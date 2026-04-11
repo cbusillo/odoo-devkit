@@ -1,0 +1,8 @@
+#!/bin/sh
+
+set -eu
+
+script_directory=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+repo_root=$(CDPATH= cd -- "$script_directory/.." && pwd)
+
+exec uv --directory "$repo_root/../odoo-devkit" run platform workspace sync --manifest "$repo_root/workspace.toml" "$@"
