@@ -1457,6 +1457,64 @@ def compose_up_script_runner(*, runtime_repo_path: Path, runtime_env_file: Path)
     run_command(runtime_repo_path=runtime_repo_path, command=compose_command + ["up", "-d", "script-runner"])
 
 
+def stream_runtime_logs(
+    *,
+    manifest: WorkspaceManifest,
+    runtime_repo_path: Path,
+    service: str,
+    tail_lines: int,
+    follow: bool,
+) -> None:
+    load_runtime_context(manifest=manifest, runtime_repo_path=runtime_repo_path)
+    runtime_env_file = ensure_runtime_env_file(
+        repo_root=runtime_repo_path,
+        context_name=manifest.runtime.context,
+        instance_name=manifest.runtime.instance,
+    )
+    compose_command = compose_base_command(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file)
+    logs_command = compose_command + ["logs", "--timestamps", "--no-color", "--tail", str(tail_lines)]
+    if follow:
+        logs_command.append("--follow")
+    normalized_service = service.strip()
+    if normalized_service:
+        logs_command.append(normalized_service)
+    run_command(runtime_repo_path=runtime_repo_path, command=logs_command)
+
+
+def run_psql_command(
+    *,
+    manifest: WorkspaceManifest,
+    runtime_repo_path: Path,
+    psql_arguments: tuple[str, ...],
+) -> None:
+    runtime_context = load_runtime_context(manifest=manifest, runtime_repo_path=runtime_repo_path)
+    runtime_env_file = ensure_runtime_env_file(
+        repo_root=runtime_repo_path,
+        context_name=manifest.runtime.context,
+        instance_name=manifest.runtime.instance,
+    )
+    db_user = runtime_context.environment.merged_values.get("ODOO_DB_USER", "odoo").strip() or "odoo"
+    db_password = runtime_context.environment.merged_values.get("ODOO_DB_PASSWORD", "")
+    compose_command = compose_base_command(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file)
+    psql_command = compose_command + ["exec", "-T"]
+    if db_password:
+        psql_command.extend(["-e", f"PGPASSWORD={db_password}"])
+    psql_command.extend(
+        [
+            "database",
+            "psql",
+            "-h",
+            "127.0.0.1",
+            "-U",
+            db_user,
+            "-d",
+            runtime_context.selection.database_name,
+            *psql_arguments,
+        ]
+    )
+    run_command(runtime_repo_path=runtime_repo_path, command=psql_command)
+
+
 def wait_for_compose_service(
     *,
     runtime_repo_path: Path,

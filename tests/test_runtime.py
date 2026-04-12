@@ -11,12 +11,14 @@ from pathlib import Path
 from unittest import mock
 
 from odoo_devkit import local_runtime
-from odoo_devkit.cli import _handle_runtime_restore, _handle_runtime_workflow
+from odoo_devkit.cli import _handle_runtime_logs, _handle_runtime_psql, _handle_runtime_restore, _handle_runtime_workflow
 from odoo_devkit.manifest import load_workspace_manifest
 from odoo_devkit.runtime import (
     build_runtime_platform_command,
     resolve_runtime_repo_path,
     run_native_runtime_inspect,
+    run_native_runtime_logs,
+    run_native_runtime_psql,
     run_native_runtime_restore,
     run_native_runtime_select,
     run_native_runtime_up,
@@ -796,6 +798,88 @@ attached_paths = ["sources/devkit"]
             self.assertEqual(exit_code, 0)
             remote_bootstrap.assert_called_once_with(manifest=manifest, runtime_repo_path=runtime_repo_path.resolve())
 
+    def test_native_runtime_logs_runs_local_helper(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = temp_root / "tenant-repo"
+            runtime_repo_path = temp_root / "runtime-repo"
+            tenant_repo_path.mkdir(parents=True, exist_ok=True)
+            runtime_repo_path.mkdir(parents=True, exist_ok=True)
+            manifest_path = self._write_manifest(
+                tenant_repo_path=tenant_repo_path,
+                runtime_repo_path=runtime_repo_path,
+            )
+            manifest = load_workspace_manifest(manifest_path)
+
+            with mock.patch("odoo_devkit.runtime.stream_runtime_logs") as stream_runtime_logs:
+                exit_code = run_native_runtime_logs(manifest=manifest, service="script-runner", tail_lines=25, follow=False)
+
+            self.assertEqual(exit_code, 0)
+            stream_runtime_logs.assert_called_once_with(
+                manifest=manifest,
+                runtime_repo_path=runtime_repo_path.resolve(),
+                service="script-runner",
+                tail_lines=25,
+                follow=False,
+            )
+
+    def test_native_runtime_logs_rejects_non_local_instance(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = temp_root / "tenant-repo"
+            runtime_repo_path = temp_root / "runtime-repo"
+            tenant_repo_path.mkdir(parents=True, exist_ok=True)
+            runtime_repo_path.mkdir(parents=True, exist_ok=True)
+            manifest_path = self._write_manifest(
+                tenant_repo_path=tenant_repo_path,
+                runtime_repo_path=runtime_repo_path,
+                instance_name="testing",
+            )
+            manifest = load_workspace_manifest(manifest_path)
+
+            with self.assertRaisesRegex(ValueError, "requires --instance local"):
+                run_native_runtime_logs(manifest=manifest, service="web", tail_lines=200, follow=True)
+
+    def test_native_runtime_psql_runs_local_helper(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = temp_root / "tenant-repo"
+            runtime_repo_path = temp_root / "runtime-repo"
+            tenant_repo_path.mkdir(parents=True, exist_ok=True)
+            runtime_repo_path.mkdir(parents=True, exist_ok=True)
+            manifest_path = self._write_manifest(
+                tenant_repo_path=tenant_repo_path,
+                runtime_repo_path=runtime_repo_path,
+            )
+            manifest = load_workspace_manifest(manifest_path)
+
+            with mock.patch("odoo_devkit.runtime.run_psql_command") as run_psql_command:
+                exit_code = run_native_runtime_psql(manifest=manifest, psql_arguments=("-c", "select 1"))
+
+            self.assertEqual(exit_code, 0)
+            run_psql_command.assert_called_once_with(
+                manifest=manifest,
+                runtime_repo_path=runtime_repo_path.resolve(),
+                psql_arguments=("-c", "select 1"),
+            )
+
+    def test_native_runtime_psql_rejects_non_local_instance(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = temp_root / "tenant-repo"
+            runtime_repo_path = temp_root / "runtime-repo"
+            tenant_repo_path.mkdir(parents=True, exist_ok=True)
+            runtime_repo_path.mkdir(parents=True, exist_ok=True)
+            manifest_path = self._write_manifest(
+                tenant_repo_path=tenant_repo_path,
+                runtime_repo_path=runtime_repo_path,
+                instance_name="prod",
+            )
+            manifest = load_workspace_manifest(manifest_path)
+
+            with self.assertRaisesRegex(ValueError, "requires --instance local"):
+                run_native_runtime_psql(manifest=manifest, psql_arguments=())
+
     def test_cli_runtime_restore_supports_instance_override_against_local_first_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
@@ -817,6 +901,64 @@ attached_paths = ["sources/devkit"]
             self.assertEqual(captured_exit.exception.code, 0)
             overridden_manifest = runtime_restore.call_args.kwargs["manifest"]
             self.assertEqual(overridden_manifest.runtime.context, "opw")
+            self.assertEqual(overridden_manifest.runtime.instance, "testing")
+
+    def test_cli_runtime_logs_supports_instance_override_against_local_first_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = temp_root / "tenant-repo"
+            runtime_repo_path = temp_root / "runtime-repo"
+            tenant_repo_path.mkdir(parents=True, exist_ok=True)
+            runtime_repo_path.mkdir(parents=True, exist_ok=True)
+            manifest_path = self._write_manifest(
+                tenant_repo_path=tenant_repo_path,
+                runtime_repo_path=runtime_repo_path,
+                instance_name="local",
+            )
+            arguments = argparse.Namespace(
+                manifest=manifest_path,
+                runtime_instance="testing",
+                service="web",
+                lines=50,
+                follow=False,
+            )
+
+            with mock.patch("odoo_devkit.cli.run_native_runtime_logs", return_value=0) as runtime_logs:
+                with self.assertRaises(SystemExit) as captured_exit:
+                    _handle_runtime_logs(arguments)
+
+            self.assertEqual(captured_exit.exception.code, 0)
+            self.assertEqual(runtime_logs.call_args.kwargs["service"], "web")
+            self.assertEqual(runtime_logs.call_args.kwargs["tail_lines"], 50)
+            self.assertFalse(runtime_logs.call_args.kwargs["follow"])
+            overridden_manifest = runtime_logs.call_args.kwargs["manifest"]
+            self.assertEqual(overridden_manifest.runtime.instance, "testing")
+
+    def test_cli_runtime_psql_strips_leading_separator_and_supports_instance_override(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = temp_root / "tenant-repo"
+            runtime_repo_path = temp_root / "runtime-repo"
+            tenant_repo_path.mkdir(parents=True, exist_ok=True)
+            runtime_repo_path.mkdir(parents=True, exist_ok=True)
+            manifest_path = self._write_manifest(
+                tenant_repo_path=tenant_repo_path,
+                runtime_repo_path=runtime_repo_path,
+                instance_name="local",
+            )
+            arguments = argparse.Namespace(
+                manifest=manifest_path,
+                runtime_instance="testing",
+                psql_arguments=["--", "-c", "select 1"],
+            )
+
+            with mock.patch("odoo_devkit.cli.run_native_runtime_psql", return_value=0) as runtime_psql:
+                with self.assertRaises(SystemExit) as captured_exit:
+                    _handle_runtime_psql(arguments)
+
+            self.assertEqual(captured_exit.exception.code, 0)
+            self.assertEqual(runtime_psql.call_args.kwargs["psql_arguments"], ("-c", "select 1"))
+            overridden_manifest = runtime_psql.call_args.kwargs["manifest"]
             self.assertEqual(overridden_manifest.runtime.instance, "testing")
 
     def test_native_runtime_workflow_rejects_non_local_init(self) -> None:

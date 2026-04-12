@@ -8,6 +8,8 @@ from pathlib import Path
 
 from .manifest import WorkspaceManifest, load_workspace_manifest
 from .runtime import (
+    run_native_runtime_logs,
+    run_native_runtime_psql,
     run_native_runtime_inspect,
     run_native_runtime_restore,
     run_native_runtime_select,
@@ -91,6 +93,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_runtime_instance_override_argument(runtime_inspect_parser)
     runtime_inspect_parser.set_defaults(handler=_handle_runtime_inspect)
+
+    runtime_logs_parser = _add_manifest_argument(
+        runtime_subparsers.add_parser("logs", help="Stream local runtime logs for the manifest runtime target")
+    )
+    _add_runtime_instance_override_argument(runtime_logs_parser)
+    runtime_logs_parser.add_argument("--service", default="web")
+    runtime_logs_parser.add_argument("--follow", action=argparse.BooleanOptionalAction, default=True)
+    runtime_logs_parser.add_argument("--lines", type=_non_negative_int, default=200)
+    runtime_logs_parser.set_defaults(handler=_handle_runtime_logs)
+
+    runtime_psql_parser = _add_manifest_argument(
+        runtime_subparsers.add_parser("psql", help="Run psql against the local manifest runtime database")
+    )
+    _add_runtime_instance_override_argument(runtime_psql_parser)
+    runtime_psql_parser.add_argument("psql_arguments", nargs=argparse.REMAINDER)
+    runtime_psql_parser.set_defaults(handler=_handle_runtime_psql)
     return parser
 
 
@@ -106,6 +124,13 @@ def _add_runtime_instance_override_argument(parser: argparse.ArgumentParser) -> 
         help="Override the manifest runtime instance for this command.",
     )
     return parser
+
+
+def _non_negative_int(value: str) -> int:
+    parsed_value = int(value)
+    if parsed_value < 0:
+        raise argparse.ArgumentTypeError("Value must be zero or greater.")
+    return parsed_value
 
 
 def _handle_workspace_sync(arguments: argparse.Namespace) -> None:
@@ -206,6 +231,33 @@ def _handle_runtime_restore(arguments: argparse.Namespace) -> None:
 def _handle_runtime_inspect(arguments: argparse.Namespace) -> None:
     manifest = _load_runtime_manifest(arguments)
     exit_code = _run_runtime_handler(lambda: run_native_runtime_inspect(manifest=manifest))
+    raise SystemExit(exit_code)
+
+
+def _handle_runtime_logs(arguments: argparse.Namespace) -> None:
+    manifest = _load_runtime_manifest(arguments)
+    exit_code = _run_runtime_handler(
+        lambda: run_native_runtime_logs(
+            manifest=manifest,
+            service=arguments.service,
+            tail_lines=arguments.lines,
+            follow=arguments.follow,
+        )
+    )
+    raise SystemExit(exit_code)
+
+
+def _handle_runtime_psql(arguments: argparse.Namespace) -> None:
+    manifest = _load_runtime_manifest(arguments)
+    psql_arguments = tuple(arguments.psql_arguments)
+    if psql_arguments and psql_arguments[0] == "--":
+        psql_arguments = psql_arguments[1:]
+    exit_code = _run_runtime_handler(
+        lambda: run_native_runtime_psql(
+            manifest=manifest,
+            psql_arguments=psql_arguments,
+        )
+    )
     raise SystemExit(exit_code)
 
 

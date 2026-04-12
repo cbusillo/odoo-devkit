@@ -8,8 +8,10 @@ from .local_runtime import (
     RuntimeCommandError,
     emit_key_value_payload,
     inspect_runtime,
+    run_psql_command,
     run_bootstrap_workflow,
     run_init_workflow,
+    stream_runtime_logs,
     run_openupgrade_workflow,
     run_restore_workflow,
     run_update_workflow,
@@ -29,6 +31,13 @@ def runtime_target_is_local(manifest: WorkspaceManifest) -> bool:
 def _raise_local_only_workflow_error(*, workflow: str, manifest: WorkspaceManifest) -> None:
     raise ValueError(
         f"workflow {workflow!r} manages local host runtime only and requires --instance local. "
+        f"Received {manifest.runtime.context}/{manifest.runtime.instance}."
+    )
+
+
+def _raise_local_only_runtime_command_error(*, command_name: str, manifest: WorkspaceManifest) -> None:
+    raise ValueError(
+        f"platform runtime {command_name} manages local host runtime only and requires --instance local. "
         f"Received {manifest.runtime.context}/{manifest.runtime.instance}."
     )
 
@@ -141,6 +150,38 @@ def run_native_runtime_inspect(*, manifest: WorkspaceManifest) -> int:
     except RuntimeCommandError as error:
         raise ValueError(str(error)) from error
     emit_key_value_payload(result.payload, output_stream=sys.stdout)
+    return 0
+
+
+def run_native_runtime_logs(*, manifest: WorkspaceManifest, service: str, tail_lines: int, follow: bool) -> int:
+    if not runtime_target_is_local(manifest):
+        _raise_local_only_runtime_command_error(command_name="logs", manifest=manifest)
+    runtime_repo_path = resolve_runtime_repo_path(manifest)
+    try:
+        stream_runtime_logs(
+            manifest=manifest,
+            runtime_repo_path=runtime_repo_path,
+            service=service,
+            tail_lines=tail_lines,
+            follow=follow,
+        )
+    except RuntimeCommandError as error:
+        raise ValueError(str(error)) from error
+    return 0
+
+
+def run_native_runtime_psql(*, manifest: WorkspaceManifest, psql_arguments: tuple[str, ...]) -> int:
+    if not runtime_target_is_local(manifest):
+        _raise_local_only_runtime_command_error(command_name="psql", manifest=manifest)
+    runtime_repo_path = resolve_runtime_repo_path(manifest)
+    try:
+        run_psql_command(
+            manifest=manifest,
+            runtime_repo_path=runtime_repo_path,
+            psql_arguments=psql_arguments,
+        )
+    except RuntimeCommandError as error:
+        raise ValueError(str(error)) from error
     return 0
 
 

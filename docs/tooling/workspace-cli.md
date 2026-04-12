@@ -7,7 +7,7 @@ Native runtime ownership is now split by target type instead of by command
 name:
 
 - manifest-local runtime targets run natively in `odoo-devkit` for
-  `platform runtime select`, `up`, `inspect`, `restore`, and
+  `platform runtime select`, `up`, `inspect`, `logs`, `psql`, `restore`, and
   `platform runtime workflow --workflow bootstrap|init|update|openupgrade`.
 - Dokploy-managed non-local runtime targets now run natively in
   `odoo-devkit` for `platform runtime restore` and
@@ -29,6 +29,8 @@ uv run platform runtime up --manifest /path/to/workspace.toml --build
 uv run platform runtime workflow --manifest /path/to/workspace.toml --workflow update
 uv run platform runtime restore --manifest /path/to/workspace.toml
 uv run platform runtime inspect --manifest /path/to/workspace.toml
+uv run platform runtime logs --manifest /path/to/workspace.toml --service web --no-follow
+uv run platform runtime psql --manifest /path/to/workspace.toml -- -c 'select 1'
 ```
 
 If `--manifest` is omitted, the command looks for `workspace.toml` in the
@@ -137,6 +139,10 @@ Notes
 - The runtime CLI accepts `--instance <name>` so a tenant repo can keep one
   tracked local-first manifest and still run remote data workflows like
   `platform runtime restore --manifest ./workspace.toml --instance testing`.
+- `platform runtime logs` and `platform runtime psql` are intentionally
+  local-only helpers for manifest-backed debugging. They require
+  `--instance local` and fail closed for non-local targets instead of falling
+  through to a legacy remote path.
 
 ## Ownership Rules
 
