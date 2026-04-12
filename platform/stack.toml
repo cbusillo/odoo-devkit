@@ -65,19 +65,16 @@ ODOO_DEV_MODE = "reload"
 ODOO_WORKERS = 2
 COMPOSE_BUILD_TARGET = "development"
 ENV_OVERRIDE_CONFIG_PARAM__WEB__BASE__URL = "https://cm-local.shinycomputers.com"
-ENV_OVERRIDE_AUTHENTIK__CLIENT_ID = "nBeUhAxSCFR7yZzFNICxPih78EyxPL9SHhzzbJy3"
 
 [contexts.cm.instances.dev.runtime_env]
 ODOO_WORKERS = 4
 COMPOSE_BUILD_TARGET = "production"
 ENV_OVERRIDE_CONFIG_PARAM__WEB__BASE__URL = "https://cm-dev.shinycomputers.com"
-ENV_OVERRIDE_AUTHENTIK__CLIENT_ID = "vTpPOs9seII8a0xT5jODra0RQTSBenlj1yDDZXI7"
 
 [contexts.cm.instances.testing.runtime_env]
 ODOO_WORKERS = 4
 COMPOSE_BUILD_TARGET = "production"
 ENV_OVERRIDE_CONFIG_PARAM__WEB__BASE__URL = "https://cm-testing.shinycomputers.com"
-ENV_OVERRIDE_AUTHENTIK__CLIENT_ID = "E2Gxez3L0NMdP2uKNjXtOAXpkXcmG1NG2JRvPhMZ"
 
 [contexts.cm.instances.prod.runtime_env]
 ODOO_WORKERS = 6
@@ -86,7 +83,6 @@ POSTGRES_EFFECTIVE_CACHE_SIZE = "6GB"
 POSTGRES_WORK_MEM = "64MB"
 COMPOSE_BUILD_TARGET = "production"
 ENV_OVERRIDE_CONFIG_PARAM__WEB__BASE__URL = "https://odoo.cellmechanic.com"
-ENV_OVERRIDE_AUTHENTIK__CLIENT_ID = "eFRxxfLhxme4jM3dqaTjNGTsVAqn97lB04zo9Q7x"
 
 [contexts.cm.instances.dev]
 install_modules_add = [
