@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .manifest import WorkspaceManifest, load_workspace_manifest
 from .runtime import (
+    run_native_runtime_build,
     run_native_runtime_down,
     run_native_runtime_logs,
     run_native_runtime_odoo_shell,
@@ -76,6 +77,13 @@ def build_parser() -> argparse.ArgumentParser:
     _add_runtime_instance_override_argument(runtime_up_parser)
     runtime_up_parser.add_argument("--build", dest="build_images", action=argparse.BooleanOptionalAction, default=True)
     runtime_up_parser.set_defaults(handler=_handle_runtime_up)
+
+    runtime_build_parser = _add_manifest_argument(
+        runtime_subparsers.add_parser("build", help="Build the local manifest runtime images")
+    )
+    _add_runtime_instance_override_argument(runtime_build_parser)
+    runtime_build_parser.add_argument("--no-cache", action="store_true")
+    runtime_build_parser.set_defaults(handler=_handle_runtime_build)
 
     runtime_down_parser = _add_manifest_argument(
         runtime_subparsers.add_parser("down", help="Stop the local manifest runtime target")
@@ -223,6 +231,12 @@ def _handle_runtime_select(arguments: argparse.Namespace) -> None:
 def _handle_runtime_up(arguments: argparse.Namespace) -> None:
     manifest = _load_runtime_manifest(arguments)
     exit_code = _run_runtime_handler(lambda: run_native_runtime_up(manifest=manifest, build_images=arguments.build_images))
+    raise SystemExit(exit_code)
+
+
+def _handle_runtime_build(arguments: argparse.Namespace) -> None:
+    manifest = _load_runtime_manifest(arguments)
+    exit_code = _run_runtime_handler(lambda: run_native_runtime_build(manifest=manifest, no_cache=arguments.no_cache))
     raise SystemExit(exit_code)
 
 

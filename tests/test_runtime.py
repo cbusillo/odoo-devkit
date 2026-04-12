@@ -12,6 +12,7 @@ from unittest import mock
 
 from odoo_devkit import local_runtime
 from odoo_devkit.cli import (
+    _handle_runtime_build,
     _handle_runtime_down,
     _handle_runtime_logs,
     _handle_runtime_odoo_shell,
@@ -23,6 +24,7 @@ from odoo_devkit.manifest import load_workspace_manifest
 from odoo_devkit.runtime import (
     build_runtime_platform_command,
     resolve_runtime_repo_path,
+    run_native_runtime_build,
     run_native_runtime_down,
     run_native_runtime_inspect,
     run_native_runtime_logs,
@@ -629,6 +631,46 @@ attached_paths = ["sources/devkit"]
             self.assertEqual(command[-3:], ["up", "-d", "--no-build"])
             self.assertEqual(run_mock.call_args.kwargs["cwd"], runtime_repo_path.resolve())
 
+    def test_native_runtime_build_runs_compose_build_with_no_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = temp_root / "tenant-repo"
+            runtime_repo_path = temp_root / "runtime-repo"
+            tenant_repo_path.mkdir(parents=True, exist_ok=True)
+            self._write_runtime_repo(runtime_repo_path)
+            manifest_path = self._write_manifest(tenant_repo_path=tenant_repo_path, runtime_repo_path=runtime_repo_path)
+
+            manifest = load_workspace_manifest(manifest_path)
+
+            with mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_base_images") as ensure_registry_auth:
+                with mock.patch("odoo_devkit.local_runtime.subprocess.run") as run_mock:
+                    run_mock.return_value = mock.Mock(returncode=0)
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        exit_code = run_native_runtime_build(manifest=manifest, no_cache=True)
+
+            self.assertEqual(exit_code, 0)
+            ensure_registry_auth.assert_called_once()
+            command = run_mock.call_args.kwargs.get("args", run_mock.call_args.args[0])
+            self.assertEqual(command[-2:], ["build", "--no-cache"])
+            self.assertEqual(run_mock.call_args.kwargs["cwd"], runtime_repo_path.resolve())
+
+    def test_native_runtime_build_rejects_non_local_instance(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = temp_root / "tenant-repo"
+            runtime_repo_path = temp_root / "runtime-repo"
+            tenant_repo_path.mkdir(parents=True, exist_ok=True)
+            runtime_repo_path.mkdir(parents=True, exist_ok=True)
+            manifest_path = self._write_manifest(
+                tenant_repo_path=tenant_repo_path,
+                runtime_repo_path=runtime_repo_path,
+                instance_name="dev",
+            )
+            manifest = load_workspace_manifest(manifest_path)
+
+            with self.assertRaisesRegex(ValueError, "requires --instance local"):
+                run_native_runtime_build(manifest=manifest, no_cache=False)
+
     def test_native_runtime_down_runs_compose_down_with_optional_volumes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
@@ -1143,6 +1185,33 @@ attached_paths = ["sources/devkit"]
             self.assertEqual(captured_exit.exception.code, 0)
             self.assertTrue(runtime_down.call_args.kwargs["volumes"])
             overridden_manifest = runtime_down.call_args.kwargs["manifest"]
+            self.assertEqual(overridden_manifest.runtime.instance, "testing")
+
+    def test_cli_runtime_build_supports_instance_override_against_local_first_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = temp_root / "tenant-repo"
+            runtime_repo_path = temp_root / "runtime-repo"
+            tenant_repo_path.mkdir(parents=True, exist_ok=True)
+            runtime_repo_path.mkdir(parents=True, exist_ok=True)
+            manifest_path = self._write_manifest(
+                tenant_repo_path=tenant_repo_path,
+                runtime_repo_path=runtime_repo_path,
+                instance_name="local",
+            )
+            arguments = argparse.Namespace(
+                manifest=manifest_path,
+                runtime_instance="testing",
+                no_cache=True,
+            )
+
+            with mock.patch("odoo_devkit.cli.run_native_runtime_build", return_value=0) as runtime_build:
+                with self.assertRaises(SystemExit) as captured_exit:
+                    _handle_runtime_build(arguments)
+
+            self.assertEqual(captured_exit.exception.code, 0)
+            self.assertTrue(runtime_build.call_args.kwargs["no_cache"])
+            overridden_manifest = runtime_build.call_args.kwargs["manifest"]
             self.assertEqual(overridden_manifest.runtime.instance, "testing")
 
     def test_cli_runtime_psql_strips_leading_separator_and_supports_instance_override(self) -> None:

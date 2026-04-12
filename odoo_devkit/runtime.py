@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .local_runtime import (
     RuntimeCommandError,
+    build_runtime,
     down_runtime,
     emit_key_value_payload,
     inspect_runtime,
@@ -221,6 +222,18 @@ def run_native_runtime_up(*, manifest: WorkspaceManifest, build_images: bool) ->
     except RuntimeCommandError as error:
         raise ValueError(str(error)) from error
     print(f"up=odoo-{manifest.runtime.context}-{manifest.runtime.instance}")
+    return 0
+
+
+def run_native_runtime_build(*, manifest: WorkspaceManifest, no_cache: bool) -> int:
+    if not runtime_target_is_local(manifest):
+        _raise_local_only_runtime_command_error(command_name="build", manifest=manifest)
+    runtime_repo_path = resolve_runtime_repo_path(manifest)
+    try:
+        build_runtime(manifest=manifest, runtime_repo_path=runtime_repo_path, no_cache=no_cache)
+    except RuntimeCommandError as error:
+        raise ValueError(str(error)) from error
+    print(f"build=odoo-{manifest.runtime.context}-{manifest.runtime.instance}")
     return 0
 
 

@@ -29,6 +29,7 @@ uv run platform workspace scaffold-tenant-overlay \
 uv run platform workspace clean --manifest /path/to/workspace.toml
 uv run platform workspace run --manifest /path/to/workspace.toml -- pwd
 uv run platform runtime select --manifest /path/to/workspace.toml
+uv run platform runtime build --manifest /path/to/workspace.toml --no-cache
 uv run platform runtime up --manifest /path/to/workspace.toml --build
 uv run platform runtime down --manifest /path/to/workspace.toml --volumes
 uv run platform runtime workflow --manifest /path/to/workspace.toml --workflow update
@@ -70,7 +71,7 @@ Current runtime ownership is intentionally narrow and explicit:
 
 - local runtime targets run natively inside `odoo-devkit` against the repo
   owned by `odoo-devkit` itself:
-  `select`, `up`, `down`, `inspect`, `logs`, `psql`, `odoo-shell`, `restore`,
+  `select`, `build`, `up`, `down`, `inspect`, `logs`, `psql`, `odoo-shell`, `restore`,
   `workflow bootstrap`, `workflow init`, `workflow update`, and
   `workflow openupgrade`.
 - Dokploy-managed non-local runtime targets now also run natively inside

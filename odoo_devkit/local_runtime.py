@@ -334,14 +334,29 @@ def up_runtime(*, manifest: WorkspaceManifest, runtime_repo_path: Path, build_im
     runtime_env_file = write_runtime_env_file(runtime_context=runtime_context)
     compose_command = compose_base_command(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file)
     if build_images:
-        ensure_registry_auth_for_base_images(
-            build_registry_auth_environment(
-                source_environment=runtime_context.environment.merged_values,
-                runtime_env_file=runtime_env_file,
-            )
-        )
-        run_command(runtime_repo_path=runtime_repo_path, command=compose_command + ["build"])
+        build_runtime(manifest=manifest, runtime_repo_path=runtime_repo_path, no_cache=False)
     run_command(runtime_repo_path=runtime_repo_path, command=compose_command + ["up", "-d", "--no-build"])
+
+
+def build_runtime(*, manifest: WorkspaceManifest, runtime_repo_path: Path, no_cache: bool) -> None:
+    runtime_context = load_runtime_context(manifest=manifest, runtime_repo_path=runtime_repo_path)
+    write_runtime_odoo_conf_file(
+        runtime_selection=runtime_context.selection,
+        stack_definition=runtime_context.stack.stack_definition,
+        source_environment=runtime_context.environment.merged_values,
+    )
+    runtime_env_file = write_runtime_env_file(runtime_context=runtime_context)
+    ensure_registry_auth_for_base_images(
+        build_registry_auth_environment(
+            source_environment=runtime_context.environment.merged_values,
+            runtime_env_file=runtime_env_file,
+        )
+    )
+    compose_command = compose_base_command(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file)
+    build_command = compose_command + ["build"]
+    if no_cache:
+        build_command.append("--no-cache")
+    run_command(runtime_repo_path=runtime_repo_path, command=build_command)
 
 
 def down_runtime(*, manifest: WorkspaceManifest, runtime_repo_path: Path, volumes: bool) -> None:
