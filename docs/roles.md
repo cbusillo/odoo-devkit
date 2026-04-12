@@ -72,8 +72,8 @@ Notes
 
 ## Maintainer
 
-Purpose: keep docs, workspace contracts, and worktree hygiene coherent during
-the repo pivot.
+Purpose: keep docs, workspace contracts, and worktree hygiene coherent as the
+shared workspace model evolves.
 
 Checklist
 

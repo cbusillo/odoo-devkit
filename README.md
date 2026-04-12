@@ -44,11 +44,11 @@ uv run platform runtime odoo-shell --manifest /path/to/workspace.toml \
 If `--manifest` is omitted, the CLI looks for `workspace.toml` in the current
 directory.
 
-## Current bootstrap scope
+## Bootstrap scope
 
-This repo is intentionally small. The current pass focuses on extracted tenant
-workspaces and the manifest/runtime contract rather than preserving a legacy
-monorepo as a required local DX dependency.
+This repo is intentionally small. It focuses on extracted tenant workspaces and
+the manifest/runtime contract instead of carrying a separate monorepo as a
+required local DX dependency.
 
 - `workspace sync` now materializes repo-addressable shared-addons inputs from
   `[repos.shared_addons].url` + `ref` into `sources/shared-addons` when the
@@ -78,7 +78,8 @@ Current runtime ownership is intentionally narrow and explicit:
   `odoo-devkit` for `restore`, `workflow bootstrap`, and `workflow update`
   using the runtime repo's generated env plus Dokploy target metadata from
   `odoo-control-plane/config/dokploy.toml` when available, falling back to the
-  runtime repo's legacy `platform/dokploy.toml` during migration.
+  runtime repo's `platform/dokploy.toml` only when the control-plane catalog is
+  not present.
 - non-local `workflow init` and `workflow openupgrade` remain local-only and
   fail closed with an explicit `--instance local` requirement instead of
   falling through to an implicit remote path.

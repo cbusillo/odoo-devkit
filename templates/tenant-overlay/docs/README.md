@@ -16,7 +16,7 @@ This docs index is intentionally thin.
 - tenant architecture or domain notes
 - tenant-specific local workflows
 - tenant-specific integration notes
-- tenant-specific migration or rollout notes
+- tenant-specific release or rollout notes
 
 ## Useful Commands
 

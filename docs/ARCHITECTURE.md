@@ -4,7 +4,7 @@ title: Workspace Architecture
 
 Purpose
 
-- Capture the workspace-first architecture for the repo pivot.
+- Capture the workspace-first architecture for extracted tenant workspaces.
 - Make the ownership split explicit between the tenant repo, `odoo-devkit`,
   the materialized workspace root, and the control plane.
 

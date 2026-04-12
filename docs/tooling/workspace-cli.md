@@ -118,8 +118,8 @@ Notes
   `odoo-devkit` may still need external runtime metadata from that repo or its
   managed `sources/runtime` checkout. Dokploy target definitions now prefer the
   control-plane-owned `config/dokploy.toml` catalog when
-  `ODOO_CONTROL_PLANE_ROOT` is set, with the runtime repo's legacy
-  `platform/dokploy.toml` used only as a migration fallback.
+  `ODOO_CONTROL_PLANE_ROOT` is set, with the runtime repo's
+  `platform/dokploy.toml` used only when the control-plane catalog is absent.
 - Runtime ownership remains fail-closed and explicit for non-local targets.
   `odoo-devkit` no longer guesses a runtime repo from `[repos.shared_addons]`,
   even if that path points at a sibling `odoo-shared-addons` checkout.
@@ -127,7 +127,7 @@ Notes
   `platform workspace sync` has materialized `sources/runtime`.
 - For extracted tenant overlays, `platform runtime select` and `inspect`
   generate the PyCharm Odoo config from the manifest-backed tenant/shared addon
-  sources rather than from the runtime repo's legacy project-addon layout.
+  sources rather than from the runtime repo's older project-addon layout.
 - Local `platform runtime up` now also emits manifest-backed host addon mount
   paths for compose, so tenant checkouts can bind-mount `sources/tenant/addons`
   plus `sources/shared-addons` into the devkit-owned local runtime bundle.
@@ -147,10 +147,10 @@ Notes
 - `platform runtime logs` and `platform runtime psql` are intentionally
   local-only helpers for manifest-backed debugging. They require
   `--instance local` and fail closed for non-local targets instead of falling
-  through to a legacy remote path.
+  through to an implicit remote path.
 - `platform runtime down` follows the same local-only rule and gives tenant
-  manifests a native way to stop the local compose stack without reaching back
-  into a retired legacy repo.
+  manifests a native way to stop the local compose stack without routing
+  through another repo.
 - `platform runtime build` follows the same local-only rule and gives tenant
   manifests a native build-only entry point when operators want image prep
   without starting the stack.
