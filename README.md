@@ -47,8 +47,8 @@ directory.
 ## Current bootstrap scope
 
 This repo is intentionally small. The current pass focuses on extracted tenant
-workspaces and the manifest/runtime contract rather than preserving `odoo-ai`
-as a required local DX dependency.
+workspaces and the manifest/runtime contract rather than preserving a legacy
+monorepo as a required local DX dependency.
 
 - `workspace sync` now materializes repo-addressable shared-addons inputs from
   `[repos.shared_addons].url` + `ref` into `sources/shared-addons` when the

@@ -150,7 +150,7 @@ Notes
   through to a legacy remote path.
 - `platform runtime down` follows the same local-only rule and gives tenant
   manifests a native way to stop the local compose stack without reaching back
-  into `odoo-ai`.
+  into a retired legacy repo.
 - `platform runtime build` follows the same local-only rule and gives tenant
   manifests a native build-only entry point when operators want image prep
   without starting the stack.
