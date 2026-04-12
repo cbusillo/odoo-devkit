@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .local_runtime import (
     RuntimeCommandError,
+    down_runtime,
     emit_key_value_payload,
     inspect_runtime,
     run_psql_command,
@@ -220,6 +221,18 @@ def run_native_runtime_up(*, manifest: WorkspaceManifest, build_images: bool) ->
     except RuntimeCommandError as error:
         raise ValueError(str(error)) from error
     print(f"up=odoo-{manifest.runtime.context}-{manifest.runtime.instance}")
+    return 0
+
+
+def run_native_runtime_down(*, manifest: WorkspaceManifest, volumes: bool) -> int:
+    if not runtime_target_is_local(manifest):
+        _raise_local_only_runtime_command_error(command_name="down", manifest=manifest)
+    runtime_repo_path = resolve_runtime_repo_path(manifest)
+    try:
+        down_runtime(manifest=manifest, runtime_repo_path=runtime_repo_path, volumes=volumes)
+    except RuntimeCommandError as error:
+        raise ValueError(str(error)) from error
+    print(f"down=odoo-{manifest.runtime.context}-{manifest.runtime.instance}")
     return 0
 
 

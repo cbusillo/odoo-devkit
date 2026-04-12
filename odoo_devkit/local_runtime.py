@@ -344,6 +344,20 @@ def up_runtime(*, manifest: WorkspaceManifest, runtime_repo_path: Path, build_im
     run_command(runtime_repo_path=runtime_repo_path, command=compose_command + ["up", "-d", "--no-build"])
 
 
+def down_runtime(*, manifest: WorkspaceManifest, runtime_repo_path: Path, volumes: bool) -> None:
+    load_runtime_context(manifest=manifest, runtime_repo_path=runtime_repo_path)
+    runtime_env_file = ensure_runtime_env_file(
+        repo_root=runtime_repo_path,
+        context_name=manifest.runtime.context,
+        instance_name=manifest.runtime.instance,
+    )
+    compose_command = compose_base_command(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file)
+    down_command = compose_command + ["down"]
+    if volumes:
+        down_command.append("--volumes")
+    run_command(runtime_repo_path=runtime_repo_path, command=down_command)
+
+
 def run_init_workflow(*, manifest: WorkspaceManifest, runtime_repo_path: Path) -> None:
     runtime_context = load_runtime_context(manifest=manifest, runtime_repo_path=runtime_repo_path)
     runtime_env_file = ensure_runtime_env_file(

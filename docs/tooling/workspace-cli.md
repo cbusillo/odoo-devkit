@@ -7,7 +7,7 @@ Native runtime ownership is now split by target type instead of by command
 name:
 
 - manifest-local runtime targets run natively in `odoo-devkit` for
-  `platform runtime select`, `up`, `inspect`, `logs`, `psql`, `odoo-shell`,
+  `platform runtime select`, `up`, `down`, `inspect`, `logs`, `psql`, `odoo-shell`,
   `restore`, and
   `platform runtime workflow --workflow bootstrap|init|update|openupgrade`.
 - Dokploy-managed non-local runtime targets now run natively in
@@ -27,6 +27,7 @@ uv run platform workspace clean --manifest /path/to/workspace.toml
 uv run platform workspace run --manifest /path/to/workspace.toml -- pwd
 uv run platform runtime select --manifest /path/to/workspace.toml
 uv run platform runtime up --manifest /path/to/workspace.toml --build
+uv run platform runtime down --manifest /path/to/workspace.toml --volumes
 uv run platform runtime workflow --manifest /path/to/workspace.toml --workflow update
 uv run platform runtime restore --manifest /path/to/workspace.toml
 uv run platform runtime inspect --manifest /path/to/workspace.toml
@@ -146,6 +147,9 @@ Notes
   local-only helpers for manifest-backed debugging. They require
   `--instance local` and fail closed for non-local targets instead of falling
   through to a legacy remote path.
+- `platform runtime down` follows the same local-only rule and gives tenant
+  manifests a native way to stop the local compose stack without reaching back
+  into `odoo-ai`.
 - `platform runtime odoo-shell` follows the same local-only rule. It can run
   interactively, consume a `--script` file, and optionally tee output into a
   `--log-file`, but it is still a manifest-backed local helper rather than a
