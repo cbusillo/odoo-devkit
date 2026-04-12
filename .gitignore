@@ -6,3 +6,9 @@ __pycache__/
 .venv/
 dist/
 *.pyc
+.env
+.platform/
+platform/.env
+platform/secrets.toml
+tmp/
+docker-compose.override.yml

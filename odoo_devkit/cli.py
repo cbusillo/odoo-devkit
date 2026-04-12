@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from .manifest import WorkspaceManifest, load_workspace_manifest
@@ -156,19 +156,19 @@ def _handle_workspace_run(arguments: argparse.Namespace) -> None:
 
 def _handle_runtime_select(arguments: argparse.Namespace) -> None:
     manifest = _load_manifest(arguments.manifest)
-    exit_code = run_native_runtime_select(manifest=manifest)
+    exit_code = _run_runtime_handler(lambda: run_native_runtime_select(manifest=manifest))
     raise SystemExit(exit_code)
 
 
 def _handle_runtime_up(arguments: argparse.Namespace) -> None:
     manifest = _load_manifest(arguments.manifest)
-    exit_code = run_native_runtime_up(manifest=manifest, build_images=arguments.build_images)
+    exit_code = _run_runtime_handler(lambda: run_native_runtime_up(manifest=manifest, build_images=arguments.build_images))
     raise SystemExit(exit_code)
 
 
 def _handle_runtime_workflow(arguments: argparse.Namespace) -> None:
     manifest = _load_manifest(arguments.manifest)
-    native_exit_code = run_native_runtime_workflow(manifest=manifest, workflow=arguments.workflow)
+    native_exit_code = _run_runtime_handler(lambda: run_native_runtime_workflow(manifest=manifest, workflow=arguments.workflow))
     if native_exit_code is not None:
         raise SystemExit(native_exit_code)
     exit_code = run_runtime_platform_command(
@@ -181,7 +181,7 @@ def _handle_runtime_workflow(arguments: argparse.Namespace) -> None:
 
 def _handle_runtime_restore(arguments: argparse.Namespace) -> None:
     manifest = _load_manifest(arguments.manifest)
-    native_exit_code = run_native_runtime_restore(manifest=manifest)
+    native_exit_code = _run_runtime_handler(lambda: run_native_runtime_restore(manifest=manifest))
     if native_exit_code is not None:
         raise SystemExit(native_exit_code)
     exit_code = run_runtime_platform_command(manifest=manifest, platform_subcommand="restore")
@@ -190,8 +190,15 @@ def _handle_runtime_restore(arguments: argparse.Namespace) -> None:
 
 def _handle_runtime_inspect(arguments: argparse.Namespace) -> None:
     manifest = _load_manifest(arguments.manifest)
-    exit_code = run_native_runtime_inspect(manifest=manifest)
+    exit_code = _run_runtime_handler(lambda: run_native_runtime_inspect(manifest=manifest))
     raise SystemExit(exit_code)
+
+
+def _run_runtime_handler(handler: Callable[[], int | None]) -> int | None:
+    try:
+        return handler()
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
 
 
 def _load_manifest(manifest_path: Path) -> WorkspaceManifest:

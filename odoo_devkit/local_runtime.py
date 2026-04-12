@@ -5,7 +5,6 @@ import os
 import re
 import shlex
 import subprocess
-import sys
 import textwrap
 import time
 import tomllib
@@ -30,6 +29,8 @@ PLATFORM_RUNTIME_ENV_KEYS = (
     "ODOO_PROJECT_NAME",
     "ODOO_STATE_ROOT",
     "ODOO_RUNTIME_CONF_HOST_PATH",
+    "ODOO_PROJECT_ADDONS_HOST_PATH",
+    "ODOO_SHARED_ADDONS_HOST_PATH",
     "DOCKER_IMAGE",
     "DOCKER_IMAGE_TAG",
     "DOCKER_IMAGE_REFERENCE",
@@ -159,6 +160,7 @@ GHCR_HOST = "ghcr.io"
 PLACEHOLDER_REGISTRY_HOST = "registry.invalid"
 DEFAULT_ODOO_BASE_RUNTIME_IMAGE = "registry.invalid/private-enterprise-runtime:19.0-runtime"
 DEFAULT_ODOO_BASE_DEVTOOLS_IMAGE = "registry.invalid/private-enterprise-devtools:19.0-devtools"
+CONTROL_PLANE_ROOT_ENV_VAR = "ODOO_CONTROL_PLANE_ROOT"
 
 _REGISTRY_LOGINS_DONE: set[tuple[str, str]] = set()
 _VERIFIED_IMAGE_ACCESS: set[str] = set()
@@ -195,41 +197,10 @@ class StackDefinition:
 
 
 @dataclass(frozen=True)
-class PlatformSecretsInstanceDefinition:
-    env: ScalarMap
-
-
-@dataclass(frozen=True)
-class PlatformSecretsContextDefinition:
-    shared: ScalarMap
-    instances: dict[str, PlatformSecretsInstanceDefinition]
-
-
-@dataclass(frozen=True)
-class PlatformSecretsDefinition:
-    schema_version: int
-    shared: ScalarMap
-    contexts: dict[str, PlatformSecretsContextDefinition]
-
-
-@dataclass(frozen=True)
-class EnvironmentLayer:
-    name: str
-    values: dict[str, str]
-
-
-@dataclass(frozen=True)
-class EnvironmentCollision:
-    key: str
-    previous_layer: str
-    incoming_layer: str
-
-
-@dataclass(frozen=True)
 class LoadedEnvironment:
     env_file_path: Path
     merged_values: dict[str, str]
-    collisions: tuple[EnvironmentCollision, ...]
+    collisions: tuple[object, ...]
 
 
 @dataclass(frozen=True)
@@ -262,6 +233,7 @@ class RuntimeSelection:
 
 @dataclass(frozen=True)
 class RuntimeContext:
+    manifest: WorkspaceManifest
     repo_root: Path
     stack: LoadedStack
     environment: LoadedEnvironment
@@ -286,6 +258,7 @@ class RuntimeCommandError(ValueError):
 
 def select_runtime(*, manifest: WorkspaceManifest, runtime_repo_path: Path) -> RuntimeSelectResult:
     runtime_context = load_runtime_context(manifest=manifest, runtime_repo_path=runtime_repo_path)
+    pycharm_host_addons_paths = resolve_manifest_pycharm_addons_paths(manifest=manifest)
     write_runtime_odoo_conf_file(
         runtime_selection=runtime_context.selection,
         stack_definition=runtime_context.stack.stack_definition,
@@ -301,6 +274,7 @@ def select_runtime(*, manifest: WorkspaceManifest, runtime_repo_path: Path) -> R
         state_path=runtime_context.selection.state_path,
         addons_paths=runtime_context.stack.stack_definition.addons_path,
         source_environment=runtime_context.environment.merged_values,
+        host_addons_paths=pycharm_host_addons_paths,
     )
     return RuntimeSelectResult(
         runtime_env_file=runtime_context.runtime_env_file,
@@ -310,6 +284,8 @@ def select_runtime(*, manifest: WorkspaceManifest, runtime_repo_path: Path) -> R
 
 def inspect_runtime(*, manifest: WorkspaceManifest, runtime_repo_path: Path) -> RuntimeInspectResult:
     runtime_context = load_runtime_context(manifest=manifest, runtime_repo_path=runtime_repo_path)
+    pycharm_host_addons_paths = resolve_manifest_pycharm_addons_paths(manifest=manifest)
+    local_addons_mount_paths = resolve_manifest_local_addons_mount_paths(manifest=manifest)
     runtime_conf_file = write_runtime_odoo_conf_file(
         runtime_selection=runtime_context.selection,
         stack_definition=runtime_context.stack.stack_definition,
@@ -324,6 +300,7 @@ def inspect_runtime(*, manifest: WorkspaceManifest, runtime_repo_path: Path) -> 
         state_path=runtime_context.selection.state_path,
         addons_paths=runtime_context.stack.stack_definition.addons_path,
         source_environment=runtime_context.environment.merged_values,
+        host_addons_paths=pycharm_host_addons_paths,
     )
     payload: dict[str, object] = {
         "context": runtime_context.selection.context_name,
@@ -333,6 +310,13 @@ def inspect_runtime(*, manifest: WorkspaceManifest, runtime_repo_path: Path) -> 
         "pycharm_odoo_conf_host": str(pycharm_odoo_conf_file),
         "odoo_conf_container": runtime_context.selection.runtime_odoo_conf_path,
         "addons_path": list(runtime_context.stack.stack_definition.addons_path),
+        "pycharm_addons_path": list(pycharm_host_addons_paths),
+        "project_addons_host_path": str(local_addons_mount_paths.project_addons_host_path),
+        "shared_addons_host_path": (
+            str(local_addons_mount_paths.shared_addons_host_path)
+            if local_addons_mount_paths.shared_addons_host_path is not None
+            else ""
+        ),
         "addon_repositories": list(runtime_context.selection.effective_addon_repositories),
         "install_modules": list(runtime_context.selection.effective_install_modules),
         "note": "Use pycharm_odoo_conf_host for run configs/tooling with explicit -c config paths; odoo_conf_host is for runtime bootstrap.",
@@ -495,7 +479,7 @@ def run_local_data_workflow(
             missing_joined = ", ".join(missing_environment_keys)
             raise RuntimeCommandError(
                 "Restore requires upstream settings; missing: "
-                f"{missing_joined}. Configure these in .env or platform/secrets.toml, "
+                f"{missing_joined}. {runtime_environment_configuration_guidance()} "
                 "or run bootstrap intentionally."
             )
 
@@ -555,8 +539,12 @@ def load_runtime_context(
         context_name=manifest.runtime.context,
         instance_name=manifest.runtime.instance,
     )
-    runtime_selection = resolve_runtime_selection(
+    effective_stack_definition = resolve_manifest_runtime_stack_definition(
+        manifest=manifest,
         stack_definition=loaded_stack.stack_definition,
+    )
+    runtime_selection = resolve_runtime_selection(
+        stack_definition=effective_stack_definition,
         context_name=manifest.runtime.context,
         instance_name=manifest.runtime.instance,
         repo_root=runtime_repo_path,
@@ -567,12 +555,145 @@ def load_runtime_context(
         instance_name=manifest.runtime.instance,
     )
     return RuntimeContext(
+        manifest=manifest,
         repo_root=runtime_repo_path,
-        stack=loaded_stack,
+        stack=LoadedStack(stack_file_path=loaded_stack.stack_file_path, stack_definition=effective_stack_definition),
         environment=loaded_environment,
         selection=runtime_selection,
         runtime_env_file=runtime_env_file,
     )
+
+
+def resolve_manifest_runtime_stack_definition(*, manifest: WorkspaceManifest, stack_definition: StackDefinition) -> StackDefinition:
+    project_addons_paths = resolve_manifest_container_addons_paths(manifest=manifest)
+    if not project_addons_paths:
+        return stack_definition
+    effective_addons_paths: list[str] = []
+    seen_paths: set[str] = set()
+    for addons_path in stack_definition.addons_path:
+        if addons_path.startswith("/opt/project/addons"):
+            continue
+        if addons_path in seen_paths:
+            continue
+        seen_paths.add(addons_path)
+        effective_addons_paths.append(addons_path)
+    for addons_path in project_addons_paths:
+        if addons_path in seen_paths:
+            continue
+        seen_paths.add(addons_path)
+        effective_addons_paths.append(addons_path)
+    return StackDefinition(
+        schema_version=stack_definition.schema_version,
+        odoo_version=stack_definition.odoo_version,
+        state_root=stack_definition.state_root,
+        addons_path=tuple(effective_addons_paths),
+        addon_repositories=stack_definition.addon_repositories,
+        runtime_env=stack_definition.runtime_env,
+        required_env_keys=stack_definition.required_env_keys,
+        contexts=stack_definition.contexts,
+    )
+
+
+def resolve_manifest_container_addons_paths(*, manifest: WorkspaceManifest) -> tuple[str, ...]:
+    resolved_paths: list[str] = []
+    seen_paths: set[str] = set()
+    for manifest_addons_path in manifest.runtime.addons_paths:
+        container_path = _resolve_manifest_container_addons_path(manifest_addons_path)
+        if container_path in seen_paths:
+            continue
+        seen_paths.add(container_path)
+        resolved_paths.append(container_path)
+    return tuple(resolved_paths)
+
+
+def _resolve_manifest_container_addons_path(manifest_addons_path: str) -> str:
+    raw_path = manifest_addons_path.strip()
+    if raw_path == "sources/tenant/addons":
+        return "/opt/project/addons"
+    if raw_path.startswith("sources/tenant/addons/"):
+        return "/opt/project/addons/" + raw_path.removeprefix("sources/tenant/addons/")
+    if raw_path == "sources/shared-addons":
+        return "/opt/project/addons/shared"
+    if raw_path.startswith("sources/shared-addons/"):
+        return "/opt/project/addons/shared/" + raw_path.removeprefix("sources/shared-addons/")
+    if raw_path == "sources/runtime":
+        return "/opt/project/runtime"
+    if raw_path.startswith("sources/runtime/"):
+        return "/opt/project/runtime/" + raw_path.removeprefix("sources/runtime/")
+    return raw_path
+
+
+def resolve_manifest_pycharm_addons_paths(*, manifest: WorkspaceManifest) -> tuple[str, ...]:
+    from .workspace import resolve_optional_repo_path_with_managed_checkout, resolve_workspace_path
+
+    workspace_path = resolve_workspace_path(manifest)
+    tenant_repo_path = manifest.tenant_repo.resolve_path(manifest_directory=manifest.manifest_directory)
+    if tenant_repo_path is None or not tenant_repo_path.exists():
+        raise RuntimeCommandError("Tenant repo path must exist before generating PyCharm Odoo config.")
+    shared_addons_repo_path = resolve_optional_repo_path_with_managed_checkout(
+        manifest.shared_addons_repo,
+        manifest=manifest,
+        managed_checkout_path=workspace_path / "sources" / "shared-addons",
+    )
+    runtime_repo_path = resolve_optional_repo_path_with_managed_checkout(
+        manifest.runtime_repo,
+        manifest=manifest,
+        managed_checkout_path=workspace_path / "sources" / "runtime",
+    )
+    resolved_paths = [
+        _resolve_manifest_addons_path(
+            manifest_addons_path=addons_path,
+            workspace_path=workspace_path,
+            tenant_repo_path=tenant_repo_path.resolve(),
+            shared_addons_repo_path=shared_addons_repo_path,
+            runtime_repo_path=runtime_repo_path,
+        )
+        for addons_path in manifest.runtime.addons_paths
+    ]
+    return tuple(str(path) for path in resolved_paths)
+
+
+def _resolve_manifest_addons_path(
+    *,
+    manifest_addons_path: str,
+    workspace_path: Path,
+    tenant_repo_path: Path,
+    shared_addons_repo_path: Path | None,
+    runtime_repo_path: Path | None,
+) -> Path:
+    raw_path = manifest_addons_path.strip()
+    candidate_path = Path(raw_path).expanduser()
+    if candidate_path.is_absolute():
+        return candidate_path.resolve()
+    if raw_path == "sources/tenant":
+        return tenant_repo_path
+    if raw_path.startswith("sources/tenant/"):
+        return (tenant_repo_path / raw_path.removeprefix("sources/tenant/")).resolve()
+    if raw_path == "sources/shared-addons":
+        if shared_addons_repo_path is None:
+            raise RuntimeCommandError(
+                "Workspace manifest references sources/shared-addons, but that repo is not available. Run `platform workspace sync` first when using repo-addressable shared addons."
+            )
+        return shared_addons_repo_path.resolve()
+    if raw_path.startswith("sources/shared-addons/"):
+        if shared_addons_repo_path is None:
+            raise RuntimeCommandError(
+                "Workspace manifest references sources/shared-addons, but that repo is not available. Run `platform workspace sync` first when using repo-addressable shared addons."
+            )
+        return (shared_addons_repo_path / raw_path.removeprefix("sources/shared-addons/")).resolve()
+    if raw_path == "sources/runtime":
+        if runtime_repo_path is None:
+            raise RuntimeCommandError(
+                "Workspace manifest references sources/runtime, but that repo is not available. Run `platform workspace sync` first when using repo-addressable runtime sources."
+            )
+        return runtime_repo_path.resolve()
+    if raw_path.startswith("sources/runtime/"):
+        if runtime_repo_path is None:
+            raise RuntimeCommandError(
+                "Workspace manifest references sources/runtime, but that repo is not available. Run `platform workspace sync` first when using repo-addressable runtime sources."
+            )
+        return (runtime_repo_path / raw_path.removeprefix("sources/runtime/")).resolve()
+    return (workspace_path / raw_path).resolve()
 
 
 def resolve_stack_file_path(runtime_repo_path: Path) -> Path:
@@ -711,23 +832,122 @@ def discover_project_addon_group_paths(repo_root: Path) -> tuple[str, ...]:
 
 
 def load_environment(*, repo_root: Path, context_name: str, instance_name: str, collision_mode: str = "warn") -> LoadedEnvironment:
-    env_file_path = resolve_default_env_file(repo_root)
-    layers = [EnvironmentLayer(name=f"env-file:{env_file_path}", values=parse_env_file(env_file_path))]
-    layers.extend(build_platform_secret_layers(repo_root=repo_root, context_name=context_name, instance_name=instance_name))
-    merged_values, collisions = merge_environment_layers(layers)
-    handle_environment_collisions(collisions=collisions, collision_mode=collision_mode)
-    return LoadedEnvironment(env_file_path=env_file_path, merged_values=merged_values, collisions=collisions)
+    _ = collision_mode
+    control_plane_root = resolve_control_plane_root()
+    if control_plane_root is None:
+        legacy_file_display = legacy_local_environment_file_display(repo_root)
+        if legacy_file_display is not None:
+            raise RuntimeCommandError(
+                "Legacy devkit-local env/secrets files are no longer supported for runtime environment authority: "
+                f"{legacy_file_display}. Remove them, set {CONTROL_PLANE_ROOT_ENV_VAR}, and migrate runtime values into "
+                "odoo-control-plane `config/runtime-environments.toml`."
+            )
+        raise RuntimeCommandError(
+            "Runtime environment resolution now requires the control-plane contract. "
+            f"Set {CONTROL_PLANE_ROOT_ENV_VAR} to a valid odoo-control-plane checkout and configure runtime values in "
+            "`config/runtime-environments.toml`."
+        )
+    ensure_legacy_local_environment_files_are_absent(repo_root)
+    return load_environment_from_control_plane(
+        control_plane_root=control_plane_root,
+        context_name=context_name,
+        instance_name=instance_name,
+    )
 
 
-def resolve_default_env_file(repo_root: Path) -> Path:
-    root_env = repo_root / ".env"
-    if root_env.exists():
-        return root_env.resolve()
-    platform_env = repo_root / "platform" / ".env"
-    if platform_env.exists():
-        return platform_env.resolve()
+def resolve_control_plane_root() -> Path | None:
+    configured_root = os.environ.get(CONTROL_PLANE_ROOT_ENV_VAR, "").strip()
+    if not configured_root:
+        return None
+    return Path(configured_root).expanduser().resolve()
+
+
+def runtime_environment_configuration_guidance(*, noun: str = "these") -> str:
+    if resolve_control_plane_root() is None:
+        return (
+            f"Set {CONTROL_PLANE_ROOT_ENV_VAR} to a valid odoo-control-plane checkout and configure {noun} in "
+            "`config/runtime-environments.toml`."
+        )
+    return (
+        f"Configure {noun} in the control-plane runtime environments file resolved through "
+        f"{CONTROL_PLANE_ROOT_ENV_VAR} (`config/runtime-environments.toml` by default)."
+    )
+
+
+def legacy_local_environment_files(repo_root: Path) -> list[Path]:
+    legacy_files = [
+        repo_root / ".env",
+        repo_root / "platform" / ".env",
+        repo_root / "platform" / "secrets.toml",
+    ]
+    return [legacy_file for legacy_file in legacy_files if legacy_file.exists()]
+
+
+def legacy_local_environment_file_display(repo_root: Path) -> str | None:
+    existing_legacy_files = legacy_local_environment_files(repo_root)
+    if not existing_legacy_files:
+        return None
+    return ", ".join(str(legacy_file) for legacy_file in existing_legacy_files)
+
+
+def ensure_legacy_local_environment_files_are_absent(repo_root: Path) -> None:
+    legacy_file_display = legacy_local_environment_file_display(repo_root)
+    if legacy_file_display is None:
+        return
     raise RuntimeCommandError(
-        "Missing environment file. Create .env at repository root or platform/.env, or pass --env-file explicitly."
+        "Local runtime environment authority is configured to come from the control plane via "
+        f"{CONTROL_PLANE_ROOT_ENV_VAR}, but legacy devkit-local env/secrets files still exist: {legacy_file_display}. "
+        "Remove or migrate those files before continuing so environment authority stays single-source and fail-closed."
+    )
+
+
+def load_environment_from_control_plane(
+    *,
+    control_plane_root: Path,
+    context_name: str,
+    instance_name: str,
+) -> LoadedEnvironment:
+    control_plane_command = [
+        "uv",
+        "--directory",
+        str(control_plane_root),
+        "run",
+        "control-plane",
+        "environments",
+        "resolve",
+        "--context",
+        context_name,
+        "--instance",
+        instance_name,
+        "--json-output",
+    ]
+    result = subprocess.run(control_plane_command, capture_output=True, text=True, env=command_execution_env())
+    if result.returncode != 0:
+        details = clean_optional_value(result.stderr) or clean_optional_value(result.stdout)
+        raise RuntimeCommandError(
+            "Unable to resolve runtime environment from control plane. "
+            f"Ensure {CONTROL_PLANE_ROOT_ENV_VAR} points at a valid odoo-control-plane checkout."
+            + (f"\nControl plane reported: {details}" if details else "")
+        )
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeCommandError(
+            "Control plane returned invalid runtime environment payload while resolving local runtime config."
+        ) from error
+    raw_environment = payload.get("environment")
+    if not isinstance(raw_environment, dict):
+        raise RuntimeCommandError("Control plane runtime environment payload did not include an environment object.")
+    resolved_environment = {
+        environment_key: str(environment_value)
+        for environment_key, environment_value in raw_environment.items()
+        if isinstance(environment_key, str)
+    }
+    synthetic_env_file = control_plane_root / ".generated" / "runtime-env" / f"{context_name}.{instance_name}.env"
+    return LoadedEnvironment(
+        env_file_path=synthetic_env_file,
+        merged_values=resolved_environment,
+        collisions=(),
     )
 
 
@@ -813,111 +1033,6 @@ def missing_upstream_source_keys(environment_values: dict[str, str]) -> tuple[st
             continue
         missing_keys.append(environment_key)
     return tuple(missing_keys)
-
-
-def build_platform_secret_layers(*, repo_root: Path, context_name: str, instance_name: str) -> list[EnvironmentLayer]:
-    platform_secrets = load_platform_secrets_definition(repo_root)
-    if platform_secrets is None:
-        return []
-    layers: list[EnvironmentLayer] = []
-    shared_values = normalize_scalar_map(platform_secrets.shared)
-    if shared_values:
-        layers.append(EnvironmentLayer(name="secrets.shared", values=shared_values))
-    context_overrides = platform_secrets.contexts.get(context_name)
-    if context_overrides is None:
-        return layers
-    context_values = normalize_scalar_map(context_overrides.shared)
-    if context_values:
-        layers.append(EnvironmentLayer(name=f"secrets.contexts.{context_name}.shared", values=context_values))
-    instance_overrides = context_overrides.instances.get(instance_name)
-    if instance_overrides is None:
-        return layers
-    instance_values = normalize_scalar_map(instance_overrides.env)
-    if instance_values:
-        layers.append(
-            EnvironmentLayer(
-                name=f"secrets.contexts.{context_name}.instances.{instance_name}.env",
-                values=instance_values,
-            )
-        )
-    return layers
-
-
-def load_platform_secrets_definition(repo_root: Path) -> PlatformSecretsDefinition | None:
-    secrets_file = repo_root / "platform" / "secrets.toml"
-    if not secrets_file.exists():
-        return None
-    try:
-        payload = tomllib.loads(secrets_file.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError) as error:
-        raise RuntimeCommandError(f"Invalid platform secrets file {secrets_file}: {error}") from error
-    return parse_platform_secrets_definition(payload)
-
-
-def parse_platform_secrets_definition(payload: dict[str, object]) -> PlatformSecretsDefinition:
-    schema_version = _read_required_int(payload, "schema_version")
-    contexts_table = _read_optional_table(payload, "contexts", scope="platform.secrets")
-    contexts: dict[str, PlatformSecretsContextDefinition] = {}
-    for context_name, raw_context in contexts_table.items():
-        context_table = _ensure_table(raw_context, scope=f"platform.secrets.contexts.{context_name}")
-        instances_table = _read_optional_table(context_table, "instances", scope=f"platform.secrets.contexts.{context_name}")
-        instances: dict[str, PlatformSecretsInstanceDefinition] = {}
-        for instance_name, raw_instance in instances_table.items():
-            instance_table = _ensure_table(
-                raw_instance,
-                scope=f"platform.secrets.contexts.{context_name}.instances.{instance_name}",
-            )
-            instances[instance_name] = PlatformSecretsInstanceDefinition(
-                env=_read_optional_scalar_map(
-                    instance_table,
-                    "env",
-                    scope=f"platform.secrets.contexts.{context_name}.instances.{instance_name}",
-                )
-            )
-        contexts[context_name] = PlatformSecretsContextDefinition(
-            shared=_read_optional_scalar_map(context_table, "shared", scope=f"platform.secrets.contexts.{context_name}"),
-            instances=instances,
-        )
-    return PlatformSecretsDefinition(
-        schema_version=schema_version,
-        shared=_read_optional_scalar_map(payload, "shared", scope="platform.secrets"),
-        contexts=contexts,
-    )
-
-
-def normalize_scalar_map(raw_values: ScalarMap) -> dict[str, str]:
-    return {key: str(value) for key, value in raw_values.items()}
-
-
-def merge_environment_layers(environment_layers: list[EnvironmentLayer]) -> tuple[dict[str, str], tuple[EnvironmentCollision, ...]]:
-    merged_values: dict[str, str] = {}
-    source_by_key: dict[str, str] = {}
-    collisions: list[EnvironmentCollision] = []
-    for environment_layer in environment_layers:
-        for environment_key, environment_value in environment_layer.values.items():
-            if environment_key in merged_values and merged_values[environment_key] != environment_value:
-                collisions.append(
-                    EnvironmentCollision(
-                        key=environment_key,
-                        previous_layer=source_by_key[environment_key],
-                        incoming_layer=environment_layer.name,
-                    )
-                )
-            merged_values[environment_key] = environment_value
-            source_by_key[environment_key] = environment_layer.name
-    return merged_values, tuple(collisions)
-
-
-def handle_environment_collisions(*, collisions: tuple[EnvironmentCollision, ...], collision_mode: str) -> None:
-    if not collisions or collision_mode == "ignore":
-        return
-    lines = ["Environment key collisions detected across layers:"]
-    for collision in collisions:
-        lines.append(f"- {collision.key}: {collision.previous_layer} -> {collision.incoming_layer}")
-    message = "\n".join(lines)
-    if collision_mode == "error":
-        raise RuntimeCommandError(message)
-    print(f"warning: {message}", file=sys.stderr)
 
 
 def resolve_runtime_selection(
@@ -1075,6 +1190,7 @@ def build_runtime_env_values(*, runtime_context: RuntimeContext) -> dict[str, st
     stack_definition = runtime_context.stack.stack_definition
     runtime_selection = runtime_context.selection
     source_environment = runtime_context.environment.merged_values
+    local_addons_mount_paths = resolve_manifest_local_addons_mount_paths(manifest=runtime_context.manifest)
     openupgrade_environment = dict(source_environment)
     for runtime_key, runtime_value in runtime_selection.effective_runtime_env.items():
         openupgrade_environment[runtime_key] = str(runtime_value)
@@ -1093,7 +1209,11 @@ def build_runtime_env_values(*, runtime_context: RuntimeContext) -> dict[str, st
         "ODOO_PROJECT_NAME": runtime_selection.project_name,
         "ODOO_STATE_ROOT": str(runtime_selection.state_path),
         "ODOO_RUNTIME_CONF_HOST_PATH": str(runtime_selection.runtime_conf_host_path),
-        "DOCKER_IMAGE": source_environment.get("DOCKER_IMAGE", runtime_selection.project_name),
+        "ODOO_PROJECT_ADDONS_HOST_PATH": str(local_addons_mount_paths.project_addons_host_path),
+        "ODOO_SHARED_ADDONS_HOST_PATH": str(local_addons_mount_paths.shared_addons_host_path)
+        if local_addons_mount_paths.shared_addons_host_path is not None
+        else source_environment.get("ODOO_SHARED_ADDONS_HOST_PATH", str(runtime_context.repo_root / "addons" / "shared")),
+        "DOCKER_IMAGE": runtime_selection.project_name,
         "DOCKER_IMAGE_TAG": source_environment.get(
             "DOCKER_IMAGE_TAG",
             "prod-local" if runtime_selection.instance_name == "local" and compose_build_target == "production" else "latest",
@@ -1149,6 +1269,35 @@ def build_runtime_env_values(*, runtime_context: RuntimeContext) -> dict[str, st
     for runtime_key, runtime_value in runtime_selection.effective_runtime_env.items():
         runtime_values[runtime_key] = runtime_value
     return runtime_values
+
+
+@dataclass(frozen=True)
+class LocalAddonsMountPaths:
+    project_addons_host_path: Path
+    shared_addons_host_path: Path | None
+
+
+def resolve_manifest_local_addons_mount_paths(*, manifest: WorkspaceManifest) -> LocalAddonsMountPaths:
+    from .workspace import resolve_optional_repo_path_with_managed_checkout, resolve_workspace_path
+
+    workspace_path = resolve_workspace_path(manifest)
+    tenant_repo_path = manifest.tenant_repo.resolve_path(manifest_directory=manifest.manifest_directory)
+    if tenant_repo_path is None or not tenant_repo_path.exists():
+        raise RuntimeCommandError("Tenant repo path must exist before generating local runtime addon mounts.")
+    project_addons_host_path = (tenant_repo_path / "addons").resolve()
+    if not project_addons_host_path.exists():
+        raise RuntimeCommandError(f"Tenant addons path does not exist: {project_addons_host_path}")
+    shared_addons_repo_path = resolve_optional_repo_path_with_managed_checkout(
+        manifest.shared_addons_repo,
+        manifest=manifest,
+        managed_checkout_path=workspace_path / "sources" / "shared-addons",
+    )
+    if shared_addons_repo_path is not None and not shared_addons_repo_path.exists():
+        raise RuntimeCommandError(f"Shared addons path does not exist: {shared_addons_repo_path}")
+    return LocalAddonsMountPaths(
+        project_addons_host_path=project_addons_host_path,
+        shared_addons_host_path=shared_addons_repo_path.resolve() if shared_addons_repo_path is not None else None,
+    )
 
 
 def render_runtime_env(runtime_values: dict[str, str]) -> str:
@@ -1249,7 +1398,7 @@ def run_command(
     if environment_overrides is not None:
         execution_environment.update(environment_overrides)
     accepted_return_codes = allowed_return_codes or {0}
-    result = subprocess.run(command, cwd=runtime_repo_path, env=execution_environment, check=False)
+    result = subprocess.run(command, cwd=runtime_repo_path, env=execution_environment)
     if result.returncode not in accepted_return_codes:
         raise RuntimeCommandError(f"Command failed ({result.returncode}): {' '.join(command)}")
 
@@ -1263,18 +1412,12 @@ def run_command_best_effort(
     execution_environment = command_execution_env()
     if environment_overrides is not None:
         execution_environment.update(environment_overrides)
-    result = subprocess.run(command, cwd=runtime_repo_path, env=execution_environment, check=False)
+    result = subprocess.run(command, cwd=runtime_repo_path, env=execution_environment)
     return result.returncode
 
 
 def run_command_with_input(*, runtime_repo_path: Path, command: list[str], input_text: str) -> None:
-    result = subprocess.run(
-        command,
-        input=input_text.encode(),
-        cwd=runtime_repo_path,
-        env=command_execution_env(),
-        check=False,
-    )
+    result = subprocess.run(command, input=input_text.encode(), cwd=runtime_repo_path, env=command_execution_env())
     if result.returncode != 0:
         raise RuntimeCommandError(f"Command failed ({result.returncode}): {' '.join(command)}")
 
@@ -1330,7 +1473,6 @@ def wait_for_compose_service(
             env=command_execution_env(),
             capture_output=True,
             text=True,
-            check=False,
         )
         container_id = (result.stdout or "").strip()
         if container_id:
@@ -1340,7 +1482,6 @@ def wait_for_compose_service(
                 env=command_execution_env(),
                 capture_output=True,
                 text=True,
-                check=False,
             )
             if (status_result.stdout or "").strip() == "running":
                 return
@@ -1596,7 +1737,7 @@ def require_configured_base_images_for_build(environment_values: dict[str, str])
         if registry_host == PLACEHOLDER_REGISTRY_HOST:
             raise RuntimeCommandError(
                 f"{environment_key} must be set to a real private base image before local builds run. "
-                "Set it in `.env` or `platform/secrets.toml`, not in checked-in public config."
+                f"{runtime_environment_configuration_guidance(noun='it')} Do not keep it in checked-in public config."
             )
         if image_reference not in required_images:
             required_images.append(image_reference)
@@ -1631,13 +1772,7 @@ def resolve_ghcr_token(environment_values: dict[str, str]) -> str | None:
         cleaned = clean_optional_value(candidate)
         if cleaned:
             return cleaned
-    gh_token_result = subprocess.run(
-        ["gh", "auth", "token"],
-        capture_output=True,
-        text=True,
-        env=command_execution_env(),
-        check=False,
-    )
+    gh_token_result = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, env=command_execution_env())
     if gh_token_result.returncode == 0:
         gh_token = clean_optional_value(gh_token_result.stdout)
         if gh_token:
@@ -1649,11 +1784,7 @@ def verify_base_image_access(image_reference: str) -> None:
     if image_reference in _VERIFIED_IMAGE_ACCESS:
         return
     inspect_result = subprocess.run(
-        ["docker", "buildx", "imagetools", "inspect", image_reference],
-        capture_output=True,
-        text=True,
-        env=command_execution_env(),
-        check=False,
+        ["docker", "buildx", "imagetools", "inspect", image_reference], capture_output=True, text=True, env=command_execution_env()
     )
     if inspect_result.returncode != 0:
         details = clean_optional_value(inspect_result.stderr) or clean_optional_value(inspect_result.stdout)
@@ -1675,12 +1806,12 @@ def ensure_registry_auth_for_base_images(environment_values: dict[str, str]) -> 
     if not ghcr_username:
         raise RuntimeCommandError(
             "Missing GHCR username for private base image pull. Set GHCR_USERNAME in resolved environment "
-            "(selected env file and/or platform/secrets.toml), or provide GITHUB_ACTOR in the current shell."
+            f"({runtime_environment_configuration_guidance(noun='it')}) or provide GITHUB_ACTOR in the current shell."
         )
     if not ghcr_token:
         raise RuntimeCommandError(
             "Missing GHCR token for private base image pull. Set GHCR_TOKEN (preferred) "
-            "or GITHUB_TOKEN in resolved environment (selected env file and/or platform/secrets.toml) "
+            f"or GITHUB_TOKEN in resolved environment ({runtime_environment_configuration_guidance(noun='it')}) "
             "with read:packages access."
         )
     login_key = (GHCR_HOST, ghcr_username)
@@ -1691,7 +1822,6 @@ def ensure_registry_auth_for_base_images(environment_values: dict[str, str]) -> 
             capture_output=True,
             text=True,
             env=command_execution_env(),
-            check=False,
         )
         if login_result.returncode != 0:
             details = clean_optional_value(login_result.stderr) or clean_optional_value(login_result.stdout)

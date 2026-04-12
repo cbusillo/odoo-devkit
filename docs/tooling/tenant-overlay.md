@@ -13,9 +13,12 @@ When
 - Keep the tenant repo focused on tenant-owned code and tenant-owned docs.
 - Keep shared DX/runtime/bootstrap guidance in `odoo-devkit`.
 - Keep the workspace root as the generated Every Code cockpit.
-- Until runtime ownership is split cleanly, let the tenant repo keep thin
-  run-config wrappers that call the sibling `odoo-ai` repo for platform
-  lifecycle commands.
+- Let the tenant repo keep thin run-config wrappers and shell helpers that call
+  the sibling `odoo-devkit` repo, while shared-addon source stays explicit in
+  the manifest.
+- Keep tenant-owned addons directly under the tenant repo's `addons/`
+  directory. Do not add an extra `addons/<tenant>/` bucket unless tooling grows
+  a concrete first-class contract around that directory.
 
 ## Tenant Root Should Contain
 
@@ -40,13 +43,15 @@ When
 - `templates/tenant-overlay/scripts/workspace-status`
 - `templates/tenant-overlay/workspace.toml`
 
-## Current Bootstrap Assumption
+## Current Local Assumption
 
-- The scaffold currently points shared addons at `../odoo-ai/addons/shared`.
-- The generated run configurations bridge runtime commands through
-  `uv --directory ../odoo-ai run platform ...`.
-- This is intentional for the current extraction phase because `odoo-ai`
-  remains the self-contained runtime owner for fresh checkout and CI.
+- The scaffold points shared addons at `../odoo-shared-addons` while local
+  runtime assets come from `odoo-devkit` itself.
+- Local tenant overlays do not need `[repos.runtime]`. `odoo-devkit` owns the
+  local runtime bundle directly, and non-local runtime ownership stays explicit
+  when that path is needed later.
+- The generated run configurations and shell wrappers call
+  `uv --directory ../odoo-devkit run platform ...`.
 - For terminal use, extracted tenants should prefer `./scripts/workspace-sync`
   and `./scripts/workspace-status` so the manifest path stays anchored to the
   tenant repo root.

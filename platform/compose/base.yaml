@@ -1,0 +1,24 @@
+# Shared compose fragments applied to every stack.
+# Applied after docker-compose.yml and before docker-compose.override.yml.
+
+services:
+  web:
+    command: >-
+      ${ODOO_WEB_COMMAND:-/odoo/odoo-bin}
+    env_file:
+      - path: .env
+        required: false
+      - platform/config/base.env
+      - ${PLATFORM_RUNTIME_ENV_FILE:-.env}
+  script-runner:
+    env_file:
+      - path: .env
+        required: false
+      - platform/config/base.env
+      - ${PLATFORM_RUNTIME_ENV_FILE:-.env}
+  database:
+    env_file:
+      - path: .env
+        required: false
+      - platform/config/base.env
+      - ${PLATFORM_RUNTIME_ENV_FILE:-.env}

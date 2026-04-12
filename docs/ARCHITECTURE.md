@@ -38,6 +38,8 @@ When
 - Generated workspace-root surface for Every Code.
 - Shared AGENTS/docs/runtime guidance.
 - Generated PyCharm metadata and run configurations for the tenant repo.
+- Devkit-owned local runtime bundle (`docker-compose.yml`, `platform/stack.toml`,
+  Dockerfile, and local runtime scripts).
 
 ### Materialized workspace root
 

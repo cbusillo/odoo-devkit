@@ -39,6 +39,11 @@ Purpose
 
 - Materialize the tenant, devkit, and optional shared-addons sources under the
   workspace root.
+- When `[repos.shared_addons]` declares `url` + `ref` instead of `path`, clone
+  or refresh a managed checkout at `sources/shared-addons`.
+- When `[repos.runtime]` declares `url` + `ref` instead of `path`, clone or
+  refresh a managed checkout at `sources/runtime` for non-local runtime
+  targets.
 - Generate runtime config under `.generated/`.
 - Generate the workspace-root Every Code surface:
   - `AGENTS.md`
@@ -74,6 +79,9 @@ Purpose
 - Copy the thin tenant-overlay starter files into a target repo directory.
 - Stamp the tenant slug into the starter `workspace.toml`.
 - Give the first extracted tenant repo a repeatable thin-root starting point.
+- Keep the starter aligned with the flat tenant-addon rule: tenant-owned addons
+  live directly under `addons/`, while shared addons stay external via
+  `[repos.shared_addons]`.
 
 ## `runtime ...`
 
@@ -88,9 +96,35 @@ Purpose
 
 Notes
 
+- The tenant repo remains path-based and user-owned. `workspace sync` does not
+  clone the active tenant checkout for you.
+- Shared-addons inputs may now be path-based or repo-addressable. Managed
+  shared-addons checkouts fail closed if the workspace copy is dirty or points
+  at a different `origin` than the manifest declares.
 - Keep the runtime repo explicit in the manifest because `odoo-devkit` still
-  reads `platform/stack.toml`, layered env files, and `platform/dokploy.toml`
-  from that repo.
+- `instance = "local"` now defaults to the devkit-owned local runtime bundle,
+  so extracted tenant manifests do not need `[repos.runtime]` for local DX.
+- Keep the runtime repo explicit in the manifest for non-local targets because
+  `odoo-devkit` still reads `platform/dokploy.toml` and any external runtime
+  metadata from that repo or its managed `sources/runtime` checkout.
+- Runtime ownership remains fail-closed and explicit for non-local targets.
+  `odoo-devkit` no longer guesses a runtime repo from `[repos.shared_addons]`,
+  even if that path points at a sibling `odoo-shared-addons` checkout.
+- Repo-addressable non-local runtime definitions fail closed until
+  `platform workspace sync` has materialized `sources/runtime`.
+- For extracted tenant overlays, `platform runtime select` and `inspect`
+  generate the PyCharm Odoo config from the manifest-backed tenant/shared addon
+  sources rather than from the runtime repo's legacy project-addon layout.
+- Local `platform runtime up` now also emits manifest-backed host addon mount
+  paths for compose, so tenant checkouts can bind-mount `sources/tenant/addons`
+  plus `sources/shared-addons` into the devkit-owned local runtime bundle.
+- When `ODOO_CONTROL_PLANE_ROOT` points at a valid `odoo-control-plane`
+  checkout, local runtime env resolution comes from the control-plane-owned
+  environment contract. Devkit-local `.env` / `platform/secrets.toml` runtime
+  authority is no longer supported. Leftover devkit-local env/secrets files are
+  treated as a hard conflict so environment authority stays single-source, and
+  build/restore requirements are expected to live in `odoo-control-plane`'s
+  `config/runtime-environments.toml` surface.
 - Native non-local ownership currently covers Dokploy-backed `restore`,
   `workflow bootstrap`, and `workflow update`; anything else should fail closed
   unless `odoo-devkit` grows an explicit remote contract for it.

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import tempfile
 import unittest
@@ -138,6 +137,163 @@ command = ["uv", "--directory", "$PROJECT_DIR$/../odoo-devkit", "run", "platform
             self.assertIn("[repos.devkit]", lock_contents)
             self.assertIn("[repos.runtime]", lock_contents)
 
+    def test_sync_materializes_shared_addons_from_repo_url_and_ref(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = self._create_git_repo(temp_root / "tenant-repo")
+            devkit_repo_path = self._create_git_repo(temp_root / "devkit-repo")
+            shared_addons_repo_path = self._create_git_repo(temp_root / "shared-addons-repo")
+            (shared_addons_repo_path / "addons" / "shared_widget").mkdir(parents=True, exist_ok=True)
+            (shared_addons_repo_path / "addons" / "shared_widget" / "README.md").write_text(
+                "# shared widget\n",
+                encoding="utf-8",
+            )
+            subprocess.run(["git", "add", "."], cwd=shared_addons_repo_path, check=True, capture_output=True)
+            subprocess.run(
+                ["git", "commit", "-m", "add shared addon"],
+                cwd=shared_addons_repo_path,
+                check=True,
+                capture_output=True,
+            )
+            shared_addons_head = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=shared_addons_repo_path,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+
+            manifest_path = tenant_repo_path / "workspace.toml"
+            manifest_path.write_text(
+                f"""
+schema_version = 1
+tenant = "opw"
+
+[workspace]
+name = "opw"
+python = "3.13"
+workspace_root = "./assembled"
+
+[repos.tenant]
+name = "tenant-repo"
+path = "."
+
+[repos.shared_addons]
+name = "shared-addons-repo"
+url = "{shared_addons_repo_path}"
+ref = "main"
+
+[runtime]
+context = "opw"
+instance = "local"
+database = "opw"
+addons_paths = ["sources/tenant/addons", "sources/shared-addons/addons"]
+
+[ide]
+mode = "tenant_repo"
+focus_paths = ["addons/opw_custom"]
+attached_paths = ["sources/shared-addons", "sources/devkit"]
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+
+            manifest = load_workspace_manifest(manifest_path)
+            result = sync_workspace(manifest=manifest, devkit_repo_path=devkit_repo_path)
+
+            materialized_shared_addons_path = result.workspace_path / "sources" / "shared-addons"
+            self.assertTrue(materialized_shared_addons_path.exists())
+            self.assertFalse(materialized_shared_addons_path.is_symlink())
+            self.assertTrue((materialized_shared_addons_path / "addons" / "shared_widget" / "README.md").exists())
+
+            materialized_head = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=materialized_shared_addons_path,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            self.assertEqual(materialized_head, shared_addons_head)
+
+            lock_contents = result.lock_file_path.read_text(encoding="utf-8")
+            self.assertIn("[repos.shared_addons]", lock_contents)
+            self.assertIn(f'declared_url = "{shared_addons_repo_path}"', lock_contents)
+            self.assertIn('declared_ref = "main"', lock_contents)
+
+    def test_sync_materializes_runtime_repo_from_url_and_ref(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = self._create_git_repo(temp_root / "tenant-repo")
+            devkit_repo_path = self._create_git_repo(temp_root / "devkit-repo")
+            runtime_repo_path = self._create_git_repo(temp_root / "runtime-repo")
+            runtime_head = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=runtime_repo_path,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+
+            manifest_path = tenant_repo_path / "workspace.toml"
+            manifest_path.write_text(
+                f"""
+schema_version = 1
+tenant = "opw"
+
+[workspace]
+name = "opw"
+python = "3.13"
+workspace_root = "./assembled"
+
+[repos.tenant]
+name = "tenant-repo"
+path = "."
+
+[repos.runtime]
+name = "runtime-repo"
+url = "{runtime_repo_path}"
+ref = "main"
+
+[runtime]
+context = "opw"
+instance = "local"
+database = "opw"
+addons_paths = ["sources/tenant/addons"]
+
+[ide]
+mode = "tenant_repo"
+focus_paths = ["addons/opw_custom"]
+attached_paths = ["sources/devkit"]
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+
+            manifest = load_workspace_manifest(manifest_path)
+            result = sync_workspace(manifest=manifest, devkit_repo_path=devkit_repo_path)
+
+            materialized_runtime_repo_path = result.workspace_path / "sources" / "runtime"
+            self.assertTrue(materialized_runtime_repo_path.exists())
+            self.assertFalse(materialized_runtime_repo_path.is_symlink())
+
+            materialized_head = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=materialized_runtime_repo_path,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            self.assertEqual(materialized_head, runtime_head)
+
+            runtime_env_contents = result.runtime_env_path.read_text(encoding="utf-8")
+            self.assertIn(f"ODOO_WORKSPACE_RUNTIME_REPO={materialized_runtime_repo_path.resolve()}", runtime_env_contents)
+
+            lock_contents = result.lock_file_path.read_text(encoding="utf-8")
+            self.assertIn("[repos.runtime]", lock_contents)
+            self.assertIn(f'resolved_path = "{materialized_runtime_repo_path.resolve()}"', lock_contents)
+            self.assertIn(f'declared_url = "{runtime_repo_path}"', lock_contents)
+            self.assertIn('declared_ref = "main"', lock_contents)
+
     def test_status_reports_existing_workspace_after_sync(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
@@ -186,6 +342,48 @@ attached_paths = ["sources/devkit"]
             self.assertEqual(
                 status_payload["attached_paths"], [str((resolve_workspace_path(manifest) / "sources" / "devkit").resolve())]
             )
+            self.assertEqual(status_payload["runtime_repo_path"], str(devkit_repo_path.resolve()))
+
+    def test_sync_records_devkit_runtime_repo_for_local_manifest_without_runtime_repo(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = self._create_git_repo(temp_root / "tenant-repo")
+            devkit_repo_path = self._create_git_repo(temp_root / "devkit-repo")
+            manifest_path = tenant_repo_path / "workspace.toml"
+            manifest_path.write_text(
+                """
+schema_version = 1
+tenant = "opw"
+
+[workspace]
+name = "opw"
+python = "3.13"
+workspace_root = "./assembled"
+
+[repos.tenant]
+name = "tenant-repo"
+path = "."
+
+[runtime]
+context = "opw"
+instance = "local"
+database = "opw"
+addons_paths = ["sources/tenant/addons"]
+
+[ide]
+mode = "tenant_repo"
+focus_paths = ["addons/opw_custom"]
+attached_paths = ["sources/devkit"]
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+
+            manifest = load_workspace_manifest(manifest_path)
+            result = sync_workspace(manifest=manifest, devkit_repo_path=devkit_repo_path)
+
+            runtime_env_contents = result.runtime_env_path.read_text(encoding="utf-8")
+            self.assertIn(f"ODOO_WORKSPACE_RUNTIME_REPO={devkit_repo_path.resolve()}", runtime_env_contents)
 
     def test_clean_removes_workspace_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -361,7 +559,8 @@ attached_paths = ["sources/devkit"]
         parsed_arguments = parser.parse_args(["workspace", "run", "--manifest", "workspace.toml", "--", "pwd"])
         self.assertEqual(parsed_arguments.command, ["--", "pwd"])
 
-    def _create_git_repo(self, repo_path: Path) -> Path:
+    @staticmethod
+    def _create_git_repo(repo_path: Path) -> Path:
         repo_path.mkdir(parents=True, exist_ok=True)
         subprocess.run(["git", "init"], cwd=repo_path, check=True, capture_output=True)
         subprocess.run(["git", "branch", "-m", "main"], cwd=repo_path, check=True, capture_output=True)

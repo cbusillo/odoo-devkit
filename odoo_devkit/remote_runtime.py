@@ -10,7 +10,6 @@ from .dokploy_api import (
     DOKPLOY_RUNNING_DEPLOYMENT_STATUSES,
     DOKPLOY_SUCCESS_DEPLOYMENT_STATUSES,
     JsonObject,
-    JsonValue,
     as_json_object,
     deployment_key,
     deployment_status,
@@ -29,7 +28,6 @@ from .dokploy_api import (
     wait_for_dokploy_schedule_deployment,
 )
 from .dokploy_config import (
-    DokploySourceOfTruth,
     DokployTargetDefinition,
     find_dokploy_target_definition,
     load_dokploy_source_of_truth,
@@ -41,6 +39,7 @@ from .local_runtime import (
     missing_upstream_source_keys,
     parse_env_file,
     resolve_data_workflow_environment,
+    runtime_environment_configuration_guidance,
     write_runtime_env_file,
     write_runtime_odoo_conf_file,
 )
@@ -109,7 +108,7 @@ def run_remote_data_workflow(
             missing_joined = ", ".join(missing_environment_keys)
             raise RuntimeCommandError(
                 "Restore requires upstream settings; missing: "
-                f"{missing_joined}. Configure these in .env or platform/secrets.toml, "
+                f"{missing_joined}. {runtime_environment_configuration_guidance()} "
                 "or run bootstrap intentionally."
             )
 
@@ -446,7 +445,7 @@ def _run_dokploy_managed_remote_data_workflow(
     if not dokploy_host or not dokploy_token:
         raise RuntimeCommandError(
             "Dokploy remote data workflow requires DOKPLOY_HOST and DOKPLOY_TOKEN "
-            "in the resolved environment. Configure them in .env or platform/secrets.toml."
+            f"in the resolved environment. {runtime_environment_configuration_guidance()}"
         )
 
     target_definition = _resolve_required_dokploy_compose_target_definition(runtime_context)

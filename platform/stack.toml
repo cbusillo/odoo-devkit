@@ -1,0 +1,148 @@
+schema_version = 1
+odoo_version = "19.0"
+addons_path = [
+    "/odoo/addons",
+    "/odoo/odoo/addons",
+    "/opt/project/addons",
+    "/opt/extra_addons",
+    "/opt/enterprise",
+]
+addon_repositories = [
+    "cbusillo/disable_odoo_online@main",
+]
+required_env_keys = [
+    "ODOO_MASTER_PASSWORD",
+    "ODOO_DB_USER",
+    "ODOO_DB_PASSWORD",
+]
+
+[runtime_env]
+ODOO_DB_MAXCONN = 8
+ODOO_MAX_CRON_THREADS = 1
+ODOO_WORKERS = 3
+ODOO_LIMIT_TIME_CPU = 600
+ODOO_LIMIT_TIME_REAL = 1800
+ODOO_LIMIT_TIME_REAL_CRON = 1800
+ODOO_LIMIT_MEMORY_SOFT = 2147483648
+ODOO_LIMIT_MEMORY_HARD = 3221225472
+POSTGRES_MAX_CONNECTIONS = 100
+POSTGRES_MAX_FILES_PER_PROCESS = 4096
+POSTGRES_ULIMIT_NOFILE_SOFT = 8192
+POSTGRES_ULIMIT_NOFILE_HARD = 8192
+POSTGRES_SHARED_BUFFERS = "1GB"
+POSTGRES_EFFECTIVE_CACHE_SIZE = "4GB"
+POSTGRES_WORK_MEM = "32MB"
+POSTGRES_MAINTENANCE_WORK_MEM = "256MB"
+POSTGRES_MAX_WAL_SIZE = "1GB"
+POSTGRES_MIN_WAL_SIZE = "80MB"
+POSTGRES_CHECKPOINT_TIMEOUT = "5min"
+POSTGRES_RANDOM_PAGE_COST = 4
+POSTGRES_EFFECTIVE_IO_CONCURRENCY = 1
+
+[contexts.cm]
+database = "cm"
+install_modules = [
+    "cm_custom",
+]
+
+[contexts.cm.runtime_env]
+ODOO_DEV_MODE = ""
+ENV_OVERRIDE_AUTHENTIK__BASE_URL = "https://authentik.cellmechanic.com"
+ENV_OVERRIDE_AUTHENTIK__DISABLE_PROVIDERS = "Odoo.com"
+ENV_OVERRIDE_AUTHENTIK__GROUP_CLAIM = "groups"
+
+[contexts.cm.instances.local]
+install_modules_add = [
+    "environment_overrides",
+    "fishbowl_import",
+    "repairshopr_import",
+    "cm_data_import",
+    "web_studio",
+]
+
+[contexts.cm.instances.local.runtime_env]
+ODOO_DEV_MODE = "reload"
+ODOO_WORKERS = 2
+COMPOSE_BUILD_TARGET = "development"
+ENV_OVERRIDE_CONFIG_PARAM__WEB__BASE__URL = "https://cm-local.shinycomputers.com"
+ENV_OVERRIDE_AUTHENTIK__CLIENT_ID = "nBeUhAxSCFR7yZzFNICxPih78EyxPL9SHhzzbJy3"
+
+[contexts.cm.instances.dev.runtime_env]
+ODOO_WORKERS = 4
+COMPOSE_BUILD_TARGET = "production"
+ENV_OVERRIDE_CONFIG_PARAM__WEB__BASE__URL = "https://cm-dev.shinycomputers.com"
+ENV_OVERRIDE_AUTHENTIK__CLIENT_ID = "vTpPOs9seII8a0xT5jODra0RQTSBenlj1yDDZXI7"
+
+[contexts.cm.instances.testing.runtime_env]
+ODOO_WORKERS = 4
+COMPOSE_BUILD_TARGET = "production"
+ENV_OVERRIDE_CONFIG_PARAM__WEB__BASE__URL = "https://cm-testing.shinycomputers.com"
+ENV_OVERRIDE_AUTHENTIK__CLIENT_ID = "E2Gxez3L0NMdP2uKNjXtOAXpkXcmG1NG2JRvPhMZ"
+
+[contexts.cm.instances.prod.runtime_env]
+ODOO_WORKERS = 6
+POSTGRES_SHARED_BUFFERS = "2GB"
+POSTGRES_EFFECTIVE_CACHE_SIZE = "6GB"
+POSTGRES_WORK_MEM = "64MB"
+COMPOSE_BUILD_TARGET = "production"
+ENV_OVERRIDE_CONFIG_PARAM__WEB__BASE__URL = "https://odoo.cellmechanic.com"
+ENV_OVERRIDE_AUTHENTIK__CLIENT_ID = "eFRxxfLhxme4jM3dqaTjNGTsVAqn97lB04zo9Q7x"
+
+[contexts.cm.instances.dev]
+install_modules_add = [
+    "environment_overrides",
+    "fishbowl_import",
+    "repairshopr_import",
+]
+
+[contexts.cm.instances.testing]
+install_modules_add = [
+    "environment_overrides",
+    "fishbowl_import",
+    "repairshopr_import",
+]
+
+[contexts.opw]
+database = "opw"
+install_modules = [
+    "opw_custom",
+    "environment_overrides",
+]
+
+[contexts.opw.runtime_env]
+ODOO_DEV_MODE = ""
+OPENUPGRADE_ENABLED = true
+OPENUPGRADE_ADDON_REPOSITORY = "OCA/OpenUpgrade@89e649728027a8ab656b3aa4be18f4bd364db417"
+OPENUPGRADELIB_INSTALL_SPEC = "git+https://github.com/OCA/openupgradelib.git@46d66ff5ed6a99481f84d3c79fc6e50835da7286"
+
+[contexts.opw.instances.local]
+
+[contexts.opw.instances.local.runtime_env]
+ODOO_DEV_MODE = "reload"
+ODOO_WORKERS = 2
+ODOO_LIMIT_MEMORY_SOFT = 2147483648
+ODOO_LIMIT_MEMORY_HARD = 3221225472
+COMPOSE_BUILD_TARGET = "development"
+ENV_OVERRIDE_CONFIG_PARAM__WEB__BASE__URL = "https://opw-local.shinycomputers.com"
+
+[contexts.opw.instances.dev]
+
+[contexts.opw.instances.dev.runtime_env]
+ODOO_WORKERS = 4
+COMPOSE_BUILD_TARGET = "production"
+ENV_OVERRIDE_CONFIG_PARAM__WEB__BASE__URL = "https://opw-dev.shinycomputers.com"
+
+[contexts.opw.instances.testing]
+
+[contexts.opw.instances.testing.runtime_env]
+ODOO_WORKERS = 4
+COMPOSE_BUILD_TARGET = "production"
+ENV_OVERRIDE_CONFIG_PARAM__WEB__BASE__URL = "https://opw-testing.shinycomputers.com"
+
+[contexts.opw.instances.prod.runtime_env]
+ODOO_WORKERS = 6
+POSTGRES_SHARED_BUFFERS = "2GB"
+POSTGRES_EFFECTIVE_CACHE_SIZE = "6GB"
+POSTGRES_WORK_MEM = "64MB"
+COMPOSE_BUILD_TARGET = "production"
+ENV_OVERRIDE_CONFIG_PARAM__WEB__BASE__URL = "https://opw-prod.shinycomputers.com"

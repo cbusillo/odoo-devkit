@@ -17,13 +17,8 @@ path = "../odoo-devkit"
 ref = "main"
 
 [repos.shared_addons]
-name = "odoo-ai-shared-addons"
-path = "../odoo-ai/addons/shared"
-ref = "main"
-
-[repos.runtime]
-name = "odoo-ai"
-path = "../odoo-ai"
+name = "odoo-shared-addons"
+path = "../odoo-shared-addons"
 ref = "main"
 
 [runtime]

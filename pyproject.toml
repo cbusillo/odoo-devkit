@@ -7,7 +7,12 @@ name = "odoo-devkit"
 version = "0.1.0"
 description = "Workspace assembly tooling for tenant-focused Odoo development"
 requires-python = ">=3.13"
-dependencies = ["requests>=2.32.0"]
+dependencies = [
+    "passlib>=1.7.4",
+    "pydantic>=2.11.0",
+    "pydantic-settings>=2.10.0",
+    "requests>=2.32.0",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["odoo_devkit"]

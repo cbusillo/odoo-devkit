@@ -35,6 +35,7 @@ def write_pycharm_odoo_conf(
     state_path: Path,
     addons_paths: tuple[str, ...],
     source_environment: Mapping[str, str],
+    host_addons_paths: tuple[str, ...] | None = None,
 ) -> Path:
     """Write an IDE-oriented Odoo config for local tooling.
 
@@ -47,7 +48,11 @@ def write_pycharm_odoo_conf(
     ide_directory.mkdir(parents=True, exist_ok=True)
     ide_config_path = ide_directory / f"{context_name}.{instance_name}.odoo.conf"
 
-    rendered_addons_paths = resolve_pycharm_addons_paths(repo_root=repo_root, addons_paths=addons_paths)
+    rendered_addons_paths = (
+        list(host_addons_paths)
+        if host_addons_paths is not None
+        else resolve_pycharm_addons_paths(repo_root=repo_root, addons_paths=addons_paths)
+    )
     host_data_directory = state_path / "data"
 
     lines = [

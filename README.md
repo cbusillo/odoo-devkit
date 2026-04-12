@@ -39,17 +39,31 @@ directory.
 
 ## Current bootstrap scope
 
-This repo is intentionally small. The first pass focuses on the current
-pre-split `odoo-ai` tree and does not yet try to materialize separate shared
-addon or Odoo core checkouts. The tenant manifest can still declare those repo
-relationships so the lock file and generated metadata stay honest.
+This repo is intentionally small. The current pass focuses on extracted tenant
+workspaces and the manifest/runtime contract rather than preserving `odoo-ai`
+as a required local DX dependency.
+
+- `workspace sync` now materializes repo-addressable shared-addons inputs from
+  `[repos.shared_addons].url` + `ref` into `sources/shared-addons` when the
+  manifest does not point at a pre-existing local path.
+- The active tenant checkout remains path-based and is still the source of
+  truth for handwritten tenant code.
+- Local runtime assets now live in `odoo-devkit` itself, so tenant manifests do
+  not need `[repos.runtime]` for `instance = "local"`.
+- Runtime repo ownership remains explicit for non-local targets. When
+  `[repos.runtime]` is present it may be path-based or repo-addressable,
+  `workspace sync` materializes repo-addressed runtime inputs into
+  `sources/runtime`, and non-local runtime commands fail closed until that
+  checkout exists.
+- Odoo core is still inherited from the runtime image/tooling chain rather than
+  materialized as a separate checkout.
 
 Current runtime ownership is intentionally narrow and explicit:
 
 - local runtime targets run natively inside `odoo-devkit` against the repo
-  declared in `[repos.runtime]`: `select`, `up`, `inspect`, `restore`,
-  `workflow bootstrap`, `workflow init`, `workflow update`, and
-  `workflow openupgrade`.
+  owned by `odoo-devkit` itself:
+  `select`, `up`, `inspect`, `restore`, `workflow bootstrap`, `workflow init`,
+  `workflow update`, and `workflow openupgrade`.
 - Dokploy-managed non-local runtime targets now also run natively inside
   `odoo-devkit` for `restore`, `workflow bootstrap`, and `workflow update`
   using the runtime repo's generated env plus `platform/dokploy.toml` target

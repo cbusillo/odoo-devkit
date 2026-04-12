@@ -37,28 +37,51 @@ def resolve_runtime_repo_path(manifest: WorkspaceManifest) -> Path:
     explicit_runtime_repo = manifest.runtime_repo
     if explicit_runtime_repo is not None:
         runtime_repo_path = explicit_runtime_repo.resolve_path(manifest_directory=manifest.manifest_directory)
-        if runtime_repo_path is None:
-            raise ValueError("Runtime repo must declare a path for the current bootstrap flow")
-        if not runtime_repo_path.exists():
-            raise ValueError(f"Runtime repo path does not exist: {runtime_repo_path}")
-        return runtime_repo_path
+        if runtime_repo_path is not None:
+            if not runtime_repo_path.exists():
+                raise ValueError(f"Runtime repo path does not exist: {runtime_repo_path}")
+            return runtime_repo_path
 
-    shared_addons_repo = manifest.shared_addons_repo
-    if shared_addons_repo is not None:
-        shared_addons_repo_path = shared_addons_repo.resolve_path(manifest_directory=manifest.manifest_directory)
-        if shared_addons_repo_path is not None:
-            resolved_shared_addons_repo_path = shared_addons_repo_path.resolve()
-            if (
-                resolved_shared_addons_repo_path.exists()
-                and resolved_shared_addons_repo_path.name == "shared"
-                and resolved_shared_addons_repo_path.parent.name == "addons"
-            ):
-                return resolved_shared_addons_repo_path.parent.parent
+        if explicit_runtime_repo.url is not None:
+            managed_runtime_repo_path = _resolve_managed_runtime_repo_path(manifest)
+            if managed_runtime_repo_path is not None:
+                return managed_runtime_repo_path
+            if not explicit_runtime_repo.ref:
+                raise ValueError(
+                    f"Runtime repo must declare ref when workspace sync materializes it from url {explicit_runtime_repo.url!r}."
+                )
+            raise ValueError(
+                "Runtime repo is repo-addressable and must be materialized by `platform workspace sync` before "
+                "runtime commands can run."
+            )
+
+        raise ValueError("Runtime repo must declare a path or url for the current bootstrap flow")
+
+    if runtime_target_is_local(manifest):
+        return _discover_devkit_repo_root()
 
     raise ValueError(
-        "Workspace manifest must declare [repos.runtime] for devkit-owned runtime commands, "
-        "or keep [repos.shared_addons].path rooted at ../odoo-ai/addons/shared for transitional inference."
+        "Workspace manifest must declare [repos.runtime] for non-local runtime commands. "
+        "Runtime ownership is explicit and is not inferred from [repos.shared_addons]."
     )
+
+
+def _resolve_managed_runtime_repo_path(manifest: WorkspaceManifest) -> Path | None:
+    runtime_repo_definition = manifest.runtime_repo
+    if runtime_repo_definition is None or runtime_repo_definition.url is None:
+        return None
+    from .workspace import resolve_optional_repo_path_with_managed_checkout, resolve_workspace_path
+
+    workspace_path = resolve_workspace_path(manifest)
+    return resolve_optional_repo_path_with_managed_checkout(
+        runtime_repo_definition,
+        manifest=manifest,
+        managed_checkout_path=workspace_path / "sources" / "runtime",
+    )
+
+
+def _discover_devkit_repo_root() -> Path:
+    return Path(__file__).resolve().parent.parent
 
 
 def build_runtime_platform_command(

@@ -5,7 +5,7 @@ import shlex
 import xml.etree.ElementTree as element_tree
 from pathlib import Path
 
-from .manifest import RunConfigurationDefinition, WorkspaceManifest
+from .manifest import WorkspaceManifest
 
 
 def write_pycharm_support_files(

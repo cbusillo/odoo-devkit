@@ -51,7 +51,7 @@ class TenantOverlayScaffoldTests(unittest.TestCase):
                     force=False,
                 )
 
-    def test_real_template_renders_current_bootstrap_contract(self) -> None:
+    def test_real_template_renders_current_shared_addons_contract(self) -> None:
         repo_root = Path(__file__).resolve().parent.parent
         with tempfile.TemporaryDirectory() as temporary_directory:
             output_directory = Path(temporary_directory) / "tenant-repo"
@@ -64,14 +64,19 @@ class TenantOverlayScaffoldTests(unittest.TestCase):
             )
 
             manifest_text = (output_directory / "workspace.toml").read_text(encoding="utf-8")
+            agents_text = (output_directory / "AGENTS.md").read_text(encoding="utf-8")
+            docs_index_text = (output_directory / "docs" / "README.md").read_text(encoding="utf-8")
             workspace_sync_text = (output_directory / "scripts" / "workspace-sync").read_text(encoding="utf-8")
             workspace_status_text = (output_directory / "scripts" / "workspace-status").read_text(encoding="utf-8")
 
-            self.assertIn('path = "../odoo-ai/addons/shared"', manifest_text)
-            self.assertIn('path = "../odoo-ai"', manifest_text)
+            self.assertIn('name = "odoo-shared-addons"', manifest_text)
+            self.assertIn('path = "../odoo-shared-addons"', manifest_text)
+            self.assertNotIn("[repos.runtime]", manifest_text)
             self.assertIn('addons_paths = ["sources/tenant/addons", "sources/shared-addons"]', manifest_text)
             self.assertIn('platform", "runtime", "workflow"', manifest_text)
             self.assertIn('name = "opw Platform Update Local"', manifest_text)
+            self.assertIn("sibling\n  `odoo-devkit` repo", agents_text)
+            self.assertIn("current runtime commands in the sibling `odoo-devkit` repo", docs_index_text)
             self.assertIn('platform workspace sync --manifest "$repo_root/workspace.toml"', workspace_sync_text)
             self.assertIn('platform workspace status --manifest "$repo_root/workspace.toml"', workspace_status_text)
 
