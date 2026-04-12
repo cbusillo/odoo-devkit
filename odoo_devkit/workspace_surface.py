@@ -67,12 +67,12 @@ def _render_workspace_agents(
     tenant_workspace_sync_command = _render_tenant_workspace_command(
         tenant_repo_path=tenant_repo_path,
         script_name="workspace-sync",
-        fallback_command=(f"uv --directory {devkit_repo_path} run platform workspace sync --manifest {manifest.manifest_path}"),
+        fallback_command=f"uv --directory {devkit_repo_path} run platform workspace sync --manifest {manifest.manifest_path}",
     )
     tenant_workspace_status_command = _render_tenant_workspace_command(
         tenant_repo_path=tenant_repo_path,
         script_name="workspace-status",
-        fallback_command=(f"uv --directory {devkit_repo_path} run platform workspace status --manifest {manifest.manifest_path}"),
+        fallback_command=f"uv --directory {devkit_repo_path} run platform workspace status --manifest {manifest.manifest_path}",
     )
     shared_addons_source_of_truth = (
         f"- `sources/shared-addons/` is materialized from `{shared_addons_repo_path}`. Edit shared addon code in that source repo path, not by treating the workspace as the owner."
@@ -108,6 +108,7 @@ def _render_workspace_agents(
         "## Editing Guardrails\n\n"
         "- Do not move source-of-truth docs or code into the workspace root just because Every Code starts here. The workspace root is a generated cockpit, not the canonical repo.\n"
         "- Keep tenant repo root docs thin and tenant-specific. Keep shared operating guidance in `odoo-devkit`, then surface it here during sync.\n"
+        "- For non-trivial work, prefer small validated checkpoint commits in the source repos, use them as the base for review follow-ups, and clean up temporary branches/worktrees as you go. See `sources/devkit/AGENTS.md` for the shared workflow rule.\n"
         "- If a path is generated, prefer fixing the generator in `sources/devkit/` instead of editing the generated output directly.\n\n"
         "## Current Layout\n\n"
         f"- Workspace root: `{workspace_path}`\n"
@@ -130,12 +131,12 @@ def _render_workspace_docs_index(
     tenant_workspace_sync_command = _render_tenant_workspace_command(
         tenant_repo_path=tenant_repo_path,
         script_name="workspace-sync",
-        fallback_command=(f"uv --directory {devkit_repo_path} run platform workspace sync --manifest {manifest.manifest_path}"),
+        fallback_command=f"uv --directory {devkit_repo_path} run platform workspace sync --manifest {manifest.manifest_path}",
     )
     tenant_workspace_status_command = _render_tenant_workspace_command(
         tenant_repo_path=tenant_repo_path,
         script_name="workspace-status",
-        fallback_command=(f"uv --directory {devkit_repo_path} run platform workspace status --manifest {manifest.manifest_path}"),
+        fallback_command=f"uv --directory {devkit_repo_path} run platform workspace status --manifest {manifest.manifest_path}",
     )
     tenant_docs_line = _render_optional_link_line(
         label="Tenant docs",
