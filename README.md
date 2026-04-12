@@ -24,7 +24,8 @@ The first implementation target is a conservative `workspace sync` flow that:
 ```bash
 uv run platform workspace sync --manifest /path/to/workspace.toml
 uv run platform workspace status --manifest /path/to/workspace.toml
-uv run platform workspace scaffold-tenant-overlay --output-dir /path/to/repo --tenant opw
+uv run platform workspace scaffold-tenant-overlay \
+  --output-dir /path/to/repo --tenant opw
 uv run platform workspace clean --manifest /path/to/workspace.toml
 uv run platform workspace run --manifest /path/to/workspace.toml -- pwd
 uv run platform runtime select --manifest /path/to/workspace.toml
@@ -48,10 +49,12 @@ as a required local DX dependency.
   manifest does not point at a pre-existing local path.
 - The active tenant checkout remains path-based and is still the source of
   truth for handwritten tenant code.
-- Local runtime assets now live in `odoo-devkit` itself, so tenant manifests do
-  not need `[repos.runtime]` for `instance = "local"`.
-- Runtime repo ownership remains explicit for non-local targets. When
-  `[repos.runtime]` is present it may be path-based or repo-addressable,
+- Local runtime assets now live in `odoo-devkit` itself. The scaffold now
+  keeps `[repos.runtime]` pointed at the sibling `odoo-devkit` checkout as
+  well so the same tracked tenant manifest can safely target Dokploy-managed
+  destructive workflows with an explicit runtime `--instance` override.
+- Runtime repo ownership remains explicit. When `[repos.runtime]` is present it
+  may be path-based or repo-addressable,
   `workspace sync` materializes repo-addressed runtime inputs into
   `sources/runtime`, and non-local runtime commands fail closed until that
   checkout exists.
@@ -66,8 +69,9 @@ Current runtime ownership is intentionally narrow and explicit:
   `workflow update`, and `workflow openupgrade`.
 - Dokploy-managed non-local runtime targets now also run natively inside
   `odoo-devkit` for `restore`, `workflow bootstrap`, and `workflow update`
-  using the runtime repo's generated env plus `platform/dokploy.toml` target
-  metadata.
+  using the runtime repo's generated env plus Dokploy target metadata from
+  `odoo-control-plane/config/dokploy.toml` when available, falling back to the
+  runtime repo's legacy `platform/dokploy.toml` during migration.
 - non-local `workflow init` and `workflow openupgrade` remain local-only and
   fail closed with an explicit `--instance local` requirement instead of
   falling through to an implicit remote path.
@@ -76,4 +80,18 @@ Current runtime ownership is intentionally narrow and explicit:
 
 ```bash
 uv run python -m unittest discover -s tests
+```
+
+For tenant repos that keep `instance = "local"` in the tracked manifest, use
+an explicit runtime target override when you need a Dokploy-managed data
+workflow, for example:
+
+```bash
+uv --directory ../odoo-devkit run platform runtime restore \
+  --manifest ./workspace.toml \
+  --instance testing
+uv --directory ../odoo-devkit run platform runtime workflow \
+  --manifest ./workspace.toml \
+  --workflow bootstrap \
+  --instance testing
 ```

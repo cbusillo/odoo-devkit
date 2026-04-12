@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .local_runtime import RuntimeCommandError
+from .local_runtime import RuntimeCommandError, resolve_control_plane_root
 
 
 @dataclass(frozen=True)
@@ -35,8 +35,8 @@ class DokploySourceOfTruth:
 
 
 def load_dokploy_source_of_truth(repo_root: Path) -> DokploySourceOfTruth | None:
-    source_file_path = repo_root / "platform" / "dokploy.toml"
-    if not source_file_path.exists():
+    source_file_path = _resolve_dokploy_source_file_path(repo_root)
+    if source_file_path is None:
         return None
     try:
         raw_payload = tomllib.loads(source_file_path.read_text(encoding="utf-8"))
@@ -52,6 +52,18 @@ def load_dokploy_source_of_truth(repo_root: Path) -> DokploySourceOfTruth | None
         for target_index, raw_target in enumerate(targets_payload, start=1)
     )
     return DokploySourceOfTruth(schema_version=schema_version, targets=targets)
+
+
+def _resolve_dokploy_source_file_path(repo_root: Path) -> Path | None:
+    control_plane_root = resolve_control_plane_root()
+    if control_plane_root is not None:
+        control_plane_source_file = control_plane_root / "config" / "dokploy.toml"
+        if control_plane_source_file.exists():
+            return control_plane_source_file
+    legacy_source_file = repo_root / "platform" / "dokploy.toml"
+    if legacy_source_file.exists():
+        return legacy_source_file
+    return None
 
 
 def find_dokploy_target_definition(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 from .manifest import WorkspaceManifest, load_workspace_manifest
@@ -62,34 +63,48 @@ def build_parser() -> argparse.ArgumentParser:
     runtime_select_parser = _add_manifest_argument(
         runtime_subparsers.add_parser("select", help="Run local platform select for the manifest runtime target")
     )
+    _add_runtime_instance_override_argument(runtime_select_parser)
     runtime_select_parser.set_defaults(handler=_handle_runtime_select)
 
     runtime_up_parser = _add_manifest_argument(
         runtime_subparsers.add_parser("up", help="Run local platform up for the manifest runtime target")
     )
+    _add_runtime_instance_override_argument(runtime_up_parser)
     runtime_up_parser.add_argument("--build", dest="build_images", action=argparse.BooleanOptionalAction, default=True)
     runtime_up_parser.set_defaults(handler=_handle_runtime_up)
 
     runtime_workflow_parser = _add_manifest_argument(
         runtime_subparsers.add_parser("workflow", help="Run a local platform workflow for the manifest runtime target")
     )
+    _add_runtime_instance_override_argument(runtime_workflow_parser)
     runtime_workflow_parser.add_argument("--workflow", required=True)
     runtime_workflow_parser.set_defaults(handler=_handle_runtime_workflow)
 
     runtime_restore_parser = _add_manifest_argument(
         runtime_subparsers.add_parser("restore", help="Run local platform restore for the manifest runtime target")
     )
+    _add_runtime_instance_override_argument(runtime_restore_parser)
     runtime_restore_parser.set_defaults(handler=_handle_runtime_restore)
 
     runtime_inspect_parser = _add_manifest_argument(
         runtime_subparsers.add_parser("inspect", help="Run local platform inspect for the manifest runtime target")
     )
+    _add_runtime_instance_override_argument(runtime_inspect_parser)
     runtime_inspect_parser.set_defaults(handler=_handle_runtime_inspect)
     return parser
 
 
 def _add_manifest_argument(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument("--manifest", type=Path, default=Path("workspace.toml"))
+    return parser
+
+
+def _add_runtime_instance_override_argument(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    parser.add_argument(
+        "--instance",
+        dest="runtime_instance",
+        help="Override the manifest runtime instance for this command.",
+    )
     return parser
 
 
@@ -155,19 +170,19 @@ def _handle_workspace_run(arguments: argparse.Namespace) -> None:
 
 
 def _handle_runtime_select(arguments: argparse.Namespace) -> None:
-    manifest = _load_manifest(arguments.manifest)
+    manifest = _load_runtime_manifest(arguments)
     exit_code = _run_runtime_handler(lambda: run_native_runtime_select(manifest=manifest))
     raise SystemExit(exit_code)
 
 
 def _handle_runtime_up(arguments: argparse.Namespace) -> None:
-    manifest = _load_manifest(arguments.manifest)
+    manifest = _load_runtime_manifest(arguments)
     exit_code = _run_runtime_handler(lambda: run_native_runtime_up(manifest=manifest, build_images=arguments.build_images))
     raise SystemExit(exit_code)
 
 
 def _handle_runtime_workflow(arguments: argparse.Namespace) -> None:
-    manifest = _load_manifest(arguments.manifest)
+    manifest = _load_runtime_manifest(arguments)
     native_exit_code = _run_runtime_handler(lambda: run_native_runtime_workflow(manifest=manifest, workflow=arguments.workflow))
     if native_exit_code is not None:
         raise SystemExit(native_exit_code)
@@ -180,7 +195,7 @@ def _handle_runtime_workflow(arguments: argparse.Namespace) -> None:
 
 
 def _handle_runtime_restore(arguments: argparse.Namespace) -> None:
-    manifest = _load_manifest(arguments.manifest)
+    manifest = _load_runtime_manifest(arguments)
     native_exit_code = _run_runtime_handler(lambda: run_native_runtime_restore(manifest=manifest))
     if native_exit_code is not None:
         raise SystemExit(native_exit_code)
@@ -189,9 +204,26 @@ def _handle_runtime_restore(arguments: argparse.Namespace) -> None:
 
 
 def _handle_runtime_inspect(arguments: argparse.Namespace) -> None:
-    manifest = _load_manifest(arguments.manifest)
+    manifest = _load_runtime_manifest(arguments)
     exit_code = _run_runtime_handler(lambda: run_native_runtime_inspect(manifest=manifest))
     raise SystemExit(exit_code)
+
+
+def _load_runtime_manifest(arguments: argparse.Namespace) -> WorkspaceManifest:
+    manifest = _load_manifest(arguments.manifest)
+    runtime_instance_override = getattr(arguments, "runtime_instance", None)
+    if runtime_instance_override is None:
+        return manifest
+    normalized_runtime_instance = runtime_instance_override.strip().lower()
+    if not normalized_runtime_instance:
+        raise SystemExit("Runtime instance override must be a non-empty value.")
+    return replace(
+        manifest,
+        runtime=replace(
+            manifest.runtime,
+            instance=normalized_runtime_instance,
+        ),
+    )
 
 
 def _run_runtime_handler(handler: Callable[[], int | None]) -> int | None:

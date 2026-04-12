@@ -16,6 +16,11 @@ name = "odoo-devkit"
 path = "../odoo-devkit"
 ref = "main"
 
+[repos.runtime]
+name = "odoo-devkit"
+path = "../odoo-devkit"
+ref = "main"
+
 [repos.shared_addons]
 name = "odoo-shared-addons"
 path = "../odoo-shared-addons"

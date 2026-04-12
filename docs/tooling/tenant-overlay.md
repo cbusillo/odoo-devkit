@@ -47,9 +47,10 @@ When
 
 - The scaffold points shared addons at `../odoo-shared-addons` while local
   runtime assets come from `odoo-devkit` itself.
-- Local tenant overlays do not need `[repos.runtime]`. `odoo-devkit` owns the
-  local runtime bundle directly, and non-local runtime ownership stays explicit
-  when that path is needed later.
+- The scaffold also keeps `[repos.runtime]` pointed at the sibling
+  `../odoo-devkit` checkout so the same tracked manifest can keep
+  `instance = "local"` while still running Dokploy-managed destructive
+  workflows through an explicit runtime `--instance` override.
 - The generated run configurations and shell wrappers call
   `uv --directory ../odoo-devkit run platform ...`.
 - For terminal use, extracted tenants should prefer `./scripts/workspace-sync`

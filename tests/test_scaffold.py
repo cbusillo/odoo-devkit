@@ -69,9 +69,11 @@ class TenantOverlayScaffoldTests(unittest.TestCase):
             workspace_sync_text = (output_directory / "scripts" / "workspace-sync").read_text(encoding="utf-8")
             workspace_status_text = (output_directory / "scripts" / "workspace-status").read_text(encoding="utf-8")
 
+            self.assertIn('name = "odoo-devkit"', manifest_text)
+            self.assertIn('[repos.runtime]', manifest_text)
+            self.assertIn('path = "../odoo-devkit"', manifest_text)
             self.assertIn('name = "odoo-shared-addons"', manifest_text)
             self.assertIn('path = "../odoo-shared-addons"', manifest_text)
-            self.assertNotIn("[repos.runtime]", manifest_text)
             self.assertIn('addons_paths = ["sources/tenant/addons", "sources/shared-addons"]', manifest_text)
             self.assertIn('platform", "runtime", "workflow"', manifest_text)
             self.assertIn('name = "opw Platform Update Local"', manifest_text)

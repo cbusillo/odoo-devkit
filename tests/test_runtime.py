@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 from odoo_devkit import local_runtime
-from odoo_devkit.cli import _handle_runtime_workflow
+from odoo_devkit.cli import _handle_runtime_restore, _handle_runtime_workflow
 from odoo_devkit.manifest import load_workspace_manifest
 from odoo_devkit.runtime import (
     build_runtime_platform_command,
@@ -795,6 +795,29 @@ attached_paths = ["sources/devkit"]
 
             self.assertEqual(exit_code, 0)
             remote_bootstrap.assert_called_once_with(manifest=manifest, runtime_repo_path=runtime_repo_path.resolve())
+
+    def test_cli_runtime_restore_supports_instance_override_against_local_first_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = temp_root / "tenant-repo"
+            runtime_repo_path = temp_root / "runtime-repo"
+            tenant_repo_path.mkdir(parents=True, exist_ok=True)
+            runtime_repo_path.mkdir(parents=True, exist_ok=True)
+            manifest_path = self._write_manifest(
+                tenant_repo_path=tenant_repo_path,
+                runtime_repo_path=runtime_repo_path,
+                instance_name="local",
+            )
+            arguments = argparse.Namespace(manifest=manifest_path, runtime_instance="testing")
+
+            with mock.patch("odoo_devkit.cli.run_native_runtime_restore", return_value=0) as runtime_restore:
+                with self.assertRaises(SystemExit) as captured_exit:
+                    _handle_runtime_restore(arguments)
+
+            self.assertEqual(captured_exit.exception.code, 0)
+            overridden_manifest = runtime_restore.call_args.kwargs["manifest"]
+            self.assertEqual(overridden_manifest.runtime.context, "opw")
+            self.assertEqual(overridden_manifest.runtime.instance, "testing")
 
     def test_native_runtime_workflow_rejects_non_local_init(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

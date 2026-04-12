@@ -20,7 +20,8 @@ name:
 ```bash
 uv run platform workspace sync --manifest /path/to/workspace.toml
 uv run platform workspace status --manifest /path/to/workspace.toml
-uv run platform workspace scaffold-tenant-overlay --output-dir /path/to/repo --tenant opw
+uv run platform workspace scaffold-tenant-overlay \
+  --output-dir /path/to/repo --tenant opw
 uv run platform workspace clean --manifest /path/to/workspace.toml
 uv run platform workspace run --manifest /path/to/workspace.toml -- pwd
 uv run platform runtime select --manifest /path/to/workspace.toml
@@ -101,12 +102,17 @@ Notes
 - Shared-addons inputs may now be path-based or repo-addressable. Managed
   shared-addons checkouts fail closed if the workspace copy is dirty or points
   at a different `origin` than the manifest declares.
-- Keep the runtime repo explicit in the manifest because `odoo-devkit` still
-- `instance = "local"` now defaults to the devkit-owned local runtime bundle,
-  so extracted tenant manifests do not need `[repos.runtime]` for local DX.
+- Keep the runtime repo explicit in the manifest. Extracted tenant scaffolds
+  now point `[repos.runtime]` at the sibling `odoo-devkit` checkout so the
+  same tracked manifest can keep `instance = "local"` by default while still
+  targeting Dokploy-managed restore/bootstrap/update flows through an explicit
+  runtime `--instance` override.
 - Keep the runtime repo explicit in the manifest for non-local targets because
-  `odoo-devkit` still reads `platform/dokploy.toml` and any external runtime
-  metadata from that repo or its managed `sources/runtime` checkout.
+  `odoo-devkit` may still need external runtime metadata from that repo or its
+  managed `sources/runtime` checkout. Dokploy target definitions now prefer the
+  control-plane-owned `config/dokploy.toml` catalog when
+  `ODOO_CONTROL_PLANE_ROOT` is set, with the runtime repo's legacy
+  `platform/dokploy.toml` used only as a migration fallback.
 - Runtime ownership remains fail-closed and explicit for non-local targets.
   `odoo-devkit` no longer guesses a runtime repo from `[repos.shared_addons]`,
   even if that path points at a sibling `odoo-shared-addons` checkout.
@@ -128,6 +134,9 @@ Notes
 - Native non-local ownership currently covers Dokploy-backed `restore`,
   `workflow bootstrap`, and `workflow update`; anything else should fail closed
   unless `odoo-devkit` grows an explicit remote contract for it.
+- The runtime CLI accepts `--instance <name>` so a tenant repo can keep one
+  tracked local-first manifest and still run remote data workflows like
+  `platform runtime restore --manifest ./workspace.toml --instance testing`.
 
 ## Ownership Rules
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -27,6 +28,44 @@ def _sample_runtime_context(*, repo_root: Path) -> SimpleNamespace:
 
 
 class RemoteRuntimeTests(unittest.TestCase):
+    def test_load_dokploy_source_of_truth_prefers_control_plane_catalog_when_available(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            repo_root = temp_root / "runtime-repo"
+            control_plane_root = temp_root / "odoo-control-plane"
+            (repo_root / "platform").mkdir(parents=True, exist_ok=True)
+            (control_plane_root / "config").mkdir(parents=True, exist_ok=True)
+            (repo_root / "platform" / "dokploy.toml").write_text(
+                """
+schema_version = 1
+
+[[targets]]
+context = "opw"
+instance = "testing"
+target_id = "legacy-compose"
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+            (control_plane_root / "config" / "dokploy.toml").write_text(
+                """
+schema_version = 1
+
+[[targets]]
+context = "opw"
+instance = "testing"
+target_id = "control-plane-compose"
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(os.environ, {"ODOO_CONTROL_PLANE_ROOT": str(control_plane_root)}):
+                source_of_truth = remote_runtime.load_dokploy_source_of_truth(repo_root)
+
+        assert source_of_truth is not None
+        self.assertEqual(source_of_truth.targets[0].target_id, "control-plane-compose")
+
     def test_load_dokploy_source_of_truth_applies_profile_and_project_inheritance(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             repo_root = Path(temporary_directory)
