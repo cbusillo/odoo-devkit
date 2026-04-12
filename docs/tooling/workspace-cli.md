@@ -117,9 +117,9 @@ Notes
 - Keep the runtime repo explicit in the manifest for non-local targets because
   `odoo-devkit` may still need external runtime metadata from that repo or its
   managed `sources/runtime` checkout. Dokploy target definitions now prefer the
-  control-plane-owned `config/dokploy.toml` catalog when
-  `ODOO_CONTROL_PLANE_ROOT` is set, with the runtime repo's
-  `platform/dokploy.toml` used only when the control-plane catalog is absent.
+  control-plane-owned `config/dokploy.toml` route catalog and
+  `config/dokploy-targets.toml` target-id catalog resolved through
+  `ODOO_CONTROL_PLANE_ROOT`.
 - Runtime ownership remains fail-closed and explicit for non-local targets.
   `odoo-devkit` no longer guesses a runtime repo from `[repos.shared_addons]`,
   even if that path points at a sibling `odoo-shared-addons` checkout.

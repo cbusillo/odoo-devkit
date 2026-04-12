@@ -28,26 +28,24 @@ def _sample_runtime_context(*, repo_root: Path) -> SimpleNamespace:
 
 
 class RemoteRuntimeTests(unittest.TestCase):
-    def test_load_dokploy_source_of_truth_prefers_control_plane_catalog_when_available(self) -> None:
+    def test_load_dokploy_source_of_truth_reads_control_plane_catalog_with_target_id_overrides(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
             repo_root = temp_root / "runtime-repo"
             control_plane_root = temp_root / "odoo-control-plane"
-            (repo_root / "platform").mkdir(parents=True, exist_ok=True)
             (control_plane_root / "config").mkdir(parents=True, exist_ok=True)
-            (repo_root / "platform" / "dokploy.toml").write_text(
+            (control_plane_root / "config" / "dokploy.toml").write_text(
                 """
 schema_version = 1
 
 [[targets]]
 context = "opw"
 instance = "testing"
-target_id = "legacy-compose"
 """.strip()
                 + "\n",
                 encoding="utf-8",
             )
-            (control_plane_root / "config" / "dokploy.toml").write_text(
+            (control_plane_root / "config" / "dokploy-targets.toml").write_text(
                 """
 schema_version = 1
 
@@ -66,12 +64,37 @@ target_id = "control-plane-compose"
         assert source_of_truth is not None
         self.assertEqual(source_of_truth.targets[0].target_id, "control-plane-compose")
 
-    def test_load_dokploy_source_of_truth_applies_profile_and_project_inheritance(self) -> None:
+    def test_load_dokploy_source_of_truth_requires_control_plane_root(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             repo_root = Path(temporary_directory)
             platform_directory = repo_root / "platform"
             platform_directory.mkdir(parents=True, exist_ok=True)
             (platform_directory / "dokploy.toml").write_text(
+                """
+schema_version = 1
+
+[[targets]]
+context = "opw"
+instance = "testing"
+target_id = "legacy-compose"
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(os.environ, {}, clear=True):
+                source_of_truth = remote_runtime.load_dokploy_source_of_truth(repo_root)
+
+        self.assertIsNone(source_of_truth)
+
+    def test_load_dokploy_source_of_truth_applies_profile_and_project_inheritance(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            repo_root = temp_root / "runtime-repo"
+            control_plane_root = temp_root / "odoo-control-plane"
+            control_plane_config_directory = control_plane_root / "config"
+            control_plane_config_directory.mkdir(parents=True, exist_ok=True)
+            (control_plane_config_directory / "dokploy.toml").write_text(
                 """
 schema_version = 1
 
@@ -90,15 +113,27 @@ healthcheck_enabled = false
 context = "opw"
 instance = "testing"
 profile = "testing"
-target_id = "compose-123"
 target_name = "opw-testing"
 domains = ["testing.example.com"]
 """.strip()
                 + "\n",
                 encoding="utf-8",
             )
+            (control_plane_config_directory / "dokploy-targets.toml").write_text(
+                """
+schema_version = 1
 
-            source_of_truth = remote_runtime.load_dokploy_source_of_truth(repo_root)
+[[targets]]
+context = "opw"
+instance = "testing"
+target_id = "compose-123"
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(os.environ, {"ODOO_CONTROL_PLANE_ROOT": str(control_plane_root)}):
+                source_of_truth = remote_runtime.load_dokploy_source_of_truth(repo_root)
 
         assert source_of_truth is not None
         self.assertEqual(source_of_truth.schema_version, 1)
@@ -109,6 +144,44 @@ domains = ["testing.example.com"]
         self.assertEqual(target_definition.deploy_timeout_seconds, 7200)
         self.assertFalse(target_definition.healthcheck_enabled)
         self.assertEqual(target_definition.domains, ("testing.example.com",))
+
+    def test_load_dokploy_source_of_truth_rejects_unknown_target_id_routes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            repo_root = temp_root / "runtime-repo"
+            control_plane_root = temp_root / "odoo-control-plane"
+            control_plane_config_directory = control_plane_root / "config"
+            control_plane_config_directory.mkdir(parents=True, exist_ok=True)
+            (control_plane_config_directory / "dokploy.toml").write_text(
+                """
+schema_version = 1
+
+[[targets]]
+context = "opw"
+instance = "testing"
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+            (control_plane_config_directory / "dokploy-targets.toml").write_text(
+                """
+schema_version = 1
+
+[[targets]]
+context = "cm"
+instance = "prod"
+target_id = "compose-456"
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(os.environ, {"ODOO_CONTROL_PLANE_ROOT": str(control_plane_root)}):
+                with self.assertRaisesRegex(
+                    remote_runtime.RuntimeCommandError,
+                    r"route\(s\) that are not present in the control-plane route catalog: cm/prod",
+                ):
+                    remote_runtime.load_dokploy_source_of_truth(repo_root)
 
     def test_build_dokploy_data_workflow_script_includes_project_labels_and_flags(self) -> None:
         schedule_script = remote_runtime._build_dokploy_data_workflow_script(

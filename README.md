@@ -76,10 +76,10 @@ Current runtime ownership is intentionally narrow and explicit:
   `workflow openupgrade`.
 - Dokploy-managed non-local runtime targets now also run natively inside
   `odoo-devkit` for `restore`, `workflow bootstrap`, and `workflow update`
-  using the runtime repo's generated env plus Dokploy target metadata from
-  `odoo-control-plane/config/dokploy.toml` when available, falling back to the
-  runtime repo's `platform/dokploy.toml` only when the control-plane catalog is
-  not present.
+  using the runtime repo's generated env plus Dokploy target metadata from the
+  control-plane-owned `config/dokploy.toml` and
+  `config/dokploy-targets.toml` catalogs resolved through
+  `ODOO_CONTROL_PLANE_ROOT`.
 - non-local `workflow init` and `workflow openupgrade` remain local-only and
   fail closed with an explicit `--instance local` requirement instead of
   falling through to an implicit remote path.

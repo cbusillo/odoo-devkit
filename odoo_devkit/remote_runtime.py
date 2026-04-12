@@ -126,7 +126,10 @@ def _resolve_required_dokploy_compose_target_definition(
 ) -> DokployTargetDefinition:
     source_of_truth = load_dokploy_source_of_truth(runtime_context.repo_root)
     if source_of_truth is None:
-        raise RuntimeCommandError("Dokploy-managed remote workflows require platform/dokploy.toml with pinned target metadata.")
+        raise RuntimeCommandError(
+            "Dokploy-managed remote workflows require ODOO_CONTROL_PLANE_ROOT to point at an "
+            "odoo-control-plane checkout with config/dokploy.toml."
+        )
 
     target_definition = find_dokploy_target_definition(
         source_of_truth,
@@ -135,19 +138,19 @@ def _resolve_required_dokploy_compose_target_definition(
     )
     if target_definition is None:
         raise RuntimeCommandError(
-            "Dokploy-managed remote workflow requires a target definition in platform/dokploy.toml for "
+            "Dokploy-managed remote workflow requires a target definition in the control-plane Dokploy route catalog for "
             f"{runtime_context.selection.context_name}/{runtime_context.selection.instance_name}."
         )
     if target_definition.target_type != "compose":
         raise RuntimeCommandError(
             "Dokploy-managed remote data workflows require compose targets, but "
-            f"platform/dokploy.toml configures {runtime_context.selection.context_name}/"
+            f"the control-plane route catalog configures {runtime_context.selection.context_name}/"
             f"{runtime_context.selection.instance_name} as '{target_definition.target_type}'."
         )
     compose_id = target_definition.target_id.strip()
     if not compose_id:
         raise RuntimeCommandError(
-            "Dokploy-managed remote workflow requires a pinned target_id in platform/dokploy.toml for "
+            "Dokploy-managed remote workflow requires a pinned target_id in the control-plane Dokploy target-id catalog for "
             f"{runtime_context.selection.context_name}/{runtime_context.selection.instance_name}."
         )
     return target_definition

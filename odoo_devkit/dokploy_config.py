@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import os
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .local_runtime import RuntimeCommandError, resolve_control_plane_root
+
+CONTROL_PLANE_DOKPLOY_TARGET_IDS_FILE_ENV_VAR = "ODOO_CONTROL_PLANE_DOKPLOY_TARGET_IDS_FILE"
 
 
 @dataclass(frozen=True)
@@ -42,28 +45,125 @@ def load_dokploy_source_of_truth(repo_root: Path) -> DokploySourceOfTruth | None
         raw_payload = tomllib.loads(source_file_path.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError) as error:
         raise RuntimeCommandError(f"Invalid dokploy source-of-truth file {source_file_path}: {error}") from error
+    control_plane_root = resolve_control_plane_root()
+    target_ids_file_path: Path | None = None
+    if control_plane_root is not None:
+        target_ids_file_path = _resolve_dokploy_target_ids_file_path(control_plane_root, source_file_path=source_file_path)
+        configured_target_ids_file = os.environ.get(CONTROL_PLANE_DOKPLOY_TARGET_IDS_FILE_ENV_VAR, "").strip()
+        should_load_target_ids = bool(configured_target_ids_file) or target_ids_file_path.exists()
+        if should_load_target_ids:
+            raw_payload = _apply_dokploy_target_id_catalog(
+                raw_payload,
+                target_id_catalog=_load_dokploy_target_id_catalog(target_ids_file_path),
+            )
     normalized_payload = _normalize_dokploy_source_payload(raw_payload)
-    schema_version = _read_required_int(normalized_payload, "schema_version", scope="platform.dokploy")
+    schema_version = _read_required_int(normalized_payload, "schema_version", scope="dokploy")
     targets_payload = normalized_payload.get("targets")
     if not isinstance(targets_payload, list):
-        raise RuntimeCommandError("platform.dokploy.targets must be an array of target tables.")
+        raise RuntimeCommandError("Dokploy route catalog targets must be an array of target tables.")
     targets = tuple(
-        _parse_dokploy_target_definition(raw_target, label=f"platform.dokploy.targets[{target_index}]")
+        _parse_dokploy_target_definition(raw_target, label=f"dokploy.targets[{target_index}]")
         for target_index, raw_target in enumerate(targets_payload, start=1)
     )
+    if control_plane_root is not None:
+        missing_target_id_routes = [
+            f"{target.context}/{target.instance}" for target in targets if not target.target_id.strip()
+        ]
+        if missing_target_id_routes:
+            missing_joined = ", ".join(missing_target_id_routes)
+            target_ids_display = (
+                str(target_ids_file_path) if target_ids_file_path is not None else "config/dokploy-targets.toml"
+            )
+            raise RuntimeCommandError(
+                "Control-plane Dokploy route catalog resolved through ODOO_CONTROL_PLANE_ROOT is missing pinned target ids for "
+                f"{missing_joined}. Define them in {target_ids_display} or inline target_id values in {source_file_path}."
+            )
     return DokploySourceOfTruth(schema_version=schema_version, targets=targets)
 
 
 def _resolve_dokploy_source_file_path(repo_root: Path) -> Path | None:
     control_plane_root = resolve_control_plane_root()
-    if control_plane_root is not None:
-        control_plane_source_file = control_plane_root / "config" / "dokploy.toml"
-        if control_plane_source_file.exists():
-            return control_plane_source_file
-    legacy_source_file = repo_root / "platform" / "dokploy.toml"
-    if legacy_source_file.exists():
-        return legacy_source_file
+    if control_plane_root is None:
+        return None
+    control_plane_source_file = control_plane_root / "config" / "dokploy.toml"
+    if control_plane_source_file.exists():
+        return control_plane_source_file
     return None
+
+
+def _resolve_dokploy_target_ids_file_path(control_plane_root: Path, *, source_file_path: Path) -> Path:
+    configured_target_ids_file = os.environ.get(CONTROL_PLANE_DOKPLOY_TARGET_IDS_FILE_ENV_VAR, "").strip()
+    if configured_target_ids_file:
+        candidate_path = Path(configured_target_ids_file)
+        if not candidate_path.is_absolute():
+            candidate_path = control_plane_root / candidate_path
+        return candidate_path
+    return source_file_path.parent / "dokploy-targets.toml"
+
+
+def _load_dokploy_target_id_catalog(target_ids_file_path: Path) -> Mapping[str, object]:
+    try:
+        raw_payload = tomllib.loads(target_ids_file_path.read_text(encoding="utf-8"))
+    except FileNotFoundError as error:
+        raise RuntimeCommandError(f"Dokploy target-id catalog file not found: {target_ids_file_path}") from error
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        raise RuntimeCommandError(f"Invalid Dokploy target-id catalog file {target_ids_file_path}: {error}") from error
+    if not isinstance(raw_payload, Mapping):
+        raise RuntimeCommandError(f"Dokploy target-id catalog {target_ids_file_path} must contain a top-level table.")
+    return raw_payload
+
+
+def _apply_dokploy_target_id_catalog(
+    raw_payload: Mapping[str, object],
+    *,
+    target_id_catalog: Mapping[str, object],
+) -> dict[str, object]:
+    merged_payload = dict(raw_payload)
+    raw_targets = merged_payload.get("targets")
+    if not isinstance(raw_targets, list):
+        raise RuntimeCommandError("Dokploy route catalog targets must be an array of target tables.")
+    catalog_targets = target_id_catalog.get("targets")
+    if not isinstance(catalog_targets, list):
+        raise RuntimeCommandError("Dokploy target-id catalog targets must be an array of target tables.")
+
+    override_map: dict[tuple[str, str], str] = {}
+    for index, raw_target in enumerate(catalog_targets, start=1):
+        target_table = _ensure_mapping(raw_target, label=f"dokploy-target-ids.targets[{index}]")
+        context_name = _read_required_string(target_table, "context", scope=f"dokploy-target-ids.targets[{index}]")
+        instance_name = _read_required_string(target_table, "instance", scope=f"dokploy-target-ids.targets[{index}]")
+        target_id = _read_required_string(target_table, "target_id", scope=f"dokploy-target-ids.targets[{index}]")
+        target_route = (context_name, instance_name)
+        if target_route in override_map:
+            raise RuntimeCommandError(
+                f"Duplicate Dokploy target-id override for {context_name}/{instance_name} in target-id catalog"
+            )
+        override_map[target_route] = target_id
+
+    remaining_routes = set(override_map)
+    merged_targets: list[object] = []
+    for index, raw_target in enumerate(raw_targets, start=1):
+        target_table = _ensure_mapping(raw_target, label=f"dokploy.targets[{index}]")
+        merged_target = dict(target_table)
+        context_name = str(merged_target.get("context") or "").strip()
+        instance_name = str(merged_target.get("instance") or "").strip()
+        target_route = (context_name, instance_name)
+        override_target_id = override_map.get(target_route)
+        if override_target_id is not None:
+            merged_target["target_id"] = override_target_id
+            remaining_routes.discard(target_route)
+        merged_targets.append(merged_target)
+
+    if remaining_routes:
+        unknown_routes = ", ".join(
+            f"{context_name}/{instance_name}" for context_name, instance_name in sorted(remaining_routes)
+        )
+        raise RuntimeCommandError(
+            "Dokploy target-id catalog contains route(s) that are not present in the control-plane route catalog: "
+            f"{unknown_routes}"
+        )
+
+    merged_payload["targets"] = merged_targets
+    return merged_payload
 
 
 def find_dokploy_target_definition(
@@ -107,7 +207,7 @@ def _parse_dokploy_target_definition(raw_target: object, *, label: str) -> Dokpl
 
 def _normalize_dokploy_source_payload(raw_value: object) -> Mapping[str, object]:
     if not isinstance(raw_value, Mapping):
-        raise RuntimeCommandError("platform/dokploy.toml must contain a top-level table.")
+        raise RuntimeCommandError("Dokploy route catalog must contain a top-level table.")
 
     normalized_payload = dict(raw_value)
     allowed_top_level_keys = {"defaults", "profiles", "projects", "schema_version", "targets"}
@@ -118,7 +218,7 @@ def _normalize_dokploy_source_payload(raw_value: object) -> Mapping[str, object]
 
     raw_targets = normalized_payload.get("targets")
     if not isinstance(raw_targets, list):
-        raise RuntimeCommandError("platform.dokploy.targets must be an array of target tables.")
+        raise RuntimeCommandError("Dokploy route catalog targets must be an array of target tables.")
 
     defaults = _expect_mapping(normalized_payload.get("defaults"), label="defaults")
     raw_profiles = _expect_mapping(normalized_payload.get("profiles"), label="profiles")
@@ -127,7 +227,7 @@ def _normalize_dokploy_source_payload(raw_value: object) -> Mapping[str, object]
     targets: list[object] = []
     for target_index, raw_target in enumerate(raw_targets, start=1):
         if not isinstance(raw_target, Mapping):
-            raise RuntimeCommandError(f"platform.dokploy.targets[{target_index}] must be a table.")
+            raise RuntimeCommandError(f"dokploy.targets[{target_index}] must be a table.")
         target_payload = dict(raw_target)
         profile_name = str(target_payload.pop("profile", "") or "").strip()
         merged_target = dict(defaults)
