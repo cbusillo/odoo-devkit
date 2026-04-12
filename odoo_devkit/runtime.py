@@ -9,6 +9,7 @@ from .local_runtime import (
     emit_key_value_payload,
     inspect_runtime,
     run_psql_command,
+    run_odoo_shell_command,
     run_bootstrap_workflow,
     run_init_workflow,
     stream_runtime_logs,
@@ -179,6 +180,33 @@ def run_native_runtime_psql(*, manifest: WorkspaceManifest, psql_arguments: tupl
             manifest=manifest,
             runtime_repo_path=runtime_repo_path,
             psql_arguments=psql_arguments,
+        )
+    except RuntimeCommandError as error:
+        raise ValueError(str(error)) from error
+    return 0
+
+
+def run_native_runtime_odoo_shell(
+    *,
+    manifest: WorkspaceManifest,
+    service: str,
+    database_name: str | None,
+    script_path: Path | None,
+    log_file: Path | None,
+    dry_run: bool,
+) -> int:
+    if not runtime_target_is_local(manifest):
+        _raise_local_only_runtime_command_error(command_name="odoo-shell", manifest=manifest)
+    runtime_repo_path = resolve_runtime_repo_path(manifest)
+    try:
+        run_odoo_shell_command(
+            manifest=manifest,
+            runtime_repo_path=runtime_repo_path,
+            service=service,
+            database_name=database_name,
+            script_path=script_path,
+            log_file=log_file,
+            dry_run=dry_run,
         )
     except RuntimeCommandError as error:
         raise ValueError(str(error)) from error

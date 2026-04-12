@@ -1515,6 +1515,110 @@ def run_psql_command(
     run_command(runtime_repo_path=runtime_repo_path, command=psql_command)
 
 
+def run_odoo_shell_command(
+    *,
+    manifest: WorkspaceManifest,
+    runtime_repo_path: Path,
+    service: str,
+    database_name: str | None,
+    script_path: Path | None,
+    log_file: Path | None,
+    dry_run: bool,
+) -> None:
+    runtime_context = load_runtime_context(manifest=manifest, runtime_repo_path=runtime_repo_path)
+    runtime_env_file = ensure_runtime_env_file(
+        repo_root=runtime_repo_path,
+        context_name=manifest.runtime.context,
+        instance_name=manifest.runtime.instance,
+    )
+    normalized_service = service.strip()
+    if not normalized_service:
+        raise RuntimeCommandError("Service name must be a non-empty value.")
+    target_database = (database_name or "").strip() or runtime_context.selection.database_name
+    addons_path_argument = ",".join(runtime_context.stack.stack_definition.addons_path)
+    odoo_shell_command = [
+        "/odoo/odoo-bin",
+        "shell",
+        "-d",
+        target_database,
+        f"--addons-path={addons_path_argument}",
+        "--data-dir=/volumes/data",
+        "--db_host=database",
+        "--db_port=5432",
+        f"--db_user={runtime_context.environment.merged_values.get('ODOO_DB_USER', 'odoo')}",
+        f"--db_password={runtime_context.environment.merged_values.get('ODOO_DB_PASSWORD', '')}",
+    ]
+    compose_command = compose_base_command(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file)
+
+    resolved_script_path: Path | None = None
+    script_text: str | None = None
+    if script_path is not None:
+        resolved_script_path = script_path.expanduser().resolve()
+        if not resolved_script_path.exists():
+            raise RuntimeCommandError(f"Odoo shell script not found: {resolved_script_path}")
+        script_text = resolved_script_path.read_text(encoding="utf-8")
+
+    resolved_log_file: Path | None = None
+    if log_file is not None:
+        resolved_log_file = log_file.expanduser().resolve()
+
+    odoo_shell_exec_command = compose_command + ["exec"]
+    if script_text is not None or resolved_log_file is not None:
+        odoo_shell_exec_command.append("-T")
+    odoo_shell_exec_command.extend([normalized_service, *odoo_shell_command])
+
+    if dry_run:
+        command_display = " ".join(odoo_shell_exec_command)
+        if resolved_script_path is not None:
+            command_display = f"{command_display} < {resolved_script_path}"
+        if resolved_log_file is not None:
+            command_display = f"{command_display} > {resolved_log_file} 2>&1"
+        print(f"$ {command_display}")
+        return
+
+    execution_environment = command_execution_env()
+    output_handle = None
+    try:
+        if resolved_log_file is not None:
+            resolved_log_file.parent.mkdir(parents=True, exist_ok=True)
+            output_handle = resolved_log_file.open("wb")
+            if script_text is not None:
+                result = subprocess.run(
+                    odoo_shell_exec_command,
+                    input=script_text.encode(),
+                    cwd=runtime_repo_path,
+                    env=execution_environment,
+                    stdout=output_handle,
+                    stderr=subprocess.STDOUT,
+                )
+            else:
+                result = subprocess.run(
+                    odoo_shell_exec_command,
+                    cwd=runtime_repo_path,
+                    env=execution_environment,
+                    stdout=output_handle,
+                    stderr=subprocess.STDOUT,
+                )
+        elif script_text is not None:
+            result = subprocess.run(
+                odoo_shell_exec_command,
+                input=script_text.encode(),
+                cwd=runtime_repo_path,
+                env=execution_environment,
+            )
+        else:
+            result = subprocess.run(
+                odoo_shell_exec_command,
+                cwd=runtime_repo_path,
+                env=execution_environment,
+            )
+    finally:
+        if output_handle is not None:
+            output_handle.close()
+    if result.returncode != 0:
+        raise RuntimeCommandError(f"Command failed ({result.returncode}): {' '.join(odoo_shell_exec_command)}")
+
+
 def wait_for_compose_service(
     *,
     runtime_repo_path: Path,

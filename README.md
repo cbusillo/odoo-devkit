@@ -35,6 +35,8 @@ uv run platform runtime restore --manifest /path/to/workspace.toml
 uv run platform runtime inspect --manifest /path/to/workspace.toml
 uv run platform runtime logs --manifest /path/to/workspace.toml --service web --no-follow
 uv run platform runtime psql --manifest /path/to/workspace.toml -- -c 'select 1'
+uv run platform runtime odoo-shell --manifest /path/to/workspace.toml \
+  --script tmp/scripts/example.py
 ```
 
 If `--manifest` is omitted, the CLI looks for `workspace.toml` in the current
@@ -67,7 +69,7 @@ Current runtime ownership is intentionally narrow and explicit:
 
 - local runtime targets run natively inside `odoo-devkit` against the repo
   owned by `odoo-devkit` itself:
-  `select`, `up`, `inspect`, `logs`, `psql`, `restore`,
+  `select`, `up`, `inspect`, `logs`, `psql`, `odoo-shell`, `restore`,
   `workflow bootstrap`, `workflow init`, `workflow update`, and
   `workflow openupgrade`.
 - Dokploy-managed non-local runtime targets now also run natively inside

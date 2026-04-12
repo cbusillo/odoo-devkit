@@ -9,6 +9,7 @@ from pathlib import Path
 from .manifest import WorkspaceManifest, load_workspace_manifest
 from .runtime import (
     run_native_runtime_logs,
+    run_native_runtime_odoo_shell,
     run_native_runtime_psql,
     run_native_runtime_inspect,
     run_native_runtime_restore,
@@ -109,6 +110,17 @@ def build_parser() -> argparse.ArgumentParser:
     _add_runtime_instance_override_argument(runtime_psql_parser)
     runtime_psql_parser.add_argument("psql_arguments", nargs=argparse.REMAINDER)
     runtime_psql_parser.set_defaults(handler=_handle_runtime_psql)
+
+    runtime_odoo_shell_parser = _add_manifest_argument(
+        runtime_subparsers.add_parser("odoo-shell", help="Run Odoo shell against the local manifest runtime database")
+    )
+    _add_runtime_instance_override_argument(runtime_odoo_shell_parser)
+    runtime_odoo_shell_parser.add_argument("--script", dest="script_path", type=Path, default=None)
+    runtime_odoo_shell_parser.add_argument("--service", default="script-runner")
+    runtime_odoo_shell_parser.add_argument("--database", dest="database_name", default=None)
+    runtime_odoo_shell_parser.add_argument("--log-file", dest="log_file", type=Path, default=None)
+    runtime_odoo_shell_parser.add_argument("--dry-run", action="store_true")
+    runtime_odoo_shell_parser.set_defaults(handler=_handle_runtime_odoo_shell)
     return parser
 
 
@@ -256,6 +268,21 @@ def _handle_runtime_psql(arguments: argparse.Namespace) -> None:
         lambda: run_native_runtime_psql(
             manifest=manifest,
             psql_arguments=psql_arguments,
+        )
+    )
+    raise SystemExit(exit_code)
+
+
+def _handle_runtime_odoo_shell(arguments: argparse.Namespace) -> None:
+    manifest = _load_runtime_manifest(arguments)
+    exit_code = _run_runtime_handler(
+        lambda: run_native_runtime_odoo_shell(
+            manifest=manifest,
+            service=arguments.service,
+            database_name=arguments.database_name,
+            script_path=arguments.script_path,
+            log_file=arguments.log_file,
+            dry_run=arguments.dry_run,
         )
     )
     raise SystemExit(exit_code)

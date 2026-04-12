@@ -11,13 +11,20 @@ from pathlib import Path
 from unittest import mock
 
 from odoo_devkit import local_runtime
-from odoo_devkit.cli import _handle_runtime_logs, _handle_runtime_psql, _handle_runtime_restore, _handle_runtime_workflow
+from odoo_devkit.cli import (
+    _handle_runtime_logs,
+    _handle_runtime_odoo_shell,
+    _handle_runtime_psql,
+    _handle_runtime_restore,
+    _handle_runtime_workflow,
+)
 from odoo_devkit.manifest import load_workspace_manifest
 from odoo_devkit.runtime import (
     build_runtime_platform_command,
     resolve_runtime_repo_path,
     run_native_runtime_inspect,
     run_native_runtime_logs,
+    run_native_runtime_odoo_shell,
     run_native_runtime_psql,
     run_native_runtime_restore,
     run_native_runtime_select,
@@ -735,6 +742,83 @@ attached_paths = ["sources/devkit"]
             self.assertTrue(any(command[-2:] == ["stop", "web"] for command in commands))
             self.assertTrue(any(command[-4:] == ["up", "-d", "--remove-orphans", "web"] for command in commands))
 
+    def test_native_runtime_odoo_shell_executes_script_runner_with_script_and_log_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = temp_root / "tenant-repo"
+            runtime_repo_path = temp_root / "runtime-repo"
+            tenant_repo_path.mkdir(parents=True, exist_ok=True)
+            self._write_runtime_repo(runtime_repo_path)
+            manifest_path = self._write_manifest(tenant_repo_path=tenant_repo_path, runtime_repo_path=runtime_repo_path)
+            manifest = load_workspace_manifest(manifest_path)
+            with contextlib.redirect_stdout(io.StringIO()):
+                run_native_runtime_select(manifest=manifest)
+
+            script_path = tenant_repo_path / "tmp" / "shell-script.py"
+            script_path.parent.mkdir(parents=True, exist_ok=True)
+            script_path.write_text("print('hello from shell')\n", encoding="utf-8")
+            log_file_path = tenant_repo_path / "tmp" / "odoo-shell.log"
+
+            with mock.patch("odoo_devkit.local_runtime.subprocess.run") as run_mock:
+                run_mock.return_value = mock.Mock(returncode=0)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    exit_code = run_native_runtime_odoo_shell(
+                        manifest=manifest,
+                        service="script-runner",
+                        database_name="opw-alt",
+                        script_path=script_path,
+                        log_file=log_file_path,
+                        dry_run=False,
+                    )
+
+            self.assertEqual(exit_code, 0)
+            command = run_mock.call_args.kwargs.get("args", run_mock.call_args.args[0])
+            self.assertIn("exec", command)
+            self.assertIn("-T", command)
+            self.assertIn("script-runner", command)
+            self.assertIn("shell", command)
+            self.assertIn("opw-alt", command)
+            self.assertEqual(run_mock.call_args.kwargs["cwd"], runtime_repo_path.resolve())
+            self.assertEqual(run_mock.call_args.kwargs["stderr"], subprocess.STDOUT)
+            self.assertEqual(run_mock.call_args.kwargs["input"], b"print('hello from shell')\n")
+            self.assertTrue(log_file_path.parent.exists())
+
+    def test_native_runtime_odoo_shell_dry_run_prints_redirects(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = temp_root / "tenant-repo"
+            runtime_repo_path = temp_root / "runtime-repo"
+            tenant_repo_path.mkdir(parents=True, exist_ok=True)
+            self._write_runtime_repo(runtime_repo_path)
+            manifest_path = self._write_manifest(tenant_repo_path=tenant_repo_path, runtime_repo_path=runtime_repo_path)
+            manifest = load_workspace_manifest(manifest_path)
+            with contextlib.redirect_stdout(io.StringIO()):
+                run_native_runtime_select(manifest=manifest)
+
+            script_path = tenant_repo_path / "tmp" / "shell-script.py"
+            script_path.parent.mkdir(parents=True, exist_ok=True)
+            script_path.write_text("print('hello from shell')\n", encoding="utf-8")
+            log_file_path = tenant_repo_path / "tmp" / "odoo-shell.log"
+
+            with mock.patch("odoo_devkit.local_runtime.subprocess.run") as run_mock:
+                output_buffer = io.StringIO()
+                with contextlib.redirect_stdout(output_buffer):
+                    exit_code = run_native_runtime_odoo_shell(
+                        manifest=manifest,
+                        service="script-runner",
+                        database_name=None,
+                        script_path=script_path,
+                        log_file=log_file_path,
+                        dry_run=True,
+                    )
+
+            self.assertEqual(exit_code, 0)
+            run_mock.assert_not_called()
+            output = output_buffer.getvalue()
+            self.assertIn("<", output)
+            self.assertIn(">", output)
+            self.assertIn("odoo-shell.log", output)
+
     def test_native_runtime_restore_returns_none_for_non_local_instance(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
@@ -880,6 +964,64 @@ attached_paths = ["sources/devkit"]
             with self.assertRaisesRegex(ValueError, "requires --instance local"):
                 run_native_runtime_psql(manifest=manifest, psql_arguments=())
 
+    def test_native_runtime_odoo_shell_runs_local_helper(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = temp_root / "tenant-repo"
+            runtime_repo_path = temp_root / "runtime-repo"
+            tenant_repo_path.mkdir(parents=True, exist_ok=True)
+            runtime_repo_path.mkdir(parents=True, exist_ok=True)
+            manifest_path = self._write_manifest(
+                tenant_repo_path=tenant_repo_path,
+                runtime_repo_path=runtime_repo_path,
+            )
+            manifest = load_workspace_manifest(manifest_path)
+
+            with mock.patch("odoo_devkit.runtime.run_odoo_shell_command") as run_odoo_shell_command:
+                exit_code = run_native_runtime_odoo_shell(
+                    manifest=manifest,
+                    service="script-runner",
+                    database_name="opw-alt",
+                    script_path=Path("tmp/script.py"),
+                    log_file=Path("tmp/odoo-shell.log"),
+                    dry_run=True,
+                )
+
+            self.assertEqual(exit_code, 0)
+            run_odoo_shell_command.assert_called_once_with(
+                manifest=manifest,
+                runtime_repo_path=runtime_repo_path.resolve(),
+                service="script-runner",
+                database_name="opw-alt",
+                script_path=Path("tmp/script.py"),
+                log_file=Path("tmp/odoo-shell.log"),
+                dry_run=True,
+            )
+
+    def test_native_runtime_odoo_shell_rejects_non_local_instance(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = temp_root / "tenant-repo"
+            runtime_repo_path = temp_root / "runtime-repo"
+            tenant_repo_path.mkdir(parents=True, exist_ok=True)
+            runtime_repo_path.mkdir(parents=True, exist_ok=True)
+            manifest_path = self._write_manifest(
+                tenant_repo_path=tenant_repo_path,
+                runtime_repo_path=runtime_repo_path,
+                instance_name="dev",
+            )
+            manifest = load_workspace_manifest(manifest_path)
+
+            with self.assertRaisesRegex(ValueError, "requires --instance local"):
+                run_native_runtime_odoo_shell(
+                    manifest=manifest,
+                    service="script-runner",
+                    database_name=None,
+                    script_path=None,
+                    log_file=None,
+                    dry_run=False,
+                )
+
     def test_cli_runtime_restore_supports_instance_override_against_local_first_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
@@ -959,6 +1101,41 @@ attached_paths = ["sources/devkit"]
             self.assertEqual(captured_exit.exception.code, 0)
             self.assertEqual(runtime_psql.call_args.kwargs["psql_arguments"], ("-c", "select 1"))
             overridden_manifest = runtime_psql.call_args.kwargs["manifest"]
+            self.assertEqual(overridden_manifest.runtime.instance, "testing")
+
+    def test_cli_runtime_odoo_shell_supports_instance_override(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = temp_root / "tenant-repo"
+            runtime_repo_path = temp_root / "runtime-repo"
+            tenant_repo_path.mkdir(parents=True, exist_ok=True)
+            runtime_repo_path.mkdir(parents=True, exist_ok=True)
+            manifest_path = self._write_manifest(
+                tenant_repo_path=tenant_repo_path,
+                runtime_repo_path=runtime_repo_path,
+                instance_name="local",
+            )
+            arguments = argparse.Namespace(
+                manifest=manifest_path,
+                runtime_instance="testing",
+                script_path=Path("tmp/script.py"),
+                service="script-runner",
+                database_name="opw-alt",
+                log_file=Path("tmp/odoo-shell.log"),
+                dry_run=True,
+            )
+
+            with mock.patch("odoo_devkit.cli.run_native_runtime_odoo_shell", return_value=0) as runtime_odoo_shell:
+                with self.assertRaises(SystemExit) as captured_exit:
+                    _handle_runtime_odoo_shell(arguments)
+
+            self.assertEqual(captured_exit.exception.code, 0)
+            self.assertEqual(runtime_odoo_shell.call_args.kwargs["service"], "script-runner")
+            self.assertEqual(runtime_odoo_shell.call_args.kwargs["database_name"], "opw-alt")
+            self.assertEqual(runtime_odoo_shell.call_args.kwargs["script_path"], Path("tmp/script.py"))
+            self.assertEqual(runtime_odoo_shell.call_args.kwargs["log_file"], Path("tmp/odoo-shell.log"))
+            self.assertTrue(runtime_odoo_shell.call_args.kwargs["dry_run"])
+            overridden_manifest = runtime_odoo_shell.call_args.kwargs["manifest"]
             self.assertEqual(overridden_manifest.runtime.instance, "testing")
 
     def test_native_runtime_workflow_rejects_non_local_init(self) -> None:
