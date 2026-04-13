@@ -13,7 +13,7 @@ When
 - Keep the tenant repo focused on tenant-owned code and tenant-owned docs.
 - Keep shared DX/runtime/bootstrap guidance in `odoo-devkit`.
 - Keep the workspace root as the generated Every Code cockpit.
-- Let the tenant repo keep thin run-config wrappers and shell helpers that call
+- Let the tenant repo keep thin run configurations and shell helpers that call
   the sibling `odoo-devkit` repo, while shared-addon source stays explicit in
   the manifest.
 - Keep tenant-owned addons directly under the tenant repo's `addons/`
@@ -53,11 +53,11 @@ When
   through an explicit runtime `--instance` override.
 - Release actions for remote environments still belong in
   `odoo-control-plane`, not in tenant-root `platform runtime` commands.
-- The generated run configurations and shell wrappers call
+- The generated run configurations and shell helpers call
   `uv --directory ../odoo-devkit run platform ...`.
 - For terminal use, extracted tenants should prefer `./scripts/workspace-sync`
-  and `./scripts/workspace-status` so the manifest path stays anchored to the
-  tenant repo root.
+  and `./scripts/workspace-status` as anchored convenience commands so the
+  manifest path stays tied to the tenant repo root.
 
 ## Scaffold Command
 

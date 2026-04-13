@@ -15,10 +15,10 @@ Treat this file as the thin tenant-specific overlay for a tenant repo.
 - Tenant-specific addons and workflows.
 - Tenant-specific docs and domain notes.
 - Tracked `workspace.toml` defaults for local DX.
-- Thin run-config wrappers and shell helpers that call the sibling
+- Tenant-root run configurations and shell helpers that call the sibling
   `odoo-devkit` repo while shared-addon source stays explicit in the manifest.
-- Thin shell wrappers under `scripts/` for workspace sync/status from the tenant
-  repo root.
+- Convenience shell commands under `scripts/` for workspace sync/status from
+  the tenant repo root.
 
 ## Do Not Duplicate Here
 
