@@ -1,8 +1,8 @@
 # AGENTS.md — odoo-devkit Operating Guide
 
 Treat this repo as the canonical home for the shared DX/runtime/bootstrap
-contract behind the Odoo repo pivot. It owns the rules that should be shared
-across tenants and surfaced into the generated workspace root.
+contract. It owns the rules that should be shared across tenants and surfaced
+into the generated workspace root.
 
 ## Start Here
 
