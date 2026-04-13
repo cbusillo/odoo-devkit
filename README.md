@@ -80,6 +80,8 @@ Current runtime ownership is intentionally narrow and explicit:
   control-plane-owned `config/dokploy.toml` and
   `config/dokploy-targets.toml` catalogs resolved through
   `ODOO_CONTROL_PLANE_ROOT`.
+- Release actions such as ship, promote, and gate execution belong in
+  `odoo-control-plane`, not under `platform runtime`.
 - non-local `workflow init` and `workflow openupgrade` remain local-only and
   fail closed with an explicit `--instance local` requirement instead of
   falling through to an implicit remote path.
@@ -91,8 +93,9 @@ uv run python -m unittest discover -s tests
 ```
 
 For tenant repos that keep `instance = "local"` in the tracked manifest, use
-an explicit runtime target override when you need a Dokploy-managed data
-workflow, for example:
+an explicit runtime target override only for Dokploy-managed data workflows.
+Release actions should run through `odoo-control-plane`. Data workflow
+examples:
 
 ```bash
 uv --directory ../odoo-devkit run platform runtime restore \

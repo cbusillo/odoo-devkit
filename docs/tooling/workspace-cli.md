@@ -10,11 +10,13 @@ name:
   `platform runtime select`, `build`, `up`, `down`, `inspect`, `logs`, `psql`, `odoo-shell`,
   `restore`, and
   `platform runtime workflow --workflow bootstrap|init|update|openupgrade`.
-- Dokploy-managed non-local runtime targets now run natively in
-  `odoo-devkit` for `platform runtime restore` and
+- Dokploy-managed non-local data workflows now run natively in `odoo-devkit`
+  for `platform runtime restore` and
   `platform runtime workflow --workflow bootstrap|update`.
 - non-local `platform runtime workflow --workflow init|openupgrade` remain
   local-only and fail early with a clear `--instance local` requirement.
+- Release actions such as ship, promote, and gate execution belong in
+  `odoo-control-plane`, not under `platform runtime`.
 
 ## Commands
 
@@ -112,8 +114,8 @@ Notes
 - Keep the runtime repo explicit in the manifest. Extracted tenant scaffolds
   now point `[repos.runtime]` at the sibling `odoo-devkit` checkout so the
   same tracked manifest can keep `instance = "local"` by default while still
-  targeting Dokploy-managed restore/bootstrap/update flows through an explicit
-  runtime `--instance` override.
+  targeting Dokploy-managed data restore/bootstrap/update flows through an
+  explicit runtime `--instance` override.
 - Keep the runtime repo explicit in the manifest for non-local targets because
   `odoo-devkit` may still need external runtime metadata from that repo or its
   managed `sources/runtime` checkout. Dokploy target definitions now prefer the
@@ -141,6 +143,9 @@ Notes
 - Native non-local ownership currently covers Dokploy-backed `restore`,
   `workflow bootstrap`, and `workflow update`; anything else should fail closed
   unless `odoo-devkit` grows an explicit remote contract for it.
+- Release/deploy ownership for remote environments stays in
+  `odoo-control-plane`, even when the same tenant manifest is used to anchor
+  local runtime context.
 - The runtime CLI accepts `--instance <name>` so a tenant repo can keep one
   tracked local-first manifest and still run remote data workflows like
   `platform runtime restore --manifest ./workspace.toml --instance testing`.

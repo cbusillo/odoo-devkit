@@ -49,8 +49,10 @@ When
   runtime assets come from `odoo-devkit` itself.
 - The scaffold also keeps `[repos.runtime]` pointed at the sibling
   `../odoo-devkit` checkout so the same tracked manifest can keep
-  `instance = "local"` while still running Dokploy-managed destructive
-  workflows through an explicit runtime `--instance` override.
+  `instance = "local"` while still running Dokploy-managed data workflows
+  through an explicit runtime `--instance` override.
+- Release actions for remote environments still belong in
+  `odoo-control-plane`, not in tenant-root `platform runtime` commands.
 - The generated run configurations and shell wrappers call
   `uv --directory ../odoo-devkit run platform ...`.
 - For terminal use, extracted tenants should prefer `./scripts/workspace-sync`
