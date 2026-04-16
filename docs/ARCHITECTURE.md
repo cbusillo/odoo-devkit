@@ -10,8 +10,7 @@ Purpose
 
 When
 
-- When onboarding, deciding where a change belongs, or preparing the first real
-  tenant extraction.
+- When onboarding or deciding where a workspace/runtime change belongs.
 
 ## Core Shape
 

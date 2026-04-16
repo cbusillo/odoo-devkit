@@ -3,17 +3,16 @@
 `odoo-devkit` owns the manifest-driven workspace command surface used to build
 the Every Code cockpit and the local runtime assembly.
 
-Native runtime ownership is now split by target type instead of by command
-name:
+Runtime ownership is split by target type:
 
 - manifest-local runtime targets run natively in `odoo-devkit` for
   `platform runtime select`, `build`, `up`, `down`, `inspect`, `logs`, `psql`, `odoo-shell`,
   `restore`, and
   `platform runtime workflow --workflow bootstrap|init|update|openupgrade`.
-- Dokploy-managed non-local data workflows now run natively in `odoo-devkit`
+- Dokploy-managed non-local data workflows run natively in `odoo-devkit`
   for `platform runtime restore` and
   `platform runtime workflow --workflow bootstrap|update`.
-- non-local `platform runtime workflow --workflow init|openupgrade` remain
+- non-local `platform runtime workflow --workflow init|openupgrade` remains
   local-only and fail early with a clear `--instance local` requirement.
 - Release actions such as ship, promote, and gate execution belong in
   `odoo-control-plane`, not under `platform runtime`.
@@ -108,35 +107,34 @@ Notes
 
 - The tenant repo remains path-based and user-owned. `workspace sync` does not
   clone the active tenant checkout for you.
-- Shared-addons inputs may now be path-based or repo-addressable. Managed
+- Shared-addons inputs may be path-based or repo-addressable. Managed
   shared-addons checkouts fail closed if the workspace copy is dirty or points
   at a different `origin` than the manifest declares.
-- Keep the runtime repo explicit in the manifest. Extracted tenant scaffolds
-  now point `[repos.runtime]` at the sibling `odoo-devkit` checkout so the
-  same tracked manifest can keep `instance = "local"` by default while still
-  targeting Dokploy-managed data restore/bootstrap/update flows through an
-  explicit runtime `--instance` override.
+- Keep the runtime repo explicit in the manifest. Tenant scaffolds point
+  `[repos.runtime]` at the sibling `odoo-devkit` checkout so the same tracked
+  manifest can keep `instance = "local"` by default while still targeting
+  Dokploy-managed data restore/bootstrap/update flows through an explicit
+  runtime `--instance` override.
 - Keep the runtime repo explicit in the manifest for non-local targets because
   `odoo-devkit` may still need external runtime metadata from that repo or its
-  managed `sources/runtime` checkout. Dokploy target definitions now prefer the
+  managed `sources/runtime` checkout. Dokploy target definitions prefer the
   control-plane-owned `config/dokploy.toml` route catalog and
   `config/dokploy-targets.toml` target-id catalog resolved through
   `ODOO_CONTROL_PLANE_ROOT`.
 - Runtime ownership remains fail-closed and explicit for non-local targets.
-  `odoo-devkit` no longer guesses a runtime repo from `[repos.shared_addons]`,
+  `odoo-devkit` does not guess a runtime repo from `[repos.shared_addons]`,
   even if that path points at a sibling `odoo-shared-addons` checkout.
 - Repo-addressable non-local runtime definitions fail closed until
   `platform workspace sync` has materialized `sources/runtime`.
-- For extracted tenant overlays, `platform runtime select` and `inspect`
-  generate the PyCharm Odoo config from the manifest-backed tenant/shared addon
-  sources rather than from the runtime repo's older project-addon layout.
-- Local `platform runtime up` now also emits manifest-backed host addon mount
+- `platform runtime select` and `inspect` generate the PyCharm Odoo config from
+  the manifest-backed tenant/shared addon sources.
+- Local `platform runtime up` emits manifest-backed host addon mount
   paths for compose, so tenant checkouts can bind-mount `sources/tenant/addons`
   plus `sources/shared-addons` into the devkit-owned local runtime bundle.
 - When `ODOO_CONTROL_PLANE_ROOT` points at a valid `odoo-control-plane`
   checkout, local runtime env resolution comes from the control-plane-owned
   environment contract. Devkit-local `.env` / `platform/secrets.toml` runtime
-  authority is no longer supported. Leftover devkit-local env/secrets files are
+  authority is unsupported. Leftover devkit-local env/secrets files are
   treated as a hard conflict so environment authority stays single-source, and
   build/restore requirements are expected to live in `odoo-control-plane`'s
   `config/runtime-environments.toml` surface.

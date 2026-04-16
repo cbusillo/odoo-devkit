@@ -2,11 +2,11 @@
 
 Purpose
 
-- Define the thin repo-root shape a tenant repo should keep after extraction.
+- Define the thin repo-root shape a tenant repo keeps in the split workspace.
 
 When
 
-- Before creating a new tenant repo or trimming a pre-split tenant root.
+- Before creating or auditing a tenant repo root.
 
 ## Principle
 
@@ -43,7 +43,7 @@ When
 - `templates/tenant-overlay/scripts/workspace-status`
 - `templates/tenant-overlay/workspace.toml`
 
-## Current Local Assumption
+## Scaffold Contract
 
 - The scaffold points shared addons at `../odoo-shared-addons` while local
   runtime assets come from `odoo-devkit` itself.
@@ -55,7 +55,7 @@ When
   `odoo-control-plane`, not in tenant-root `platform runtime` commands.
 - The generated run configurations and shell helpers call
   `uv --directory ../odoo-devkit run platform ...`.
-- For terminal use, extracted tenants should prefer `./scripts/workspace-sync`
+- For terminal use, tenant repos should prefer `./scripts/workspace-sync`
   and `./scripts/workspace-status` as anchored convenience commands so the
   manifest path stays tied to the tenant repo root.
 

@@ -3,7 +3,7 @@
 `odoo-devkit` bootstraps tenant-focused Odoo workspaces from a tracked
 `workspace.toml` manifest.
 
-The first implementation target is a conservative `workspace sync` flow that:
+The current workspace flow:
 
 - assembles a long-lived but rebuildable workspace under
   `~/Developer/odoo-workspaces/<tenant>` by default,
@@ -44,21 +44,21 @@ uv run platform runtime odoo-shell --manifest /path/to/workspace.toml \
 If `--manifest` is omitted, the CLI looks for `workspace.toml` in the current
 directory.
 
-## Bootstrap scope
+## Scope
 
-This repo is intentionally small. It focuses on extracted tenant workspaces and
-the manifest/runtime contract instead of carrying a separate monorepo as a
-required local DX dependency.
+This repo is intentionally small. It owns the manifest/runtime contract for
+tenant workspaces and the local runtime commands needed to develop against
+those workspaces.
 
-- `workspace sync` now materializes repo-addressable shared-addons inputs from
+- `workspace sync` materializes repo-addressable shared-addons inputs from
   `[repos.shared_addons].url` + `ref` into `sources/shared-addons` when the
   manifest does not point at a pre-existing local path.
 - The active tenant checkout remains path-based and is still the source of
   truth for handwritten tenant code.
-- Local runtime assets now live in `odoo-devkit` itself. The scaffold now
-  keeps `[repos.runtime]` pointed at the sibling `odoo-devkit` checkout as
-  well so the same tracked tenant manifest can safely target Dokploy-managed
-  destructive workflows with an explicit runtime `--instance` override.
+- Local runtime assets live in `odoo-devkit` itself. Tenant scaffolds keep
+  `[repos.runtime]` pointed at the sibling `odoo-devkit` checkout so the same
+  tracked tenant manifest can target local runtime work and explicit
+  Dokploy-managed data workflows.
 - Runtime repo ownership remains explicit. When `[repos.runtime]` is present it
   may be path-based or repo-addressable,
   `workspace sync` materializes repo-addressed runtime inputs into
@@ -74,7 +74,7 @@ Current runtime ownership is intentionally narrow and explicit:
   `select`, `build`, `up`, `down`, `inspect`, `logs`, `psql`, `odoo-shell`, `restore`,
   `workflow bootstrap`, `workflow init`, `workflow update`, and
   `workflow openupgrade`.
-- Dokploy-managed non-local runtime targets now also run natively inside
+- Dokploy-managed non-local runtime targets also run natively inside
   `odoo-devkit` for `restore`, `workflow bootstrap`, and `workflow update`
   using the runtime repo's generated env plus Dokploy target metadata from the
   control-plane-owned `config/dokploy.toml` and
