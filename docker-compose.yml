@@ -10,21 +10,6 @@ x-odoo-base: &odoo-base
     - path: .env
       required: false
 
-x-odoo-build: &odoo-build
-  build:
-    dockerfile: docker/Dockerfile
-    args:
-      ODOO_VERSION: ${ODOO_VERSION:-19.0}
-      ODOO_BASE_RUNTIME_IMAGE: ${ODOO_BASE_RUNTIME_IMAGE:-}
-      ODOO_BASE_DEVTOOLS_IMAGE: ${ODOO_BASE_DEVTOOLS_IMAGE:-}
-      ODOO_ADDON_REPOSITORIES: ${ODOO_ADDON_REPOSITORIES:-}
-      OPENUPGRADE_ADDON_REPOSITORY: ${OPENUPGRADE_ADDON_REPOSITORY:-}
-      OPENUPGRADELIB_INSTALL_SPEC: ${OPENUPGRADELIB_INSTALL_SPEC:-}
-      ODOO_PYTHON_SYNC_SKIP_ADDONS: ${ODOO_PYTHON_SYNC_SKIP_ADDONS:-}
-    target: ${COMPOSE_BUILD_TARGET:-development}
-    secrets:
-      - github_token
-
 x-odoo-env: &odoo-env
   ODOO_STACK_NAME: ${ODOO_STACK_NAME:-}
   ODOO_PROJECT_NAME: ${ODOO_PROJECT_NAME:-}
@@ -59,7 +44,7 @@ x-healthcheck-defaults: &healthcheck-defaults
 name: ${ODOO_PROJECT_NAME:-odoo}
 services:
   web:
-    <<: [*odoo-base, *odoo-build]
+    <<: *odoo-base
     command:
       - /bin/sh
       - -lc
