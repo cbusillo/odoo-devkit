@@ -31,6 +31,8 @@ uv run platform workspace sync --manifest /path/to/workspace.toml
 uv run platform workspace status --manifest /path/to/workspace.toml
 uv run platform workspace scaffold-tenant-overlay \
   --output-dir /path/to/repo --tenant opw
+uv run platform workspace scaffold-cockpit-root \
+  --output-dir /path/to/workspace-root --force
 uv run platform workspace clean --manifest /path/to/workspace.toml
 uv run platform workspace run --manifest /path/to/workspace.toml -- pwd
 uv run platform runtime select --manifest /path/to/workspace.toml

@@ -21,7 +21,7 @@ from .runtime import (
     run_native_runtime_workflow,
     run_runtime_platform_command,
 )
-from .scaffold import scaffold_tenant_overlay
+from .scaffold import scaffold_tenant_overlay, scaffold_workspace_cockpit
 from .workspace import clean_workspace, run_in_workspace, sync_workspace, workspace_status
 
 
@@ -58,6 +58,14 @@ def build_parser() -> argparse.ArgumentParser:
     scaffold_parser.add_argument("--tenant", required=True)
     scaffold_parser.add_argument("--force", action="store_true")
     scaffold_parser.set_defaults(handler=_handle_workspace_scaffold_tenant_overlay)
+
+    cockpit_parser = workspace_subparsers.add_parser(
+        "scaffold-cockpit-root",
+        help="Copy the shared manual workspace-cockpit root starter into a target directory",
+    )
+    cockpit_parser.add_argument("--output-dir", type=Path, required=True)
+    cockpit_parser.add_argument("--force", action="store_true")
+    cockpit_parser.set_defaults(handler=_handle_workspace_scaffold_cockpit_root)
 
     run_parser = _add_manifest_argument(workspace_subparsers.add_parser("run", help="Run a command inside the workspace"))
     run_parser.add_argument("command", nargs=argparse.REMAINDER)
@@ -219,6 +227,24 @@ def _handle_workspace_scaffold_tenant_overlay(arguments: argparse.Namespace) -> 
             {
                 "output_directory": str(result.output_directory),
                 "tenant": arguments.tenant,
+                "written_paths": [str(path) for path in result.written_paths],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+
+
+def _handle_workspace_scaffold_cockpit_root(arguments: argparse.Namespace) -> None:
+    result = scaffold_workspace_cockpit(
+        repo_root=_discover_repo_root(),
+        output_directory=arguments.output_dir.expanduser().resolve(),
+        force=arguments.force,
+    )
+    print(
+        json.dumps(
+            {
+                "output_directory": str(result.output_directory),
                 "written_paths": [str(path) for path in result.written_paths],
             },
             indent=2,

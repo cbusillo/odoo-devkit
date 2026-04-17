@@ -78,6 +78,15 @@ Purpose
 - Report whether the lock file and workspace-root docs surface exist.
 - Report the tenant/devkit/shared-addons source paths and attached IDE roots.
 
+## `workspace scaffold-cockpit-root`
+
+Purpose
+
+- Copy the shared manual multi-repo cockpit-root starter into a target
+  directory.
+- Keep non-repo workspace roots thin, link-heavy, and synced from
+  `odoo-devkit` instead of hand-maintaining the same entrypoint docs.
+
 ## `workspace clean`
 
 Purpose
