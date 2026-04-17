@@ -11,13 +11,18 @@ The current workspace flow:
   code,
 - emits a `workspace.lock.toml` file with the exact assembled refs,
 - generates a minimal runtime config scaffold under `.generated/`, and
-- generates a workspace-root `AGENTS.md` plus `docs/README.md` so Every Code
-  can use the assembled workspace as a shared cockpit without turning each
-  tenant repo into a copy of the shared operating guide, and
+- generates workspace-root `AGENTS.md`, `docs/README.md`, and
+  `docs/session-prompt.md` so Every Code can use the assembled workspace as a
+  shared cockpit without turning each tenant repo into a copy of the shared
+  operating guide, and
 - owns the pure PyCharm Odoo-conf helper and the starter templates for thin
   tenant overlays, and
 - writes PyCharm-visible shared run configurations for rare-but-important
   commands.
+
+For remote environments, the stable lane model is `testing` plus `prod`.
+Harbor-managed PR previews are a separate control-plane concern rather than a
+third durable runtime lane exposed through `platform runtime`.
 
 ## Command surface
 
@@ -26,6 +31,8 @@ uv run platform workspace sync --manifest /path/to/workspace.toml
 uv run platform workspace status --manifest /path/to/workspace.toml
 uv run platform workspace scaffold-tenant-overlay \
   --output-dir /path/to/repo --tenant opw
+uv run platform workspace scaffold-cockpit-root \
+  --output-dir /path/to/workspace-root --force
 uv run platform workspace clean --manifest /path/to/workspace.toml
 uv run platform workspace run --manifest /path/to/workspace.toml -- pwd
 uv run platform runtime select --manifest /path/to/workspace.toml
@@ -76,7 +83,8 @@ Current runtime ownership is intentionally narrow and explicit:
 
 - local runtime targets run natively inside `odoo-devkit` against the repo
   owned by `odoo-devkit` itself:
-  `select`, `build`, `publish`, `up`, `down`, `inspect`, `logs`, `psql`, `odoo-shell`, `restore`,
+  `select`, `build`, `publish`, `up`, `down`, `inspect`, `logs`, `psql`,
+  `odoo-shell`, `restore`,
   `workflow bootstrap`, `workflow init`, `workflow update`, and
   `workflow openupgrade`.
 - Dokploy-managed non-local runtime targets also run natively inside
@@ -85,6 +93,8 @@ Current runtime ownership is intentionally narrow and explicit:
   control-plane-owned `config/dokploy.toml` and
   `config/dokploy-targets.toml` catalogs resolved through
   `ODOO_CONTROL_PLANE_ROOT`.
+- Those non-local targets are the stable remote lanes (`testing`, `prod`). PR
+  preview lifecycle and release orchestration stay outside `platform runtime`.
 - Release actions such as ship, promote, and gate execution belong in
   `odoo-control-plane`, not under `platform runtime`.
 - non-local `workflow init` and `workflow openupgrade` remain local-only and

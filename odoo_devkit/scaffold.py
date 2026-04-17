@@ -15,6 +15,44 @@ def scaffold_tenant_overlay(*, repo_root: Path, output_directory: Path, tenant: 
     if not template_root.exists():
         raise ValueError(f"Tenant overlay templates not found: {template_root}")
 
+    written_paths = _scaffold_template_tree(
+        template_root=template_root,
+        output_directory=output_directory,
+        force=force,
+        tenant=tenant,
+    )
+
+    return TenantOverlayScaffoldResult(output_directory=output_directory, written_paths=written_paths)
+
+
+@dataclass(frozen=True)
+class WorkspaceCockpitScaffoldResult:
+    output_directory: Path
+    written_paths: tuple[Path, ...]
+
+
+def scaffold_workspace_cockpit(*, repo_root: Path, output_directory: Path, force: bool) -> WorkspaceCockpitScaffoldResult:
+    template_root = repo_root / "templates" / "workspace-cockpit"
+    if not template_root.exists():
+        raise ValueError(f"Workspace cockpit templates not found: {template_root}")
+
+    written_paths = _scaffold_template_tree(
+        template_root=template_root,
+        output_directory=output_directory,
+        force=force,
+        tenant="replace-me",
+    )
+
+    return WorkspaceCockpitScaffoldResult(output_directory=output_directory, written_paths=written_paths)
+
+
+def _scaffold_template_tree(
+    *,
+    template_root: Path,
+    output_directory: Path,
+    force: bool,
+    tenant: str,
+) -> tuple[Path, ...]:
     output_directory.mkdir(parents=True, exist_ok=True)
     written_paths: list[Path] = []
     for template_path in sorted(template_root.rglob("*")):
@@ -29,7 +67,7 @@ def scaffold_tenant_overlay(*, repo_root: Path, output_directory: Path, tenant: 
         destination_path.write_text(rendered_text, encoding="utf-8")
         written_paths.append(destination_path)
 
-    return TenantOverlayScaffoldResult(output_directory=output_directory, written_paths=tuple(written_paths))
+    return tuple(written_paths)
 
 
 def _render_template(template_text: str, *, tenant: str) -> str:

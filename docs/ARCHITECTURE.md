@@ -19,6 +19,9 @@ When
 - `odoo-devkit` owns the shared DX/runtime/bootstrap contract.
 - The control plane owns canonical deploy/build tuples and release-sensitive
   behavior.
+- Stable remote lanes live in the control-plane shape as `testing` and `prod`;
+  Harbor PR previews are separate preview records and runtime state, not a
+  durable third lane owned by `odoo-devkit`.
 
 ## Ownership Boundaries
 
@@ -53,6 +56,7 @@ When
 - Exact compatible refs and artifact identity.
 - Ship/promote/gate workflows and fail-closed release rules.
 - Operator-facing deployment state.
+- Harbor preview identities, preview generations, and stable remote lane truth.
 
 ## Working Rule
 

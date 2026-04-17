@@ -74,24 +74,24 @@ command = [
 [[ide.run_configurations]]
 name = "replace-me Platform Select Local"
 working_directory = "$PROJECT_DIR$"
-command = ["uv", "--directory", "$PROJECT_DIR$/../odoo-devkit", "run", "platform", "runtime", "select", "--manifest", "$PROJECT_DIR$/workspace.toml"]
+command = ["uv", "--directory", "$PROJECT_DIR$/../odoo-devkit", "run", "platform", "runtime", "select", "--manifest", "$PROJECT_DIR$/workspace.toml", "--instance", "local"]
 
 [[ide.run_configurations]]
 name = "replace-me Platform Up Local"
 working_directory = "$PROJECT_DIR$"
-command = ["uv", "--directory", "$PROJECT_DIR$/../odoo-devkit", "run", "platform", "runtime", "up", "--manifest", "$PROJECT_DIR$/workspace.toml", "--build"]
+command = ["uv", "--directory", "$PROJECT_DIR$/../odoo-devkit", "run", "platform", "runtime", "up", "--manifest", "$PROJECT_DIR$/workspace.toml", "--instance", "local", "--build"]
 
 [[ide.run_configurations]]
 name = "replace-me Platform Update Local"
 working_directory = "$PROJECT_DIR$"
-command = ["uv", "--directory", "$PROJECT_DIR$/../odoo-devkit", "run", "platform", "runtime", "workflow", "--manifest", "$PROJECT_DIR$/workspace.toml", "--workflow", "update"]
+command = ["uv", "--directory", "$PROJECT_DIR$/../odoo-devkit", "run", "platform", "runtime", "workflow", "--manifest", "$PROJECT_DIR$/workspace.toml", "--instance", "local", "--workflow", "update"]
 
 [[ide.run_configurations]]
 name = "replace-me Platform Restore Local"
 working_directory = "$PROJECT_DIR$"
-command = ["uv", "--directory", "$PROJECT_DIR$/../odoo-devkit", "run", "platform", "runtime", "restore", "--manifest", "$PROJECT_DIR$/workspace.toml"]
+command = ["uv", "--directory", "$PROJECT_DIR$/../odoo-devkit", "run", "platform", "runtime", "restore", "--manifest", "$PROJECT_DIR$/workspace.toml", "--instance", "local"]
 
 [[ide.run_configurations]]
 name = "replace-me Platform Inspect Local"
 working_directory = "$PROJECT_DIR$"
-command = ["uv", "--directory", "$PROJECT_DIR$/../odoo-devkit", "run", "platform", "runtime", "inspect", "--manifest", "$PROJECT_DIR$/workspace.toml"]
+command = ["uv", "--directory", "$PROJECT_DIR$/../odoo-devkit", "run", "platform", "runtime", "inspect", "--manifest", "$PROJECT_DIR$/workspace.toml", "--instance", "local"]

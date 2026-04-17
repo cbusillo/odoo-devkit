@@ -3,6 +3,9 @@
 This repo owns the shared DX/runtime contract used to assemble tenant
 workspaces.
 
+It does not own remote release actions. Ship, promote, gate, and Harbor
+preview lifecycle for stable remote lanes live in `odoo-control-plane`.
+
 ## Start Here
 
 - [../AGENTS.md](../AGENTS.md) for the shared operating guide.
@@ -26,11 +29,14 @@ workspaces.
 - Own the pure PyCharm Odoo-conf rendering helper shared by tenant repos.
 - Keep the assembled workspace rebuildable and explicit about source-of-truth
   ownership.
+- Keep the boundary clear between `odoo-devkit` local/data workflows and
+  `odoo-control-plane` remote release orchestration.
 
 ## Current Outputs
 
 - workspace-root `AGENTS.md`
 - workspace-root `docs/README.md`
+- workspace-root `docs/session-prompt.md`
 - `.generated/odoo.conf`
 - `.generated/runtime.env`
 - `.generated/pycharm/project-metadata.json`

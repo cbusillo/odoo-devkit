@@ -86,6 +86,8 @@ command = ["uv", "--directory", "$PROJECT_DIR$/../odoo-devkit", "run", "platform
             self.assertTrue(result.workspace_agents_path.exists())
             self.assertIsNotNone(result.workspace_docs_index_path)
             self.assertTrue(result.workspace_docs_index_path.exists())
+            self.assertIsNotNone(result.workspace_session_prompt_path)
+            self.assertTrue(result.workspace_session_prompt_path.exists())
             self.assertEqual((result.workspace_path / "sources" / "tenant").resolve(), tenant_repo_path.resolve())
             self.assertEqual((result.workspace_path / "sources" / "devkit").resolve(), devkit_repo_path.resolve())
             self.assertEqual(
@@ -118,15 +120,31 @@ command = ["uv", "--directory", "$PROJECT_DIR$/../odoo-devkit", "run", "platform
             self.assertIn(str(tenant_repo_path), workspace_agents_contents)
             self.assertIn(str(devkit_repo_path), workspace_agents_contents)
             self.assertIn(str((tenant_repo_path / "addons" / "shared").resolve()), workspace_agents_contents)
+            self.assertIn("Stable remote lanes are `testing` and `prod`", workspace_agents_contents)
+            self.assertIn("Harbor PR previews replace a durable `dev` lane", workspace_agents_contents)
+            self.assertIn("release actions such as ship/promote/gate stay in `odoo-control-plane`", workspace_agents_contents)
 
             workspace_docs_index_contents = result.workspace_docs_index_path.read_text(encoding="utf-8")
             self.assertIn("Workspace Docs", workspace_docs_index_contents)
             self.assertIn("Workspace operating guide", workspace_docs_index_contents)
+            self.assertIn("Session prompt template", workspace_docs_index_contents)
             self.assertIn("Shared workspace CLI guide", workspace_docs_index_contents)
             self.assertIn("Shared workspace architecture", workspace_docs_index_contents)
             self.assertIn("Shared workspace command patterns", workspace_docs_index_contents)
             self.assertIn("Tenant overlay guide", workspace_docs_index_contents)
             self.assertIn(str((tenant_repo_path / "addons" / "shared").resolve()), workspace_docs_index_contents)
+            self.assertIn("Stable remote lanes are `testing` and `prod`", workspace_docs_index_contents)
+            self.assertIn("Harbor PR previews replace a durable `dev` lane", workspace_docs_index_contents)
+            self.assertIn("release actions for remote environments belong in `odoo-control-plane`", workspace_docs_index_contents)
+
+            workspace_session_prompt_contents = result.workspace_session_prompt_path.read_text(encoding="utf-8")
+            self.assertIn("Session Prompt Template", workspace_session_prompt_contents)
+            self.assertIn(str(result.workspace_path), workspace_session_prompt_contents)
+            self.assertIn(str(tenant_repo_path), workspace_session_prompt_contents)
+            self.assertIn(str(devkit_repo_path), workspace_session_prompt_contents)
+            self.assertIn("generated cockpit, not the source of truth", workspace_session_prompt_contents)
+            self.assertIn("Stable remote lanes are testing and prod", workspace_session_prompt_contents)
+            self.assertIn("Harbor PR previews replace any durable shared dev lane", workspace_session_prompt_contents)
 
             self.assertEqual(len(result.run_configuration_paths), 2)
             first_run_configuration = result.run_configuration_paths[0].read_text(encoding="utf-8")
@@ -341,6 +359,7 @@ attached_paths = ["sources/devkit"]
             self.assertEqual(status_payload["runtime_instance"], "local")
             self.assertTrue(status_payload["workspace_agents_exists"])
             self.assertTrue(status_payload["workspace_docs_index_exists"])
+            self.assertTrue(status_payload["workspace_session_prompt_exists"])
             self.assertEqual(
                 status_payload["attached_paths"], [str((resolve_workspace_path(manifest) / "sources" / "devkit").resolve())]
             )
@@ -550,11 +569,13 @@ attached_paths = ["sources/devkit"]
 
             workspace_agents_contents = result.workspace_agents_path.read_text(encoding="utf-8")
             workspace_docs_contents = result.workspace_docs_index_path.read_text(encoding="utf-8")
+            workspace_session_prompt_contents = result.workspace_session_prompt_path.read_text(encoding="utf-8")
 
             self.assertIn("sources/tenant/scripts/workspace-sync", workspace_agents_contents)
             self.assertIn("sources/tenant/scripts/workspace-status", workspace_agents_contents)
             self.assertIn("sources/tenant/scripts/workspace-sync", workspace_docs_contents)
             self.assertIn("sources/tenant/scripts/workspace-status", workspace_docs_contents)
+            self.assertIn("odoo-control-plane for remote release actions", workspace_session_prompt_contents)
 
     def test_cli_parser_accepts_workspace_run_remainder(self) -> None:
         parser = build_parser()

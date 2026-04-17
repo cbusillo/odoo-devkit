@@ -69,4 +69,5 @@ into the generated workspace root.
 - Run `uv run ruff format --check .` and `uv run ruff check .` before closing a
   substantial change.
 - For workspace-surface changes, also run a live `workspace sync` against the
-  current proof manifest and inspect the generated root files.
+  current proof manifest and inspect the generated root files, including
+  `docs/session-prompt.md`.
