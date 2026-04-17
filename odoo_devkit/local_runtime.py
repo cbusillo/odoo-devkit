@@ -179,6 +179,7 @@ _VERIFIED_IMAGE_ACCESS: set[str] = set()
 class InstanceDefinition:
     database: str | None
     addon_repositories_add: tuple[str, ...]
+    addon_repository_selectors_add: tuple[str, ...]
     install_modules_add: tuple[str, ...]
     runtime_env: ScalarMap
 
@@ -188,6 +189,7 @@ class ContextDefinition:
     database: str | None
     install_modules: tuple[str, ...]
     addon_repositories_add: tuple[str, ...]
+    addon_repository_selectors_add: tuple[str, ...]
     runtime_env: ScalarMap
     update_modules: str
     instances: dict[str, InstanceDefinition]
@@ -200,6 +202,7 @@ class StackDefinition:
     state_root: str
     addons_path: tuple[str, ...]
     addon_repositories: tuple[str, ...]
+    addon_repository_selectors: tuple[str, ...]
     runtime_env: ScalarMap
     required_env_keys: tuple[str, ...]
     contexts: dict[str, ContextDefinition]
@@ -237,6 +240,7 @@ class RuntimeSelection:
     runtime_odoo_conf_path: str
     effective_install_modules: tuple[str, ...]
     effective_addon_repositories: tuple[str, ...]
+    effective_addon_repository_selectors: tuple[str, ...]
     effective_runtime_env: dict[str, str]
 
 
@@ -333,6 +337,7 @@ def inspect_runtime(*, manifest: WorkspaceManifest, runtime_repo_path: Path) -> 
             else ""
         ),
         "addon_repositories": list(runtime_context.selection.effective_addon_repositories),
+        "addon_repository_selectors": list(runtime_context.selection.effective_addon_repository_selectors),
         "install_modules": list(runtime_context.selection.effective_install_modules),
         "note": "Use pycharm_odoo_conf_host for run configs/tooling with explicit -c config paths; odoo_conf_host is for runtime bootstrap.",
     }
@@ -760,6 +765,7 @@ def resolve_manifest_runtime_stack_definition(*, manifest: WorkspaceManifest, st
         state_root=stack_definition.state_root,
         addons_path=tuple(effective_addons_paths),
         addon_repositories=stack_definition.addon_repositories,
+        addon_repository_selectors=stack_definition.addon_repository_selectors,
         runtime_env=stack_definition.runtime_env,
         required_env_keys=stack_definition.required_env_keys,
         contexts=stack_definition.contexts,
@@ -910,6 +916,11 @@ def parse_stack_definition(payload: dict[str, object], *, stack_file_path: Path)
         state_root=_read_optional_string(payload, "state_root", scope="stack") or "",
         addons_path=_read_string_tuple(payload, "addons_path", scope="stack"),
         addon_repositories=_read_optional_string_tuple(payload, "addon_repositories", scope="stack"),
+        addon_repository_selectors=_read_optional_string_tuple(
+            payload,
+            "addon_repository_selectors",
+            scope="stack",
+        ),
         runtime_env=_read_optional_scalar_map(payload, "runtime_env", scope="stack"),
         required_env_keys=_read_optional_string_tuple(payload, "required_env_keys", scope="stack"),
         contexts=contexts,
@@ -933,6 +944,11 @@ def _parse_context_definition(context_name: str, raw_context: object) -> Context
             "addon_repositories_add",
             scope=f"contexts.{context_name}",
         ),
+        addon_repository_selectors_add=_read_optional_string_tuple(
+            context_table,
+            "addon_repository_selectors_add",
+            scope=f"contexts.{context_name}",
+        ),
         runtime_env=_read_optional_scalar_map(context_table, "runtime_env", scope=f"contexts.{context_name}"),
         update_modules=_read_optional_string(context_table, "update_modules", scope=f"contexts.{context_name}") or "AUTO",
         instances=instances,
@@ -946,6 +962,11 @@ def _parse_instance_definition(*, context_name: str, instance_name: str, raw_ins
         addon_repositories_add=_read_optional_string_tuple(
             instance_table,
             "addon_repositories_add",
+            scope=f"contexts.{context_name}.instances.{instance_name}",
+        ),
+        addon_repository_selectors_add=_read_optional_string_tuple(
+            instance_table,
+            "addon_repository_selectors_add",
             scope=f"contexts.{context_name}.instances.{instance_name}",
         ),
         install_modules_add=_read_optional_string_tuple(
@@ -984,6 +1005,7 @@ def expand_project_addons_paths(*, stack_definition: StackDefinition, stack_file
         state_root=stack_definition.state_root,
         addons_path=tuple(expanded_paths),
         addon_repositories=stack_definition.addon_repositories,
+        addon_repository_selectors=stack_definition.addon_repository_selectors,
         runtime_env=stack_definition.runtime_env,
         required_env_keys=stack_definition.required_env_keys,
         contexts=stack_definition.contexts,
@@ -1231,6 +1253,11 @@ def resolve_runtime_selection(
         context_definition=context_definition,
         instance_definition=instance_definition,
     )
+    effective_addon_repository_selectors = tuple(
+        repository_spec
+        for repository_spec in effective_addon_repositories
+        if addon_repository_declares_selector(repository_spec)
+    )
     effective_runtime_env = merge_effective_runtime_env(
         stack_definition=stack_definition,
         context_definition=context_definition,
@@ -1259,6 +1286,7 @@ def resolve_runtime_selection(
         runtime_odoo_conf_path="/tmp/platform.odoo.conf",
         effective_install_modules=effective_install_modules,
         effective_addon_repositories=effective_addon_repositories,
+        effective_addon_repository_selectors=effective_addon_repository_selectors,
         effective_runtime_env=effective_runtime_env,
     )
 
@@ -1278,13 +1306,27 @@ def merge_effective_addon_repositories(
     instance_definition: InstanceDefinition,
 ) -> tuple[str, ...]:
     effective_addon_repositories: list[str] = []
-    for repository_name in (
-        *stack_definition.addon_repositories,
-        *context_definition.addon_repositories_add,
-        *instance_definition.addon_repositories_add,
+    repository_indexes: dict[str, int] = {}
+
+    def upsert_repository(repository_spec: str) -> None:
+        normalized_repository = repository_spec.strip()
+        if not normalized_repository:
+            return
+        repository_identity = addon_repository_identity(normalized_repository)
+        existing_index = repository_indexes.get(repository_identity)
+        if existing_index is None:
+            repository_indexes[repository_identity] = len(effective_addon_repositories)
+            effective_addon_repositories.append(normalized_repository)
+            return
+        effective_addon_repositories[existing_index] = normalized_repository
+
+    for selector_entries, exact_entries in (
+        (stack_definition.addon_repository_selectors, stack_definition.addon_repositories),
+        (context_definition.addon_repository_selectors_add, context_definition.addon_repositories_add),
+        (instance_definition.addon_repository_selectors_add, instance_definition.addon_repositories_add),
     ):
-        if repository_name not in effective_addon_repositories:
-            effective_addon_repositories.append(repository_name)
+        for repository_name in (*selector_entries, *exact_entries):
+            upsert_repository(repository_name)
     return tuple(effective_addon_repositories)
 
 
@@ -1881,6 +1923,16 @@ def addon_repository_identity(repository_spec: str) -> str:
     if separator and repository_name.strip():
         return repository_name.strip()
     return normalized_spec
+
+
+def addon_repository_declares_selector(repository_spec: str) -> bool:
+    normalized_spec = repository_spec.strip()
+    if not normalized_spec:
+        return False
+    repository_name, separator, repository_ref = normalized_spec.rpartition("@")
+    if not separator or not repository_name.strip() or not repository_ref.strip():
+        return False
+    return not GIT_SHA_PATTERN.fullmatch(repository_ref.strip())
 
 
 def render_runtime_env(runtime_values: dict[str, str]) -> str:

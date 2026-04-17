@@ -7,7 +7,7 @@ addons_path = [
     "/opt/extra_addons",
     "/opt/enterprise",
 ]
-addon_repositories = [
+addon_repository_selectors = [
     "cbusillo/disable_odoo_online@main",
 ]
 required_env_keys = [

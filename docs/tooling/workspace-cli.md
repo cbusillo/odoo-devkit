@@ -214,6 +214,10 @@ Notes
   repository selectors to exact git SHAs before build and artifact minting,
   pushes the requested image tag, resolves the pushed digest, and writes a
   control-plane-compatible artifact manifest JSON file.
+- Tracked stack config should declare moving addon refs in
+  `addon_repository_selectors` / `addon_repository_selectors_add`; reserve
+  `addon_repositories` / `addon_repositories_add` for already-pinned exact SHA
+  inputs.
 - `platform runtime odoo-shell` follows the same local-only rule. It can run
   interactively, consume a `--script` file, and optionally tee output into a
   `--log-file`, but it is still a manifest-backed local helper rather than a
