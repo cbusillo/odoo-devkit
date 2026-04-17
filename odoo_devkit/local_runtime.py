@@ -1363,9 +1363,8 @@ def build_runtime_env_values(
     runtime_selection = runtime_context.selection
     source_environment = runtime_context.environment.merged_values
     local_addons_mount_paths = resolve_manifest_local_addons_mount_paths(manifest=runtime_context.manifest)
-    openupgrade_environment = dict(source_environment)
-    for runtime_key, runtime_value in runtime_selection.effective_runtime_env.items():
-        openupgrade_environment[runtime_key] = str(runtime_value)
+    openupgrade_environment = {key: str(value) for key, value in runtime_selection.effective_runtime_env.items()}
+    openupgrade_environment.update(source_environment)
     effective_addon_repositories = effective_runtime_addon_repositories(
         runtime_selection=runtime_selection,
         source_environment=openupgrade_environment,
