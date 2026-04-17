@@ -848,6 +848,16 @@ install_modules = ["opw_custom"]
                 payload["addon_sources"],
             )
             self.assertEqual(
+                payload["addon_selectors"],
+                [
+                    {
+                        "repository": "cbusillo/disable_odoo_online",
+                        "selector": "main",
+                        "resolved_ref": resolved_ref,
+                    }
+                ],
+            )
+            self.assertEqual(
                 payload["build_flags"]["values"]["odoo_addon_repository_selectors"],
                 "cbusillo/disable_odoo_online@main",
             )

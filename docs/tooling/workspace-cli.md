@@ -218,6 +218,9 @@ Notes
   `addon_repository_selectors` / `addon_repository_selectors_add`; reserve
   `addon_repositories` / `addon_repositories_add` for already-pinned exact SHA
   inputs.
+- Artifact manifests preserve selector intent in `addon_selectors` while
+  keeping `addon_sources` as the resolved exact-SHA runtime truth consumed by
+  control-plane release and deploy flows.
 - `platform runtime odoo-shell` follows the same local-only rule. It can run
   interactively, consume a `--script` file, and optionally tee output into a
   `--log-file`, but it is still a manifest-backed local helper rather than a

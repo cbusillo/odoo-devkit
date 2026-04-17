@@ -406,7 +406,7 @@ def publish_runtime_artifact(
         image_repository_override=normalized_image_repository,
         image_tag_override=normalized_image_tag,
     )
-    runtime_values, addon_selector_build_flags = resolve_artifact_runtime_addon_repository_refs(
+    runtime_values, addon_selector_build_flags, artifact_addon_selectors = resolve_artifact_runtime_addon_repository_refs(
         runtime_values=runtime_values,
     )
     ensure_registry_auth_for_base_images(runtime_values)
@@ -483,6 +483,7 @@ def publish_runtime_artifact(
         runtime_repo_name=(manifest.runtime_repo.name if manifest.runtime_repo is not None else runtime_repo_path.name),
         runtime_repo_commit=runtime_commit,
         addon_sources=addon_sources,
+        addon_selectors=artifact_addon_selectors,
         addon_selector_build_flags=addon_selector_build_flags,
         openupgrade_addon_repository=runtime_values.get("OPENUPGRADE_ADDON_REPOSITORY", ""),
         openupgradelib_install_spec=runtime_values.get("OPENUPGRADELIB_INSTALL_SPEC", ""),
@@ -1670,9 +1671,10 @@ def parse_artifact_addon_repository_entries(
 def resolve_artifact_runtime_addon_repository_refs(
     *,
     runtime_values: dict[str, str],
-) -> tuple[dict[str, str], dict[str, str]]:
+) -> tuple[dict[str, str], dict[str, str], tuple[dict[str, str], ...]]:
     resolved_values = dict(runtime_values)
     selector_build_flags: dict[str, str] = {}
+    selector_metadata: list[dict[str, str]] = []
     for env_key in ARTIFACT_ADDON_ENV_KEYS:
         raw_value = runtime_values.get(env_key, "")
         parsed_entries = parse_artifact_addon_repository_entries(raw_value)
@@ -1688,13 +1690,20 @@ def resolve_artifact_runtime_addon_repository_refs(
                     repository=repository,
                     ref=ref,
                 )
+                selector_metadata.append(
+                    {
+                        "repository": repository,
+                        "selector": ref,
+                        "resolved_ref": resolved_ref,
+                    }
+                )
             resolved_entries.append((repository, resolved_ref))
         resolved_values[env_key] = ",".join(
             f"{repository}@{resolved_ref}" for repository, resolved_ref in resolved_entries
         )
         if selector_entries:
             selector_build_flags[ARTIFACT_ADDON_SELECTOR_BUILD_FLAG_KEYS[env_key]] = ",".join(selector_entries)
-    return resolved_values, selector_build_flags
+    return resolved_values, selector_build_flags, tuple(selector_metadata)
 
 
 def resolve_addon_repository_ref_to_git_sha(*, repository: str, ref: str) -> str:
@@ -1862,6 +1871,7 @@ def build_runtime_artifact_manifest_payload(
     runtime_repo_name: str,
     runtime_repo_commit: str,
     addon_sources: tuple[dict[str, str], ...],
+    addon_selectors: tuple[dict[str, str], ...],
     addon_selector_build_flags: dict[str, str],
     openupgrade_addon_repository: str,
     openupgradelib_install_spec: str,
@@ -1887,6 +1897,7 @@ def build_runtime_artifact_manifest_payload(
         "source_commit": source_commit,
         "enterprise_base_digest": enterprise_base_digest,
         "addon_sources": list(addon_sources),
+        "addon_selectors": list(addon_selectors),
         "openupgrade_inputs": {
             "addon_repository": openupgrade_addon_repository,
             "install_spec": openupgradelib_install_spec,
