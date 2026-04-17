@@ -1777,6 +1777,16 @@ def parse_csv_values(raw_value: str) -> tuple[str, ...]:
     return tuple(values)
 
 
+def addon_repository_identity(repository_spec: str) -> str:
+    normalized_spec = repository_spec.strip()
+    if not normalized_spec:
+        return ""
+    repository_name, separator, _repository_ref = normalized_spec.rpartition("@")
+    if separator and repository_name.strip():
+        return repository_name.strip()
+    return normalized_spec
+
+
 def render_runtime_env(runtime_values: dict[str, str]) -> str:
     return "\n".join(f"{key}={value}" for key, value in runtime_values.items()) + "\n"
 
@@ -1784,14 +1794,28 @@ def render_runtime_env(runtime_values: dict[str, str]) -> str:
 def effective_runtime_addon_repositories(
     *, runtime_selection: RuntimeSelection, source_environment: dict[str, str]
 ) -> tuple[str, ...]:
-    effective_repositories = list(runtime_selection.effective_addon_repositories)
+    effective_repositories: list[str] = []
+    repository_indexes: dict[str, int] = {}
+
+    def upsert_repository(repository_spec: str) -> None:
+        normalized_repository = repository_spec.strip()
+        if not normalized_repository:
+            return
+        repository_identity = addon_repository_identity(normalized_repository)
+        existing_index = repository_indexes.get(repository_identity)
+        if existing_index is None:
+            repository_indexes[repository_identity] = len(effective_repositories)
+            effective_repositories.append(normalized_repository)
+            return
+        effective_repositories[existing_index] = normalized_repository
+
+    for configured_repository in runtime_selection.effective_addon_repositories:
+        upsert_repository(configured_repository)
     for configured_repository in parse_csv_values(source_environment.get("ODOO_ADDON_REPOSITORIES", "")):
-        if configured_repository not in effective_repositories:
-            effective_repositories.append(configured_repository)
+        upsert_repository(configured_repository)
     if openupgrade_enabled(source_environment):
         openupgrade_repository = resolve_openupgrade_addon_repository(source_environment)
-        if openupgrade_repository not in effective_repositories:
-            effective_repositories.append(openupgrade_repository)
+        upsert_repository(openupgrade_repository)
     return tuple(effective_repositories)
 
 
