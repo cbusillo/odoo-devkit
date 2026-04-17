@@ -4,7 +4,7 @@ x-odoo-base: &odoo-base
   # 2. To prevent accidental push: keep image name local (no registry prefix)
   # Build already uses BuildKit secrets for addon fetch authentication.
   image: ${DOCKER_IMAGE_REFERENCE:-${DOCKER_IMAGE:-odoo-devkit}:${DOCKER_IMAGE_TAG:-latest}}
-  pull_policy: never
+  pull_policy: ${DOCKER_PULL_POLICY:-never}
   restart: unless-stopped
   env_file:
     - path: .env
