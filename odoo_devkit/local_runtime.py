@@ -20,6 +20,7 @@ from .manifest import WorkspaceManifest
 
 ScalarValue = str | int | float | bool
 ScalarMap = dict[str, ScalarValue]
+DEFAULT_ARTIFACT_IMAGE_PLATFORMS = ("linux/amd64", "linux/arm64")
 
 PLATFORM_RUNTIME_ENV_KEYS = (
     "PLATFORM_CONTEXT",
@@ -414,13 +415,17 @@ def publish_runtime_artifact(
         )
         build_command = [
             "docker",
+            "buildx",
             "build",
             "--file",
             str(staged_context_root / "docker" / "Dockerfile"),
             "--target",
             "production",
+            "--platform",
+            ",".join(DEFAULT_ARTIFACT_IMAGE_PLATFORMS),
             "--tag",
             f"{normalized_image_repository}:{normalized_image_tag}",
+            "--push",
         ]
         if github_token is not None:
             build_command.extend(["--secret", "id=github_token,env=GITHUB_TOKEN"])
@@ -442,12 +447,6 @@ def publish_runtime_artifact(
             command=build_command,
             environment_overrides=build_environment,
         )
-        run_command(
-            runtime_repo_path=staged_context_root,
-            command=["docker", "push", f"{normalized_image_repository}:{normalized_image_tag}"],
-            environment_overrides=build_environment,
-        )
-
     tenant_repo_path = manifest.tenant_repo.resolve_path(manifest_directory=manifest.manifest_directory)
     if tenant_repo_path is None or not tenant_repo_path.exists():
         raise RuntimeCommandError("Tenant repo path must exist before publishing an artifact.")

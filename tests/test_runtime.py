@@ -707,8 +707,11 @@ attached_paths = ["sources/devkit"]
 
             def fake_run_command(*, runtime_repo_path: Path, command: list[str], environment_overrides=None, allowed_return_codes=None):
                 _ = environment_overrides, allowed_return_codes
-                if command[:2] == ["docker", "build"]:
+                if command[:3] == ["docker", "buildx", "build"]:
                     captured_build_contexts.append(runtime_repo_path)
+                    self.assertIn("--platform", command)
+                    self.assertIn(",".join(local_runtime.DEFAULT_ARTIFACT_IMAGE_PLATFORMS), command)
+                    self.assertIn("--push", command)
                     self.assertTrue((runtime_repo_path / "addons" / "opw_custom" / "__manifest__.py").exists())
                     self.assertTrue((runtime_repo_path / "addons" / "shared" / "shared_module" / "__manifest__.py").exists())
                     self.assertFalse((runtime_repo_path / "addons" / "shared" / "tenant_shadow.txt").exists())
@@ -817,7 +820,7 @@ attached_paths = ["sources/devkit"]
 
             def fake_run_command(*, runtime_repo_path: Path, command: list[str], environment_overrides=None, allowed_return_codes=None):
                 _ = runtime_repo_path, environment_overrides, allowed_return_codes
-                if command[:2] == ["docker", "build"]:
+                if command[:3] == ["docker", "buildx", "build"]:
                     captured_build_args.extend(command)
 
             exact_ref = "cbusillo/disable_odoo_online@411f6b8e85cac72dc7aa2e2dc5540001043c327d"
