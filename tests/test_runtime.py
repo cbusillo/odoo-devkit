@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
+import json
 import os
 import subprocess
 import tempfile
@@ -30,6 +31,7 @@ from odoo_devkit.runtime import (
     run_native_runtime_logs,
     run_native_runtime_odoo_shell,
     run_native_runtime_psql,
+    run_native_runtime_publish,
     run_native_runtime_restore,
     run_native_runtime_select,
     run_native_runtime_up,
@@ -670,6 +672,125 @@ attached_paths = ["sources/devkit"]
 
             with self.assertRaisesRegex(ValueError, "requires --instance local"):
                 run_native_runtime_build(manifest=manifest, no_cache=False)
+
+    def test_native_runtime_publish_builds_release_context_and_emits_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = self._create_git_repo(temp_root / "tenant-repo")
+            runtime_repo_path = self._create_git_repo(temp_root / "runtime-repo")
+            shared_addons_repo_path = self._create_git_repo(temp_root / "shared-addons-repo")
+            (tenant_repo_path / "addons" / "opw_custom").mkdir(parents=True, exist_ok=True)
+            (tenant_repo_path / "addons" / "opw_custom" / "__manifest__.py").write_text("{}\n", encoding="utf-8")
+            (tenant_repo_path / "addons" / "shared").mkdir(parents=True, exist_ok=True)
+            (tenant_repo_path / "addons" / "shared" / "tenant_shadow.txt").write_text("ignore me\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=tenant_repo_path, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "tenant addons"], cwd=tenant_repo_path, check=True, capture_output=True)
+            self._write_runtime_repo(runtime_repo_path)
+            subprocess.run(["git", "add", "."], cwd=runtime_repo_path, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "runtime files"], cwd=runtime_repo_path, check=True, capture_output=True)
+            (shared_addons_repo_path / "shared_module").mkdir(parents=True, exist_ok=True)
+            (shared_addons_repo_path / "shared_module" / "__manifest__.py").write_text("{}\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=shared_addons_repo_path, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "shared addon"], cwd=shared_addons_repo_path, check=True, capture_output=True)
+            manifest_path = self._write_manifest(
+                tenant_repo_path=tenant_repo_path,
+                runtime_repo_path=runtime_repo_path,
+                shared_addons_repo_path=shared_addons_repo_path,
+                addons_paths=("sources/tenant/addons", "sources/shared-addons"),
+                instance_name="testing",
+            )
+            subprocess.run(["git", "add", "workspace.toml"], cwd=tenant_repo_path, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "workspace manifest"], cwd=tenant_repo_path, check=True, capture_output=True)
+            manifest = load_workspace_manifest(manifest_path)
+
+            captured_build_contexts: list[Path] = []
+
+            def fake_run_command(*, runtime_repo_path: Path, command: list[str], environment_overrides=None, allowed_return_codes=None):
+                _ = environment_overrides, allowed_return_codes
+                if command[:2] == ["docker", "build"]:
+                    captured_build_contexts.append(runtime_repo_path)
+                    self.assertTrue((runtime_repo_path / "addons" / "opw_custom" / "__manifest__.py").exists())
+                    self.assertTrue((runtime_repo_path / "addons" / "shared" / "shared_module" / "__manifest__.py").exists())
+                    self.assertFalse((runtime_repo_path / "addons" / "shared" / "tenant_shadow.txt").exists())
+
+            output_file = temp_root / "artifact.json"
+            with mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_base_images"):
+                with mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_image_push"):
+                    with mock.patch("odoo_devkit.local_runtime.run_command", side_effect=fake_run_command):
+                        with mock.patch(
+                            "odoo_devkit.local_runtime.resolve_image_digest",
+                            side_effect=["sha256:" + "1" * 64, "sha256:" + "2" * 64],
+                        ):
+                            payload = run_native_runtime_publish(
+                                manifest=manifest,
+                                image_repository="ghcr.io/example/opw-runtime",
+                                image_tag="opw-20260416-abcdef",
+                                output_file=output_file,
+                                no_cache=True,
+                            )
+
+            self.assertTrue(captured_build_contexts)
+            self.assertEqual(payload["image"]["repository"], "ghcr.io/example/opw-runtime")
+            self.assertEqual(payload["image"]["digest"], "sha256:" + "1" * 64)
+            self.assertEqual(payload["enterprise_base_digest"], "sha256:" + "2" * 64)
+            self.assertEqual(payload["build_flags"]["values"]["build_target"], "production")
+            self.assertEqual(payload["image"]["tags"], ["opw-20260416-abcdef"])
+            self.assertEqual(payload["output_file"], str(output_file.resolve()))
+            written_payload = json.loads(output_file.read_text(encoding="utf-8"))
+            self.assertEqual(written_payload["artifact_id"], payload["artifact_id"])
+            self.assertIn(
+                {"repository": "shared-addons-repo", "ref": written_payload["addon_sources"][0]["ref"]},
+                written_payload["addon_sources"],
+            )
+
+    def test_native_runtime_publish_rejects_mutable_addon_refs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = self._create_git_repo(temp_root / "tenant-repo")
+            runtime_repo_path = self._create_git_repo(temp_root / "runtime-repo")
+            (tenant_repo_path / "addons" / "opw_custom").mkdir(parents=True, exist_ok=True)
+            (tenant_repo_path / "addons" / "opw_custom" / "__manifest__.py").write_text("{}\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=tenant_repo_path, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "tenant addons"], cwd=tenant_repo_path, check=True, capture_output=True)
+            self._write_runtime_repo(runtime_repo_path)
+            subprocess.run(["git", "add", "."], cwd=runtime_repo_path, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "runtime files"], cwd=runtime_repo_path, check=True, capture_output=True)
+            manifest_path = self._write_manifest(
+                tenant_repo_path=tenant_repo_path,
+                runtime_repo_path=runtime_repo_path,
+                instance_name="testing",
+            )
+            subprocess.run(["git", "add", "workspace.toml"], cwd=tenant_repo_path, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "workspace manifest"], cwd=tenant_repo_path, check=True, capture_output=True)
+            manifest = load_workspace_manifest(manifest_path)
+
+            with mock.patch(
+                "odoo_devkit.local_runtime.load_environment_from_control_plane",
+                return_value=local_runtime.LoadedEnvironment(
+                    env_file_path=self.control_plane_root / ".generated" / "runtime-env" / "opw.testing.env",
+                    merged_values={
+                        "ODOO_MASTER_PASSWORD": "control-plane-master",
+                        "ODOO_DB_USER": "odoo",
+                        "ODOO_DB_PASSWORD": "control-plane-secret",
+                        "GITHUB_TOKEN": "gh-token",
+                        "ODOO_BASE_RUNTIME_IMAGE": "ghcr.io/example/runtime:19.0-runtime",
+                        "ODOO_BASE_DEVTOOLS_IMAGE": "ghcr.io/example/devtools:19.0-devtools",
+                        "ODOO_ADDON_REPOSITORIES": "cbusillo/disable_odoo_online@main",
+                    },
+                    collisions=(),
+                ),
+            ):
+                with mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_base_images"):
+                    with mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_image_push"):
+                        with mock.patch("odoo_devkit.local_runtime.run_command"):
+                            with self.assertRaisesRegex(ValueError, "exact git SHAs"):
+                                run_native_runtime_publish(
+                                    manifest=manifest,
+                                    image_repository="ghcr.io/example/opw-runtime",
+                                    image_tag="opw-20260416-abcdef",
+                                    output_file=None,
+                                    no_cache=False,
+                                )
 
     def test_native_runtime_down_runs_compose_down_with_optional_volumes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1436,9 +1557,15 @@ attached_paths = ["sources/devkit"]
     @staticmethod
     def _write_runtime_repo(runtime_repo_path: Path) -> None:
         (runtime_repo_path / "platform" / "compose").mkdir(parents=True, exist_ok=True)
+        (runtime_repo_path / "platform" / "config").mkdir(parents=True, exist_ok=True)
+        (runtime_repo_path / "docker").mkdir(parents=True, exist_ok=True)
         (runtime_repo_path / "addons" / "shared").mkdir(parents=True, exist_ok=True)
         (runtime_repo_path / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
         (runtime_repo_path / "platform" / "compose" / "base.yaml").write_text("services: {}\n", encoding="utf-8")
+        (runtime_repo_path / "docker" / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+        (runtime_repo_path / "platform" / "config" / "odoo.conf").write_text("[options]\n", encoding="utf-8")
+        (runtime_repo_path / "pyproject.toml").write_text("[project]\nname='runtime-repo'\nversion='0.1.0'\n", encoding="utf-8")
+        (runtime_repo_path / "uv.lock").write_text("version = 1\n", encoding="utf-8")
         (runtime_repo_path / "platform" / "stack.toml").write_text(
             """
 schema_version = 1

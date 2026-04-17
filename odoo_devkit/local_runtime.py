@@ -4,7 +4,9 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
+import tempfile
 import textwrap
 import time
 import tomllib
@@ -252,6 +254,12 @@ class RuntimeInspectResult:
     payload: dict[str, object]
 
 
+@dataclass(frozen=True)
+class RuntimeArtifactPublishResult:
+    manifest_payload: dict[str, object]
+    output_file: Path | None
+
+
 class RuntimeCommandError(ValueError):
     pass
 
@@ -357,6 +365,132 @@ def build_runtime(*, manifest: WorkspaceManifest, runtime_repo_path: Path, no_ca
     if no_cache:
         build_command.append("--no-cache")
     run_command(runtime_repo_path=runtime_repo_path, command=build_command)
+
+
+def publish_runtime_artifact(
+    *,
+    manifest: WorkspaceManifest,
+    runtime_repo_path: Path,
+    image_repository: str,
+    image_tag: str,
+    output_file: Path | None,
+    no_cache: bool,
+) -> RuntimeArtifactPublishResult:
+    normalized_image_repository = image_repository.strip()
+    normalized_image_tag = image_tag.strip()
+    if not normalized_image_repository:
+        raise RuntimeCommandError("Artifact publish requires a non-empty image repository.")
+    if not normalized_image_tag:
+        raise RuntimeCommandError("Artifact publish requires a non-empty image tag.")
+
+    runtime_context = load_runtime_context(
+        manifest=manifest,
+        runtime_repo_path=runtime_repo_path,
+        require_local_instance=False,
+    )
+    runtime_values = build_runtime_env_values(
+        runtime_context=runtime_context,
+        build_target_override="production",
+        image_repository_override=normalized_image_repository,
+        image_tag_override=normalized_image_tag,
+    )
+    ensure_registry_auth_for_base_images(runtime_values)
+    ensure_registry_auth_for_image_push(
+        environment_values=runtime_values,
+        image_repository=normalized_image_repository,
+    )
+
+    build_environment = command_execution_env()
+    github_token = resolve_github_token_for_build(runtime_values)
+    if github_token is not None:
+        build_environment["GITHUB_TOKEN"] = github_token
+
+    with tempfile.TemporaryDirectory(prefix="odoo-artifact-") as temporary_directory_name:
+        staged_context_root = Path(temporary_directory_name)
+        stage_artifact_build_context(
+            manifest=manifest,
+            runtime_repo_path=runtime_repo_path,
+            staged_context_root=staged_context_root,
+        )
+        build_command = [
+            "docker",
+            "build",
+            "--file",
+            str(staged_context_root / "docker" / "Dockerfile"),
+            "--target",
+            "production",
+            "--tag",
+            f"{normalized_image_repository}:{normalized_image_tag}",
+        ]
+        if github_token is not None:
+            build_command.extend(["--secret", "id=github_token,env=GITHUB_TOKEN"])
+        if no_cache:
+            build_command.append("--no-cache")
+        for build_argument_name in (
+            "ODOO_VERSION",
+            "ODOO_BASE_RUNTIME_IMAGE",
+            "ODOO_BASE_DEVTOOLS_IMAGE",
+            "ODOO_ADDON_REPOSITORIES",
+            "OPENUPGRADE_ADDON_REPOSITORY",
+            "OPENUPGRADELIB_INSTALL_SPEC",
+            "ODOO_PYTHON_SYNC_SKIP_ADDONS",
+        ):
+            build_command.extend(["--build-arg", f"{build_argument_name}={runtime_values.get(build_argument_name, '')}"])
+        build_command.append(str(staged_context_root))
+        run_command(
+            runtime_repo_path=staged_context_root,
+            command=build_command,
+            environment_overrides=build_environment,
+        )
+        run_command(
+            runtime_repo_path=staged_context_root,
+            command=["docker", "push", f"{normalized_image_repository}:{normalized_image_tag}"],
+            environment_overrides=build_environment,
+        )
+
+    tenant_repo_path = manifest.tenant_repo.resolve_path(manifest_directory=manifest.manifest_directory)
+    if tenant_repo_path is None or not tenant_repo_path.exists():
+        raise RuntimeCommandError("Tenant repo path must exist before publishing an artifact.")
+    tenant_commit = require_clean_git_commit(
+        repo_path=tenant_repo_path.resolve(),
+        label=manifest.tenant_repo.name,
+    )
+    runtime_commit = require_clean_git_commit(
+        repo_path=runtime_repo_path.resolve(),
+        label=(manifest.runtime_repo.name if manifest.runtime_repo is not None else runtime_repo_path.name),
+    )
+    addon_sources = collect_artifact_addon_sources(
+        manifest=manifest,
+        runtime_values=runtime_values,
+    )
+    base_runtime_image, _ = resolve_base_images_for_build(runtime_values)
+    manifest_payload = build_runtime_artifact_manifest_payload(
+        context_name=runtime_context.selection.context_name,
+        source_commit=tenant_commit,
+        runtime_repo_name=(manifest.runtime_repo.name if manifest.runtime_repo is not None else runtime_repo_path.name),
+        runtime_repo_commit=runtime_commit,
+        addon_sources=addon_sources,
+        openupgrade_addon_repository=runtime_values.get("OPENUPGRADE_ADDON_REPOSITORY", ""),
+        openupgradelib_install_spec=runtime_values.get("OPENUPGRADELIB_INSTALL_SPEC", ""),
+        addon_skip_flags=parse_csv_values(runtime_values.get("ODOO_PYTHON_SYNC_SKIP_ADDONS", "")),
+        image_repository=normalized_image_repository,
+        image_tag=normalized_image_tag,
+        image_digest=resolve_image_digest(f"{normalized_image_repository}:{normalized_image_tag}"),
+        enterprise_base_digest=resolve_image_digest(base_runtime_image),
+        odoo_version=runtime_values.get("ODOO_VERSION", ""),
+    )
+
+    normalized_output_file = None if output_file is None else output_file.expanduser().resolve()
+    if normalized_output_file is not None:
+        normalized_output_file.parent.mkdir(parents=True, exist_ok=True)
+        normalized_output_file.write_text(
+            json.dumps(manifest_payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    return RuntimeArtifactPublishResult(
+        manifest_payload=manifest_payload,
+        output_file=normalized_output_file,
+    )
 
 
 def down_runtime(*, manifest: WorkspaceManifest, runtime_repo_path: Path, volumes: bool) -> None:
@@ -1218,7 +1352,13 @@ def write_runtime_env_file(*, runtime_context: RuntimeContext) -> Path:
     return runtime_env_file
 
 
-def build_runtime_env_values(*, runtime_context: RuntimeContext) -> dict[str, str]:
+def build_runtime_env_values(
+    *,
+    runtime_context: RuntimeContext,
+    build_target_override: str | None = None,
+    image_repository_override: str | None = None,
+    image_tag_override: str | None = None,
+) -> dict[str, str]:
     stack_definition = runtime_context.stack.stack_definition
     runtime_selection = runtime_context.selection
     source_environment = runtime_context.environment.merged_values
@@ -1230,7 +1370,12 @@ def build_runtime_env_values(*, runtime_context: RuntimeContext) -> dict[str, st
         runtime_selection=runtime_selection,
         source_environment=openupgrade_environment,
     )
-    compose_build_target = openupgrade_environment.get("COMPOSE_BUILD_TARGET", "development")
+    compose_build_target = build_target_override or openupgrade_environment.get("COMPOSE_BUILD_TARGET", "development")
+    docker_image = image_repository_override or runtime_selection.project_name
+    docker_image_tag = image_tag_override or source_environment.get(
+        "DOCKER_IMAGE_TAG",
+        "prod-local" if runtime_selection.instance_name == "local" and compose_build_target == "production" else "latest",
+    )
     runtime_values = {
         "PLATFORM_CONTEXT": runtime_selection.context_name,
         "PLATFORM_INSTANCE": runtime_selection.instance_name,
@@ -1245,11 +1390,8 @@ def build_runtime_env_values(*, runtime_context: RuntimeContext) -> dict[str, st
         "ODOO_SHARED_ADDONS_HOST_PATH": str(local_addons_mount_paths.shared_addons_host_path)
         if local_addons_mount_paths.shared_addons_host_path is not None
         else source_environment.get("ODOO_SHARED_ADDONS_HOST_PATH", str(runtime_context.repo_root / "addons" / "shared")),
-        "DOCKER_IMAGE": runtime_selection.project_name,
-        "DOCKER_IMAGE_TAG": source_environment.get(
-            "DOCKER_IMAGE_TAG",
-            "prod-local" if runtime_selection.instance_name == "local" and compose_build_target == "production" else "latest",
-        ),
+        "DOCKER_IMAGE": docker_image,
+        "DOCKER_IMAGE_TAG": docker_image_tag,
         "COMPOSE_BUILD_TARGET": compose_build_target,
         "ODOO_DATA_VOLUME": runtime_selection.data_volume_name,
         "ODOO_LOG_VOLUME": runtime_selection.log_volume_name,
@@ -1332,6 +1474,309 @@ def resolve_manifest_local_addons_mount_paths(*, manifest: WorkspaceManifest) ->
     )
 
 
+def stage_artifact_build_context(
+    *,
+    manifest: WorkspaceManifest,
+    runtime_repo_path: Path,
+    staged_context_root: Path,
+) -> None:
+    tenant_repo_path = manifest.tenant_repo.resolve_path(manifest_directory=manifest.manifest_directory)
+    if tenant_repo_path is None or not tenant_repo_path.exists():
+        raise RuntimeCommandError("Tenant repo path must exist before staging an artifact build context.")
+    shared_addons_repo_path = resolve_manifest_shared_addons_repo_path(manifest=manifest)
+
+    staged_context_root.mkdir(parents=True, exist_ok=True)
+    copy_required_path(
+        source_path=runtime_repo_path / "docker",
+        destination_path=staged_context_root / "docker",
+        label="runtime docker directory",
+    )
+    copy_required_path(
+        source_path=runtime_repo_path / "platform" / "config",
+        destination_path=staged_context_root / "platform" / "config",
+        label="runtime platform config directory",
+    )
+    copy_required_path(
+        source_path=runtime_repo_path / "pyproject.toml",
+        destination_path=staged_context_root / "pyproject.toml",
+        label="runtime pyproject.toml",
+    )
+    copy_required_path(
+        source_path=runtime_repo_path / "uv.lock",
+        destination_path=staged_context_root / "uv.lock",
+        label="runtime uv.lock",
+    )
+
+    staged_addons_root = staged_context_root / "addons"
+    tenant_addons_root = tenant_repo_path / "addons"
+    if not tenant_addons_root.exists():
+        raise RuntimeCommandError(f"Tenant addons path does not exist: {tenant_addons_root}")
+    staged_addons_root.mkdir(parents=True, exist_ok=True)
+    for child_path in sorted(tenant_addons_root.iterdir()):
+        if shared_addons_repo_path is not None and child_path.name == "shared":
+            continue
+        copy_required_path(
+            source_path=child_path,
+            destination_path=staged_addons_root / child_path.name,
+            label=f"tenant addon path {child_path}",
+        )
+
+    if shared_addons_repo_path is not None:
+        staged_shared_addons_root = staged_addons_root / "shared"
+        staged_shared_addons_root.mkdir(parents=True, exist_ok=True)
+        for child_path in sorted(shared_addons_repo_path.iterdir()):
+            copy_required_path(
+                source_path=child_path,
+                destination_path=staged_shared_addons_root / child_path.name,
+                label=f"shared addon path {child_path}",
+            )
+
+
+def copy_required_path(*, source_path: Path, destination_path: Path, label: str) -> None:
+    if not source_path.exists():
+        raise RuntimeCommandError(f"Missing required {label}: {source_path}")
+    if source_path.is_dir():
+        shutil.copytree(source_path, destination_path, dirs_exist_ok=True)
+        return
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source_path, destination_path)
+
+
+def resolve_manifest_shared_addons_repo_path(*, manifest: WorkspaceManifest) -> Path | None:
+    from .workspace import resolve_optional_repo_path_with_managed_checkout, resolve_workspace_path
+
+    workspace_path = resolve_workspace_path(manifest)
+    return resolve_optional_repo_path_with_managed_checkout(
+        manifest.shared_addons_repo,
+        manifest=manifest,
+        managed_checkout_path=workspace_path / "sources" / "shared-addons",
+    )
+
+
+def collect_artifact_addon_sources(
+    *,
+    manifest: WorkspaceManifest,
+    runtime_values: dict[str, str],
+) -> tuple[dict[str, str], ...]:
+    addon_sources: list[dict[str, str]] = []
+    shared_addons_repo_path = resolve_manifest_shared_addons_repo_path(manifest=manifest)
+    if manifest.shared_addons_repo is not None and shared_addons_repo_path is not None:
+        addon_sources.append(
+            {
+                "repository": manifest.shared_addons_repo.url or manifest.shared_addons_repo.name,
+                "ref": require_clean_git_commit(
+                    repo_path=shared_addons_repo_path.resolve(),
+                    label=manifest.shared_addons_repo.name,
+                ),
+            }
+        )
+
+    seen_repository_refs: set[tuple[str, str]] = {
+        (entry["repository"], entry["ref"]) for entry in addon_sources
+    }
+    for env_key in ("ODOO_ADDON_REPOSITORIES", "OPENUPGRADE_ADDON_REPOSITORY"):
+        raw_value = runtime_values.get(env_key, "")
+        for repository, ref in parse_artifact_addon_repository_entries(raw_value):
+            repository_key = (repository, ref)
+            if repository_key in seen_repository_refs:
+                continue
+            seen_repository_refs.add(repository_key)
+            addon_sources.append({"repository": repository, "ref": ref})
+    return tuple(addon_sources)
+
+
+def parse_artifact_addon_repository_entries(raw_value: str) -> tuple[tuple[str, str], ...]:
+    entries = []
+    seen_entries: set[tuple[str, str]] = set()
+    for raw_entry in raw_value.replace("\n", ",").split(","):
+        candidate_entry = raw_entry.strip()
+        if not candidate_entry:
+            continue
+        repository_name, separator, repository_ref = candidate_entry.rpartition("@")
+        if not separator or not repository_name.strip() or not repository_ref.strip():
+            raise RuntimeCommandError(
+                "Artifact publish requires addon repositories to use exact git SHAs in '<repo>@<sha>' form. "
+                f"Received: {candidate_entry}"
+            )
+        normalized_repository = repository_name.strip()
+        normalized_ref = repository_ref.strip()
+        if not re.fullmatch(r"[0-9a-fA-F]{7,40}", normalized_ref):
+            raise RuntimeCommandError(
+                "Artifact publish requires addon repositories to use exact git SHAs. "
+                f"Received: {candidate_entry}"
+            )
+        normalized_entry = (normalized_repository, normalized_ref)
+        if normalized_entry in seen_entries:
+            continue
+        seen_entries.add(normalized_entry)
+        entries.append(normalized_entry)
+    return tuple(entries)
+
+
+def require_clean_git_commit(*, repo_path: Path, label: str) -> str:
+    head_result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        env=command_execution_env(),
+    )
+    if head_result.returncode != 0:
+        raise RuntimeCommandError(f"Unable to resolve git commit for {label}: {repo_path}")
+    head_commit = head_result.stdout.strip()
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", head_commit):
+        raise RuntimeCommandError(f"Unable to resolve a full git commit for {label}: {repo_path}")
+
+    dirty_result = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        env=command_execution_env(),
+    )
+    if dirty_result.returncode != 0:
+        raise RuntimeCommandError(f"Unable to determine git status for {label}: {repo_path}")
+    if dirty_result.stdout.strip():
+        raise RuntimeCommandError(
+            f"Artifact publish requires a clean git worktree for {label}: {repo_path}"
+        )
+    return head_commit
+
+
+def resolve_github_token_for_build(environment_values: dict[str, str]) -> str | None:
+    configured_token = clean_optional_value(environment_values.get("GITHUB_TOKEN"))
+    if configured_token:
+        return configured_token
+    return resolve_ghcr_token(environment_values)
+
+
+def ensure_registry_auth_for_image_push(
+    *,
+    environment_values: dict[str, str],
+    image_repository: str,
+) -> None:
+    registry_host = extract_registry_host(image_repository)
+    if registry_host != GHCR_HOST:
+        return
+    ghcr_username = resolve_ghcr_username(environment_values, image_repository)
+    ghcr_token = resolve_ghcr_token(environment_values)
+    if not ghcr_username:
+        raise RuntimeCommandError(
+            "Missing GHCR username for artifact push. Set GHCR_USERNAME in resolved environment "
+            f"({runtime_environment_configuration_guidance(noun='it')}) or provide GITHUB_ACTOR in the current shell."
+        )
+    if not ghcr_token:
+        raise RuntimeCommandError(
+            "Missing GHCR token for artifact push. Set GHCR_TOKEN (preferred) or GITHUB_TOKEN in resolved environment "
+            f"({runtime_environment_configuration_guidance(noun='it')}) with write:packages access."
+        )
+    ensure_registry_login(registry_host=GHCR_HOST, username=ghcr_username, token=ghcr_token)
+
+
+def ensure_registry_login(*, registry_host: str, username: str, token: str) -> None:
+    login_key = (registry_host, username)
+    if login_key in _REGISTRY_LOGINS_DONE:
+        return
+    login_result = subprocess.run(
+        ["docker", "login", registry_host, "-u", username, "--password-stdin"],
+        input=f"{token}\n",
+        capture_output=True,
+        text=True,
+        env=command_execution_env(),
+    )
+    if login_result.returncode != 0:
+        details = clean_optional_value(login_result.stderr) or clean_optional_value(login_result.stdout)
+        raise RuntimeCommandError(
+            f"Docker login to {registry_host} failed."
+            + (f"\nDocker reported: {details}" if details else "")
+        )
+    _REGISTRY_LOGINS_DONE.add(login_key)
+
+
+def resolve_image_digest(image_reference: str) -> str:
+    candidate = image_reference.strip()
+    if not candidate:
+        raise RuntimeCommandError("Image digest resolution requires a non-empty image reference.")
+    digest_match = re.search(r"@(sha256:[0-9a-fA-F]{64})$", candidate)
+    if digest_match is not None:
+        return digest_match.group(1)
+    inspect_result = subprocess.run(
+        ["docker", "buildx", "imagetools", "inspect", candidate],
+        capture_output=True,
+        text=True,
+        env=command_execution_env(),
+    )
+    if inspect_result.returncode != 0:
+        details = clean_optional_value(inspect_result.stderr) or clean_optional_value(inspect_result.stdout)
+        raise RuntimeCommandError(
+            "Unable to resolve image digest for "
+            f"'{candidate}'."
+            + (f"\nDocker reported: {details}" if details else "")
+        )
+    digest_match = re.search(r"^Digest:\s*(sha256:[0-9a-fA-F]{64})\s*$", inspect_result.stdout, flags=re.MULTILINE)
+    if digest_match is None:
+        raise RuntimeCommandError(f"Unable to parse image digest from docker output for {candidate}.")
+    return digest_match.group(1)
+
+
+def build_runtime_artifact_manifest_payload(
+    *,
+    context_name: str,
+    source_commit: str,
+    runtime_repo_name: str,
+    runtime_repo_commit: str,
+    addon_sources: tuple[dict[str, str], ...],
+    openupgrade_addon_repository: str,
+    openupgradelib_install_spec: str,
+    addon_skip_flags: tuple[str, ...],
+    image_repository: str,
+    image_tag: str,
+    image_digest: str,
+    enterprise_base_digest: str,
+    odoo_version: str,
+) -> dict[str, object]:
+    artifact_id = f"artifact-{context_name}-{image_digest.removeprefix('sha256:')[:16]}"
+    build_flag_values = {
+        "build_target": "production",
+        "image_tag": image_tag,
+        "odoo_version": odoo_version,
+        "runtime_repo": runtime_repo_name,
+        "runtime_repo_commit": runtime_repo_commit,
+    }
+    return {
+        "schema_version": 1,
+        "artifact_id": artifact_id,
+        "source_commit": source_commit,
+        "enterprise_base_digest": enterprise_base_digest,
+        "addon_sources": list(addon_sources),
+        "openupgrade_inputs": {
+            "addon_repository": openupgrade_addon_repository,
+            "install_spec": openupgradelib_install_spec,
+        },
+        "build_flags": {
+            "addon_skip_flags": list(addon_skip_flags),
+            "values": build_flag_values,
+        },
+        "image": {
+            "repository": image_repository,
+            "digest": image_digest,
+            "tags": [image_tag],
+        },
+    }
+
+
+def parse_csv_values(raw_value: str) -> tuple[str, ...]:
+    values = []
+    seen_values: set[str] = set()
+    for raw_entry in raw_value.split(","):
+        normalized_entry = raw_entry.strip()
+        if not normalized_entry or normalized_entry in seen_values:
+            continue
+        seen_values.add(normalized_entry)
+        values.append(normalized_entry)
+    return tuple(values)
+
+
 def render_runtime_env(runtime_values: dict[str, str]) -> str:
     return "\n".join(f"{key}={value}" for key, value in runtime_values.items()) + "\n"
 
@@ -1340,6 +1785,9 @@ def effective_runtime_addon_repositories(
     *, runtime_selection: RuntimeSelection, source_environment: dict[str, str]
 ) -> tuple[str, ...]:
     effective_repositories = list(runtime_selection.effective_addon_repositories)
+    for configured_repository in parse_csv_values(source_environment.get("ODOO_ADDON_REPOSITORIES", "")):
+        if configured_repository not in effective_repositories:
+            effective_repositories.append(configured_repository)
     if openupgrade_enabled(source_environment):
         openupgrade_repository = resolve_openupgrade_addon_repository(source_environment)
         if openupgrade_repository not in effective_repositories:

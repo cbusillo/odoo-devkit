@@ -30,6 +30,11 @@ uv run platform workspace clean --manifest /path/to/workspace.toml
 uv run platform workspace run --manifest /path/to/workspace.toml -- pwd
 uv run platform runtime select --manifest /path/to/workspace.toml
 uv run platform runtime build --manifest /path/to/workspace.toml --no-cache
+uv run platform runtime publish --manifest /path/to/workspace.toml \
+  --instance testing \
+  --image-repository ghcr.io/example/odoo-opw \
+  --image-tag opw-20260416-deadbeef \
+  --output-file /tmp/opw-artifact.json
 uv run platform runtime up --manifest /path/to/workspace.toml --build
 uv run platform runtime down --manifest /path/to/workspace.toml --volumes
 uv run platform runtime workflow --manifest /path/to/workspace.toml --workflow update
@@ -71,7 +76,7 @@ Current runtime ownership is intentionally narrow and explicit:
 
 - local runtime targets run natively inside `odoo-devkit` against the repo
   owned by `odoo-devkit` itself:
-  `select`, `build`, `up`, `down`, `inspect`, `logs`, `psql`, `odoo-shell`, `restore`,
+  `select`, `build`, `publish`, `up`, `down`, `inspect`, `logs`, `psql`, `odoo-shell`, `restore`,
   `workflow bootstrap`, `workflow init`, `workflow update`, and
   `workflow openupgrade`.
 - Dokploy-managed non-local runtime targets also run natively inside
@@ -105,4 +110,18 @@ uv --directory ../odoo-devkit run platform runtime workflow \
   --manifest ./workspace.toml \
   --workflow bootstrap \
   --instance testing
+uv --directory ../odoo-devkit run platform runtime publish \
+  --manifest ./workspace.toml \
+  --instance testing \
+  --image-repository ghcr.io/example/odoo-opw \
+  --image-tag opw-20260416-deadbeef \
+  --output-file /tmp/opw-artifact.json
+uv --directory ../odoo-control-plane run control-plane artifacts write \
+  --state-dir ./state \
+  --input-file /tmp/opw-artifact.json
 ```
+
+`platform runtime publish` stages the tenant addons plus shared addons into a
+real build context, requires clean git worktrees for the repos it captures,
+pushes the resulting image, resolves the pushed digest, and emits a
+control-plane-compatible artifact manifest JSON file.

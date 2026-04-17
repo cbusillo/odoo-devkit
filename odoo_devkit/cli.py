@@ -14,6 +14,7 @@ from .runtime import (
     run_native_runtime_odoo_shell,
     run_native_runtime_psql,
     run_native_runtime_inspect,
+    run_native_runtime_publish,
     run_native_runtime_restore,
     run_native_runtime_select,
     run_native_runtime_up,
@@ -84,6 +85,16 @@ def build_parser() -> argparse.ArgumentParser:
     _add_runtime_instance_override_argument(runtime_build_parser)
     runtime_build_parser.add_argument("--no-cache", action="store_true")
     runtime_build_parser.set_defaults(handler=_handle_runtime_build)
+
+    runtime_publish_parser = _add_manifest_argument(
+        runtime_subparsers.add_parser("publish", help="Build and publish a release artifact image from the manifest runtime inputs")
+    )
+    _add_runtime_instance_override_argument(runtime_publish_parser)
+    runtime_publish_parser.add_argument("--image-repository", required=True)
+    runtime_publish_parser.add_argument("--image-tag", required=True)
+    runtime_publish_parser.add_argument("--output-file", type=Path, default=None)
+    runtime_publish_parser.add_argument("--no-cache", action="store_true")
+    runtime_publish_parser.set_defaults(handler=_handle_runtime_publish)
 
     runtime_down_parser = _add_manifest_argument(
         runtime_subparsers.add_parser("down", help="Stop the local manifest runtime target")
@@ -240,6 +251,20 @@ def _handle_runtime_build(arguments: argparse.Namespace) -> None:
     raise SystemExit(exit_code)
 
 
+def _handle_runtime_publish(arguments: argparse.Namespace) -> None:
+    manifest = _load_runtime_manifest(arguments)
+    payload = _run_runtime_handler(
+        lambda: run_native_runtime_publish(
+            manifest=manifest,
+            image_repository=arguments.image_repository,
+            image_tag=arguments.image_tag,
+            output_file=arguments.output_file,
+            no_cache=arguments.no_cache,
+        )
+    )
+    print(json.dumps(payload, indent=2, sort_keys=True))
+
+
 def _handle_runtime_down(arguments: argparse.Namespace) -> None:
     manifest = _load_runtime_manifest(arguments)
     exit_code = _run_runtime_handler(lambda: run_native_runtime_down(manifest=manifest, volumes=arguments.volumes))
@@ -333,7 +358,7 @@ def _load_runtime_manifest(arguments: argparse.Namespace) -> WorkspaceManifest:
     )
 
 
-def _run_runtime_handler(handler: Callable[[], int | None]) -> int | None:
+def _run_runtime_handler(handler: Callable[[], object]) -> object:
     try:
         return handler()
     except ValueError as error:

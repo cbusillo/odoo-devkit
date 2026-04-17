@@ -6,7 +6,7 @@ the Every Code cockpit and the local runtime assembly.
 Runtime ownership is split by target type:
 
 - manifest-local runtime targets run natively in `odoo-devkit` for
-  `platform runtime select`, `build`, `up`, `down`, `inspect`, `logs`, `psql`, `odoo-shell`,
+  `platform runtime select`, `build`, `publish`, `up`, `down`, `inspect`, `logs`, `psql`, `odoo-shell`,
   `restore`, and
   `platform runtime workflow --workflow bootstrap|init|update|openupgrade`.
 - Dokploy-managed non-local data workflows run natively in `odoo-devkit`
@@ -28,6 +28,11 @@ uv run platform workspace clean --manifest /path/to/workspace.toml
 uv run platform workspace run --manifest /path/to/workspace.toml -- pwd
 uv run platform runtime select --manifest /path/to/workspace.toml
 uv run platform runtime build --manifest /path/to/workspace.toml --no-cache
+uv run platform runtime publish --manifest /path/to/workspace.toml \
+  --instance testing \
+  --image-repository ghcr.io/example/odoo-opw \
+  --image-tag opw-20260416-deadbeef \
+  --output-file /tmp/opw-artifact.json
 uv run platform runtime up --manifest /path/to/workspace.toml --build
 uv run platform runtime down --manifest /path/to/workspace.toml --volumes
 uv run platform runtime workflow --manifest /path/to/workspace.toml --workflow update
@@ -157,6 +162,10 @@ Notes
 - `platform runtime build` follows the same local-only rule and gives tenant
   manifests a native build-only entry point when operators want image prep
   without starting the stack.
+- `platform runtime publish` is the release-handoff path. It stages tenant and
+  shared addon sources into a clean build context, requires exact git SHAs for
+  addon repository inputs, pushes the requested image tag, resolves the pushed
+  digest, and writes a control-plane-compatible artifact manifest JSON file.
 - `platform runtime odoo-shell` follows the same local-only rule. It can run
   interactively, consume a `--script` file, and optionally tee output into a
   `--log-file`, but it is still a manifest-backed local helper rather than a

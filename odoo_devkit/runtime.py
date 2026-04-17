@@ -10,6 +10,7 @@ from .local_runtime import (
     down_runtime,
     emit_key_value_payload,
     inspect_runtime,
+    publish_runtime_artifact,
     run_psql_command,
     run_odoo_shell_command,
     run_bootstrap_workflow,
@@ -235,6 +236,32 @@ def run_native_runtime_build(*, manifest: WorkspaceManifest, no_cache: bool) -> 
         raise ValueError(str(error)) from error
     print(f"build=odoo-{manifest.runtime.context}-{manifest.runtime.instance}")
     return 0
+
+
+def run_native_runtime_publish(
+    *,
+    manifest: WorkspaceManifest,
+    image_repository: str,
+    image_tag: str,
+    output_file: Path | None,
+    no_cache: bool,
+) -> dict[str, object]:
+    runtime_repo_path = resolve_runtime_repo_path(manifest)
+    try:
+        result = publish_runtime_artifact(
+            manifest=manifest,
+            runtime_repo_path=runtime_repo_path,
+            image_repository=image_repository,
+            image_tag=image_tag,
+            output_file=output_file,
+            no_cache=no_cache,
+        )
+    except RuntimeCommandError as error:
+        raise ValueError(str(error)) from error
+    payload = dict(result.manifest_payload)
+    if result.output_file is not None:
+        payload["output_file"] = str(result.output_file)
+    return payload
 
 
 def run_native_runtime_down(*, manifest: WorkspaceManifest, volumes: bool) -> int:
