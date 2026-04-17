@@ -1,0 +1,51 @@
+schema_version = 1
+plans_directory = "~/.codex/plans"
+
+[[repos]]
+group = "primary"
+role = "devkit"
+label = "Devkit"
+path = "sources/devkit"
+repo_name = "odoo-devkit"
+
+[[repos]]
+group = "primary"
+role = "shared_addons"
+label = "Shared addons"
+path = "sources/shared-addons"
+repo_name = "odoo-shared-addons"
+
+[[repos]]
+group = "primary"
+role = "tenant"
+label = "CM tenant"
+path = "sources/tenant-cm"
+repo_name = "odoo-tenant-cm"
+
+[[repos]]
+group = "primary"
+role = "tenant"
+label = "OPW tenant"
+path = "sources/tenant-opw"
+repo_name = "odoo-tenant-opw"
+
+[[repos]]
+group = "primary"
+role = "control_plane"
+label = "Control plane"
+path = "sources/control-plane"
+repo_name = "odoo-control-plane"
+
+[[repos]]
+group = "upstream_image"
+role = "upstream_image"
+label = "Public base image"
+path = "sources/odoo-docker"
+repo_name = "odoo-docker"
+
+[[repos]]
+group = "upstream_image"
+role = "upstream_image"
+label = "Private enterprise image layer"
+path = "sources/odoo-enterprise-docker"
+repo_name = "odoo-enterprise-docker"
