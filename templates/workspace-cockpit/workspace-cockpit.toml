@@ -1,6 +1,53 @@
 schema_version = 1
 plans_directory = "~/.codex/plans"
 
+[guidance.agents]
+first_reads = [
+  "Open [docs/README.md](docs/README.md) in this workspace root first.",
+  "Use [sources/devkit/AGENTS.md](sources/devkit/AGENTS.md) for the canonical shared operating guide.",
+  "Use [sources/devkit/docs/README.md](sources/devkit/docs/README.md) for the canonical shared docs index.",
+  "Use the tenant-specific `workspace.toml` manifests when you need to run current local runtime commands through `odoo-devkit`.",
+]
+ownership = [
+  "`odoo-devkit` owns shared DX/runtime/workspace behavior plus local runtime and explicit data workflows.",
+  "`odoo-control-plane` owns remote release actions, deployment truth, release tuples, and promotion evidence.",
+  "Stable remote lanes are `testing` and `prod`.",
+  "Harbor PR previews replace any durable shared `dev` lane.",
+]
+notes = [
+  "This cockpit root is regenerated from `workspace-cockpit.toml` through `odoo-devkit`; keep the repo map and root guidance in that config instead of hand-editing markdown entrypoints.",
+  "This is still a manual multi-repo cockpit root, not a tenant `platform workspace sync` surface with runtime materialization.",
+  "Do not bring `odoo-ai` into the normal workspace context. If an explicit archaeology task still needs it, treat that as an external reference rather than part of the active repo map.",
+  "Commit as you go when a coherent slice is verified; prefer small, reviewable commits over batching unrelated work until the end of the session.",
+]
+
+[guidance.docs]
+external_reference_boundary = [
+  "Keep the main working set in the repos above.",
+  "Do not include `odoo-ai` in the normal workspace flow. If an explicit archaeology task still needs it, treat that checkout as an external reference rather than part of the live repo map.",
+]
+working_split = [
+  "Use `odoo-devkit` for shared DX/runtime/workspace behavior and for local runtime plus explicit data workflows.",
+  "Use `odoo-control-plane` for remote release actions, deployment truth, release tuples, and promotion evidence.",
+  "Stable remote lanes are `testing` and `prod`.",
+  "Harbor PR previews replace any durable shared `dev` lane.",
+]
+operational_notes = [
+  "Historical plans remain available under `/Users/cbusillo/.codex/plans/` when you need rationale or prior sequencing.",
+]
+
+[guidance.session_prompt]
+working_rules = [
+  "Treat repos under sources/ as the primary system under construction.",
+  "Use odoo-devkit for shared DX/runtime/workspace behavior and local/data workflows.",
+  "Use odoo-control-plane for remote release actions, deployment truth, release tuples, and promotion evidence.",
+  "Stable remote lanes are testing and prod.",
+  "Harbor PR previews replace any durable shared dev lane.",
+  "Do not bring odoo-ai into the normal workspace context unless the task is explicit archaeology.",
+  "Keep tenant repos thin and tenant-specific; fix shared behavior in devkit.",
+  "When `workspace-cockpit.toml`, the workspace root, and source repos disagree, treat the source repos as the source of truth, then regenerate the cockpit.",
+]
+
 [[repos]]
 group = "primary"
 role = "devkit"

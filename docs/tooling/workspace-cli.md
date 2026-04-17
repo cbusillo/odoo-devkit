@@ -91,6 +91,8 @@ Purpose
 - Copy the shared manual multi-repo cockpit-root starter into a target
   directory.
 - Write `workspace-cockpit.toml` as the source of truth for that root.
+- Keep the repo map and section-level cockpit guidance in that config instead
+  of hand-maintaining root markdown files.
 - Generate `AGENTS.md`, `docs/README.md`, and `docs/session-prompt.md` from
   that config.
 - Keep non-repo workspace roots thin, link-heavy, and synced from
@@ -103,6 +105,8 @@ Purpose
 - Regenerate a manual multi-repo cockpit root from `workspace-cockpit.toml`.
 - Keep root entrypoint docs manifest-driven even when the cockpit is not a
   tenant `workspace sync` surface.
+- Re-render both repo listings and section-level guidance bullets from the
+  tracked cockpit config.
 
 ## `workspace status-cockpit-root`
 

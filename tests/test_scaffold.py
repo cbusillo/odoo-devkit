@@ -193,6 +193,9 @@ repo_name = "odoo-control-plane"
             session_prompt_text = (output_directory / "docs" / "session-prompt.md").read_text(encoding="utf-8")
 
             self.assertIn('path = "sources/devkit"', manifest_text)
+            self.assertIn("[guidance.agents]", manifest_text)
+            self.assertIn("[guidance.docs]", manifest_text)
+            self.assertIn("[guidance.session_prompt]", manifest_text)
             self.assertIn("sources/devkit/AGENTS.md", agents_text)
             self.assertIn("sources/devkit/docs/README.md", agents_text)
             self.assertIn("Shared operating guide", docs_index_text)
@@ -308,6 +311,56 @@ repo_name = "odoo-control-plane"
             stale_agents_status = next(file_status for file_status in stale_result.file_statuses if file_status.path.name == "AGENTS.md")
             self.assertTrue(stale_agents_status.exists)
             self.assertFalse(stale_agents_status.matches_expected)
+
+    def test_workspace_cockpit_sync_renders_guidance_from_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output_directory = Path(temporary_directory)
+            manifest_path = output_directory / "workspace-cockpit.toml"
+            manifest_path.write_text(
+                """
+schema_version = 1
+
+[guidance.agents]
+first_reads = ["Open the custom cockpit guide first."]
+ownership = ["Custom ownership line."]
+notes = ["Custom note line."]
+
+[guidance.docs]
+external_reference_boundary = ["Custom external boundary."]
+working_split = ["Custom working split."]
+operational_notes = ["Custom operational note."]
+
+[guidance.session_prompt]
+working_rules = ["Custom working rule."]
+
+[[repos]]
+group = "primary"
+role = "devkit"
+label = "Devkit"
+path = "sources/devkit"
+repo_name = "odoo-devkit"
+
+[[repos]]
+group = "primary"
+role = "control_plane"
+label = "Control plane"
+path = "sources/control-plane"
+repo_name = "odoo-control-plane"
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            sync_workspace_cockpit(
+                manifest=load_workspace_cockpit_manifest(manifest_path),
+                output_directory=output_directory,
+                overwrite_existing=True,
+            )
+
+            self.assertIn("Open the custom cockpit guide first.", (output_directory / "AGENTS.md").read_text(encoding="utf-8"))
+            self.assertIn("Custom ownership line.", (output_directory / "AGENTS.md").read_text(encoding="utf-8"))
+            self.assertIn("Custom external boundary.", (output_directory / "docs" / "README.md").read_text(encoding="utf-8"))
+            self.assertIn("Custom working split.", (output_directory / "docs" / "README.md").read_text(encoding="utf-8"))
+            self.assertIn("Custom working rule.", (output_directory / "docs" / "session-prompt.md").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
