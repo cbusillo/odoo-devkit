@@ -118,6 +118,9 @@ command = ["uv", "--directory", "$PROJECT_DIR$/../odoo-devkit", "run", "platform
             self.assertIn(str(tenant_repo_path), workspace_agents_contents)
             self.assertIn(str(devkit_repo_path), workspace_agents_contents)
             self.assertIn(str((tenant_repo_path / "addons" / "shared").resolve()), workspace_agents_contents)
+            self.assertIn("Stable remote lanes are `testing` and `prod`", workspace_agents_contents)
+            self.assertIn("Harbor PR previews replace a durable `dev` lane", workspace_agents_contents)
+            self.assertIn("release actions such as ship/promote/gate stay in `odoo-control-plane`", workspace_agents_contents)
 
             workspace_docs_index_contents = result.workspace_docs_index_path.read_text(encoding="utf-8")
             self.assertIn("Workspace Docs", workspace_docs_index_contents)
@@ -127,6 +130,9 @@ command = ["uv", "--directory", "$PROJECT_DIR$/../odoo-devkit", "run", "platform
             self.assertIn("Shared workspace command patterns", workspace_docs_index_contents)
             self.assertIn("Tenant overlay guide", workspace_docs_index_contents)
             self.assertIn(str((tenant_repo_path / "addons" / "shared").resolve()), workspace_docs_index_contents)
+            self.assertIn("Stable remote lanes are `testing` and `prod`", workspace_docs_index_contents)
+            self.assertIn("Harbor PR previews replace a durable `dev` lane", workspace_docs_index_contents)
+            self.assertIn("release actions for remote environments belong in `odoo-control-plane`", workspace_docs_index_contents)
 
             self.assertEqual(len(result.run_configuration_paths), 2)
             first_run_configuration = result.run_configuration_paths[0].read_text(encoding="utf-8")

@@ -6,12 +6,16 @@ the Every Code cockpit and the local runtime assembly.
 Runtime ownership is split by target type:
 
 - manifest-local runtime targets run natively in `odoo-devkit` for
-  `platform runtime select`, `build`, `publish`, `up`, `down`, `inspect`, `logs`, `psql`, `odoo-shell`,
+  `platform runtime select`, `build`, `publish`, `up`, `down`, `inspect`,
+  `logs`, `psql`, `odoo-shell`,
   `restore`, and
   `platform runtime workflow --workflow bootstrap|init|update|openupgrade`.
 - Dokploy-managed non-local data workflows run natively in `odoo-devkit`
   for `platform runtime restore` and
   `platform runtime workflow --workflow bootstrap|update`.
+- Those non-local targets are the stable remote lanes (`testing`, `prod`). PR
+  previews belong to Harbor preview workflows in `odoo-control-plane`, not to
+  `platform runtime` as another durable lane.
 - non-local `platform runtime workflow --workflow init|openupgrade` remains
   local-only and fail early with a clear `--instance local` requirement.
 - Release actions such as ship, promote, and gate execution belong in
@@ -152,6 +156,9 @@ Notes
 - The runtime CLI accepts `--instance <name>` so a tenant repo can keep one
   tracked local-first manifest and still run remote data workflows like
   `platform runtime restore --manifest ./workspace.toml --instance testing`.
+- Do not treat `--instance` as a general environment-expansion hook. The
+  stable remote lane model is `testing` plus `prod`; preview runtime belongs
+  in Harbor preview records and generation workflows instead.
 - `platform runtime logs` and `platform runtime psql` are intentionally
   local-only helpers for manifest-backed debugging. They require
   `--instance local` and fail closed for non-local targets instead of falling

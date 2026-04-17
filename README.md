@@ -19,6 +19,10 @@ The current workspace flow:
 - writes PyCharm-visible shared run configurations for rare-but-important
   commands.
 
+For remote environments, the stable lane model is `testing` plus `prod`.
+Harbor-managed PR previews are a separate control-plane concern rather than a
+third durable runtime lane exposed through `platform runtime`.
+
 ## Command surface
 
 ```bash
@@ -76,7 +80,8 @@ Current runtime ownership is intentionally narrow and explicit:
 
 - local runtime targets run natively inside `odoo-devkit` against the repo
   owned by `odoo-devkit` itself:
-  `select`, `build`, `publish`, `up`, `down`, `inspect`, `logs`, `psql`, `odoo-shell`, `restore`,
+  `select`, `build`, `publish`, `up`, `down`, `inspect`, `logs`, `psql`,
+  `odoo-shell`, `restore`,
   `workflow bootstrap`, `workflow init`, `workflow update`, and
   `workflow openupgrade`.
 - Dokploy-managed non-local runtime targets also run natively inside
@@ -85,6 +90,8 @@ Current runtime ownership is intentionally narrow and explicit:
   control-plane-owned `config/dokploy.toml` and
   `config/dokploy-targets.toml` catalogs resolved through
   `ODOO_CONTROL_PLANE_ROOT`.
+- Those non-local targets are the stable remote lanes (`testing`, `prod`). PR
+  preview lifecycle and release orchestration stay outside `platform runtime`.
 - Release actions such as ship, promote, and gate execution belong in
   `odoo-control-plane`, not under `platform runtime`.
 - non-local `workflow init` and `workflow openupgrade` remain local-only and
