@@ -857,10 +857,7 @@ install_modules = ["opw_custom"]
                     }
                 ],
             )
-            self.assertEqual(
-                payload["build_flags"]["values"]["odoo_addon_repository_selectors"],
-                "cbusillo/disable_odoo_online@main",
-            )
+            self.assertNotIn("odoo_addon_repository_selectors", payload["build_flags"]["values"])
 
     def test_resolve_runtime_selection_tracks_effective_addon_repository_selectors(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

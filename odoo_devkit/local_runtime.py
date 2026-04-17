@@ -23,10 +23,6 @@ ScalarMap = dict[str, ScalarValue]
 DEFAULT_ARTIFACT_IMAGE_PLATFORMS = ("linux/amd64", "linux/arm64")
 GIT_SHA_PATTERN = re.compile(r"[0-9a-fA-F]{7,40}")
 ARTIFACT_ADDON_ENV_KEYS = ("ODOO_ADDON_REPOSITORIES", "OPENUPGRADE_ADDON_REPOSITORY")
-ARTIFACT_ADDON_SELECTOR_BUILD_FLAG_KEYS = {
-    "ODOO_ADDON_REPOSITORIES": "odoo_addon_repository_selectors",
-    "OPENUPGRADE_ADDON_REPOSITORY": "openupgrade_addon_repository_selector",
-}
 
 PLATFORM_RUNTIME_ENV_KEYS = (
     "PLATFORM_CONTEXT",
@@ -406,7 +402,7 @@ def publish_runtime_artifact(
         image_repository_override=normalized_image_repository,
         image_tag_override=normalized_image_tag,
     )
-    runtime_values, addon_selector_build_flags, artifact_addon_selectors = resolve_artifact_runtime_addon_repository_refs(
+    runtime_values, artifact_addon_selectors = resolve_artifact_runtime_addon_repository_refs(
         runtime_values=runtime_values,
     )
     ensure_registry_auth_for_base_images(runtime_values)
@@ -484,7 +480,6 @@ def publish_runtime_artifact(
         runtime_repo_commit=runtime_commit,
         addon_sources=addon_sources,
         addon_selectors=artifact_addon_selectors,
-        addon_selector_build_flags=addon_selector_build_flags,
         openupgrade_addon_repository=runtime_values.get("OPENUPGRADE_ADDON_REPOSITORY", ""),
         openupgradelib_install_spec=runtime_values.get("OPENUPGRADELIB_INSTALL_SPEC", ""),
         addon_skip_flags=parse_csv_values(runtime_values.get("ODOO_PYTHON_SYNC_SKIP_ADDONS", "")),
@@ -1671,9 +1666,8 @@ def parse_artifact_addon_repository_entries(
 def resolve_artifact_runtime_addon_repository_refs(
     *,
     runtime_values: dict[str, str],
-) -> tuple[dict[str, str], dict[str, str], tuple[dict[str, str], ...]]:
+) -> tuple[dict[str, str], tuple[dict[str, str], ...]]:
     resolved_values = dict(runtime_values)
-    selector_build_flags: dict[str, str] = {}
     selector_metadata: list[dict[str, str]] = []
     for env_key in ARTIFACT_ADDON_ENV_KEYS:
         raw_value = runtime_values.get(env_key, "")
@@ -1681,11 +1675,9 @@ def resolve_artifact_runtime_addon_repository_refs(
         if not parsed_entries:
             continue
         resolved_entries: list[tuple[str, str]] = []
-        selector_entries: list[str] = []
         for repository, ref in parsed_entries:
             resolved_ref = ref
             if not GIT_SHA_PATTERN.fullmatch(ref):
-                selector_entries.append(f"{repository}@{ref}")
                 resolved_ref = resolve_addon_repository_ref_to_git_sha(
                     repository=repository,
                     ref=ref,
@@ -1701,9 +1693,7 @@ def resolve_artifact_runtime_addon_repository_refs(
         resolved_values[env_key] = ",".join(
             f"{repository}@{resolved_ref}" for repository, resolved_ref in resolved_entries
         )
-        if selector_entries:
-            selector_build_flags[ARTIFACT_ADDON_SELECTOR_BUILD_FLAG_KEYS[env_key]] = ",".join(selector_entries)
-    return resolved_values, selector_build_flags, tuple(selector_metadata)
+    return resolved_values, tuple(selector_metadata)
 
 
 def resolve_addon_repository_ref_to_git_sha(*, repository: str, ref: str) -> str:
@@ -1872,7 +1862,6 @@ def build_runtime_artifact_manifest_payload(
     runtime_repo_commit: str,
     addon_sources: tuple[dict[str, str], ...],
     addon_selectors: tuple[dict[str, str], ...],
-    addon_selector_build_flags: dict[str, str],
     openupgrade_addon_repository: str,
     openupgradelib_install_spec: str,
     addon_skip_flags: tuple[str, ...],
@@ -1890,7 +1879,6 @@ def build_runtime_artifact_manifest_payload(
         "runtime_repo": runtime_repo_name,
         "runtime_repo_commit": runtime_repo_commit,
     }
-    build_flag_values.update(addon_selector_build_flags)
     return {
         "schema_version": 1,
         "artifact_id": artifact_id,
