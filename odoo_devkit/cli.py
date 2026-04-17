@@ -22,6 +22,7 @@ from .runtime import (
     run_runtime_platform_command,
 )
 from .scaffold import scaffold_tenant_overlay, scaffold_workspace_cockpit
+from .workspace_cockpit import load_workspace_cockpit_manifest, sync_workspace_cockpit
 from .workspace import clean_workspace, run_in_workspace, sync_workspace, workspace_status
 
 
@@ -66,6 +67,13 @@ def build_parser() -> argparse.ArgumentParser:
     cockpit_parser.add_argument("--output-dir", type=Path, required=True)
     cockpit_parser.add_argument("--force", action="store_true")
     cockpit_parser.set_defaults(handler=_handle_workspace_scaffold_cockpit_root)
+
+    sync_cockpit_parser = workspace_subparsers.add_parser(
+        "sync-cockpit-root",
+        help="Regenerate a manual multi-repo cockpit root from workspace-cockpit.toml",
+    )
+    sync_cockpit_parser.add_argument("--config", type=Path, default=Path("workspace-cockpit.toml"))
+    sync_cockpit_parser.set_defaults(handler=_handle_workspace_sync_cockpit_root)
 
     run_parser = _add_manifest_argument(workspace_subparsers.add_parser("run", help="Run a command inside the workspace"))
     run_parser.add_argument("command", nargs=argparse.REMAINDER)
@@ -244,6 +252,26 @@ def _handle_workspace_scaffold_cockpit_root(arguments: argparse.Namespace) -> No
     print(
         json.dumps(
             {
+                "output_directory": str(result.output_directory),
+                "written_paths": [str(path) for path in result.written_paths],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+
+
+def _handle_workspace_sync_cockpit_root(arguments: argparse.Namespace) -> None:
+    manifest_path = arguments.config.expanduser().resolve()
+    result = sync_workspace_cockpit(
+        manifest=load_workspace_cockpit_manifest(manifest_path),
+        output_directory=manifest_path.parent,
+        overwrite_existing=True,
+    )
+    print(
+        json.dumps(
+            {
+                "manifest_path": str(result.manifest_path),
                 "output_directory": str(result.output_directory),
                 "written_paths": [str(path) for path in result.written_paths],
             },

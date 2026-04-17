@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from .workspace_cockpit import load_workspace_cockpit_manifest, sync_workspace_cockpit
+
 
 @dataclass(frozen=True)
 class TenantOverlayScaffoldResult:
@@ -32,18 +34,25 @@ class WorkspaceCockpitScaffoldResult:
 
 
 def scaffold_workspace_cockpit(*, repo_root: Path, output_directory: Path, force: bool) -> WorkspaceCockpitScaffoldResult:
-    template_root = repo_root / "templates" / "workspace-cockpit"
-    if not template_root.exists():
-        raise ValueError(f"Workspace cockpit templates not found: {template_root}")
+    template_path = repo_root / "templates" / "workspace-cockpit" / "workspace-cockpit.toml"
+    if not template_path.exists():
+        raise ValueError(f"Workspace cockpit template not found: {template_path}")
 
-    written_paths = _scaffold_template_tree(
-        template_root=template_root,
+    output_directory.mkdir(parents=True, exist_ok=True)
+    manifest_path = output_directory / "workspace-cockpit.toml"
+    if manifest_path.exists() and not force:
+        raise ValueError(f"Refusing to overwrite existing file without --force: {manifest_path}")
+    manifest_path.write_text(template_path.read_text(encoding="utf-8"), encoding="utf-8")
+
+    sync_result = sync_workspace_cockpit(
+        manifest=load_workspace_cockpit_manifest(manifest_path),
         output_directory=output_directory,
-        force=force,
-        tenant="replace-me",
+        overwrite_existing=force,
     )
-
-    return WorkspaceCockpitScaffoldResult(output_directory=output_directory, written_paths=written_paths)
+    return WorkspaceCockpitScaffoldResult(
+        output_directory=output_directory,
+        written_paths=(manifest_path, *sync_result.written_paths),
+    )
 
 
 def _scaffold_template_tree(

@@ -28,6 +28,10 @@ uv run platform workspace sync --manifest /path/to/workspace.toml
 uv run platform workspace status --manifest /path/to/workspace.toml
 uv run platform workspace scaffold-tenant-overlay \
   --output-dir /path/to/repo --tenant opw
+uv run platform workspace scaffold-cockpit-root \
+  --output-dir /path/to/workspace-root
+uv run platform workspace sync-cockpit-root \
+  --config /path/to/workspace-root/workspace-cockpit.toml
 uv run platform workspace clean --manifest /path/to/workspace.toml
 uv run platform workspace run --manifest /path/to/workspace.toml -- pwd
 uv run platform runtime select --manifest /path/to/workspace.toml
@@ -84,8 +88,19 @@ Purpose
 
 - Copy the shared manual multi-repo cockpit-root starter into a target
   directory.
+- Write `workspace-cockpit.toml` as the source of truth for that root.
+- Generate `AGENTS.md`, `docs/README.md`, and `docs/session-prompt.md` from
+  that config.
 - Keep non-repo workspace roots thin, link-heavy, and synced from
   `odoo-devkit` instead of hand-maintaining the same entrypoint docs.
+
+## `workspace sync-cockpit-root`
+
+Purpose
+
+- Regenerate a manual multi-repo cockpit root from `workspace-cockpit.toml`.
+- Keep root entrypoint docs manifest-driven even when the cockpit is not a
+  tenant `workspace sync` surface.
 
 ## `workspace clean`
 
