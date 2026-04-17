@@ -24,6 +24,7 @@ class SyncResult:
     pycharm_metadata_path: Path
     workspace_agents_path: Path | None
     workspace_docs_index_path: Path | None
+    workspace_session_prompt_path: Path | None
     run_configuration_paths: tuple[Path, ...]
     materialized_sources: tuple[Path, ...]
     attached_paths: tuple[Path, ...]
@@ -129,6 +130,7 @@ def sync_workspace(*, manifest: WorkspaceManifest, devkit_repo_path: Path) -> Sy
         pycharm_metadata_path=pycharm_metadata_path,
         workspace_agents_path=workspace_surface_files.workspace_agents_path,
         workspace_docs_index_path=workspace_surface_files.workspace_docs_index_path,
+        workspace_session_prompt_path=workspace_surface_files.workspace_session_prompt_path,
         run_configuration_paths=run_configuration_paths,
         materialized_sources=tuple(materialized_sources),
         attached_paths=attached_paths,
@@ -153,6 +155,8 @@ def workspace_status(*, manifest: WorkspaceManifest, devkit_repo_path: Path) -> 
         "workspace_agents_exists": (workspace_path / "AGENTS.md").exists(),
         "workspace_docs_index_path": str(workspace_path / "docs" / "README.md"),
         "workspace_docs_index_exists": (workspace_path / "docs" / "README.md").exists(),
+        "workspace_session_prompt_path": str(workspace_path / "docs" / "session-prompt.md"),
+        "workspace_session_prompt_exists": (workspace_path / "docs" / "session-prompt.md").exists(),
     }
     shared_addons_repo_path = resolve_optional_repo_path_with_managed_checkout(
         manifest.shared_addons_repo,

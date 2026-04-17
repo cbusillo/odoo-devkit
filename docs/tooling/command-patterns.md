@@ -62,7 +62,8 @@ uv run platform workspace scaffold-tenant-overlay \
 - `sources/tenant/` points at the expected tenant checkout.
 - `sources/devkit/` points at the expected devkit checkout.
 - `workspace.lock.toml` reflects the assembled state.
-- `AGENTS.md` and `docs/README.md` exist at workspace root.
+- `AGENTS.md`, `docs/README.md`, and `docs/session-prompt.md` exist at
+  workspace root.
 - `.generated/pycharm/project-metadata.json` reflects the attached roots.
 
 ## Guardrails

@@ -36,6 +36,7 @@ preview lifecycle for stable remote lanes live in `odoo-control-plane`.
 
 - workspace-root `AGENTS.md`
 - workspace-root `docs/README.md`
+- workspace-root `docs/session-prompt.md`
 - `.generated/odoo.conf`
 - `.generated/runtime.env`
 - `.generated/pycharm/project-metadata.json`

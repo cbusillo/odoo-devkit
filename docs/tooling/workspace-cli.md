@@ -66,6 +66,7 @@ Purpose
 - Generate the workspace-root Every Code surface:
   - `AGENTS.md`
   - `docs/README.md`
+  - `docs/session-prompt.md`
 - Generate PyCharm metadata plus run configurations.
 - Emit `workspace.lock.toml` with the exact assembled local state.
 

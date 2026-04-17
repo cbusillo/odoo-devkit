@@ -185,6 +185,9 @@ def _handle_workspace_sync(arguments: argparse.Namespace) -> None:
         "workspace_docs_index_path": (
             str(result.workspace_docs_index_path) if result.workspace_docs_index_path is not None else None
         ),
+        "workspace_session_prompt_path": (
+            str(result.workspace_session_prompt_path) if result.workspace_session_prompt_path is not None else None
+        ),
         "materialized_sources": [str(path) for path in result.materialized_sources],
         "attached_paths": [str(path) for path in result.attached_paths],
         "run_configuration_paths": [str(path) for path in result.run_configuration_paths],

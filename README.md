@@ -11,9 +11,10 @@ The current workspace flow:
   code,
 - emits a `workspace.lock.toml` file with the exact assembled refs,
 - generates a minimal runtime config scaffold under `.generated/`, and
-- generates a workspace-root `AGENTS.md` plus `docs/README.md` so Every Code
-  can use the assembled workspace as a shared cockpit without turning each
-  tenant repo into a copy of the shared operating guide, and
+- generates workspace-root `AGENTS.md`, `docs/README.md`, and
+  `docs/session-prompt.md` so Every Code can use the assembled workspace as a
+  shared cockpit without turning each tenant repo into a copy of the shared
+  operating guide, and
 - owns the pure PyCharm Odoo-conf helper and the starter templates for thin
   tenant overlays, and
 - writes PyCharm-visible shared run configurations for rare-but-important
