@@ -32,6 +32,8 @@ uv run platform workspace scaffold-cockpit-root \
   --output-dir /path/to/workspace-root
 uv run platform workspace sync-cockpit-root \
   --config /path/to/workspace-root/workspace-cockpit.toml
+uv run platform workspace status-cockpit-root \
+  --config /path/to/workspace-root/workspace-cockpit.toml
 uv run platform workspace clean --manifest /path/to/workspace.toml
 uv run platform workspace run --manifest /path/to/workspace.toml -- pwd
 uv run platform runtime select --manifest /path/to/workspace.toml
@@ -101,6 +103,15 @@ Purpose
 - Regenerate a manual multi-repo cockpit root from `workspace-cockpit.toml`.
 - Keep root entrypoint docs manifest-driven even when the cockpit is not a
   tenant `workspace sync` surface.
+
+## `workspace status-cockpit-root`
+
+Purpose
+
+- Report whether the generated cockpit entrypoint files exist.
+- Report whether those files still match the current `workspace-cockpit.toml`
+  render output.
+- Give manual cockpit roots a native drift check before or after sync.
 
 ## `workspace clean`
 

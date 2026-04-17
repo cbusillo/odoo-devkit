@@ -22,7 +22,7 @@ from .runtime import (
     run_runtime_platform_command,
 )
 from .scaffold import scaffold_tenant_overlay, scaffold_workspace_cockpit
-from .workspace_cockpit import load_workspace_cockpit_manifest, sync_workspace_cockpit
+from .workspace_cockpit import load_workspace_cockpit_manifest, sync_workspace_cockpit, workspace_cockpit_status
 from .workspace import clean_workspace, run_in_workspace, sync_workspace, workspace_status
 
 
@@ -74,6 +74,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sync_cockpit_parser.add_argument("--config", type=Path, default=Path("workspace-cockpit.toml"))
     sync_cockpit_parser.set_defaults(handler=_handle_workspace_sync_cockpit_root)
+
+    status_cockpit_parser = workspace_subparsers.add_parser(
+        "status-cockpit-root",
+        help="Report whether a manual cockpit root matches workspace-cockpit.toml",
+    )
+    status_cockpit_parser.add_argument("--config", type=Path, default=Path("workspace-cockpit.toml"))
+    status_cockpit_parser.set_defaults(handler=_handle_workspace_status_cockpit_root)
 
     run_parser = _add_manifest_argument(workspace_subparsers.add_parser("run", help="Run a command inside the workspace"))
     run_parser.add_argument("command", nargs=argparse.REMAINDER)
@@ -274,6 +281,33 @@ def _handle_workspace_sync_cockpit_root(arguments: argparse.Namespace) -> None:
                 "manifest_path": str(result.manifest_path),
                 "output_directory": str(result.output_directory),
                 "written_paths": [str(path) for path in result.written_paths],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+
+
+def _handle_workspace_status_cockpit_root(arguments: argparse.Namespace) -> None:
+    manifest_path = arguments.config.expanduser().resolve()
+    result = workspace_cockpit_status(
+        manifest=load_workspace_cockpit_manifest(manifest_path),
+        output_directory=manifest_path.parent,
+    )
+    print(
+        json.dumps(
+            {
+                "manifest_path": str(result.manifest_path),
+                "output_directory": str(result.output_directory),
+                "is_current": result.is_current,
+                "file_statuses": [
+                    {
+                        "path": str(file_status.path),
+                        "exists": file_status.exists,
+                        "matches_expected": file_status.matches_expected,
+                    }
+                    for file_status in result.file_statuses
+                ],
             },
             indent=2,
             sort_keys=True,

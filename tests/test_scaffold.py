@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from odoo_devkit.scaffold import scaffold_tenant_overlay, scaffold_workspace_cockpit
-from odoo_devkit.workspace_cockpit import load_workspace_cockpit_manifest, sync_workspace_cockpit
+from odoo_devkit.workspace_cockpit import load_workspace_cockpit_manifest, sync_workspace_cockpit, workspace_cockpit_status
 
 
 class TenantOverlayScaffoldTests(unittest.TestCase):
@@ -135,6 +135,7 @@ repo_name = "odoo-docker"
             self.assertIn("workspace-cockpit.toml", agents_text)
             self.assertIn("sources/devkit", agents_text)
             self.assertIn("sync-cockpit-root", docs_index_text)
+            self.assertIn("status-cockpit-root", docs_index_text)
             self.assertIn("sources/control-plane -> odoo-control-plane", session_prompt_text)
 
     def test_workspace_cockpit_scaffold_refuses_to_overwrite_without_force(self) -> None:
@@ -197,6 +198,7 @@ repo_name = "odoo-control-plane"
             self.assertIn("Shared operating guide", docs_index_text)
             self.assertIn("Shared workspace CLI guide", docs_index_text)
             self.assertIn("workspace-cockpit.toml", agents_text)
+            self.assertIn("status-cockpit-root", agents_text)
             self.assertIn("workspace root, and source repos", session_prompt_text)
             self.assertIn("odoo-control-plane for remote release actions", session_prompt_text)
 
@@ -259,6 +261,53 @@ repo_name = "odoo-docker"
             self.assertIn("sources/shared-addons", (output_directory / "AGENTS.md").read_text(encoding="utf-8"))
             self.assertIn("Public base image", (output_directory / "docs" / "README.md").read_text(encoding="utf-8"))
             self.assertIn("source repos as the source of truth", (output_directory / "docs" / "session-prompt.md").read_text(encoding="utf-8"))
+
+    def test_workspace_cockpit_status_reports_current_missing_and_stale_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output_directory = Path(temporary_directory)
+            manifest_path = output_directory / "workspace-cockpit.toml"
+            manifest_path.write_text(
+                """
+schema_version = 1
+
+[[repos]]
+group = "primary"
+role = "devkit"
+label = "Devkit"
+path = "sources/devkit"
+repo_name = "odoo-devkit"
+
+[[repos]]
+group = "primary"
+role = "control_plane"
+label = "Control plane"
+path = "sources/control-plane"
+repo_name = "odoo-control-plane"
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            manifest = load_workspace_cockpit_manifest(manifest_path)
+            missing_result = workspace_cockpit_status(manifest=manifest, output_directory=output_directory)
+
+            self.assertFalse(missing_result.is_current)
+            self.assertTrue(all(not file_status.exists for file_status in missing_result.file_statuses))
+
+            sync_workspace_cockpit(
+                manifest=manifest,
+                output_directory=output_directory,
+                overwrite_existing=True,
+            )
+            current_result = workspace_cockpit_status(manifest=manifest, output_directory=output_directory)
+            self.assertTrue(current_result.is_current)
+            self.assertTrue(all(file_status.matches_expected for file_status in current_result.file_statuses))
+
+            (output_directory / "AGENTS.md").write_text("stale\n", encoding="utf-8")
+            stale_result = workspace_cockpit_status(manifest=manifest, output_directory=output_directory)
+            self.assertFalse(stale_result.is_current)
+            stale_agents_status = next(file_status for file_status in stale_result.file_statuses if file_status.path.name == "AGENTS.md")
+            self.assertTrue(stale_agents_status.exists)
+            self.assertFalse(stale_agents_status.matches_expected)
 
 
 if __name__ == "__main__":

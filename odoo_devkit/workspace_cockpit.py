@@ -33,6 +33,24 @@ class WorkspaceCockpitSyncResult:
     written_paths: tuple[Path, ...]
 
 
+@dataclass(frozen=True)
+class WorkspaceCockpitFileStatus:
+    path: Path
+    exists: bool
+    matches_expected: bool
+
+
+@dataclass(frozen=True)
+class WorkspaceCockpitStatusResult:
+    output_directory: Path
+    manifest_path: Path
+    file_statuses: tuple[WorkspaceCockpitFileStatus, ...]
+
+    @property
+    def is_current(self) -> bool:
+        return all(file_status.exists and file_status.matches_expected for file_status in self.file_statuses)
+
+
 def load_workspace_cockpit_manifest(manifest_path: Path) -> WorkspaceCockpitManifest:
     manifest_data = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
     schema_version = int(manifest_data.get("schema_version", 0))
@@ -62,11 +80,7 @@ def sync_workspace_cockpit(
     output_directory = output_directory or manifest.manifest_directory
     output_directory.mkdir(parents=True, exist_ok=True)
 
-    file_contents = {
-        output_directory / "AGENTS.md": _render_workspace_agents(manifest),
-        output_directory / "docs" / "README.md": _render_workspace_docs_index(manifest),
-        output_directory / "docs" / "session-prompt.md": _render_workspace_session_prompt(manifest),
-    }
+    file_contents = _render_workspace_cockpit_files(manifest=manifest, output_directory=output_directory)
     written_paths: list[Path] = []
     for path, contents in file_contents.items():
         if path.exists() and not overwrite_existing:
@@ -79,6 +93,31 @@ def sync_workspace_cockpit(
         output_directory=output_directory,
         manifest_path=manifest.manifest_path,
         written_paths=tuple(written_paths),
+    )
+
+
+def workspace_cockpit_status(
+    *,
+    manifest: WorkspaceCockpitManifest,
+    output_directory: Path | None = None,
+) -> WorkspaceCockpitStatusResult:
+    output_directory = output_directory or manifest.manifest_directory
+    file_contents = _render_workspace_cockpit_files(manifest=manifest, output_directory=output_directory)
+    file_statuses: list[WorkspaceCockpitFileStatus] = []
+    for path, expected_contents in file_contents.items():
+        exists = path.exists()
+        matches_expected = exists and path.read_text(encoding="utf-8") == expected_contents
+        file_statuses.append(
+            WorkspaceCockpitFileStatus(
+                path=path,
+                exists=exists,
+                matches_expected=matches_expected,
+            )
+        )
+    return WorkspaceCockpitStatusResult(
+        output_directory=output_directory,
+        manifest_path=manifest.manifest_path,
+        file_statuses=tuple(file_statuses),
     )
 
 
@@ -145,6 +184,7 @@ def _render_workspace_agents(manifest: WorkspaceCockpitManifest) -> str:
         f"- Use [{devkit_repo.path}/docs/README.md]({devkit_repo.path}/docs/README.md) for the\n"
         "  canonical shared docs index.\n"
         f"- Refresh this cockpit with `{sync_command}`.\n"
+        f"- Inspect cockpit drift with `{_status_command(devkit_repo)}`.\n"
         "- Use the tenant-specific `workspace.toml` manifests when you need to run\n"
         "  current local runtime commands through `odoo-devkit`.\n\n"
         "## Ownership split\n\n"
@@ -211,6 +251,7 @@ def _render_workspace_docs_index(manifest: WorkspaceCockpitManifest) -> str:
         "- Harbor PR previews replace any durable shared `dev` lane.\n\n"
         "## Operational notes\n\n"
         f"- This cockpit root is regenerated from `workspace-cockpit.toml` via `{sync_command}`.\n"
+        f"- Inspect whether the root docs are current with `{_status_command(devkit_repo)}`.\n"
         "- Historical plans remain available under `/Users/cbusillo/.codex/plans/`\n"
         "  when you need rationale or prior sequencing.\n\n"
         "## Session prompt helper\n\n"
@@ -253,6 +294,18 @@ def _render_workspace_session_prompt(manifest: WorkspaceCockpitManifest) -> str:
     )
 
 
+def _render_workspace_cockpit_files(
+    *,
+    manifest: WorkspaceCockpitManifest,
+    output_directory: Path,
+) -> dict[Path, str]:
+    return {
+        output_directory / "AGENTS.md": _render_workspace_agents(manifest),
+        output_directory / "docs" / "README.md": _render_workspace_docs_index(manifest),
+        output_directory / "docs" / "session-prompt.md": _render_workspace_session_prompt(manifest),
+    }
+
+
 def _repos_for_group(manifest: WorkspaceCockpitManifest, group: str) -> tuple[WorkspaceCockpitRepoDefinition, ...]:
     return tuple(repo for repo in manifest.repos if repo.group == group)
 
@@ -266,6 +319,10 @@ def _repo_for_role(manifest: WorkspaceCockpitManifest, role: str) -> WorkspaceCo
 
 def _format_repo_map_line(repo: WorkspaceCockpitRepoDefinition) -> str:
     return f"- `{repo.path}` -> `{repo.repo_name}`"
+
+
+def _status_command(devkit_repo: WorkspaceCockpitRepoDefinition) -> str:
+    return f"uv --directory {devkit_repo.path} run platform workspace status-cockpit-root --config workspace-cockpit.toml"
 
 
 def _docs_link_target(path: str) -> str:
