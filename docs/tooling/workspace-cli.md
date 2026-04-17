@@ -210,9 +210,10 @@ Notes
   manifests a native build-only entry point when operators want image prep
   without starting the stack.
 - `platform runtime publish` is the release-handoff path. It stages tenant and
-  shared addon sources into a clean build context, requires exact git SHAs for
-  addon repository inputs, pushes the requested image tag, resolves the pushed
-  digest, and writes a control-plane-compatible artifact manifest JSON file.
+  shared addon sources into a clean build context, resolves configured addon
+  repository selectors to exact git SHAs before build and artifact minting,
+  pushes the requested image tag, resolves the pushed digest, and writes a
+  control-plane-compatible artifact manifest JSON file.
 - `platform runtime odoo-shell` follows the same local-only rule. It can run
   interactively, consume a `--script` file, and optionally tee output into a
   `--log-file`, but it is still a manifest-backed local helper rather than a

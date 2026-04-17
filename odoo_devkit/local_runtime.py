@@ -21,6 +21,12 @@ from .manifest import WorkspaceManifest
 ScalarValue = str | int | float | bool
 ScalarMap = dict[str, ScalarValue]
 DEFAULT_ARTIFACT_IMAGE_PLATFORMS = ("linux/amd64", "linux/arm64")
+GIT_SHA_PATTERN = re.compile(r"[0-9a-fA-F]{7,40}")
+ARTIFACT_ADDON_ENV_KEYS = ("ODOO_ADDON_REPOSITORIES", "OPENUPGRADE_ADDON_REPOSITORY")
+ARTIFACT_ADDON_SELECTOR_BUILD_FLAG_KEYS = {
+    "ODOO_ADDON_REPOSITORIES": "odoo_addon_repository_selectors",
+    "OPENUPGRADE_ADDON_REPOSITORY": "openupgrade_addon_repository_selector",
+}
 
 PLATFORM_RUNTIME_ENV_KEYS = (
     "PLATFORM_CONTEXT",
@@ -395,6 +401,9 @@ def publish_runtime_artifact(
         image_repository_override=normalized_image_repository,
         image_tag_override=normalized_image_tag,
     )
+    runtime_values, addon_selector_build_flags = resolve_artifact_runtime_addon_repository_refs(
+        runtime_values=runtime_values,
+    )
     ensure_registry_auth_for_base_images(runtime_values)
     ensure_registry_auth_for_image_push(
         environment_values=runtime_values,
@@ -469,6 +478,7 @@ def publish_runtime_artifact(
         runtime_repo_name=(manifest.runtime_repo.name if manifest.runtime_repo is not None else runtime_repo_path.name),
         runtime_repo_commit=runtime_commit,
         addon_sources=addon_sources,
+        addon_selector_build_flags=addon_selector_build_flags,
         openupgrade_addon_repository=runtime_values.get("OPENUPGRADE_ADDON_REPOSITORY", ""),
         openupgradelib_install_spec=runtime_values.get("OPENUPGRADELIB_INSTALL_SPEC", ""),
         addon_skip_flags=parse_csv_values(runtime_values.get("ODOO_PYTHON_SYNC_SKIP_ADDONS", "")),
@@ -1572,9 +1582,9 @@ def collect_artifact_addon_sources(
     seen_repository_refs: set[tuple[str, str]] = {
         (entry["repository"], entry["ref"]) for entry in addon_sources
     }
-    for env_key in ("ODOO_ADDON_REPOSITORIES", "OPENUPGRADE_ADDON_REPOSITORY"):
+    for env_key in ARTIFACT_ADDON_ENV_KEYS:
         raw_value = runtime_values.get(env_key, "")
-        for repository, ref in parse_artifact_addon_repository_entries(raw_value):
+        for repository, ref in parse_artifact_addon_repository_entries(raw_value, require_exact_shas=True):
             repository_key = (repository, ref)
             if repository_key in seen_repository_refs:
                 continue
@@ -1583,7 +1593,11 @@ def collect_artifact_addon_sources(
     return tuple(addon_sources)
 
 
-def parse_artifact_addon_repository_entries(raw_value: str) -> tuple[tuple[str, str], ...]:
+def parse_artifact_addon_repository_entries(
+    raw_value: str,
+    *,
+    require_exact_shas: bool = False,
+) -> tuple[tuple[str, str], ...]:
     entries = []
     seen_entries: set[tuple[str, str]] = set()
     for raw_entry in raw_value.replace("\n", ",").split(","):
@@ -1593,12 +1607,12 @@ def parse_artifact_addon_repository_entries(raw_value: str) -> tuple[tuple[str, 
         repository_name, separator, repository_ref = candidate_entry.rpartition("@")
         if not separator or not repository_name.strip() or not repository_ref.strip():
             raise RuntimeCommandError(
-                "Artifact publish requires addon repositories to use exact git SHAs in '<repo>@<sha>' form. "
+                "Artifact publish requires addon repositories to use '<repo>@<ref>' form. "
                 f"Received: {candidate_entry}"
             )
         normalized_repository = repository_name.strip()
         normalized_ref = repository_ref.strip()
-        if not re.fullmatch(r"[0-9a-fA-F]{7,40}", normalized_ref):
+        if require_exact_shas and not GIT_SHA_PATTERN.fullmatch(normalized_ref):
             raise RuntimeCommandError(
                 "Artifact publish requires addon repositories to use exact git SHAs. "
                 f"Received: {candidate_entry}"
@@ -1609,6 +1623,88 @@ def parse_artifact_addon_repository_entries(raw_value: str) -> tuple[tuple[str, 
         seen_entries.add(normalized_entry)
         entries.append(normalized_entry)
     return tuple(entries)
+
+
+def resolve_artifact_runtime_addon_repository_refs(
+    *,
+    runtime_values: dict[str, str],
+) -> tuple[dict[str, str], dict[str, str]]:
+    resolved_values = dict(runtime_values)
+    selector_build_flags: dict[str, str] = {}
+    for env_key in ARTIFACT_ADDON_ENV_KEYS:
+        raw_value = runtime_values.get(env_key, "")
+        parsed_entries = parse_artifact_addon_repository_entries(raw_value)
+        if not parsed_entries:
+            continue
+        resolved_entries: list[tuple[str, str]] = []
+        selector_entries: list[str] = []
+        for repository, ref in parsed_entries:
+            resolved_ref = ref
+            if not GIT_SHA_PATTERN.fullmatch(ref):
+                selector_entries.append(f"{repository}@{ref}")
+                resolved_ref = resolve_addon_repository_ref_to_git_sha(
+                    repository=repository,
+                    ref=ref,
+                )
+            resolved_entries.append((repository, resolved_ref))
+        resolved_values[env_key] = ",".join(
+            f"{repository}@{resolved_ref}" for repository, resolved_ref in resolved_entries
+        )
+        if selector_entries:
+            selector_build_flags[ARTIFACT_ADDON_SELECTOR_BUILD_FLAG_KEYS[env_key]] = ",".join(selector_entries)
+    return resolved_values, selector_build_flags
+
+
+def resolve_addon_repository_ref_to_git_sha(*, repository: str, ref: str) -> str:
+    normalized_repository = repository.strip()
+    normalized_ref = ref.strip()
+    if GIT_SHA_PATTERN.fullmatch(normalized_ref):
+        return normalized_ref
+    remote_url = resolve_addon_repository_remote_url(normalized_repository)
+    ls_remote_result = subprocess.run(
+        ["git", "ls-remote", "--refs", remote_url, normalized_ref],
+        capture_output=True,
+        text=True,
+        env=command_execution_env(),
+    )
+    if ls_remote_result.returncode != 0:
+        details = clean_optional_value(ls_remote_result.stderr) or clean_optional_value(ls_remote_result.stdout)
+        raise RuntimeCommandError(
+            "Artifact publish could not resolve addon repository ref "
+            f"{normalized_repository}@{normalized_ref}."
+            + (f"\nGit reported: {details}" if details else "")
+        )
+    resolved_shas = tuple(
+        line.split("\t", 1)[0].strip()
+        for line in ls_remote_result.stdout.splitlines()
+        if line.strip()
+    )
+    unique_resolved_shas = tuple(dict.fromkeys(resolved_shas))
+    if not unique_resolved_shas:
+        raise RuntimeCommandError(
+            "Artifact publish requires addon repository selectors to resolve to an exact git SHA. "
+            f"No remote ref matched {normalized_repository}@{normalized_ref}."
+        )
+    if len(unique_resolved_shas) != 1 or not GIT_SHA_PATTERN.fullmatch(unique_resolved_shas[0]):
+        raise RuntimeCommandError(
+            "Artifact publish requires addon repository selectors to resolve unambiguously to one git SHA. "
+            f"Received matches for {normalized_repository}@{normalized_ref}: {', '.join(unique_resolved_shas)}"
+        )
+    return unique_resolved_shas[0]
+
+
+def resolve_addon_repository_remote_url(repository: str) -> str:
+    normalized_repository = repository.strip()
+    if not normalized_repository:
+        raise RuntimeCommandError("Artifact publish requires a non-empty addon repository name.")
+    if normalized_repository.startswith("git@") or "://" in normalized_repository:
+        return normalized_repository
+    candidate_path = Path(normalized_repository).expanduser()
+    if candidate_path.is_absolute():
+        return str(candidate_path)
+    if normalized_repository.count("/") == 1:
+        return f"https://github.com/{normalized_repository}.git"
+    return normalized_repository
 
 
 def require_clean_git_commit(*, repo_path: Path, label: str) -> str:
@@ -1724,6 +1820,7 @@ def build_runtime_artifact_manifest_payload(
     runtime_repo_name: str,
     runtime_repo_commit: str,
     addon_sources: tuple[dict[str, str], ...],
+    addon_selector_build_flags: dict[str, str],
     openupgrade_addon_repository: str,
     openupgradelib_install_spec: str,
     addon_skip_flags: tuple[str, ...],
@@ -1741,6 +1838,7 @@ def build_runtime_artifact_manifest_payload(
         "runtime_repo": runtime_repo_name,
         "runtime_repo_commit": runtime_repo_commit,
     }
+    build_flag_values.update(addon_selector_build_flags)
     return {
         "schema_version": 1,
         "artifact_id": artifact_id,

@@ -746,7 +746,7 @@ attached_paths = ["sources/devkit"]
                 written_payload["addon_sources"],
             )
 
-    def test_native_runtime_publish_rejects_mutable_addon_refs(self) -> None:
+    def test_native_runtime_publish_resolves_addon_selectors_before_build(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
             tenant_repo_path = self._create_git_repo(temp_root / "tenant-repo")
@@ -767,6 +767,15 @@ attached_paths = ["sources/devkit"]
             subprocess.run(["git", "commit", "-m", "workspace manifest"], cwd=tenant_repo_path, check=True, capture_output=True)
             manifest = load_workspace_manifest(manifest_path)
 
+            captured_build_args: list[str] = []
+
+            def fake_run_command(*, runtime_repo_path: Path, command: list[str], environment_overrides=None, allowed_return_codes=None):
+                _ = runtime_repo_path, environment_overrides, allowed_return_codes
+                if command[:3] == ["docker", "buildx", "build"]:
+                    captured_build_args.extend(command)
+
+            resolved_ref = "411f6b8e85cac72dc7aa2e2dc5540001043c327d"
+
             with mock.patch(
                 "odoo_devkit.local_runtime.load_environment_from_control_plane",
                 return_value=local_runtime.LoadedEnvironment(
@@ -785,15 +794,41 @@ attached_paths = ["sources/devkit"]
             ):
                 with mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_base_images"):
                     with mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_image_push"):
-                        with mock.patch("odoo_devkit.local_runtime.run_command"):
-                            with self.assertRaisesRegex(ValueError, "exact git SHAs"):
-                                run_native_runtime_publish(
-                                    manifest=manifest,
-                                    image_repository="ghcr.io/example/opw-runtime",
-                                    image_tag="opw-20260416-abcdef",
-                                    output_file=None,
-                                    no_cache=False,
-                                )
+                        with mock.patch("odoo_devkit.local_runtime.run_command", side_effect=fake_run_command):
+                            with mock.patch(
+                                "odoo_devkit.local_runtime.resolve_addon_repository_ref_to_git_sha",
+                                return_value=resolved_ref,
+                            ) as resolve_ref_mock:
+                                with mock.patch(
+                                    "odoo_devkit.local_runtime.resolve_image_digest",
+                                    side_effect=["sha256:" + "1" * 64, "sha256:" + "2" * 64],
+                                ):
+                                    payload = run_native_runtime_publish(
+                                        manifest=manifest,
+                                        image_repository="ghcr.io/example/opw-runtime",
+                                        image_tag="opw-20260416-abcdef",
+                                        output_file=None,
+                                        no_cache=False,
+                                    )
+
+            resolve_ref_mock.assert_called_once_with(repository="cbusillo/disable_odoo_online", ref="main")
+            addon_build_arg = next(
+                argument
+                for argument in captured_build_args
+                if argument.startswith("ODOO_ADDON_REPOSITORIES=")
+            )
+            self.assertEqual(
+                addon_build_arg,
+                f"ODOO_ADDON_REPOSITORIES=cbusillo/disable_odoo_online@{resolved_ref}",
+            )
+            self.assertIn(
+                {"repository": "cbusillo/disable_odoo_online", "ref": resolved_ref},
+                payload["addon_sources"],
+            )
+            self.assertEqual(
+                payload["build_flags"]["values"]["odoo_addon_repository_selectors"],
+                "cbusillo/disable_odoo_online@main",
+            )
 
     def test_native_runtime_publish_prefers_exact_control_plane_refs_over_stack_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -865,6 +900,29 @@ attached_paths = ["sources/devkit"]
                 {"repository": "cbusillo/disable_odoo_online", "ref": exact_ref.rsplit("@", 1)[1]},
                 payload["addon_sources"],
             )
+
+    def test_resolve_addon_repository_ref_to_git_sha_rejects_missing_remote_ref(self) -> None:
+        with mock.patch(
+            "odoo_devkit.local_runtime.subprocess.run",
+            return_value=mock.Mock(returncode=0, stdout="", stderr=""),
+        ):
+            with self.assertRaisesRegex(ValueError, "No remote ref matched"):
+                local_runtime.resolve_addon_repository_ref_to_git_sha(
+                    repository="cbusillo/disable_odoo_online",
+                    ref="main",
+                )
+
+    def test_resolve_addon_repository_ref_to_git_sha_rejects_ambiguous_matches(self) -> None:
+        ambiguous_stdout = "1111111111111111111111111111111111111111\trefs/heads/main\n2222222222222222222222222222222222222222\trefs/tags/main\n"
+        with mock.patch(
+            "odoo_devkit.local_runtime.subprocess.run",
+            return_value=mock.Mock(returncode=0, stdout=ambiguous_stdout, stderr=""),
+        ):
+            with self.assertRaisesRegex(ValueError, "resolve unambiguously"):
+                local_runtime.resolve_addon_repository_ref_to_git_sha(
+                    repository="cbusillo/disable_odoo_online",
+                    ref="main",
+                )
 
     def test_native_runtime_down_runs_compose_down_with_optional_volumes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
