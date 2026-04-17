@@ -136,7 +136,7 @@ Purpose
 
 - Copy the thin tenant-overlay starter files into a target repo directory.
 - Stamp the tenant slug into the starter `workspace.toml`.
-- Give the first extracted tenant repo a repeatable thin-root starting point.
+- Give a tenant repo a repeatable thin-root starting point.
 - Keep the starter aligned with the flat tenant-addon rule: tenant-owned addons
   live directly under `addons/`, while shared addons stay external via
   `[repos.shared_addons]`.

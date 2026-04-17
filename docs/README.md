@@ -18,7 +18,7 @@ preview lifecycle for stable remote lanes live in `odoo-control-plane`.
 - [tooling/command-patterns.md](tooling/command-patterns.md) for concrete
   workspace command examples.
 - [tooling/tenant-overlay.md](tooling/tenant-overlay.md) for the thin tenant
-  repo shape used by the split.
+  repo shape used by the current workspace model.
 
 ## Shared Responsibilities
 

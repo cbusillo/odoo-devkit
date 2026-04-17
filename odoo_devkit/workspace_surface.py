@@ -158,7 +158,7 @@ def _render_workspace_docs_index(
         label="Tenant docs",
         relative_target=Path("../sources/tenant/docs/README.md"),
         absolute_target=tenant_repo_path / "docs" / "README.md",
-        fallback_text="Tenant docs index is not present yet; keep tenant-specific notes in the tenant repo as they are extracted.",
+        fallback_text="Tenant docs index is not present yet; keep tenant-specific notes in the tenant repo.",
     )
     shared_devkit_docs_line = _render_optional_link_line(
         label="Shared devkit docs",

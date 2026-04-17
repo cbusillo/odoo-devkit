@@ -4,7 +4,8 @@ title: Workspace Architecture
 
 Purpose
 
-- Capture the workspace-first architecture for extracted tenant workspaces.
+- Capture the workspace-first architecture for the current tenant workspace
+  model.
 - Make the ownership split explicit between the tenant repo, `odoo-devkit`,
   the materialized workspace root, and the control plane.
 
@@ -19,6 +20,8 @@ When
 - `odoo-devkit` owns the shared DX/runtime/bootstrap contract.
 - The control plane owns canonical deploy/build tuples and release-sensitive
   behavior.
+- Remote release flow remains artifact-backed and control-plane-owned rather
+  than branch-driven inside `odoo-devkit`.
 - Stable remote lanes live in the control-plane shape as `testing` and `prod`;
   Harbor PR previews are separate preview records and runtime state, not a
   durable third lane owned by `odoo-devkit`.
@@ -31,8 +34,7 @@ When
 - Tenant-specific docs and domain notes.
 - Tracked `workspace.toml` input for local DX defaults.
 - Thin repo-root instructions only.
-- Use `templates/tenant-overlay/` as the starting shape for extracted tenant
-  repos.
+- Use `templates/tenant-overlay/` as the starting shape for thin tenant repos.
 
 ### `odoo-devkit`
 

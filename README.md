@@ -22,7 +22,9 @@ The current workspace flow:
 
 For remote environments, the stable lane model is `testing` plus `prod`.
 Harbor-managed PR previews are a separate control-plane concern rather than a
-third durable runtime lane exposed through `platform runtime`.
+third durable runtime lane exposed through `platform runtime`. Remote release
+or promotion flow is artifact-backed and belongs in `odoo-control-plane`, not
+in branch-oriented `odoo-devkit` commands.
 
 ## Command surface
 

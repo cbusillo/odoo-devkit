@@ -2,7 +2,8 @@
 
 Purpose
 
-- Define the thin repo-root shape a tenant repo keeps in the split workspace.
+- Define the thin repo-root shape a tenant repo keeps in the current workspace
+  model.
 
 When
 
@@ -53,8 +54,11 @@ When
   through an explicit runtime `--instance` override.
 - Release actions for remote environments still belong in
   `odoo-control-plane`, not in tenant-root `platform runtime` commands.
-- The generated run configurations and shell helpers call
-  `uv --directory ../odoo-devkit run platform ...`.
+- The generated `Workspace Sync` and `Workspace Status` entrypoints call the
+  tenant-root helper scripts so the manifest stays anchored at the tenant repo
+  root.
+- Runtime run configurations continue to call
+  `uv --directory ../odoo-devkit run platform ...` directly.
 - For terminal use, tenant repos should prefer `./scripts/workspace-sync`
   and `./scripts/workspace-status` as anchored convenience commands so the
   manifest path stays tied to the tenant repo root.
