@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.25"]
+requires = ["hatchling>=1.29.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -9,7 +9,7 @@ description = "Workspace assembly tooling for tenant-focused Odoo development"
 requires-python = ">=3.13"
 dependencies = [
     "passlib>=1.7.4",
-    "pydantic>=2.11.0",
+    "pydantic>=2.13.2",
     "pydantic-settings>=2.10.0",
     "requests>=2.32.0",
 ]
