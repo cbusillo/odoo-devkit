@@ -474,7 +474,7 @@ def publish_runtime_artifact(
         repo_path=runtime_repo_path.resolve(),
         label=(manifest.runtime_repo.name if manifest.runtime_repo is not None else runtime_repo_path.name),
     )
-    addon_sources = collect_artifact_addon_sources(
+    artifact_source_entries = collect_artifact_source_entries(
         manifest=manifest,
         runtime_values=runtime_values,
     )
@@ -484,8 +484,8 @@ def publish_runtime_artifact(
         source_commit=tenant_commit,
         runtime_repo_name=(manifest.runtime_repo.name if manifest.runtime_repo is not None else runtime_repo_path.name),
         runtime_repo_commit=runtime_commit,
-        addon_sources=addon_sources,
-        addon_selectors=artifact_source_selectors,
+        artifact_source_entries=artifact_source_entries,
+        source_selector_entries=artifact_source_selectors,
         openupgrade_addon_repository=runtime_values.get("OPENUPGRADE_ADDON_REPOSITORY", ""),
         openupgradelib_install_spec=runtime_values.get("OPENUPGRADELIB_INSTALL_SPEC", ""),
         addon_skip_flags=parse_csv_values(runtime_values.get("ODOO_PYTHON_SYNC_SKIP_ADDONS", "")),
@@ -1627,15 +1627,15 @@ def resolve_manifest_shared_addons_repo_path(*, manifest: WorkspaceManifest) -> 
     )
 
 
-def collect_artifact_addon_sources(
+def collect_artifact_source_entries(
     *,
     manifest: WorkspaceManifest,
     runtime_values: dict[str, str],
 ) -> tuple[dict[str, str], ...]:
-    addon_sources: list[dict[str, str]] = []
+    source_entries: list[dict[str, str]] = []
     shared_addons_repo_path = resolve_manifest_shared_addons_repo_path(manifest=manifest)
     if manifest.shared_addons_repo is not None and shared_addons_repo_path is not None:
-        addon_sources.append(
+        source_entries.append(
             {
                 "repository": manifest.shared_addons_repo.url or manifest.shared_addons_repo.name,
                 "ref": require_clean_git_commit(
@@ -1645,9 +1645,7 @@ def collect_artifact_addon_sources(
             }
         )
 
-    seen_repository_refs: set[tuple[str, str]] = {
-        (entry["repository"], entry["ref"]) for entry in addon_sources
-    }
+    seen_repository_refs: set[tuple[str, str]] = {(entry["repository"], entry["ref"]) for entry in source_entries}
     for env_key in ARTIFACT_SOURCE_ENV_KEYS:
         raw_value = runtime_values.get(env_key, "")
         for repository, ref in parse_artifact_source_repository_entries(raw_value, require_exact_shas=True):
@@ -1655,8 +1653,8 @@ def collect_artifact_addon_sources(
             if repository_key in seen_repository_refs:
                 continue
             seen_repository_refs.add(repository_key)
-            addon_sources.append({"repository": repository, "ref": ref})
-    return tuple(addon_sources)
+            source_entries.append({"repository": repository, "ref": ref})
+    return tuple(source_entries)
 
 
 def parse_artifact_source_repository_entries(
@@ -1888,8 +1886,8 @@ def build_runtime_artifact_manifest_payload(
     source_commit: str,
     runtime_repo_name: str,
     runtime_repo_commit: str,
-    addon_sources: tuple[dict[str, str], ...],
-    addon_selectors: tuple[dict[str, str], ...],
+    artifact_source_entries: tuple[dict[str, str], ...],
+    source_selector_entries: tuple[dict[str, str], ...],
     openupgrade_addon_repository: str,
     openupgradelib_install_spec: str,
     addon_skip_flags: tuple[str, ...],
@@ -1912,8 +1910,8 @@ def build_runtime_artifact_manifest_payload(
         "artifact_id": artifact_id,
         "source_commit": source_commit,
         "enterprise_base_digest": enterprise_base_digest,
-        "addon_sources": list(addon_sources),
-        "addon_selectors": list(addon_selectors),
+        "addon_sources": list(artifact_source_entries),
+        "addon_selectors": list(source_selector_entries),
         "openupgrade_inputs": {
             "addon_repository": openupgrade_addon_repository,
             "install_spec": openupgradelib_install_spec,

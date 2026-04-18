@@ -56,7 +56,7 @@ When
   through an explicit runtime `--instance` override.
 - The scaffold includes a repo-owned `artifact-inputs.toml` beside
   `workspace.toml` so source selection lives in the tenant repo instead of
-  depending on runtime-side defaults.
+  depending on implicit runtime defaults.
 - Release actions for remote environments still belong in
   `odoo-control-plane`, not in tenant-root `platform runtime` commands.
 - The generated `Workspace Sync` and `Workspace Status` entrypoints call the
