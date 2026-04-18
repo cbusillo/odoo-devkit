@@ -218,6 +218,9 @@ Notes
   `platform runtime publish` uses it as the source-selection contract for
   publish addon inputs. Publish does not fall back to runtime `stack.toml`
   selector fields.
+- Use [artifact-inputs.md](artifact-inputs.md) for the file schema and example
+  shapes, including a non-Odoo example that keeps the contract repo-owned
+  instead of runtime-specific.
 - Tracked stack config should declare moving addon refs in
   `addon_repository_selectors` / `addon_repository_selectors_add`; reserve
   `addon_repositories` / `addon_repositories_add` for already-pinned exact SHA
