@@ -65,6 +65,7 @@ class TenantOverlayScaffoldTests(unittest.TestCase):
             )
 
             manifest_text = (output_directory / "workspace.toml").read_text(encoding="utf-8")
+            artifact_inputs_text = (output_directory / "artifact-inputs.toml").read_text(encoding="utf-8")
             agents_text = (output_directory / "AGENTS.md").read_text(encoding="utf-8")
             docs_index_text = (output_directory / "docs" / "README.md").read_text(encoding="utf-8")
             workspace_sync_text = (output_directory / "scripts" / "workspace-sync").read_text(encoding="utf-8")
@@ -76,6 +77,9 @@ class TenantOverlayScaffoldTests(unittest.TestCase):
             self.assertIn('name = "odoo-shared-addons"', manifest_text)
             self.assertIn('path = "../odoo-shared-addons"', manifest_text)
             self.assertIn('addons_paths = ["sources/tenant/addons", "sources/shared-addons"]', manifest_text)
+            self.assertIn('focus_paths = ["addons", "docs", "workspace.toml", "artifact-inputs.toml"]', manifest_text)
+            self.assertIn('repository = "cbusillo/disable_odoo_online"', artifact_inputs_text)
+            self.assertIn('selector = "main"', artifact_inputs_text)
             self.assertIn('platform", "runtime", "workflow"', manifest_text)
             self.assertIn('name = "opw Platform Update Local"', manifest_text)
             self.assertIn("sibling\n  `odoo-devkit` repo", agents_text)

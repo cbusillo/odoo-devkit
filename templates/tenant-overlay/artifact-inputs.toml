@@ -1,0 +1,5 @@
+schema_version = 1
+
+sources = [
+  { repository = "cbusillo/disable_odoo_online", selector = "main" },
+]

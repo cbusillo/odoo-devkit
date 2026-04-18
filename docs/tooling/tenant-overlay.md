@@ -27,6 +27,7 @@ When
 - a thin `docs/README.md`
 - tenant-specific docs
 - tracked `workspace.toml`
+- tracked `artifact-inputs.toml` for publish-time source selectors
 - tenant-owned code
 
 ## Tenant Root Should Not Contain
@@ -42,6 +43,7 @@ When
 - `templates/tenant-overlay/docs/README.md`
 - `templates/tenant-overlay/scripts/workspace-sync`
 - `templates/tenant-overlay/scripts/workspace-status`
+- `templates/tenant-overlay/artifact-inputs.toml`
 - `templates/tenant-overlay/workspace.toml`
 
 ## Scaffold Contract
@@ -52,6 +54,9 @@ When
   `../odoo-devkit` checkout so the same tracked manifest can keep
   `instance = "local"` while still running Dokploy-managed data workflows
   through an explicit runtime `--instance` override.
+- The scaffold includes a repo-owned `artifact-inputs.toml` beside
+  `workspace.toml` so publish-time source selection lives in the tenant repo
+  instead of depending on runtime stack defaults.
 - Release actions for remote environments still belong in
   `odoo-control-plane`, not in tenant-root `platform runtime` commands.
 - The generated `Workspace Sync` and `Workspace Status` entrypoints call the

@@ -34,7 +34,7 @@ addons_paths = ["sources/tenant/addons", "sources/shared-addons"]
 
 [ide]
 mode = "tenant_repo"
-focus_paths = ["addons", "docs", "workspace.toml"]
+focus_paths = ["addons", "docs", "workspace.toml", "artifact-inputs.toml"]
 attached_paths = ["sources/shared-addons", "sources/devkit"]
 
 [codex]
