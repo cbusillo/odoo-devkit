@@ -406,6 +406,7 @@ def publish_runtime_artifact(
         build_target_override="production",
         image_repository_override=normalized_image_repository,
         image_tag_override=normalized_image_tag,
+        include_runtime_selection_addons=False,
     )
     runtime_values = apply_publish_artifact_input_manifest(
         manifest=manifest,
@@ -1415,6 +1416,7 @@ def build_runtime_env_values(
     build_target_override: str | None = None,
     image_repository_override: str | None = None,
     image_tag_override: str | None = None,
+    include_runtime_selection_addons: bool = True,
 ) -> dict[str, str]:
     stack_definition = runtime_context.stack.stack_definition
     runtime_selection = runtime_context.selection
@@ -1425,6 +1427,7 @@ def build_runtime_env_values(
     effective_addon_repositories = effective_runtime_addon_repositories(
         runtime_selection=runtime_selection,
         source_environment=openupgrade_environment,
+        include_runtime_selection_addons=include_runtime_selection_addons,
     )
     compose_build_target = build_target_override or openupgrade_environment.get("COMPOSE_BUILD_TARGET", "development")
     docker_image = image_repository_override or runtime_selection.project_name
@@ -1973,7 +1976,10 @@ def render_runtime_env(runtime_values: dict[str, str]) -> str:
 
 
 def effective_runtime_addon_repositories(
-    *, runtime_selection: RuntimeSelection, source_environment: dict[str, str]
+    *,
+    runtime_selection: RuntimeSelection,
+    source_environment: dict[str, str],
+    include_runtime_selection_addons: bool = True,
 ) -> tuple[str, ...]:
     effective_repositories: list[str] = []
     repository_indexes: dict[str, int] = {}
@@ -1990,8 +1996,9 @@ def effective_runtime_addon_repositories(
             return
         effective_repositories[existing_index] = normalized_repository
 
-    for configured_repository in runtime_selection.effective_addon_repositories:
-        upsert_repository(configured_repository)
+    if include_runtime_selection_addons:
+        for configured_repository in runtime_selection.effective_addon_repositories:
+            upsert_repository(configured_repository)
     for configured_repository in parse_csv_values(source_environment.get("ODOO_ADDON_REPOSITORIES", "")):
         upsert_repository(configured_repository)
     if openupgrade_enabled(source_environment):

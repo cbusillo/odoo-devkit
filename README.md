@@ -138,6 +138,5 @@ real build context, requires clean git worktrees for the repos it captures,
 pushes the resulting image, resolves the pushed digest, and emits a
 control-plane-compatible artifact manifest JSON file.
 When a repo-owned `artifact-inputs.toml` exists beside `workspace.toml`,
-publish treats that file as the source-selection contract for publish inputs;
-otherwise it falls back to the current Odoo `stack.toml` addon selector fields
-as a compatibility path.
+publish treats that file as the source-selection contract for publish addon
+inputs. Publish no longer falls back to runtime `stack.toml` selector fields.
