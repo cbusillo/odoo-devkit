@@ -214,10 +214,14 @@ Notes
   repository selectors to exact git SHAs before build and artifact minting,
   pushes the requested image tag, resolves the pushed digest, and writes a
   control-plane-compatible artifact manifest JSON file.
+- When a repo-owned `artifact-inputs.toml` lives beside `workspace.toml`,
+  `platform runtime publish` uses it as the source-selection contract for
+  publish inputs. If it is absent, publish falls back to the current Odoo
+  `stack.toml` addon selector fields as a compatibility path.
 - Tracked stack config should declare moving addon refs in
   `addon_repository_selectors` / `addon_repository_selectors_add`; reserve
   `addon_repositories` / `addon_repositories_add` for already-pinned exact SHA
-  inputs.
+  inputs until repos migrate to the dedicated artifact-input manifest.
 - Artifact manifests preserve selector intent in `addon_selectors` while
   keeping `addon_sources` as the resolved exact-SHA runtime truth consumed by
   control-plane release and deploy flows.

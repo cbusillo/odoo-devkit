@@ -62,6 +62,11 @@ class CodexDefinition:
 
 
 @dataclass(frozen=True)
+class ArtifactsDefinition:
+    inputs_file: str | None = None
+
+
+@dataclass(frozen=True)
 class WorkspaceManifest:
     schema_version: int
     tenant: str
@@ -70,6 +75,7 @@ class WorkspaceManifest:
     runtime: RuntimeDefinition
     ide: IdeDefinition
     codex: CodexDefinition
+    artifacts: ArtifactsDefinition
     tenant_repo: RepoDefinition
     shared_addons_repo: RepoDefinition | None = None
     devkit_repo: RepoDefinition | None = None
@@ -91,6 +97,7 @@ def load_workspace_manifest(manifest_path: Path) -> WorkspaceManifest:
     runtime_table = _read_required_table(manifest_data, "runtime")
     ide_table = _read_required_table(manifest_data, "ide")
     codex_table = _read_optional_table(manifest_data, "codex")
+    artifacts_table = _read_optional_table(manifest_data, "artifacts")
     repositories_table = _read_required_table(manifest_data, "repos")
     tenant_repo = _parse_repo_definition(repositories_table, "tenant")
     shared_addons_repo = _parse_optional_repo_definition(repositories_table, "shared_addons")
@@ -123,6 +130,9 @@ def load_workspace_manifest(manifest_path: Path) -> WorkspaceManifest:
         workspace_agents=_read_optional_bool(codex_table, "workspace_agents", default=True),
         workspace_docs_index=_read_optional_bool(codex_table, "workspace_docs_index", default=True),
     )
+    artifacts_definition = ArtifactsDefinition(
+        inputs_file=_read_optional_string(artifacts_table, "inputs_file"),
+    )
     return WorkspaceManifest(
         schema_version=schema_version,
         tenant=tenant_name,
@@ -131,6 +141,7 @@ def load_workspace_manifest(manifest_path: Path) -> WorkspaceManifest:
         runtime=runtime_definition,
         ide=ide_definition,
         codex=codex_definition,
+        artifacts=artifacts_definition,
         tenant_repo=tenant_repo,
         shared_addons_repo=shared_addons_repo,
         devkit_repo=devkit_repo,

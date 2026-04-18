@@ -15,6 +15,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 
+from .artifact_inputs import (
+    ArtifactInputsError,
+    effective_artifact_input_sources,
+    load_artifact_inputs_definition,
+)
 from .ide_support import write_pycharm_odoo_conf
 from .manifest import WorkspaceManifest
 
@@ -401,6 +406,11 @@ def publish_runtime_artifact(
         build_target_override="production",
         image_repository_override=normalized_image_repository,
         image_tag_override=normalized_image_tag,
+    )
+    runtime_values = apply_publish_artifact_input_manifest(
+        manifest=manifest,
+        runtime_context=runtime_context,
+        runtime_values=runtime_values,
     )
     runtime_values, artifact_addon_selectors = resolve_artifact_runtime_addon_repository_refs(
         runtime_values=runtime_values,
@@ -1489,6 +1499,30 @@ def build_runtime_env_values(
     for runtime_key, runtime_value in runtime_selection.effective_runtime_env.items():
         runtime_values[runtime_key] = runtime_value
     return runtime_values
+
+
+def apply_publish_artifact_input_manifest(
+    *,
+    manifest: WorkspaceManifest,
+    runtime_context: RuntimeContext,
+    runtime_values: dict[str, str],
+) -> dict[str, str]:
+    try:
+        artifact_inputs_definition = load_artifact_inputs_definition(manifest=manifest)
+    except ArtifactInputsError as error:
+        raise RuntimeCommandError(str(error)) from error
+    if artifact_inputs_definition is None:
+        return runtime_values
+    effective_sources = effective_artifact_input_sources(
+        artifact_inputs_definition=artifact_inputs_definition,
+        context_name=runtime_context.selection.context_name,
+        instance_name=runtime_context.selection.instance_name,
+    )
+    updated_values = dict(runtime_values)
+    updated_values["ODOO_ADDON_REPOSITORIES"] = ",".join(
+        source_definition.repository_spec() for source_definition in effective_sources
+    )
+    return updated_values
 
 
 @dataclass(frozen=True)

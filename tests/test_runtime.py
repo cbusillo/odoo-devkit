@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from odoo_devkit import artifact_inputs
 from odoo_devkit import local_runtime
 from odoo_devkit.cli import (
     _handle_runtime_build,
@@ -858,6 +859,183 @@ install_modules = ["opw_custom"]
                 ],
             )
             self.assertNotIn("odoo_addon_repository_selectors", payload["build_flags"]["values"])
+
+    def test_native_runtime_publish_prefers_artifact_inputs_manifest_over_runtime_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = self._create_git_repo(temp_root / "tenant-repo")
+            runtime_repo_path = self._create_git_repo(temp_root / "runtime-repo")
+            (tenant_repo_path / "addons" / "opw_custom").mkdir(parents=True, exist_ok=True)
+            (tenant_repo_path / "addons" / "opw_custom" / "__manifest__.py").write_text("{}\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=tenant_repo_path, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "tenant addons"], cwd=tenant_repo_path, check=True, capture_output=True)
+            self._write_runtime_repo(runtime_repo_path)
+            subprocess.run(["git", "add", "."], cwd=runtime_repo_path, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "runtime files"], cwd=runtime_repo_path, check=True, capture_output=True)
+            manifest_path = self._write_manifest(
+                tenant_repo_path=tenant_repo_path,
+                runtime_repo_path=runtime_repo_path,
+                instance_name="testing",
+            )
+            (tenant_repo_path / "artifact-inputs.toml").write_text(
+                """
+schema_version = 1
+sources = [
+  { repository = "cbusillo/disable_odoo_online", selector = "release-19" },
+]
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+            subprocess.run(["git", "add", "workspace.toml", "artifact-inputs.toml"], cwd=tenant_repo_path, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "workspace manifest"], cwd=tenant_repo_path, check=True, capture_output=True)
+            manifest = load_workspace_manifest(manifest_path)
+
+            captured_build_args: list[str] = []
+
+            def fake_run_command(*, runtime_repo_path: Path, command: list[str], environment_overrides=None, allowed_return_codes=None):
+                _ = runtime_repo_path, environment_overrides, allowed_return_codes
+                if command[:3] == ["docker", "buildx", "build"]:
+                    captured_build_args.extend(command)
+
+            resolved_ref = "411f6b8e85cac72dc7aa2e2dc5540001043c327d"
+            with mock.patch(
+                "odoo_devkit.local_runtime.load_environment_from_control_plane",
+                return_value=local_runtime.LoadedEnvironment(
+                    env_file_path=self.control_plane_root / ".generated" / "runtime-env" / "opw.testing.env",
+                    merged_values={
+                        "ODOO_MASTER_PASSWORD": "control-plane-master",
+                        "ODOO_DB_USER": "odoo",
+                        "ODOO_DB_PASSWORD": "control-plane-secret",
+                        "GITHUB_TOKEN": "gh-token",
+                        "ODOO_BASE_RUNTIME_IMAGE": "ghcr.io/example/runtime:19.0-runtime",
+                        "ODOO_BASE_DEVTOOLS_IMAGE": "ghcr.io/example/devtools:19.0-devtools",
+                        "ODOO_ADDON_REPOSITORIES": "cbusillo/disable_odoo_online@ffffffffffffffffffffffffffffffffffffffff",
+                    },
+                    collisions=(),
+                ),
+            ):
+                with mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_base_images"):
+                    with mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_image_push"):
+                        with mock.patch("odoo_devkit.local_runtime.run_command", side_effect=fake_run_command):
+                            with mock.patch(
+                                "odoo_devkit.local_runtime.resolve_addon_repository_ref_to_git_sha",
+                                return_value=resolved_ref,
+                            ) as resolve_ref_mock:
+                                with mock.patch(
+                                    "odoo_devkit.local_runtime.resolve_image_digest",
+                                    side_effect=["sha256:" + "1" * 64, "sha256:" + "2" * 64],
+                                ):
+                                    payload = run_native_runtime_publish(
+                                        manifest=manifest,
+                                        image_repository="ghcr.io/example/opw-runtime",
+                                        image_tag="opw-20260416-abcdef",
+                                        output_file=None,
+                                        no_cache=False,
+                                    )
+
+            resolve_ref_mock.assert_called_once_with(repository="cbusillo/disable_odoo_online", ref="release-19")
+            addon_build_arg = next(argument for argument in captured_build_args if argument.startswith("ODOO_ADDON_REPOSITORIES="))
+            self.assertEqual(
+                addon_build_arg,
+                f"ODOO_ADDON_REPOSITORIES=cbusillo/disable_odoo_online@{resolved_ref}",
+            )
+            self.assertEqual(
+                payload["addon_selectors"],
+                [
+                    {
+                        "repository": "cbusillo/disable_odoo_online",
+                        "selector": "release-19",
+                        "resolved_ref": resolved_ref,
+                    }
+                ],
+            )
+
+    def test_native_runtime_publish_rejects_invalid_artifact_inputs_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = self._create_git_repo(temp_root / "tenant-repo")
+            runtime_repo_path = self._create_git_repo(temp_root / "runtime-repo")
+            (tenant_repo_path / "addons" / "opw_custom").mkdir(parents=True, exist_ok=True)
+            (tenant_repo_path / "addons" / "opw_custom" / "__manifest__.py").write_text("{}\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=tenant_repo_path, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "tenant addons"], cwd=tenant_repo_path, check=True, capture_output=True)
+            self._write_runtime_repo(runtime_repo_path)
+            subprocess.run(["git", "add", "."], cwd=runtime_repo_path, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "runtime files"], cwd=runtime_repo_path, check=True, capture_output=True)
+            manifest_path = self._write_manifest(
+                tenant_repo_path=tenant_repo_path,
+                runtime_repo_path=runtime_repo_path,
+                instance_name="testing",
+                artifact_inputs_file="config/publish-inputs.toml",
+            )
+            (tenant_repo_path / "config").mkdir(parents=True, exist_ok=True)
+            (tenant_repo_path / "config" / "publish-inputs.toml").write_text(
+                """
+schema_version = 1
+sources = [
+  { repository = "cbusillo/disable_odoo_online", selector = "main", exact_ref = "411f6b8e85cac72dc7aa2e2dc5540001043c327d" },
+]
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+            subprocess.run(["git", "add", "workspace.toml", "config/publish-inputs.toml"], cwd=tenant_repo_path, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "workspace manifest"], cwd=tenant_repo_path, check=True, capture_output=True)
+            manifest = load_workspace_manifest(manifest_path)
+
+            with self.assertRaisesRegex(ValueError, "exactly one of exact_ref or selector"):
+                run_native_runtime_publish(
+                    manifest=manifest,
+                    image_repository="ghcr.io/example/opw-runtime",
+                    image_tag="opw-20260416-abcdef",
+                    output_file=None,
+                    no_cache=False,
+                )
+
+    def test_artifact_inputs_manifest_merges_context_and_instance_sources(self) -> None:
+        definition = artifact_inputs.parse_artifact_inputs_definition(
+            payload={
+                "schema_version": 1,
+                "sources": [
+                    {"repository": "cbusillo/disable_odoo_online", "selector": "main"},
+                    {"repository": "example/global", "selector": "stable"},
+                ],
+                "contexts": {
+                    "opw": {
+                        "sources_add": [
+                            {
+                                "repository": "cbusillo/disable_odoo_online",
+                                "exact_ref": "411f6b8e85cac72dc7aa2e2dc5540001043c327d",
+                            }
+                        ],
+                        "instances": {
+                            "testing": {
+                                "sources_add": [
+                                    {"repository": "example/testing", "selector": "release-19"}
+                                ]
+                            }
+                        },
+                    }
+                },
+            },
+            source_file_path=Path("/tmp/artifact-inputs.toml"),
+        )
+
+        effective_sources = artifact_inputs.effective_artifact_input_sources(
+            artifact_inputs_definition=definition,
+            context_name="opw",
+            instance_name="testing",
+        )
+
+        self.assertEqual(
+            tuple(source.repository_spec() for source in effective_sources),
+            (
+                "cbusillo/disable_odoo_online@411f6b8e85cac72dc7aa2e2dc5540001043c327d",
+                "example/global@stable",
+                "example/testing@release-19",
+            ),
+        )
 
     def test_resolve_runtime_selection_tracks_effective_addon_repository_selectors(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1722,16 +1900,24 @@ install_modules = ["opw_custom"]
         shared_addons_repo_path: Path | None = None,
         addons_paths: tuple[str, ...] = ("sources/tenant/addons",),
         instance_name: str = "local",
+        artifact_inputs_file: str | None = None,
     ) -> Path:
         manifest_path = tenant_repo_path / "workspace.toml"
         (tenant_repo_path / "addons").mkdir(parents=True, exist_ok=True)
         shared_addons_block = ""
+        artifacts_block = ""
         if shared_addons_repo_path is not None:
             shared_addons_block = f"""
 
 [repos.shared_addons]
 name = "shared-addons-repo"
 path = "{shared_addons_repo_path}"
+"""
+        if artifact_inputs_file is not None:
+            artifacts_block = f"""
+
+[artifacts]
+inputs_file = "{artifact_inputs_file}"
 """
         rendered_addons_paths = ", ".join(f'"{addons_path}"' for addons_path in addons_paths)
         manifest_path.write_text(
@@ -1757,6 +1943,7 @@ context = "opw"
 instance = "{instance_name}"
 database = "opw"
 addons_paths = [{rendered_addons_paths}]
+{artifacts_block}
 
 [ide]
 mode = "tenant_repo"
