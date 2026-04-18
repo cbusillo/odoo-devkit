@@ -2,16 +2,16 @@
 
 Purpose
 
-- Define the repo-owned publish input contract for source selectors.
+- Define the repo-owned source-input contract for publish and runtime selection.
 
 When
 
 - When a repo needs publish-time source selection to live with the product repo
-  instead of hiding in runtime stack defaults.
+  instead of hiding in runtime config.
 
 ## Principle
 
-- Keep publish input intent versioned in the repo that owns the build.
+- Keep source input intent versioned in the repo that owns the build.
 - Keep `workspace.toml` focused on workspace assembly and runtime targeting.
 - Keep runtime stack config focused on runtime selection state.
 - Keep artifact, release, and deploy truth pinned to resolved SHAs and image
@@ -22,8 +22,8 @@ When
 - The default file name is `artifact-inputs.toml` beside `workspace.toml`.
 - `workspace.toml` can override the path with `[artifacts].inputs_file` when a
   repo needs a different layout.
-- `platform runtime` reads this file for addon source selectors used by local
-  runtime and publish flows.
+- `platform runtime` reads this file for source repository selection used by
+  local runtime and publish flows.
 
 ## Current schema
 
@@ -32,7 +32,10 @@ schema_version = 1
 
 sources = [
   { repository = "owner/repo", selector = "main" },
-  { repository = "owner/another-repo", exact_ref = "411f6b8e85cac72dc7aa2e2dc5540001043c327d" },
+  {
+    repository = "owner/another-repo",
+    exact_ref = "411f6b8e85cac72dc7aa2e2dc5540001043c327d",
+  },
 ]
 
 [contexts.testing]
@@ -42,7 +45,10 @@ sources_add = [
 
 [contexts.testing.instances.prod]
 sources_add = [
-  { repository = "owner/hotfix", exact_ref = "89e649728027a8ab656b3aa4be18f4bd364db417" },
+  {
+    repository = "owner/hotfix",
+    exact_ref = "89e649728027a8ab656b3aa4be18f4bd364db417",
+  },
 ]
 ```
 
@@ -87,12 +93,15 @@ sources_add = [
 
 [contexts.preview.instances.demo]
 sources_add = [
-  { repository = "every-inc/verireel-branding", exact_ref = "7d33f3a0c6c1f8b675d619d8ad5ec4d9820f2c19" },
+  {
+    repository = "every-inc/verireel-branding",
+    exact_ref = "7d33f3a0c6c1f8b675d619d8ad5ec4d9820f2c19",
+  },
 ]
 ```
 
 Today, `platform runtime publish` still wires these resolved entries into the
-Odoo addon source environment. The schema itself is repo-owned and neutral,
+current Odoo runtime environment. The schema itself is repo-owned and neutral,
 which is why this example belongs here even before a full non-Odoo runtime path
 lands.
 
@@ -100,5 +109,5 @@ lands.
 
 - If a repo needs publish-time source selection, add or edit
   `artifact-inputs.toml` in that repo.
-- Do not put publish selector intent back into `stack.toml` as a convenience
+- Do not put source selector intent back into `stack.toml` as a convenience
   shortcut.

@@ -15,7 +15,7 @@ When
 - Keep shared DX/runtime/bootstrap guidance in `odoo-devkit`.
 - Keep the workspace root as the generated Every Code cockpit.
 - Let the tenant repo keep thin run configurations and shell helpers that call
-  the sibling `odoo-devkit` repo, while shared-addon source stays explicit in
+  the sibling `odoo-devkit` repo, while shared addon source stays explicit in
   the manifest.
 - Keep tenant-owned addons directly under the tenant repo's `addons/`
   directory. Do not add an extra `addons/<tenant>/` bucket unless tooling grows
@@ -27,7 +27,7 @@ When
 - a thin `docs/README.md`
 - tenant-specific docs
 - tracked `workspace.toml`
-- tracked `artifact-inputs.toml` for runtime and publish-time source selectors
+- tracked `artifact-inputs.toml` for runtime and publish-time source inputs
 - tenant-owned code
 
 ## Tenant Root Should Not Contain
@@ -55,8 +55,8 @@ When
   `instance = "local"` while still running Dokploy-managed data workflows
   through an explicit runtime `--instance` override.
 - The scaffold includes a repo-owned `artifact-inputs.toml` beside
-  `workspace.toml` so addon source selection lives in the tenant repo instead
-  of depending on runtime stack defaults.
+  `workspace.toml` so source selection lives in the tenant repo instead of
+  depending on runtime-side defaults.
 - Release actions for remote environments still belong in
   `odoo-control-plane`, not in tenant-root `platform runtime` commands.
 - The generated `Workspace Sync` and `Workspace Status` entrypoints call the

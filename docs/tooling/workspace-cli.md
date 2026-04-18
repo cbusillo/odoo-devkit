@@ -215,14 +215,13 @@ Notes
   pushes the requested image tag, resolves the pushed digest, and writes a
   control-plane-compatible artifact manifest JSON file.
 - When a repo-owned `artifact-inputs.toml` lives beside `workspace.toml`,
-  `platform runtime` commands use it as the source-selection contract for addon
-  inputs. Runtime and publish do not fall back to `stack.toml` selector
-  fields.
+  `platform runtime` commands use it as the repo-owned source-input contract.
+  Runtime and publish do not fall back to `stack.toml` source selector fields.
 - Use [artifact-inputs.md](artifact-inputs.md) for the file schema and example
   shapes, including a non-Odoo example that keeps the contract repo-owned
   instead of runtime-specific.
-- Runtime stack config should not declare addon source selectors. Repo-owned
-  addon source selection belongs in the dedicated artifact-input manifest.
+- Runtime stack config should not declare source repository selectors.
+  Repo-owned source selection belongs in the dedicated artifact-input manifest.
 - Artifact manifests preserve selector intent in `addon_selectors` while
   keeping `addon_sources` as the resolved exact-SHA runtime truth consumed by
   control-plane release and deploy flows.

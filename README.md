@@ -138,6 +138,6 @@ real build context, requires clean git worktrees for the repos it captures,
 pushes the resulting image, resolves the pushed digest, and emits a
 control-plane-compatible artifact manifest JSON file.
 When a repo-owned `artifact-inputs.toml` exists beside `workspace.toml`,
-runtime and publish treat that file as the source-selection contract for addon
-inputs. Runtime and publish no longer fall back to `stack.toml` selector
+runtime and publish treat that file as the repo-owned source-input contract.
+Runtime and publish no longer fall back to `stack.toml` source selector
 fields.
