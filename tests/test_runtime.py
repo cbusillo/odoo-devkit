@@ -853,7 +853,7 @@ sources = [
                     with mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_image_push"):
                         with mock.patch("odoo_devkit.local_runtime.run_command", side_effect=fake_run_command):
                             with mock.patch(
-                                "odoo_devkit.local_runtime.resolve_addon_repository_ref_to_git_sha",
+                                "odoo_devkit.local_runtime.resolve_source_repository_ref_to_git_sha",
                                 return_value=resolved_ref,
                             ) as resolve_ref_mock:
                                 with mock.patch(
@@ -1013,7 +1013,7 @@ sources = [
                     with mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_image_push"):
                         with mock.patch("odoo_devkit.local_runtime.run_command", side_effect=fake_run_command):
                             with mock.patch(
-                                "odoo_devkit.local_runtime.resolve_addon_repository_ref_to_git_sha",
+                                "odoo_devkit.local_runtime.resolve_source_repository_ref_to_git_sha",
                                 return_value=resolved_ref,
                             ) as resolve_ref_mock:
                                 with mock.patch(
@@ -1131,7 +1131,7 @@ sources = [
             ),
         )
 
-    def test_resolve_runtime_selection_tracks_effective_addon_repository_selectors(self) -> None:
+    def test_resolve_runtime_selection_tracks_effective_source_selectors(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
             stack_definition = local_runtime.parse_stack_definition(
@@ -1188,7 +1188,7 @@ sources = [
             )
 
             self.assertEqual(
-                selection.effective_addon_repositories,
+                selection.effective_source_repositories,
                 (
                     "cbusillo/disable_odoo_online@411f6b8e85cac72dc7aa2e2dc5540001043c327d",
                     "example/retained_selector@stable",
@@ -1196,7 +1196,7 @@ sources = [
                 ),
             )
             self.assertEqual(
-                selection.effective_addon_repository_selectors,
+                selection.effective_source_selectors,
                 (
                     "example/retained_selector@stable",
                     "example/testing_selector@release-19",
@@ -1274,25 +1274,25 @@ sources = [
                 payload["addon_sources"],
             )
 
-    def test_resolve_addon_repository_ref_to_git_sha_rejects_missing_remote_ref(self) -> None:
+    def test_resolve_source_repository_ref_to_git_sha_rejects_missing_remote_ref(self) -> None:
         with mock.patch(
             "odoo_devkit.local_runtime.subprocess.run",
             return_value=mock.Mock(returncode=0, stdout="", stderr=""),
         ):
             with self.assertRaisesRegex(ValueError, "No remote ref matched"):
-                local_runtime.resolve_addon_repository_ref_to_git_sha(
+                local_runtime.resolve_source_repository_ref_to_git_sha(
                     repository="cbusillo/disable_odoo_online",
                     ref="main",
                 )
 
-    def test_resolve_addon_repository_ref_to_git_sha_rejects_ambiguous_matches(self) -> None:
+    def test_resolve_source_repository_ref_to_git_sha_rejects_ambiguous_matches(self) -> None:
         ambiguous_stdout = "1111111111111111111111111111111111111111\trefs/heads/main\n2222222222222222222222222222222222222222\trefs/tags/main\n"
         with mock.patch(
             "odoo_devkit.local_runtime.subprocess.run",
             return_value=mock.Mock(returncode=0, stdout=ambiguous_stdout, stderr=""),
         ):
             with self.assertRaisesRegex(ValueError, "resolve unambiguously"):
-                local_runtime.resolve_addon_repository_ref_to_git_sha(
+                local_runtime.resolve_source_repository_ref_to_git_sha(
                     repository="cbusillo/disable_odoo_online",
                     ref="main",
                 )

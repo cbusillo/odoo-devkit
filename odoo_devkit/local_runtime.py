@@ -28,7 +28,7 @@ ScalarValue = str | int | float | bool
 ScalarMap = dict[str, ScalarValue]
 DEFAULT_ARTIFACT_IMAGE_PLATFORMS = ("linux/amd64", "linux/arm64")
 GIT_SHA_PATTERN = re.compile(r"[0-9a-fA-F]{7,40}")
-ARTIFACT_ADDON_ENV_KEYS = ("ODOO_ADDON_REPOSITORIES", "OPENUPGRADE_ADDON_REPOSITORY")
+ARTIFACT_SOURCE_ENV_KEYS = ("ODOO_ADDON_REPOSITORIES", "OPENUPGRADE_ADDON_REPOSITORY")
 
 PLATFORM_RUNTIME_ENV_KEYS = (
     "PLATFORM_CONTEXT",
@@ -235,8 +235,8 @@ class RuntimeSelection:
     db_host_port: int
     runtime_odoo_conf_path: str
     effective_install_modules: tuple[str, ...]
-    effective_addon_repositories: tuple[str, ...]
-    effective_addon_repository_selectors: tuple[str, ...]
+    effective_source_repositories: tuple[str, ...]
+    effective_source_selectors: tuple[str, ...]
     effective_runtime_env: dict[str, str]
 
 
@@ -333,8 +333,8 @@ def inspect_runtime(*, manifest: WorkspaceManifest, runtime_repo_path: Path) -> 
             if local_addons_mount_paths.shared_addons_host_path is not None
             else ""
         ),
-        "addon_repositories": list(runtime_context.selection.effective_addon_repositories),
-        "addon_repository_selectors": list(runtime_context.selection.effective_addon_repository_selectors),
+        "addon_repositories": list(runtime_context.selection.effective_source_repositories),
+        "addon_repository_selectors": list(runtime_context.selection.effective_source_selectors),
         "install_modules": list(runtime_context.selection.effective_install_modules),
         "note": "Use pycharm_odoo_conf_host for run configs/tooling with explicit -c config paths; odoo_conf_host is for runtime bootstrap.",
     }
@@ -402,13 +402,13 @@ def publish_runtime_artifact(
         build_target_override="production",
         image_repository_override=normalized_image_repository,
         image_tag_override=normalized_image_tag,
-        include_runtime_selection_addons=False,
+        include_selection_sources=False,
     )
     runtime_values = apply_publish_artifact_input_manifest(
         runtime_context=runtime_context,
         runtime_values=runtime_values,
     )
-    runtime_values, artifact_addon_selectors = resolve_artifact_runtime_addon_repository_refs(
+    runtime_values, artifact_source_selectors = resolve_artifact_runtime_source_repository_refs(
         runtime_values=runtime_values,
     )
     ensure_registry_auth_for_base_images(runtime_values)
@@ -485,7 +485,7 @@ def publish_runtime_artifact(
         runtime_repo_name=(manifest.runtime_repo.name if manifest.runtime_repo is not None else runtime_repo_path.name),
         runtime_repo_commit=runtime_commit,
         addon_sources=addon_sources,
-        addon_selectors=artifact_addon_selectors,
+        addon_selectors=artifact_source_selectors,
         openupgrade_addon_repository=runtime_values.get("OPENUPGRADE_ADDON_REPOSITORY", ""),
         openupgradelib_install_spec=runtime_values.get("OPENUPGRADELIB_INSTALL_SPEC", ""),
         addon_skip_flags=parse_csv_values(runtime_values.get("ODOO_PYTHON_SYNC_SKIP_ADDONS", "")),
@@ -1263,15 +1263,15 @@ def resolve_runtime_selection(
     effective_install_modules = merge_effective_modules(
         context_definition=context_definition, instance_definition=instance_definition
     )
-    effective_addon_repositories = resolve_runtime_addon_repositories(
+    effective_source_repositories = resolve_runtime_source_repositories(
         artifact_inputs_definition=artifact_inputs_definition,
         context_name=context_name,
         instance_name=instance_name,
     )
-    effective_addon_repository_selectors = tuple(
+    effective_source_selectors = tuple(
         repository_spec
-        for repository_spec in effective_addon_repositories
-        if addon_repository_declares_selector(repository_spec)
+        for repository_spec in effective_source_repositories
+        if repository_spec_declares_selector(repository_spec)
     )
     effective_runtime_env = merge_effective_runtime_env(
         stack_definition=stack_definition,
@@ -1300,8 +1300,8 @@ def resolve_runtime_selection(
         db_host_port=base_db_port + instance_offset,
         runtime_odoo_conf_path="/tmp/platform.odoo.conf",
         effective_install_modules=effective_install_modules,
-        effective_addon_repositories=effective_addon_repositories,
-        effective_addon_repository_selectors=effective_addon_repository_selectors,
+        effective_source_repositories=effective_source_repositories,
+        effective_source_selectors=effective_source_selectors,
         effective_runtime_env=effective_runtime_env,
     )
 
@@ -1314,7 +1314,7 @@ def merge_effective_modules(*, context_definition: ContextDefinition, instance_d
     return tuple(effective_install_modules)
 
 
-def resolve_runtime_addon_repositories(
+def resolve_runtime_source_repositories(
     *,
     artifact_inputs_definition: ArtifactInputsDefinition | None,
     context_name: str,
@@ -1411,7 +1411,7 @@ def build_runtime_env_values(
     build_target_override: str | None = None,
     image_repository_override: str | None = None,
     image_tag_override: str | None = None,
-    include_runtime_selection_addons: bool = True,
+    include_selection_sources: bool = True,
 ) -> dict[str, str]:
     stack_definition = runtime_context.stack.stack_definition
     runtime_selection = runtime_context.selection
@@ -1419,10 +1419,10 @@ def build_runtime_env_values(
     local_addons_mount_paths = resolve_manifest_local_addons_mount_paths(manifest=runtime_context.manifest)
     openupgrade_environment = {key: str(value) for key, value in runtime_selection.effective_runtime_env.items()}
     openupgrade_environment.update(source_environment)
-    effective_addon_repositories = effective_runtime_addon_repositories(
+    effective_source_repositories = effective_runtime_source_repositories(
         runtime_selection=runtime_selection,
         source_environment=openupgrade_environment,
-        include_runtime_selection_addons=include_runtime_selection_addons,
+        include_selection_sources=include_selection_sources,
     )
     compose_build_target = build_target_override or openupgrade_environment.get("COMPOSE_BUILD_TARGET", "development")
     docker_image = image_repository_override or runtime_selection.project_name
@@ -1458,7 +1458,7 @@ def build_runtime_env_values(
         "ODOO_ADMIN_LOGIN": source_environment.get("ODOO_ADMIN_LOGIN", ""),
         "ODOO_ADMIN_PASSWORD": source_environment.get("ODOO_ADMIN_PASSWORD", ""),
         "ODOO_INSTALL_MODULES": ",".join(runtime_selection.effective_install_modules),
-        "ODOO_ADDON_REPOSITORIES": ",".join(effective_addon_repositories),
+        "ODOO_ADDON_REPOSITORIES": ",".join(effective_source_repositories),
         "ODOO_UPDATE_MODULES": runtime_selection.context_definition.update_modules,
         "ODOO_ADDONS_PATH": ",".join(stack_definition.addons_path),
         "ODOO_WEB_HOST_PORT": str(runtime_selection.web_host_port),
@@ -1648,9 +1648,9 @@ def collect_artifact_addon_sources(
     seen_repository_refs: set[tuple[str, str]] = {
         (entry["repository"], entry["ref"]) for entry in addon_sources
     }
-    for env_key in ARTIFACT_ADDON_ENV_KEYS:
+    for env_key in ARTIFACT_SOURCE_ENV_KEYS:
         raw_value = runtime_values.get(env_key, "")
-        for repository, ref in parse_artifact_addon_repository_entries(raw_value, require_exact_shas=True):
+        for repository, ref in parse_artifact_source_repository_entries(raw_value, require_exact_shas=True):
             repository_key = (repository, ref)
             if repository_key in seen_repository_refs:
                 continue
@@ -1659,7 +1659,7 @@ def collect_artifact_addon_sources(
     return tuple(addon_sources)
 
 
-def parse_artifact_addon_repository_entries(
+def parse_artifact_source_repository_entries(
     raw_value: str,
     *,
     require_exact_shas: bool = False,
@@ -1691,22 +1691,22 @@ def parse_artifact_addon_repository_entries(
     return tuple(entries)
 
 
-def resolve_artifact_runtime_addon_repository_refs(
+def resolve_artifact_runtime_source_repository_refs(
     *,
     runtime_values: dict[str, str],
 ) -> tuple[dict[str, str], tuple[dict[str, str], ...]]:
     resolved_values = dict(runtime_values)
     selector_metadata: list[dict[str, str]] = []
-    for env_key in ARTIFACT_ADDON_ENV_KEYS:
+    for env_key in ARTIFACT_SOURCE_ENV_KEYS:
         raw_value = runtime_values.get(env_key, "")
-        parsed_entries = parse_artifact_addon_repository_entries(raw_value)
+        parsed_entries = parse_artifact_source_repository_entries(raw_value)
         if not parsed_entries:
             continue
         resolved_entries: list[tuple[str, str]] = []
         for repository, ref in parsed_entries:
             resolved_ref = ref
             if not GIT_SHA_PATTERN.fullmatch(ref):
-                resolved_ref = resolve_addon_repository_ref_to_git_sha(
+                resolved_ref = resolve_source_repository_ref_to_git_sha(
                     repository=repository,
                     ref=ref,
                 )
@@ -1724,12 +1724,12 @@ def resolve_artifact_runtime_addon_repository_refs(
     return resolved_values, tuple(selector_metadata)
 
 
-def resolve_addon_repository_ref_to_git_sha(*, repository: str, ref: str) -> str:
+def resolve_source_repository_ref_to_git_sha(*, repository: str, ref: str) -> str:
     normalized_repository = repository.strip()
     normalized_ref = ref.strip()
     if GIT_SHA_PATTERN.fullmatch(normalized_ref):
         return normalized_ref
-    remote_url = resolve_addon_repository_remote_url(normalized_repository)
+    remote_url = resolve_source_repository_remote_url(normalized_repository)
     ls_remote_result = subprocess.run(
         ["git", "ls-remote", "--refs", remote_url, normalized_ref],
         capture_output=True,
@@ -1762,7 +1762,7 @@ def resolve_addon_repository_ref_to_git_sha(*, repository: str, ref: str) -> str
     return unique_resolved_shas[0]
 
 
-def resolve_addon_repository_remote_url(repository: str) -> str:
+def resolve_source_repository_remote_url(repository: str) -> str:
     normalized_repository = repository.strip()
     if not normalized_repository:
         raise RuntimeCommandError("Artifact publish requires a non-empty addon repository name.")
@@ -1942,7 +1942,7 @@ def parse_csv_values(raw_value: str) -> tuple[str, ...]:
     return tuple(values)
 
 
-def addon_repository_identity(repository_spec: str) -> str:
+def repository_spec_identity(repository_spec: str) -> str:
     normalized_spec = repository_spec.strip()
     if not normalized_spec:
         return ""
@@ -1952,7 +1952,7 @@ def addon_repository_identity(repository_spec: str) -> str:
     return normalized_spec
 
 
-def addon_repository_declares_selector(repository_spec: str) -> bool:
+def repository_spec_declares_selector(repository_spec: str) -> bool:
     normalized_spec = repository_spec.strip()
     if not normalized_spec:
         return False
@@ -1966,11 +1966,11 @@ def render_runtime_env(runtime_values: dict[str, str]) -> str:
     return "\n".join(f"{key}={value}" for key, value in runtime_values.items()) + "\n"
 
 
-def effective_runtime_addon_repositories(
+def effective_runtime_source_repositories(
     *,
     runtime_selection: RuntimeSelection,
     source_environment: dict[str, str],
-    include_runtime_selection_addons: bool = True,
+    include_selection_sources: bool = True,
 ) -> tuple[str, ...]:
     effective_repositories: list[str] = []
     repository_indexes: dict[str, int] = {}
@@ -1979,7 +1979,7 @@ def effective_runtime_addon_repositories(
         normalized_repository = repository_spec.strip()
         if not normalized_repository:
             return
-        repository_identity = addon_repository_identity(normalized_repository)
+        repository_identity = repository_spec_identity(normalized_repository)
         existing_index = repository_indexes.get(repository_identity)
         if existing_index is None:
             repository_indexes[repository_identity] = len(effective_repositories)
@@ -1987,8 +1987,8 @@ def effective_runtime_addon_repositories(
             return
         effective_repositories[existing_index] = normalized_repository
 
-    if include_runtime_selection_addons:
-        for configured_repository in runtime_selection.effective_addon_repositories:
+    if include_selection_sources:
+        for configured_repository in runtime_selection.effective_source_repositories:
             upsert_repository(configured_repository)
     for configured_repository in parse_csv_values(source_environment.get("ODOO_ADDON_REPOSITORIES", "")):
         upsert_repository(configured_repository)
