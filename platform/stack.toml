@@ -7,9 +7,6 @@ addons_path = [
     "/opt/extra_addons",
     "/opt/enterprise",
 ]
-addon_repository_selectors = [
-    "cbusillo/disable_odoo_online@main",
-]
 required_env_keys = [
     "ODOO_MASTER_PASSWORD",
     "ODOO_DB_USER",

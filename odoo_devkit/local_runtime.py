@@ -17,6 +17,7 @@ from typing import TextIO
 
 from .artifact_inputs import (
     ArtifactInputsError,
+    ArtifactInputsDefinition,
     effective_artifact_input_sources,
     load_artifact_inputs_definition,
 )
@@ -179,8 +180,6 @@ _VERIFIED_IMAGE_ACCESS: set[str] = set()
 @dataclass(frozen=True)
 class InstanceDefinition:
     database: str | None
-    addon_repositories_add: tuple[str, ...]
-    addon_repository_selectors_add: tuple[str, ...]
     install_modules_add: tuple[str, ...]
     runtime_env: ScalarMap
 
@@ -189,8 +188,6 @@ class InstanceDefinition:
 class ContextDefinition:
     database: str | None
     install_modules: tuple[str, ...]
-    addon_repositories_add: tuple[str, ...]
-    addon_repository_selectors_add: tuple[str, ...]
     runtime_env: ScalarMap
     update_modules: str
     instances: dict[str, InstanceDefinition]
@@ -202,8 +199,6 @@ class StackDefinition:
     odoo_version: str
     state_root: str
     addons_path: tuple[str, ...]
-    addon_repositories: tuple[str, ...]
-    addon_repository_selectors: tuple[str, ...]
     runtime_env: ScalarMap
     required_env_keys: tuple[str, ...]
     contexts: dict[str, ContextDefinition]
@@ -250,6 +245,7 @@ class RuntimeContext:
     manifest: WorkspaceManifest
     repo_root: Path
     stack: LoadedStack
+    artifact_inputs_definition: ArtifactInputsDefinition | None
     environment: LoadedEnvironment
     selection: RuntimeSelection
     runtime_env_file: Path
@@ -409,7 +405,6 @@ def publish_runtime_artifact(
         include_runtime_selection_addons=False,
     )
     runtime_values = apply_publish_artifact_input_manifest(
-        manifest=manifest,
         runtime_context=runtime_context,
         runtime_values=runtime_values,
     )
@@ -723,12 +718,17 @@ def load_runtime_context(
         context_name=manifest.runtime.context,
         instance_name=manifest.runtime.instance,
     )
+    try:
+        artifact_inputs_definition = load_artifact_inputs_definition(manifest=manifest)
+    except ArtifactInputsError as error:
+        raise RuntimeCommandError(str(error)) from error
     effective_stack_definition = resolve_manifest_runtime_stack_definition(
         manifest=manifest,
         stack_definition=loaded_stack.stack_definition,
     )
     runtime_selection = resolve_runtime_selection(
         stack_definition=effective_stack_definition,
+        artifact_inputs_definition=artifact_inputs_definition,
         context_name=manifest.runtime.context,
         instance_name=manifest.runtime.instance,
         repo_root=runtime_repo_path,
@@ -742,6 +742,7 @@ def load_runtime_context(
         manifest=manifest,
         repo_root=runtime_repo_path,
         stack=LoadedStack(stack_file_path=loaded_stack.stack_file_path, stack_definition=effective_stack_definition),
+        artifact_inputs_definition=artifact_inputs_definition,
         environment=loaded_environment,
         selection=runtime_selection,
         runtime_env_file=runtime_env_file,
@@ -771,8 +772,6 @@ def resolve_manifest_runtime_stack_definition(*, manifest: WorkspaceManifest, st
         odoo_version=stack_definition.odoo_version,
         state_root=stack_definition.state_root,
         addons_path=tuple(effective_addons_paths),
-        addon_repositories=stack_definition.addon_repositories,
-        addon_repository_selectors=stack_definition.addon_repository_selectors,
         runtime_env=stack_definition.runtime_env,
         required_env_keys=stack_definition.required_env_keys,
         contexts=stack_definition.contexts,
@@ -913,6 +912,7 @@ def parse_stack_definition(payload: dict[str, object], *, stack_file_path: Path)
     schema_version = _read_required_int(payload, "schema_version")
     if schema_version != 1:
         raise RuntimeCommandError(f"Unsupported stack schema_version: {schema_version}")
+    _ensure_legacy_addon_source_keys_absent(payload, scope="stack", replacement="artifact-inputs.toml")
     contexts_table = _read_required_table(payload, "contexts", scope="stack")
     contexts: dict[str, ContextDefinition] = {}
     for context_name, raw_context in contexts_table.items():
@@ -922,12 +922,6 @@ def parse_stack_definition(payload: dict[str, object], *, stack_file_path: Path)
         odoo_version=_read_required_string(payload, "odoo_version", scope="stack"),
         state_root=_read_optional_string(payload, "state_root", scope="stack") or "",
         addons_path=_read_string_tuple(payload, "addons_path", scope="stack"),
-        addon_repositories=_read_optional_string_tuple(payload, "addon_repositories", scope="stack"),
-        addon_repository_selectors=_read_optional_string_tuple(
-            payload,
-            "addon_repository_selectors",
-            scope="stack",
-        ),
         runtime_env=_read_optional_scalar_map(payload, "runtime_env", scope="stack"),
         required_env_keys=_read_optional_string_tuple(payload, "required_env_keys", scope="stack"),
         contexts=contexts,
@@ -937,6 +931,11 @@ def parse_stack_definition(payload: dict[str, object], *, stack_file_path: Path)
 
 def _parse_context_definition(context_name: str, raw_context: object) -> ContextDefinition:
     context_table = _ensure_table(raw_context, scope=f"contexts.{context_name}")
+    _ensure_legacy_addon_source_keys_absent(
+        context_table,
+        scope=f"contexts.{context_name}",
+        replacement="artifact-inputs.toml contexts",
+    )
     instances_table = _read_required_table(context_table, "instances", scope=f"contexts.{context_name}")
     instances: dict[str, InstanceDefinition] = {}
     for instance_name, raw_instance in instances_table.items():
@@ -946,16 +945,6 @@ def _parse_context_definition(context_name: str, raw_context: object) -> Context
     return ContextDefinition(
         database=_read_optional_string(context_table, "database", scope=f"contexts.{context_name}"),
         install_modules=_read_optional_string_tuple(context_table, "install_modules", scope=f"contexts.{context_name}"),
-        addon_repositories_add=_read_optional_string_tuple(
-            context_table,
-            "addon_repositories_add",
-            scope=f"contexts.{context_name}",
-        ),
-        addon_repository_selectors_add=_read_optional_string_tuple(
-            context_table,
-            "addon_repository_selectors_add",
-            scope=f"contexts.{context_name}",
-        ),
         runtime_env=_read_optional_scalar_map(context_table, "runtime_env", scope=f"contexts.{context_name}"),
         update_modules=_read_optional_string(context_table, "update_modules", scope=f"contexts.{context_name}") or "AUTO",
         instances=instances,
@@ -964,18 +953,13 @@ def _parse_context_definition(context_name: str, raw_context: object) -> Context
 
 def _parse_instance_definition(*, context_name: str, instance_name: str, raw_instance: object) -> InstanceDefinition:
     instance_table = _ensure_table(raw_instance, scope=f"contexts.{context_name}.instances.{instance_name}")
+    _ensure_legacy_addon_source_keys_absent(
+        instance_table,
+        scope=f"contexts.{context_name}.instances.{instance_name}",
+        replacement="artifact-inputs.toml instance overrides",
+    )
     return InstanceDefinition(
         database=_read_optional_string(instance_table, "database", scope=f"contexts.{context_name}.instances.{instance_name}"),
-        addon_repositories_add=_read_optional_string_tuple(
-            instance_table,
-            "addon_repositories_add",
-            scope=f"contexts.{context_name}.instances.{instance_name}",
-        ),
-        addon_repository_selectors_add=_read_optional_string_tuple(
-            instance_table,
-            "addon_repository_selectors_add",
-            scope=f"contexts.{context_name}.instances.{instance_name}",
-        ),
         install_modules_add=_read_optional_string_tuple(
             instance_table,
             "install_modules_add",
@@ -1011,11 +995,30 @@ def expand_project_addons_paths(*, stack_definition: StackDefinition, stack_file
         odoo_version=stack_definition.odoo_version,
         state_root=stack_definition.state_root,
         addons_path=tuple(expanded_paths),
-        addon_repositories=stack_definition.addon_repositories,
-        addon_repository_selectors=stack_definition.addon_repository_selectors,
         runtime_env=stack_definition.runtime_env,
         required_env_keys=stack_definition.required_env_keys,
         contexts=stack_definition.contexts,
+    )
+
+
+def _ensure_legacy_addon_source_keys_absent(
+    source: dict[str, object],
+    *,
+    scope: str,
+    replacement: str,
+) -> None:
+    legacy_keys = (
+        "addon_repositories",
+        "addon_repository_selectors",
+        "addon_repositories_add",
+        "addon_repository_selectors_add",
+    )
+    configured_keys = [key for key in legacy_keys if key in source]
+    if not configured_keys:
+        return
+    formatted_keys = ", ".join(configured_keys)
+    raise RuntimeCommandError(
+        f"Legacy addon source keys are no longer supported in {scope}: {formatted_keys}. Move addon source selection into {replacement}."
     )
 
 
@@ -1240,7 +1243,12 @@ def missing_upstream_source_keys(environment_values: dict[str, str]) -> tuple[st
 
 
 def resolve_runtime_selection(
-    *, stack_definition: StackDefinition, context_name: str, instance_name: str, repo_root: Path
+    *,
+    stack_definition: StackDefinition,
+    artifact_inputs_definition: ArtifactInputsDefinition | None,
+    context_name: str,
+    instance_name: str,
+    repo_root: Path,
 ) -> RuntimeSelection:
     context_definition = stack_definition.contexts.get(context_name)
     if context_definition is None:
@@ -1255,10 +1263,10 @@ def resolve_runtime_selection(
     effective_install_modules = merge_effective_modules(
         context_definition=context_definition, instance_definition=instance_definition
     )
-    effective_addon_repositories = merge_effective_addon_repositories(
-        stack_definition=stack_definition,
-        context_definition=context_definition,
-        instance_definition=instance_definition,
+    effective_addon_repositories = resolve_runtime_addon_repositories(
+        artifact_inputs_definition=artifact_inputs_definition,
+        context_name=context_name,
+        instance_name=instance_name,
     )
     effective_addon_repository_selectors = tuple(
         repository_spec
@@ -1306,35 +1314,22 @@ def merge_effective_modules(*, context_definition: ContextDefinition, instance_d
     return tuple(effective_install_modules)
 
 
-def merge_effective_addon_repositories(
+def resolve_runtime_addon_repositories(
     *,
-    stack_definition: StackDefinition,
-    context_definition: ContextDefinition,
-    instance_definition: InstanceDefinition,
+    artifact_inputs_definition: ArtifactInputsDefinition | None,
+    context_name: str,
+    instance_name: str,
 ) -> tuple[str, ...]:
-    effective_addon_repositories: list[str] = []
-    repository_indexes: dict[str, int] = {}
-
-    def upsert_repository(repository_spec: str) -> None:
-        normalized_repository = repository_spec.strip()
-        if not normalized_repository:
-            return
-        repository_identity = addon_repository_identity(normalized_repository)
-        existing_index = repository_indexes.get(repository_identity)
-        if existing_index is None:
-            repository_indexes[repository_identity] = len(effective_addon_repositories)
-            effective_addon_repositories.append(normalized_repository)
-            return
-        effective_addon_repositories[existing_index] = normalized_repository
-
-    for selector_entries, exact_entries in (
-        (stack_definition.addon_repository_selectors, stack_definition.addon_repositories),
-        (context_definition.addon_repository_selectors_add, context_definition.addon_repositories_add),
-        (instance_definition.addon_repository_selectors_add, instance_definition.addon_repositories_add),
-    ):
-        for repository_name in (*selector_entries, *exact_entries):
-            upsert_repository(repository_name)
-    return tuple(effective_addon_repositories)
+    if artifact_inputs_definition is None:
+        return ()
+    return tuple(
+        source_definition.repository_spec()
+        for source_definition in effective_artifact_input_sources(
+            artifact_inputs_definition=artifact_inputs_definition,
+            context_name=context_name,
+            instance_name=instance_name,
+        )
+    )
 
 
 def merge_effective_runtime_env(
@@ -1506,14 +1501,10 @@ def build_runtime_env_values(
 
 def apply_publish_artifact_input_manifest(
     *,
-    manifest: WorkspaceManifest,
     runtime_context: RuntimeContext,
     runtime_values: dict[str, str],
 ) -> dict[str, str]:
-    try:
-        artifact_inputs_definition = load_artifact_inputs_definition(manifest=manifest)
-    except ArtifactInputsError as error:
-        raise RuntimeCommandError(str(error)) from error
+    artifact_inputs_definition = runtime_context.artifact_inputs_definition
     if artifact_inputs_definition is None:
         return runtime_values
     effective_sources = effective_artifact_input_sources(

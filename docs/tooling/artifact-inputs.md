@@ -22,8 +22,8 @@ When
 - The default file name is `artifact-inputs.toml` beside `workspace.toml`.
 - `workspace.toml` can override the path with `[artifacts].inputs_file` when a
   repo needs a different layout.
-- `platform runtime publish` reads this file for publish-time addon source
-  selectors.
+- `platform runtime` reads this file for addon source selectors used by local
+  runtime and publish flows.
 
 ## Current schema
 
