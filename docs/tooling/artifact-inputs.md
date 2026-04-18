@@ -105,6 +105,11 @@ current Odoo runtime environment. The schema itself is repo-owned and neutral,
 which is why this example belongs here even before a full non-Odoo runtime path
 lands.
 
+For v1, keep this file fully repo-local rather than introducing a shared
+catalog. The neutral source-input surface is already the cross-product contract;
+the current Odoo-facing runtime and artifact edge names can stay product-
+specific until a second real driver/runtime path proves a rename is worth it.
+
 ## Working rule
 
 - If a repo needs publish-time source selection, add or edit
