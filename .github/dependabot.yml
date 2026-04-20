@@ -1,30 +1,36 @@
 ---
 version: 2
 
-multi-ecosystem-groups:
-  dependencies:
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    open-pull-requests-limit: 2
     schedule:
       interval: weekly
-    open-pull-requests-limit: 2
-
-updates:
-  - package-ecosystem: uv
-    directory: "/"
-    patterns:
-      - "*"
-    multi-ecosystem-group: dependencies
+    labels:
+      - dependencies
+      - github-actions
     groups:
+      all-version-updates:
+        patterns:
+          - "*"
       all-security-updates:
         applies-to: security-updates
         patterns:
           - "*"
 
-  - package-ecosystem: github-actions
+  - package-ecosystem: uv
     directory: "/"
-    patterns:
-      - "*"
-    multi-ecosystem-group: dependencies
+    open-pull-requests-limit: 2
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - python:uv
     groups:
+      all-version-updates:
+        patterns:
+          - "*"
       all-security-updates:
         applies-to: security-updates
         patterns:
@@ -32,21 +38,16 @@ updates:
 
   - package-ecosystem: docker
     directory: "/docker"
-    patterns:
-      - "*"
-    multi-ecosystem-group: dependencies
+    open-pull-requests-limit: 2
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - docker
     groups:
-      all-security-updates:
-        applies-to: security-updates
+      all-version-updates:
         patterns:
           - "*"
-
-  - package-ecosystem: docker-compose
-    directory: "/"
-    patterns:
-      - "*"
-    multi-ecosystem-group: dependencies
-    groups:
       all-security-updates:
         applies-to: security-updates
         patterns:
