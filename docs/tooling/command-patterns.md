@@ -13,7 +13,7 @@ When
 
 These examples are workspace and local/data-workflow patterns. Remote release
 actions such as ship, promote, and Harbor preview lifecycle belong in
-`odoo-control-plane`.
+`harbor`.
 
 - Sync the current tenant workspace:
 

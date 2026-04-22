@@ -14,12 +14,12 @@ Runtime ownership is split by target type:
   for `platform runtime restore` and
   `platform runtime workflow --workflow bootstrap|update`.
 - Those non-local targets are the stable remote lanes (`testing`, `prod`). PR
-  previews belong to Harbor preview workflows in `odoo-control-plane`, not to
+  previews belong to Harbor preview workflows in `harbor`, not to
   `platform runtime` as another durable lane.
 - non-local `platform runtime workflow --workflow init|openupgrade` remains
   local-only and fail early with a clear `--instance local` requirement.
 - Release actions such as ship, promote, and gate execution belong in
-  `odoo-control-plane`, not under `platform runtime`.
+  `harbor`, not under `platform runtime`.
 
 ## Commands
 
@@ -180,18 +180,18 @@ Notes
 - Local `platform runtime up` emits manifest-backed host addon mount
   paths for compose, so tenant checkouts can bind-mount `sources/tenant/addons`
   plus `sources/shared-addons` into the devkit-owned local runtime bundle.
-- When `ODOO_CONTROL_PLANE_ROOT` points at a valid `odoo-control-plane`
+- When `ODOO_CONTROL_PLANE_ROOT` points at a valid `harbor`
   checkout, local runtime env resolution comes from the control-plane-owned
   environment contract. Devkit-local `.env` / `platform/secrets.toml` runtime
   authority is unsupported. Leftover devkit-local env/secrets files are
   treated as a hard conflict so environment authority stays single-source, and
-  build/restore requirements are expected to live in `odoo-control-plane`'s
+  build/restore requirements are expected to live in `harbor`'s
   `config/runtime-environments.toml` surface.
 - Native non-local ownership currently covers Dokploy-backed `restore`,
   `workflow bootstrap`, and `workflow update`; anything else should fail closed
   unless `odoo-devkit` grows an explicit remote contract for it.
 - Release/deploy ownership for remote environments stays in
-  `odoo-control-plane`, even when the same tenant manifest is used to anchor
+  `harbor`, even when the same tenant manifest is used to anchor
   local runtime context.
 - The runtime CLI accepts `--instance <name>` so a tenant repo can keep one
   tracked local-first manifest and still run remote data workflows like

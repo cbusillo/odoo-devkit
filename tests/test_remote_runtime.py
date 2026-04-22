@@ -32,7 +32,7 @@ class RemoteRuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
             repo_root = temp_root / "runtime-repo"
-            control_plane_root = temp_root / "odoo-control-plane"
+            control_plane_root = temp_root / "harbor"
             (control_plane_root / "config").mkdir(parents=True, exist_ok=True)
             (control_plane_root / "config" / "dokploy.toml").write_text(
                 """
@@ -91,7 +91,7 @@ target_id = "legacy-compose"
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
             repo_root = temp_root / "runtime-repo"
-            control_plane_root = temp_root / "odoo-control-plane"
+            control_plane_root = temp_root / "harbor"
             control_plane_config_directory = control_plane_root / "config"
             control_plane_config_directory.mkdir(parents=True, exist_ok=True)
             (control_plane_config_directory / "dokploy.toml").write_text(
@@ -149,7 +149,7 @@ target_id = "compose-123"
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
             repo_root = temp_root / "runtime-repo"
-            control_plane_root = temp_root / "odoo-control-plane"
+            control_plane_root = temp_root / "harbor"
             control_plane_config_directory = control_plane_root / "config"
             control_plane_config_directory.mkdir(parents=True, exist_ok=True)
             (control_plane_config_directory / "dokploy.toml").write_text(

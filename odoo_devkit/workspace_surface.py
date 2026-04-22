@@ -107,7 +107,7 @@ def _render_workspace_agents(
         "- For workspace command details, open `sources/devkit/docs/tooling/workspace-cli.md`.\n"
         "- Use `sources/tenant/` for the active tenant source tree. PyCharm should still open that tenant repo directly by default.\n"
         "- Use `sources/devkit/` for shared DX/runtime/tooling ownership. That repo is the canonical owner of the shared operating guide and docs used to generate this workspace surface.\n"
-        "- Treat `platform runtime` as the home for local runtime work plus explicit Dokploy-managed data workflows. Stable remote lanes are `testing` and `prod`; Harbor PR previews replace a durable `dev` lane; release actions such as ship/promote/gate stay in `odoo-control-plane`.\n"
+        "- Treat `platform runtime` as the home for local runtime work plus explicit Dokploy-managed data workflows. Stable remote lanes are `testing` and `prod`; Harbor PR previews replace a durable `dev` lane; release actions such as ship/promote/gate stay in `harbor`.\n"
         f"{shared_addons_pointer}\n"
         "- Treat `.generated/` and `state/` as managed output only. They are safe to regenerate and should not become a long-term home for hand-edited code or secrets.\n\n"
         "## Source Of Truth Rules\n\n"
@@ -239,7 +239,7 @@ def _render_workspace_docs_index(
         "- PyCharm should keep opening the tenant repo directly so search/indexing stays focused on the client code.\n"
         f"- Preferred tenant-root sync command: `{tenant_workspace_sync_command}`.\n"
         f"- Preferred tenant-root status command: `{tenant_workspace_status_command}`.\n"
-        "- Treat `platform runtime` as the local-runtime and remote-data-workflow surface. Stable remote lanes are `testing` and `prod`; Harbor PR previews replace a durable `dev` lane; release actions for remote environments belong in `odoo-control-plane`.\n"
+        "- Treat `platform runtime` as the local-runtime and remote-data-workflow surface. Stable remote lanes are `testing` and `prod`; Harbor PR previews replace a durable `dev` lane; release actions for remote environments belong in `harbor`.\n"
         "- When in doubt about ownership, fix the source repo under `sources/` instead of editing generated files in the workspace root.\n"
     )
 
@@ -276,7 +276,7 @@ def _render_workspace_session_prompt(
         "- Keep tenant code in sources/tenant.\n"
         "- Keep shared DX/runtime/workspace behavior in odoo-devkit.\n"
         "- Use platform runtime for local runtime and explicit data workflows.\n"
-        "- Use odoo-control-plane for remote release actions.\n"
+        "- Use harbor for remote release actions.\n"
         "- Stable remote lanes are testing and prod.\n"
         "- Harbor PR previews replace any durable shared dev lane.\n"
         "- When generated files disagree with source repos, fix the source repo or generator rather than hand-editing generated output.\n"

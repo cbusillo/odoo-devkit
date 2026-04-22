@@ -334,7 +334,7 @@ def _default_agents_first_read_lines() -> tuple[str, ...]:
 def _default_agents_ownership_lines() -> tuple[str, ...]:
     return (
         "`odoo-devkit` owns shared DX/runtime/workspace behavior plus local runtime and explicit data workflows.",
-        "`odoo-control-plane` owns remote release actions, deployment truth, release tuples, and promotion evidence.",
+        "`harbor` owns remote release actions, deployment truth, release tuples, and promotion evidence.",
         "Stable remote lanes are `testing` and `prod`.",
         "Harbor PR previews replace any durable shared `dev` lane.",
     )
@@ -359,7 +359,7 @@ def _default_docs_external_reference_lines() -> tuple[str, ...]:
 def _default_docs_working_split_lines() -> tuple[str, ...]:
     return (
         "Use `odoo-devkit` for shared DX/runtime/workspace behavior and for local runtime plus explicit data workflows.",
-        "Use `odoo-control-plane` for remote release actions, deployment truth, release tuples, and promotion evidence.",
+        "Use `harbor` for remote release actions, deployment truth, release tuples, and promotion evidence.",
         "Stable remote lanes are `testing` and `prod`.",
         "Harbor PR previews replace any durable shared `dev` lane.",
     )
@@ -375,7 +375,7 @@ def _default_session_prompt_rule_lines() -> tuple[str, ...]:
     return (
         "Treat repos under sources/ as the primary system under construction.",
         "Use odoo-devkit for shared DX/runtime/workspace behavior and local/data workflows.",
-        "Use odoo-control-plane for remote release actions, deployment truth, release tuples, and promotion evidence.",
+        "Use harbor for remote release actions, deployment truth, release tuples, and promotion evidence.",
         "Stable remote lanes are testing and prod.",
         "Harbor PR previews replace any durable shared dev lane.",
         "Do not bring odoo-ai into the normal workspace context unless the task is explicit archaeology.",

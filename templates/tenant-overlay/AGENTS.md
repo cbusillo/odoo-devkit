@@ -19,7 +19,7 @@ Treat this file as the thin tenant-specific overlay for a tenant repo.
   `odoo-devkit` repo while shared-addon source stays explicit in the manifest.
 - Convenience shell commands under `scripts/` for workspace sync/status from
   the tenant repo root.
-- Remote release actions belong in `odoo-control-plane`; keep this overlay
+- Remote release actions belong in `harbor`; keep this overlay
   focused on tenant-specific guidance and local/data-workflow entrypoints.
 
 ## Do Not Duplicate Here

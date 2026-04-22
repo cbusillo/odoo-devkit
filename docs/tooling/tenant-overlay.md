@@ -58,7 +58,7 @@ When
   `workspace.toml` so source selection lives in the tenant repo instead of
   depending on implicit runtime defaults.
 - Release actions for remote environments still belong in
-  `odoo-control-plane`, not in tenant-root `platform runtime` commands.
+  `harbor`, not in tenant-root `platform runtime` commands.
 - The generated `Workspace Sync` and `Workspace Status` entrypoints call the
   tenant-root helper scripts so the manifest stays anchored at the tenant repo
   root.

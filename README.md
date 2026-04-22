@@ -23,7 +23,7 @@ The current workspace flow:
 For remote environments, the stable lane model is `testing` plus `prod`.
 Harbor-managed PR previews are a separate control-plane concern rather than a
 third durable runtime lane exposed through `platform runtime`. Remote release
-or promotion flow is artifact-backed and belongs in `odoo-control-plane`, not
+or promotion flow is artifact-backed and belongs in `harbor`, not
 in branch-oriented `odoo-devkit` commands.
 
 ## Command surface
@@ -98,7 +98,7 @@ Current runtime ownership is intentionally narrow and explicit:
 - Those non-local targets are the stable remote lanes (`testing`, `prod`). PR
   preview lifecycle and release orchestration stay outside `platform runtime`.
 - Release actions such as ship, promote, and gate execution belong in
-  `odoo-control-plane`, not under `platform runtime`.
+  `harbor`, not under `platform runtime`.
 - non-local `workflow init` and `workflow openupgrade` remain local-only and
   fail closed with an explicit `--instance local` requirement instead of
   falling through to an implicit remote path.
@@ -111,7 +111,7 @@ uv run python -m unittest discover -s tests
 
 For tenant repos that keep `instance = "local"` in the tracked manifest, use
 an explicit runtime target override only for Dokploy-managed data workflows.
-Release actions should run through `odoo-control-plane`. Data workflow
+Release actions should run through `harbor`. Data workflow
 examples:
 
 ```bash
@@ -128,7 +128,7 @@ uv --directory ../odoo-devkit run platform runtime publish \
   --image-repository ghcr.io/example/odoo-opw \
   --image-tag opw-20260416-deadbeef \
   --output-file /tmp/opw-artifact.json
-uv --directory ../odoo-control-plane run control-plane artifacts write \
+uv --directory ../harbor run harbor artifacts write \
   --state-dir ./state \
   --input-file /tmp/opw-artifact.json
 ```

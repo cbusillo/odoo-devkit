@@ -46,7 +46,7 @@ class RuntimeCommandTests(unittest.TestCase):
     def setUp(self) -> None:
         super().setUp()
         self.control_plane_root_temporary_directory = tempfile.TemporaryDirectory()
-        self.control_plane_root = Path(self.control_plane_root_temporary_directory.name) / "odoo-control-plane"
+        self.control_plane_root = Path(self.control_plane_root_temporary_directory.name) / "harbor"
         self.control_plane_root.mkdir(parents=True, exist_ok=True)
         self.environment_patch = mock.patch.dict(
             os.environ, {local_runtime.CONTROL_PLANE_ROOT_ENV_VAR: str(self.control_plane_root)}
@@ -620,7 +620,7 @@ install_modules = ["opw_custom"]
     def test_runtime_environment_configuration_guidance_mentions_control_plane_when_configured(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
-            with mock.patch.dict(os.environ, {local_runtime.CONTROL_PLANE_ROOT_ENV_VAR: str(temp_root / "odoo-control-plane")}):
+            with mock.patch.dict(os.environ, {local_runtime.CONTROL_PLANE_ROOT_ENV_VAR: str(temp_root / "harbor")}):
                 guidance = local_runtime.runtime_environment_configuration_guidance(noun="it")
 
         self.assertIn(local_runtime.CONTROL_PLANE_ROOT_ENV_VAR, guidance)

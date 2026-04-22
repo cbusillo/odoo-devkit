@@ -128,7 +128,7 @@ def _resolve_required_dokploy_compose_target_definition(
     if source_of_truth is None:
         raise RuntimeCommandError(
             "Dokploy-managed remote workflows require ODOO_CONTROL_PLANE_ROOT to point at an "
-            "odoo-control-plane checkout with config/dokploy.toml."
+            "harbor checkout with config/dokploy.toml."
         )
 
     target_definition = find_dokploy_target_definition(

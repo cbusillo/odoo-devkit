@@ -10,7 +10,7 @@ first_reads = [
 ]
 ownership = [
   "`odoo-devkit` owns shared DX/runtime/workspace behavior plus local runtime and explicit data workflows.",
-  "`odoo-control-plane` owns remote release actions, deployment truth, release tuples, and promotion evidence.",
+  "`harbor` owns remote release actions, deployment truth, release tuples, and promotion evidence.",
   "Stable remote lanes are `testing` and `prod`.",
   "Harbor PR previews replace any durable shared `dev` lane.",
 ]
@@ -28,7 +28,7 @@ external_reference_boundary = [
 ]
 working_split = [
   "Use `odoo-devkit` for shared DX/runtime/workspace behavior and for local runtime plus explicit data workflows.",
-  "Use `odoo-control-plane` for remote release actions, deployment truth, release tuples, and promotion evidence.",
+  "Use `harbor` for remote release actions, deployment truth, release tuples, and promotion evidence.",
   "Stable remote lanes are `testing` and `prod`.",
   "Harbor PR previews replace any durable shared `dev` lane.",
 ]
@@ -40,7 +40,7 @@ operational_notes = [
 working_rules = [
   "Treat repos under sources/ as the primary system under construction.",
   "Use odoo-devkit for shared DX/runtime/workspace behavior and local/data workflows.",
-  "Use odoo-control-plane for remote release actions, deployment truth, release tuples, and promotion evidence.",
+  "Use harbor for remote release actions, deployment truth, release tuples, and promotion evidence.",
   "Stable remote lanes are testing and prod.",
   "Harbor PR previews replace any durable shared dev lane.",
   "Do not bring odoo-ai into the normal workspace context unless the task is explicit archaeology.",
@@ -80,8 +80,8 @@ repo_name = "odoo-tenant-opw"
 group = "primary"
 role = "control_plane"
 label = "Control plane"
-path = "sources/control-plane"
-repo_name = "odoo-control-plane"
+path = "sources/harbor"
+repo_name = "harbor"
 
 [[repos]]
 group = "upstream_image"

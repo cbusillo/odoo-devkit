@@ -4,7 +4,7 @@ This repo owns the shared DX/runtime contract used to assemble tenant
 workspaces.
 
 It does not own remote release actions. Ship, promote, gate, and Harbor
-preview lifecycle for stable remote lanes live in `odoo-control-plane`.
+preview lifecycle for stable remote lanes live in `harbor`.
 
 ## Start Here
 
@@ -32,7 +32,7 @@ preview lifecycle for stable remote lanes live in `odoo-control-plane`.
 - Keep the assembled workspace rebuildable and explicit about source-of-truth
   ownership.
 - Keep the boundary clear between `odoo-devkit` local/data workflows and
-  `odoo-control-plane` remote release orchestration.
+  `harbor` remote release orchestration.
 
 ## Current Outputs
 

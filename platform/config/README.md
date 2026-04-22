@@ -1,7 +1,7 @@
 # Platform Config Layering
 
 This directory holds fallback defaults for devkit-owned local runtime compose
-commands. Canonical tenant environment values come from `odoo-control-plane`,
+commands. Canonical tenant environment values come from `harbor`,
 not from devkit-local secrets files.
 
 ## Platform Runtime Generation
@@ -9,7 +9,7 @@ not from devkit-local secrets files.
 `platform runtime ...` resolves configuration in this order:
 
 ```text
-odoo-control-plane config/runtime-environments.toml
+harbor config/runtime-environments.toml
 -> selected generated runtime env file
 -> platform/config/base.env fallback defaults
 ```

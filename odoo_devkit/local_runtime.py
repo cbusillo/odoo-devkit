@@ -1047,11 +1047,11 @@ def load_environment(*, repo_root: Path, context_name: str, instance_name: str, 
             raise RuntimeCommandError(
                 "Legacy devkit-local env/secrets files are no longer supported for runtime environment authority: "
                 f"{legacy_file_display}. Remove them, set {CONTROL_PLANE_ROOT_ENV_VAR}, and migrate runtime values into "
-                "odoo-control-plane `config/runtime-environments.toml`."
+                "harbor `config/runtime-environments.toml`."
             )
         raise RuntimeCommandError(
             "Runtime environment resolution now requires the control-plane contract. "
-            f"Set {CONTROL_PLANE_ROOT_ENV_VAR} to a valid odoo-control-plane checkout and configure runtime values in "
+            f"Set {CONTROL_PLANE_ROOT_ENV_VAR} to a valid harbor checkout and configure runtime values in "
             "`config/runtime-environments.toml`."
         )
     ensure_legacy_local_environment_files_are_absent(repo_root)
@@ -1072,7 +1072,7 @@ def resolve_control_plane_root() -> Path | None:
 def runtime_environment_configuration_guidance(*, noun: str = "these") -> str:
     if resolve_control_plane_root() is None:
         return (
-            f"Set {CONTROL_PLANE_ROOT_ENV_VAR} to a valid odoo-control-plane checkout and configure {noun} in "
+            f"Set {CONTROL_PLANE_ROOT_ENV_VAR} to a valid harbor checkout and configure {noun} in "
             "`config/runtime-environments.toml`."
         )
     return (
@@ -1133,7 +1133,7 @@ def load_environment_from_control_plane(
         details = clean_optional_value(result.stderr) or clean_optional_value(result.stdout)
         raise RuntimeCommandError(
             "Unable to resolve runtime environment from control plane. "
-            f"Ensure {CONTROL_PLANE_ROOT_ENV_VAR} points at a valid odoo-control-plane checkout."
+            f"Ensure {CONTROL_PLANE_ROOT_ENV_VAR} points at a valid harbor checkout."
             + (f"\nControl plane reported: {details}" if details else "")
         )
     try:

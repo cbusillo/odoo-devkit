@@ -110,8 +110,8 @@ repo_name = "odoo-devkit"
 group = "primary"
 role = "control_plane"
 label = "Control plane"
-path = "sources/control-plane"
-repo_name = "odoo-control-plane"
+path = "sources/harbor"
+repo_name = "harbor"
 
 [[repos]]
 group = "upstream_image"
@@ -140,7 +140,7 @@ repo_name = "odoo-docker"
             self.assertIn("sources/devkit", agents_text)
             self.assertIn("sync-cockpit-root", docs_index_text)
             self.assertIn("status-cockpit-root", docs_index_text)
-            self.assertIn("sources/control-plane -> odoo-control-plane", session_prompt_text)
+            self.assertIn("sources/harbor -> harbor", session_prompt_text)
 
     def test_workspace_cockpit_scaffold_refuses_to_overwrite_without_force(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -163,8 +163,8 @@ repo_name = "odoo-devkit"
 group = "primary"
 role = "control_plane"
 label = "Control plane"
-path = "sources/control-plane"
-repo_name = "odoo-control-plane"
+path = "sources/harbor"
+repo_name = "harbor"
 """.lstrip(),
                 encoding="utf-8",
             )
@@ -207,7 +207,7 @@ repo_name = "odoo-control-plane"
             self.assertIn("workspace-cockpit.toml", agents_text)
             self.assertIn("status-cockpit-root", agents_text)
             self.assertIn("workspace root, and source repos", session_prompt_text)
-            self.assertIn("odoo-control-plane for remote release actions", session_prompt_text)
+            self.assertIn("harbor for remote release actions", session_prompt_text)
 
 
 class WorkspaceCockpitSyncTests(unittest.TestCase):
@@ -244,8 +244,8 @@ repo_name = "odoo-tenant-cm"
 group = "primary"
 role = "control_plane"
 label = "Control plane"
-path = "sources/control-plane"
-repo_name = "odoo-control-plane"
+path = "sources/harbor"
+repo_name = "harbor"
 
 [[repos]]
 group = "upstream_image"
@@ -288,8 +288,8 @@ repo_name = "odoo-devkit"
 group = "primary"
 role = "control_plane"
 label = "Control plane"
-path = "sources/control-plane"
-repo_name = "odoo-control-plane"
+path = "sources/harbor"
+repo_name = "harbor"
 """.lstrip(),
                 encoding="utf-8",
             )
@@ -348,8 +348,8 @@ repo_name = "odoo-devkit"
 group = "primary"
 role = "control_plane"
 label = "Control plane"
-path = "sources/control-plane"
-repo_name = "odoo-control-plane"
+path = "sources/harbor"
+repo_name = "harbor"
 """.lstrip(),
                 encoding="utf-8",
             )
