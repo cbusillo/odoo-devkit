@@ -64,7 +64,7 @@ services:
       - "host.docker.internal:host-gateway"
 
   database:
-    image: postgres:17
+    image: postgres:18
     restart: unless-stopped
     ulimits:
       nofile:
