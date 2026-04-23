@@ -12,8 +12,8 @@ When
 ## Quick Start
 
 These examples are workspace and local/data-workflow patterns. Remote release
-actions such as ship, promote, and Harbor preview lifecycle belong in
-`harbor`.
+actions such as ship, promote, and Launchplane preview lifecycle belong in
+`launchplane`.
 
 - Sync the current tenant workspace:
 

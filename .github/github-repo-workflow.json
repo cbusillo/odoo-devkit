@@ -1,0 +1,18 @@
+{
+  "defaultBranch": "main",
+  "importantWorkflows": ["CI"],
+  "qaLabels": [],
+  "deployLabels": [],
+  "healthUrls": [],
+  "relatedRepos": [
+    "odoo-shared-addons",
+    "odoo-tenant-cm",
+    "odoo-tenant-opw",
+    "launchplane"
+  ],
+  "validatedThrough": ["odoo-tenant-cm", "odoo-tenant-opw"],
+  "cleanup": {
+    "deleteMergedLocalBranches": true,
+    "removeMergedCleanWorktrees": true
+  }
+}
