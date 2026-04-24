@@ -64,7 +64,9 @@ services:
       - "host.docker.internal:host-gateway"
 
   database:
-    image: postgres:18
+    # Pin Postgres below 18 until this compose contract migrates away from the
+    # legacy /var/lib/postgresql/data volume layout used by existing tenant DBs.
+    image: postgres:17
     restart: unless-stopped
     ulimits:
       nofile:
