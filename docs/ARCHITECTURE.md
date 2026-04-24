@@ -44,6 +44,9 @@ When
 - Generated PyCharm metadata and run configurations for the tenant repo.
 - Devkit-owned local runtime bundle (`docker-compose.yml`, `platform/stack.toml`,
   Dockerfile, and local runtime scripts).
+- Shared tenant runtime contracts that must stay safe across stable-lane
+  redeploys, including conservative database image/version changes for
+  long-lived tenant volumes.
 
 ### Materialized workspace root
 

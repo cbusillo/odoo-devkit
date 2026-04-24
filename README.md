@@ -103,6 +103,17 @@ Current runtime ownership is intentionally narrow and explicit:
   fail closed with an explicit `--instance local` requirement instead of
   falling through to an implicit remote path.
 
+## Runtime Contract Notes
+
+- The shared tenant compose database service stays pinned to `postgres:17`
+  while existing tenant DB volumes still use the legacy
+  `/var/lib/postgresql/data` layout.
+- A Postgres major-version bump is not a routine dependency refresh on this
+  surface. Treat it as explicit migration work with a documented upgrade path
+  for existing tenant data volumes.
+- Dependabot should not propose Postgres major upgrades automatically for the
+  root `docker-compose.yml`; those changes should be intentional operator work.
+
 ## Testing
 
 ```bash
