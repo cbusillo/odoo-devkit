@@ -51,15 +51,6 @@ into the generated workspace root.
   generated docs examples.
 - Keep the private Enterprise layer generic in public docs, templates, and
   examples.
-- For non-trivial work, prefer small checkpoint commits after each validated
-  logical slice. Use those checkpoints as the base for review work so isolated
-  follow-up fixes can be merged or `cherry-pick`-ed instead of manually
-  re-applied. Keep commits coherent rather than per-turn, do not amend unless
-  the operator explicitly asks, and fall back to manual porting when the
-  checkout is too dirty or the review diff overlaps unrelated changes.
-- Keep branch/worktree hygiene tight: remove Code-created branches and
-  temporary worktrees once merged or abandoned, and prune stale refs/worktrees
-  as you go.
 - When behavior changes, update the shared docs here in the same change so the
   workspace-root surface stays honest.
 
