@@ -29,6 +29,7 @@ ScalarMap = dict[str, ScalarValue]
 DEFAULT_ARTIFACT_IMAGE_PLATFORMS = ("linux/amd64", "linux/arm64")
 GIT_SHA_PATTERN = re.compile(r"[0-9a-fA-F]{7,40}")
 ARTIFACT_SOURCE_ENV_KEYS = ("ODOO_ADDON_REPOSITORIES", "OPENUPGRADE_ADDON_REPOSITORY")
+RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR = "ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON"
 
 PLATFORM_RUNTIME_ENV_KEYS = (
     "PLATFORM_CONTEXT",
@@ -1040,6 +1041,14 @@ def discover_project_addon_group_paths(repo_root: Path) -> tuple[str, ...]:
 
 def load_environment(*, repo_root: Path, context_name: str, instance_name: str, collision_mode: str = "warn") -> LoadedEnvironment:
     _ = collision_mode
+    explicit_environment = os.environ.get(RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR, "").strip()
+    if explicit_environment:
+        ensure_legacy_local_environment_files_are_absent(repo_root)
+        return load_environment_from_explicit_payload(
+            raw_payload=explicit_environment,
+            context_name=context_name,
+            instance_name=instance_name,
+        )
     control_plane_root = resolve_control_plane_root()
     if control_plane_root is None:
         legacy_file_display = legacy_local_environment_file_display(repo_root)
@@ -1059,6 +1068,51 @@ def load_environment(*, repo_root: Path, context_name: str, instance_name: str, 
         control_plane_root=control_plane_root,
         context_name=context_name,
         instance_name=instance_name,
+    )
+
+
+def load_environment_from_explicit_payload(
+    *,
+    raw_payload: str,
+    context_name: str,
+    instance_name: str,
+) -> LoadedEnvironment:
+    try:
+        payload = json.loads(raw_payload)
+    except json.JSONDecodeError as error:
+        raise RuntimeCommandError(
+            f"{RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR} must contain a JSON object."
+        ) from error
+    if not isinstance(payload, dict):
+        raise RuntimeCommandError(
+            f"{RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR} must contain a JSON object."
+        )
+    payload_context = clean_optional_value(str(payload.get("context", "")))
+    payload_instance = clean_optional_value(str(payload.get("instance", "")))
+    if payload_context != context_name or payload_instance != instance_name:
+        raise RuntimeCommandError(
+            f"{RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR} context/instance does not match the selected runtime. "
+            f"Payload={payload_context}/{payload_instance} selected={context_name}/{instance_name}."
+        )
+    raw_environment = payload.get("environment")
+    if not isinstance(raw_environment, dict):
+        raise RuntimeCommandError(
+            f"{RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR} must include an environment object."
+        )
+    resolved_environment = {
+        environment_key: str(environment_value)
+        for environment_key, environment_value in raw_environment.items()
+        if isinstance(environment_key, str)
+    }
+    if not resolved_environment:
+        raise RuntimeCommandError(
+            f"{RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR} environment object must not be empty."
+        )
+    synthetic_env_file = Path(".generated") / "runtime-env" / f"{context_name}.{instance_name}.env"
+    return LoadedEnvironment(
+        env_file_path=synthetic_env_file,
+        merged_values=resolved_environment,
+        collisions=(),
     )
 
 

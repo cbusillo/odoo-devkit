@@ -9,6 +9,40 @@ from odoo_devkit import local_runtime
 
 
 class ControlPlaneCliContractTests(unittest.TestCase):
+    def test_environment_resolution_accepts_explicit_launchplane_payload(self) -> None:
+        loaded_environment = local_runtime.load_environment_from_explicit_payload(
+            raw_payload=json.dumps(
+                {
+                    "context": "cm",
+                    "instance": "testing",
+                    "environment": {
+                        "ODOO_MASTER_PASSWORD": "control-plane-master",
+                    },
+                }
+            ),
+            context_name="cm",
+            instance_name="testing",
+        )
+
+        self.assertEqual(
+            loaded_environment.merged_values["ODOO_MASTER_PASSWORD"],
+            "control-plane-master",
+        )
+
+    def test_environment_resolution_rejects_mismatched_explicit_payload(self) -> None:
+        with self.assertRaises(local_runtime.RuntimeCommandError):
+            local_runtime.load_environment_from_explicit_payload(
+                raw_payload=json.dumps(
+                    {
+                        "context": "cm",
+                        "instance": "prod",
+                        "environment": {"ODOO_MASTER_PASSWORD": "secret"},
+                    }
+                ),
+                context_name="cm",
+                instance_name="testing",
+            )
+
     def test_environment_resolution_uses_launchplane_cli(self) -> None:
         completed_process = mock.Mock(
             returncode=0,
