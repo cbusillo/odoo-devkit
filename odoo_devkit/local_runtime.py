@@ -16,8 +16,8 @@ from pathlib import Path
 from typing import TextIO
 
 from .artifact_inputs import (
-    ArtifactInputsError,
     ArtifactInputsDefinition,
+    ArtifactInputsError,
     effective_artifact_input_sources,
     load_artifact_inputs_definition,
 )
@@ -1119,7 +1119,7 @@ def load_environment_from_control_plane(
         "--directory",
         str(control_plane_root),
         "run",
-        "control-plane",
+        "launchplane",
         "environments",
         "resolve",
         "--context",
