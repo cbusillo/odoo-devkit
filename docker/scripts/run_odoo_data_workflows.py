@@ -1119,6 +1119,7 @@ class OdooDataWorkflowRunner:
         }
         script = textwrap.dedent("""
 import json
+import os
 from odoo import api, SUPERUSER_ID
 from odoo.modules.registry import Registry
 
@@ -1127,16 +1128,22 @@ registry = Registry(payload['db'])
 with registry.cursor() as cr:
     env = api.Environment(cr, SUPERUSER_ID, {})
     typed_override_payload_present = bool(os.environ.get('ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64', '').strip())
-    if 'environment.overrides' in env.registry:
+    if typed_override_payload_present and 'launchplane.settings' in env.registry:
+        env['launchplane.settings'].sudo().apply_from_env()
+        cr.commit()
+    elif 'environment.overrides' in env.registry:
         env['environment.overrides'].sudo().apply_from_env()
+        cr.commit()
+    elif 'launchplane.settings' in env.registry:
+        env['launchplane.settings'].sudo().apply_from_env()
         cr.commit()
     elif typed_override_payload_present:
         raise RuntimeError(
             'Launchplane supplied ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64, '
-            'but the environment.overrides addon is not installed.'
+            'but neither launchplane.settings nor environment.overrides is installed.'
         )
     else:
-        print('Environment overrides addon not installed; skipping overrides.')
+        print('Launchplane settings addon not installed; skipping settings apply.')
     if 'authentik.sso.config' in env.registry:
         env['authentik.sso.config'].sudo().apply_from_env()
         cr.commit()
