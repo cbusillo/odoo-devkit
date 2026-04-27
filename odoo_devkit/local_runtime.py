@@ -386,6 +386,7 @@ def publish_runtime_artifact(
     image_tag: str,
     output_file: Path | None,
     no_cache: bool,
+    platforms: tuple[str, ...] = DEFAULT_ARTIFACT_IMAGE_PLATFORMS,
 ) -> RuntimeArtifactPublishResult:
     normalized_image_repository = image_repository.strip()
     normalized_image_tag = image_tag.strip()
@@ -393,6 +394,9 @@ def publish_runtime_artifact(
         raise RuntimeCommandError("Artifact publish requires a non-empty image repository.")
     if not normalized_image_tag:
         raise RuntimeCommandError("Artifact publish requires a non-empty image tag.")
+    normalized_platforms = tuple(platform.strip() for platform in platforms if platform.strip())
+    if not normalized_platforms:
+        raise RuntimeCommandError("Artifact publish requires at least one target platform.")
 
     runtime_context = load_runtime_context(
         manifest=manifest,
@@ -440,7 +444,7 @@ def publish_runtime_artifact(
             "--target",
             "production",
             "--platform",
-            ",".join(DEFAULT_ARTIFACT_IMAGE_PLATFORMS),
+            ",".join(normalized_platforms),
             "--tag",
             f"{normalized_image_repository}:{normalized_image_tag}",
             "--push",

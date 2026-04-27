@@ -10,10 +10,10 @@ from .manifest import WorkspaceManifest, load_workspace_manifest
 from .runtime import (
     run_native_runtime_build,
     run_native_runtime_down,
+    run_native_runtime_inspect,
     run_native_runtime_logs,
     run_native_runtime_odoo_shell,
     run_native_runtime_psql,
-    run_native_runtime_inspect,
     run_native_runtime_publish,
     run_native_runtime_restore,
     run_native_runtime_select,
@@ -22,8 +22,8 @@ from .runtime import (
     run_runtime_platform_command,
 )
 from .scaffold import scaffold_tenant_overlay, scaffold_workspace_cockpit
-from .workspace_cockpit import load_workspace_cockpit_manifest, sync_workspace_cockpit, workspace_cockpit_status
 from .workspace import clean_workspace, run_in_workspace, sync_workspace, workspace_status
+from .workspace_cockpit import load_workspace_cockpit_manifest, sync_workspace_cockpit, workspace_cockpit_status
 
 
 def main() -> None:
@@ -117,6 +117,12 @@ def build_parser() -> argparse.ArgumentParser:
     runtime_publish_parser.add_argument("--image-tag", required=True)
     runtime_publish_parser.add_argument("--output-file", type=Path, default=None)
     runtime_publish_parser.add_argument("--no-cache", action="store_true")
+    runtime_publish_parser.add_argument(
+        "--platform",
+        action="append",
+        default=[],
+        help="Target platform for artifact image builds. May be provided more than once; defaults to linux/amd64 and linux/arm64.",
+    )
     runtime_publish_parser.set_defaults(handler=_handle_runtime_publish)
 
     runtime_down_parser = _add_manifest_argument(
@@ -351,6 +357,7 @@ def _handle_runtime_publish(arguments: argparse.Namespace) -> None:
             image_tag=arguments.image_tag,
             output_file=arguments.output_file,
             no_cache=arguments.no_cache,
+            platforms=tuple(arguments.platform or ()),
         )
     )
     print(json.dumps(payload, indent=2, sort_keys=True))
