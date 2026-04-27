@@ -1126,9 +1126,15 @@ payload = json.loads('__PAYLOAD__')
 registry = Registry(payload['db'])
 with registry.cursor() as cr:
     env = api.Environment(cr, SUPERUSER_ID, {})
+    typed_override_payload_present = bool(os.environ.get('ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64', '').strip())
     if 'environment.overrides' in env.registry:
         env['environment.overrides'].sudo().apply_from_env()
         cr.commit()
+    elif typed_override_payload_present:
+        raise RuntimeError(
+            'Launchplane supplied ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64, '
+            'but the environment.overrides addon is not installed.'
+        )
     else:
         print('Environment overrides addon not installed; skipping overrides.')
     if 'authentik.sso.config' in env.registry:

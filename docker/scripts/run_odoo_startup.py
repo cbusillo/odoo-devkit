@@ -385,8 +385,16 @@ print('admin_password_updated=true')
 
 def _apply_environment_overrides_if_available(settings: StartupSettings) -> None:
     script = """
+import os
+
+typed_override_payload_present = bool(os.environ.get('ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64', '').strip())
 if 'environment.overrides' in env.registry:
     env['environment.overrides'].sudo().apply_from_env()
+elif typed_override_payload_present:
+    raise RuntimeError(
+        'Launchplane supplied ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64, '
+        'but the environment.overrides addon is not installed.'
+    )
 elif 'authentik.sso.config' in env.registry:
     env['authentik.sso.config'].sudo().apply_from_env()
 env.cr.commit()
