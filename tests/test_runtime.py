@@ -826,7 +826,9 @@ sources = [
                 + "\n",
                 encoding="utf-8",
             )
-            subprocess.run(["git", "add", "workspace.toml", "artifact-inputs.toml"], cwd=tenant_repo_path, check=True, capture_output=True)
+            subprocess.run(
+                ["git", "add", "workspace.toml", "artifact-inputs.toml"], cwd=tenant_repo_path, check=True, capture_output=True
+            )
             subprocess.run(["git", "commit", "-m", "workspace manifest"], cwd=tenant_repo_path, check=True, capture_output=True)
             manifest = load_workspace_manifest(manifest_path)
 
@@ -884,11 +886,7 @@ sources = [
                 ref="main",
                 github_token="gh-token",
             )
-            addon_build_arg = next(
-                argument
-                for argument in captured_build_args
-                if argument.startswith("ODOO_ADDON_REPOSITORIES=")
-            )
+            addon_build_arg = next(argument for argument in captured_build_args if argument.startswith("ODOO_ADDON_REPOSITORIES="))
             self.assertEqual(
                 addon_build_arg,
                 f"ODOO_ADDON_REPOSITORIES=cbusillo/disable_odoo_online@{resolved_ref}",
@@ -908,6 +906,37 @@ sources = [
                 ],
             )
             self.assertNotIn("odoo_addon_repository_selectors", payload["build_flags"]["values"])
+
+    def test_registry_auth_splits_base_image_read_and_artifact_push_tokens(self) -> None:
+        environment_values = {
+            "GHCR_USERNAME": "cbusillo",
+            "GHCR_READ_TOKEN": "read-token",
+            "GHCR_TOKEN": "push-token",
+            "ODOO_BASE_RUNTIME_IMAGE": "ghcr.io/cbusillo/odoo-enterprise-docker:19.0-runtime",
+            "ODOO_BASE_DEVTOOLS_IMAGE": "ghcr.io/cbusillo/odoo-enterprise-docker:19.0-devtools",
+        }
+        login_inputs: list[str] = []
+
+        def fake_subprocess_run(*args: object, **kwargs: object) -> mock.Mock:
+            command = kwargs.get("args") or args[0]
+            assert isinstance(command, list)
+            if command[:3] == ["docker", "login", "ghcr.io"]:
+                login_inputs.append(str(kwargs.get("input", "")).strip())
+                return mock.Mock(returncode=0, stdout="", stderr="")
+            if command[:3] == ["docker", "buildx", "imagetools"]:
+                return mock.Mock(returncode=0, stdout="", stderr="")
+            return mock.Mock(returncode=1, stdout="", stderr="")
+
+        with mock.patch.object(local_runtime, "_REGISTRY_LOGINS_DONE", set()):
+            with mock.patch.object(local_runtime, "_VERIFIED_IMAGE_ACCESS", set()):
+                with mock.patch("odoo_devkit.local_runtime.subprocess.run", side_effect=fake_subprocess_run):
+                    local_runtime.ensure_registry_auth_for_base_images(environment_values)
+                    local_runtime.ensure_registry_auth_for_image_push(
+                        environment_values=environment_values,
+                        image_repository="ghcr.io/cbusillo/odoo-tenant-opw",
+                    )
+
+        self.assertEqual(login_inputs, ["read-token", "push-token"])
 
     def test_native_runtime_publish_rejects_legacy_runtime_stack_selectors(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1002,7 +1031,9 @@ sources = [
                 + "\n",
                 encoding="utf-8",
             )
-            subprocess.run(["git", "add", "workspace.toml", "artifact-inputs.toml"], cwd=tenant_repo_path, check=True, capture_output=True)
+            subprocess.run(
+                ["git", "add", "workspace.toml", "artifact-inputs.toml"], cwd=tenant_repo_path, check=True, capture_output=True
+            )
             subprocess.run(["git", "commit", "-m", "workspace manifest"], cwd=tenant_repo_path, check=True, capture_output=True)
             manifest = load_workspace_manifest(manifest_path)
 
@@ -1105,7 +1136,9 @@ sources = [
                 + "\n",
                 encoding="utf-8",
             )
-            subprocess.run(["git", "add", "workspace.toml", "config/publish-inputs.toml"], cwd=tenant_repo_path, check=True, capture_output=True)
+            subprocess.run(
+                ["git", "add", "workspace.toml", "config/publish-inputs.toml"], cwd=tenant_repo_path, check=True, capture_output=True
+            )
             subprocess.run(["git", "commit", "-m", "workspace manifest"], cwd=tenant_repo_path, check=True, capture_output=True)
             manifest = load_workspace_manifest(manifest_path)
 
@@ -1134,13 +1167,7 @@ sources = [
                                 "exact_ref": "411f6b8e85cac72dc7aa2e2dc5540001043c327d",
                             }
                         ],
-                        "instances": {
-                            "testing": {
-                                "sources_add": [
-                                    {"repository": "example/testing", "selector": "release-19"}
-                                ]
-                            }
-                        },
+                        "instances": {"testing": {"sources_add": [{"repository": "example/testing", "selector": "release-19"}]}},
                     }
                 },
             },
@@ -1198,11 +1225,7 @@ sources = [
                                 }
                             ],
                             "instances": {
-                                "testing": {
-                                    "sources_add": [
-                                        {"repository": "example/testing_selector", "selector": "release-19"}
-                                    ]
-                                }
+                                "testing": {"sources_add": [{"repository": "example/testing_selector", "selector": "release-19"}]}
                             },
                         }
                     },
@@ -1300,11 +1323,7 @@ sources = [
                                     no_cache=False,
                                 )
 
-            addon_build_arg = next(
-                argument
-                for argument in captured_build_args
-                if argument.startswith("ODOO_ADDON_REPOSITORIES=")
-            )
+            addon_build_arg = next(argument for argument in captured_build_args if argument.startswith("ODOO_ADDON_REPOSITORIES="))
             self.assertEqual(addon_build_arg, f"ODOO_ADDON_REPOSITORIES={exact_ref}")
             self.assertIn(
                 {"repository": "cbusillo/disable_odoo_online", "ref": exact_ref.rsplit("@", 1)[1]},
@@ -1323,7 +1342,9 @@ sources = [
                 )
 
     def test_resolve_source_repository_ref_to_git_sha_rejects_ambiguous_matches(self) -> None:
-        ambiguous_stdout = "1111111111111111111111111111111111111111\trefs/heads/main\n2222222222222222222222222222222222222222\trefs/tags/main\n"
+        ambiguous_stdout = (
+            "1111111111111111111111111111111111111111\trefs/heads/main\n2222222222222222222222222222222222222222\trefs/tags/main\n"
+        )
         with mock.patch(
             "odoo_devkit.local_runtime.subprocess.run",
             return_value=mock.Mock(returncode=0, stdout=ambiguous_stdout, stderr=""),
