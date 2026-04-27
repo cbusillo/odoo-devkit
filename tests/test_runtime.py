@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
 import io
 import json
@@ -107,6 +108,68 @@ attached_paths = ["sources/devkit"]
             manifest = load_workspace_manifest(manifest_path)
 
             self.assertEqual(resolve_runtime_repo_path(manifest), runtime_repo_path.resolve())
+
+    def test_typed_odoo_instance_override_payload_from_legacy_setting_env(self) -> None:
+        runtime_values = {
+            "ENV_OVERRIDE_CONFIG_PARAM__WEB__BASE__URL": "https://opw-local.example.com",
+            "ENV_OVERRIDE_AUTHENTIK__BASE_URL": "https://authentik.example.com",
+            "ENV_OVERRIDE_SHOPIFY__TEST_STORE": "true",
+            "ENV_OVERRIDE_DISABLE_CRON": "1",
+        }
+
+        local_runtime.apply_typed_odoo_instance_override_payload(
+            runtime_values=runtime_values,
+            context_name="opw",
+            instance_name="local",
+        )
+
+        encoded_payload = runtime_values[local_runtime.ODOO_INSTANCE_OVERRIDES_PAYLOAD_ENV_KEY]
+        payload = json.loads(base64.b64decode(encoded_payload).decode("utf-8"))
+
+        self.assertEqual(payload["context"], "opw")
+        self.assertEqual(payload["instance"], "local")
+        self.assertEqual(
+            payload["config_parameters"],
+            [
+                {
+                    "key": "web.base.url",
+                    "value": {"source": "literal", "value": "https://opw-local.example.com"},
+                }
+            ],
+        )
+        self.assertIn(
+            {
+                "addon": "authentik_sso",
+                "setting": "base_url",
+                "value": {"source": "literal", "value": "https://authentik.example.com"},
+            },
+            payload["addon_settings"],
+        )
+        self.assertIn(
+            {
+                "addon": "shopify",
+                "setting": "test_store",
+                "value": {"source": "literal", "value": "true"},
+            },
+            payload["addon_settings"],
+        )
+        self.assertNotIn("ENV_OVERRIDE_CONFIG_PARAM__WEB__BASE__URL", runtime_values)
+        self.assertNotIn("ENV_OVERRIDE_AUTHENTIK__BASE_URL", runtime_values)
+        self.assertNotIn("ENV_OVERRIDE_SHOPIFY__TEST_STORE", runtime_values)
+        self.assertEqual(runtime_values["ENV_OVERRIDE_DISABLE_CRON"], "1")
+
+    def test_typed_odoo_instance_override_payload_rejects_mixed_authority(self) -> None:
+        runtime_values = {
+            local_runtime.ODOO_INSTANCE_OVERRIDES_PAYLOAD_ENV_KEY: "already-set",
+            "ENV_OVERRIDE_CONFIG_PARAM__WEB__BASE__URL": "https://opw-local.example.com",
+        }
+
+        with self.assertRaisesRegex(local_runtime.RuntimeCommandError, "cannot be combined"):
+            local_runtime.apply_typed_odoo_instance_override_payload(
+                runtime_values=runtime_values,
+                context_name="opw",
+                instance_name="local",
+            )
 
     def test_resolve_runtime_repo_path_requires_workspace_sync_for_repo_addressable_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

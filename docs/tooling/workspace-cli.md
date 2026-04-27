@@ -180,6 +180,14 @@ Notes
 - Local `platform runtime up` emits manifest-backed host addon mount
   paths for compose, so tenant checkouts can bind-mount `sources/tenant/addons`
   plus `sources/shared-addons` into the devkit-owned local runtime bundle.
+- Local runtime selection converts legacy setting-shaped inputs such as
+  `ENV_OVERRIDE_CONFIG_PARAM__*`, `ENV_OVERRIDE_AUTHENTIK__*`, and
+  `ENV_OVERRIDE_SHOPIFY__*` into the typed
+  `ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64` payload consumed by
+  `launchplane_settings`. The generated runtime env no longer emits those
+  legacy setting keys, while unrelated devkit control keys such as
+  `ENV_OVERRIDE_DISABLE_CRON` remain available until they get their own typed
+  local contract.
 - When `ODOO_CONTROL_PLANE_ROOT` points at a valid `launchplane`
   checkout, local runtime env resolution comes from the control-plane-owned
   environment contract. Devkit-local `.env` / `platform/secrets.toml` runtime
