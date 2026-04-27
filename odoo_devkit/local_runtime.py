@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -1748,6 +1749,7 @@ def resolve_artifact_runtime_source_repository_refs(
     runtime_values: dict[str, str],
 ) -> tuple[dict[str, str], tuple[dict[str, str], ...]]:
     resolved_values = dict(runtime_values)
+    github_token = clean_optional_value(runtime_values.get("GITHUB_TOKEN"))
     selector_metadata: list[dict[str, str]] = []
     for env_key in ARTIFACT_SOURCE_ENV_KEYS:
         raw_value = runtime_values.get(env_key, "")
@@ -1761,6 +1763,7 @@ def resolve_artifact_runtime_source_repository_refs(
                 resolved_ref = resolve_source_repository_ref_to_git_sha(
                     repository=repository,
                     ref=ref,
+                    github_token=github_token,
                 )
                 selector_metadata.append(
                     {
@@ -1776,17 +1779,28 @@ def resolve_artifact_runtime_source_repository_refs(
     return resolved_values, tuple(selector_metadata)
 
 
-def resolve_source_repository_ref_to_git_sha(*, repository: str, ref: str) -> str:
+def resolve_source_repository_ref_to_git_sha(*, repository: str, ref: str, github_token: str | None = None) -> str:
     normalized_repository = repository.strip()
     normalized_ref = ref.strip()
     if GIT_SHA_PATTERN.fullmatch(normalized_ref):
         return normalized_ref
     remote_url = resolve_source_repository_remote_url(normalized_repository)
+    execution_env = command_execution_env()
+    normalized_token = clean_optional_value(github_token)
+    if normalized_token and remote_url.startswith("https://github.com/"):
+        encoded_auth = base64.b64encode(f"x-access-token:{normalized_token}".encode()).decode("ascii")
+        execution_env.update(
+            {
+                "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader",
+                "GIT_CONFIG_VALUE_0": f"AUTHORIZATION: basic {encoded_auth}",
+            }
+        )
     ls_remote_result = subprocess.run(
         ["git", "ls-remote", "--refs", remote_url, normalized_ref],
         capture_output=True,
         text=True,
-        env=command_execution_env(),
+        env=execution_env,
     )
     if ls_remote_result.returncode != 0:
         details = clean_optional_value(ls_remote_result.stderr) or clean_optional_value(ls_remote_result.stdout)

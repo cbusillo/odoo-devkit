@@ -11,8 +11,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from odoo_devkit import artifact_inputs
-from odoo_devkit import local_runtime
+from odoo_devkit import artifact_inputs, local_runtime
 from odoo_devkit.cli import (
     _handle_runtime_build,
     _handle_runtime_down,
@@ -753,7 +752,13 @@ install_modules = ["opw_custom"]
 
             captured_build_contexts: list[Path] = []
 
-            def fake_run_command(*, runtime_repo_path: Path, command: list[str], environment_overrides=None, allowed_return_codes=None):
+            def fake_run_command(
+                *,
+                runtime_repo_path: Path,
+                command: list[str],
+                environment_overrides: object | None = None,
+                allowed_return_codes: object | None = None,
+            ) -> None:
                 _ = environment_overrides, allowed_return_codes
                 if command[:3] == ["docker", "buildx", "build"]:
                     captured_build_contexts.append(runtime_repo_path)
@@ -827,7 +832,13 @@ sources = [
 
             captured_build_args: list[str] = []
 
-            def fake_run_command(*, runtime_repo_path: Path, command: list[str], environment_overrides=None, allowed_return_codes=None):
+            def fake_run_command(
+                *,
+                runtime_repo_path: Path,
+                command: list[str],
+                environment_overrides: object | None = None,
+                allowed_return_codes: object | None = None,
+            ) -> None:
                 _ = runtime_repo_path, environment_overrides, allowed_return_codes
                 if command[:3] == ["docker", "buildx", "build"]:
                     captured_build_args.extend(command)
@@ -868,7 +879,11 @@ sources = [
                                         no_cache=False,
                                     )
 
-            resolve_ref_mock.assert_called_once_with(repository="cbusillo/disable_odoo_online", ref="main")
+            resolve_ref_mock.assert_called_once_with(
+                repository="cbusillo/disable_odoo_online",
+                ref="main",
+                github_token="gh-token",
+            )
             addon_build_arg = next(
                 argument
                 for argument in captured_build_args
@@ -940,7 +955,13 @@ install_modules = ["opw_custom"]
 
             captured_build_args: list[str] = []
 
-            def fake_run_command(*, runtime_repo_path: Path, command: list[str], environment_overrides=None, allowed_return_codes=None):
+            def fake_run_command(
+                *,
+                runtime_repo_path: Path,
+                command: list[str],
+                environment_overrides: object | None = None,
+                allowed_return_codes: object | None = None,
+            ) -> None:
                 _ = runtime_repo_path, environment_overrides, allowed_return_codes
                 if command[:3] == ["docker", "buildx", "build"]:
                     captured_build_args.extend(command)
@@ -987,7 +1008,13 @@ sources = [
 
             captured_build_args: list[str] = []
 
-            def fake_run_command(*, runtime_repo_path: Path, command: list[str], environment_overrides=None, allowed_return_codes=None):
+            def fake_run_command(
+                *,
+                runtime_repo_path: Path,
+                command: list[str],
+                environment_overrides: object | None = None,
+                allowed_return_codes: object | None = None,
+            ) -> None:
                 _ = runtime_repo_path, environment_overrides, allowed_return_codes
                 if command[:3] == ["docker", "buildx", "build"]:
                     captured_build_args.extend(command)
@@ -1028,7 +1055,11 @@ sources = [
                                         no_cache=False,
                                     )
 
-            resolve_ref_mock.assert_called_once_with(repository="cbusillo/disable_odoo_online", ref="release-19")
+            resolve_ref_mock.assert_called_once_with(
+                repository="cbusillo/disable_odoo_online",
+                ref="release-19",
+                github_token="gh-token",
+            )
             addon_build_arg = next(argument for argument in captured_build_args if argument.startswith("ODOO_ADDON_REPOSITORIES="))
             self.assertEqual(
                 addon_build_arg,
@@ -1226,7 +1257,13 @@ sources = [
 
             captured_build_args: list[str] = []
 
-            def fake_run_command(*, runtime_repo_path: Path, command: list[str], environment_overrides=None, allowed_return_codes=None):
+            def fake_run_command(
+                *,
+                runtime_repo_path: Path,
+                command: list[str],
+                environment_overrides: object | None = None,
+                allowed_return_codes: object | None = None,
+            ) -> None:
                 _ = runtime_repo_path, environment_overrides, allowed_return_codes
                 if command[:3] == ["docker", "buildx", "build"]:
                     captured_build_args.extend(command)
