@@ -11,7 +11,7 @@ import tempfile
 import textwrap
 import time
 import tomllib
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
@@ -175,7 +175,7 @@ DEFAULT_ODOO_BASE_RUNTIME_IMAGE = "registry.invalid/private-enterprise-runtime:1
 DEFAULT_ODOO_BASE_DEVTOOLS_IMAGE = "registry.invalid/private-enterprise-devtools:19.0-devtools"
 CONTROL_PLANE_ROOT_ENV_VAR = "ODOO_CONTROL_PLANE_ROOT"
 
-_REGISTRY_LOGINS_DONE: set[tuple[str, str]] = set()
+_REGISTRY_LOGINS_DONE: set[tuple[str, str, str]] = set()
 _VERIFIED_IMAGE_ACCESS: set[str] = set()
 
 
@@ -1085,13 +1085,9 @@ def load_environment_from_explicit_payload(
     try:
         payload = json.loads(raw_payload)
     except json.JSONDecodeError as error:
-        raise RuntimeCommandError(
-            f"{RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR} must contain a JSON object."
-        ) from error
+        raise RuntimeCommandError(f"{RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR} must contain a JSON object.") from error
     if not isinstance(payload, dict):
-        raise RuntimeCommandError(
-            f"{RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR} must contain a JSON object."
-        )
+        raise RuntimeCommandError(f"{RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR} must contain a JSON object.")
     payload_context = clean_optional_value(str(payload.get("context", "")))
     payload_instance = clean_optional_value(str(payload.get("instance", "")))
     if payload_context != context_name or payload_instance != instance_name:
@@ -1101,18 +1097,14 @@ def load_environment_from_explicit_payload(
         )
     raw_environment = payload.get("environment")
     if not isinstance(raw_environment, dict):
-        raise RuntimeCommandError(
-            f"{RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR} must include an environment object."
-        )
+        raise RuntimeCommandError(f"{RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR} must include an environment object.")
     resolved_environment = {
         environment_key: str(environment_value)
         for environment_key, environment_value in raw_environment.items()
         if isinstance(environment_key, str)
     }
     if not resolved_environment:
-        raise RuntimeCommandError(
-            f"{RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR} environment object must not be empty."
-        )
+        raise RuntimeCommandError(f"{RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR} environment object must not be empty.")
     synthetic_env_file = Path(".generated") / "runtime-env" / f"{context_name}.{instance_name}.env"
     return LoadedEnvironment(
         env_file_path=synthetic_env_file,
@@ -1328,9 +1320,7 @@ def resolve_runtime_selection(
         instance_name=instance_name,
     )
     effective_source_selectors = tuple(
-        repository_spec
-        for repository_spec in effective_source_repositories
-        if repository_spec_declares_selector(repository_spec)
+        repository_spec for repository_spec in effective_source_repositories if repository_spec_declares_selector(repository_spec)
     )
     effective_runtime_env = merge_effective_runtime_env(
         stack_definition=stack_definition,
@@ -1730,15 +1720,13 @@ def parse_artifact_source_repository_entries(
         repository_name, separator, repository_ref = candidate_entry.rpartition("@")
         if not separator or not repository_name.strip() or not repository_ref.strip():
             raise RuntimeCommandError(
-                "Artifact publish requires addon repositories to use '<repo>@<ref>' form. "
-                f"Received: {candidate_entry}"
+                f"Artifact publish requires addon repositories to use '<repo>@<ref>' form. Received: {candidate_entry}"
             )
         normalized_repository = repository_name.strip()
         normalized_ref = repository_ref.strip()
         if require_exact_shas and not GIT_SHA_PATTERN.fullmatch(normalized_ref):
             raise RuntimeCommandError(
-                "Artifact publish requires addon repositories to use exact git SHAs. "
-                f"Received: {candidate_entry}"
+                f"Artifact publish requires addon repositories to use exact git SHAs. Received: {candidate_entry}"
             )
         normalized_entry = (normalized_repository, normalized_ref)
         if normalized_entry in seen_entries:
@@ -1777,9 +1765,7 @@ def resolve_artifact_runtime_source_repository_refs(
                     }
                 )
             resolved_entries.append((repository, resolved_ref))
-        resolved_values[env_key] = ",".join(
-            f"{repository}@{resolved_ref}" for repository, resolved_ref in resolved_entries
-        )
+        resolved_values[env_key] = ",".join(f"{repository}@{resolved_ref}" for repository, resolved_ref in resolved_entries)
     return resolved_values, tuple(selector_metadata)
 
 
@@ -1810,14 +1796,9 @@ def resolve_source_repository_ref_to_git_sha(*, repository: str, ref: str, githu
         details = clean_optional_value(ls_remote_result.stderr) or clean_optional_value(ls_remote_result.stdout)
         raise RuntimeCommandError(
             "Artifact publish could not resolve addon repository ref "
-            f"{normalized_repository}@{normalized_ref}."
-            + (f"\nGit reported: {details}" if details else "")
+            f"{normalized_repository}@{normalized_ref}." + (f"\nGit reported: {details}" if details else "")
         )
-    resolved_shas = tuple(
-        line.split("\t", 1)[0].strip()
-        for line in ls_remote_result.stdout.splitlines()
-        if line.strip()
-    )
+    resolved_shas = tuple(line.split("\t", 1)[0].strip() for line in ls_remote_result.stdout.splitlines() if line.strip())
     unique_resolved_shas = tuple(dict.fromkeys(resolved_shas))
     if not unique_resolved_shas:
         raise RuntimeCommandError(
@@ -1870,9 +1851,7 @@ def require_clean_git_commit(*, repo_path: Path, label: str) -> str:
     if dirty_result.returncode != 0:
         raise RuntimeCommandError(f"Unable to determine git status for {label}: {repo_path}")
     if dirty_result.stdout.strip():
-        raise RuntimeCommandError(
-            f"Artifact publish requires a clean git worktree for {label}: {repo_path}"
-        )
+        raise RuntimeCommandError(f"Artifact publish requires a clean git worktree for {label}: {repo_path}")
     return head_commit
 
 
@@ -1880,7 +1859,7 @@ def resolve_github_token_for_build(environment_values: dict[str, str]) -> str | 
     configured_token = clean_optional_value(environment_values.get("GITHUB_TOKEN"))
     if configured_token:
         return configured_token
-    return resolve_ghcr_token(environment_values)
+    return resolve_ghcr_read_token(environment_values)
 
 
 def ensure_registry_auth_for_image_push(
@@ -1892,7 +1871,7 @@ def ensure_registry_auth_for_image_push(
     if registry_host != GHCR_HOST:
         return
     ghcr_username = resolve_ghcr_username(environment_values, image_repository)
-    ghcr_token = resolve_ghcr_token(environment_values)
+    ghcr_token = resolve_ghcr_push_token(environment_values)
     if not ghcr_username:
         raise RuntimeCommandError(
             "Missing GHCR username for artifact push. Set GHCR_USERNAME in resolved environment "
@@ -1903,11 +1882,11 @@ def ensure_registry_auth_for_image_push(
             "Missing GHCR token for artifact push. Set GHCR_TOKEN (preferred) or GITHUB_TOKEN in resolved environment "
             f"({runtime_environment_configuration_guidance(noun='it')}) with write:packages access."
         )
-    ensure_registry_login(registry_host=GHCR_HOST, username=ghcr_username, token=ghcr_token)
+    ensure_registry_login(registry_host=GHCR_HOST, username=ghcr_username, token=ghcr_token, purpose="push")
 
 
-def ensure_registry_login(*, registry_host: str, username: str, token: str) -> None:
-    login_key = (registry_host, username)
+def ensure_registry_login(*, registry_host: str, username: str, token: str, purpose: str) -> None:
+    login_key = (registry_host, username, purpose)
     if login_key in _REGISTRY_LOGINS_DONE:
         return
     login_result = subprocess.run(
@@ -1919,10 +1898,7 @@ def ensure_registry_login(*, registry_host: str, username: str, token: str) -> N
     )
     if login_result.returncode != 0:
         details = clean_optional_value(login_result.stderr) or clean_optional_value(login_result.stdout)
-        raise RuntimeCommandError(
-            f"Docker login to {registry_host} failed."
-            + (f"\nDocker reported: {details}" if details else "")
-        )
+        raise RuntimeCommandError(f"Docker login to {registry_host} failed." + (f"\nDocker reported: {details}" if details else ""))
     _REGISTRY_LOGINS_DONE.add(login_key)
 
 
@@ -1942,9 +1918,7 @@ def resolve_image_digest(image_reference: str) -> str:
     if inspect_result.returncode != 0:
         details = clean_optional_value(inspect_result.stderr) or clean_optional_value(inspect_result.stdout)
         raise RuntimeCommandError(
-            "Unable to resolve image digest for "
-            f"'{candidate}'."
-            + (f"\nDocker reported: {details}" if details else "")
+            f"Unable to resolve image digest for '{candidate}'." + (f"\nDocker reported: {details}" if details else "")
         )
     digest_match = re.search(r"^Digest:\s*(sha256:[0-9a-fA-F]{64})\s*$", inspect_result.stdout, flags=re.MULTILINE)
     if digest_match is None:
@@ -2674,19 +2648,37 @@ def resolve_ghcr_username(environment_values: dict[str, str], image_reference: s
     return None
 
 
-def resolve_ghcr_token(environment_values: dict[str, str]) -> str | None:
+def resolve_ghcr_push_token(environment_values: dict[str, str]) -> str | None:
     candidates = (
         environment_values.get("GHCR_TOKEN"),
         os.environ.get("GHCR_TOKEN"),
-        environment_values.get("GHCR_READ_TOKEN"),
-        os.environ.get("GHCR_READ_TOKEN"),
         environment_values.get("GITHUB_TOKEN"),
         os.environ.get("GITHUB_TOKEN"),
     )
+    return first_clean_optional_value(candidates) or resolve_gh_auth_token()
+
+
+def resolve_ghcr_read_token(environment_values: dict[str, str]) -> str | None:
+    candidates = (
+        environment_values.get("GHCR_READ_TOKEN"),
+        os.environ.get("GHCR_READ_TOKEN"),
+        environment_values.get("GHCR_TOKEN"),
+        os.environ.get("GHCR_TOKEN"),
+        environment_values.get("GITHUB_TOKEN"),
+        os.environ.get("GITHUB_TOKEN"),
+    )
+    return first_clean_optional_value(candidates) or resolve_gh_auth_token()
+
+
+def first_clean_optional_value(candidates: Iterable[str | None]) -> str | None:
     for candidate in candidates:
         cleaned = clean_optional_value(candidate)
         if cleaned:
             return cleaned
+    return None
+
+
+def resolve_gh_auth_token() -> str | None:
     gh_token_result = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, env=command_execution_env())
     if gh_token_result.returncode == 0:
         gh_token = clean_optional_value(gh_token_result.stdout)
@@ -2717,7 +2709,7 @@ def ensure_registry_auth_for_base_images(environment_values: dict[str, str]) -> 
     if not ghcr_images:
         return
     ghcr_username = resolve_ghcr_username(environment_values, ghcr_images[0])
-    ghcr_token = resolve_ghcr_token(environment_values)
+    ghcr_token = resolve_ghcr_read_token(environment_values)
     if not ghcr_username:
         raise RuntimeCommandError(
             "Missing GHCR username for private base image pull. Set GHCR_USERNAME in resolved environment "
@@ -2725,26 +2717,11 @@ def ensure_registry_auth_for_base_images(environment_values: dict[str, str]) -> 
         )
     if not ghcr_token:
         raise RuntimeCommandError(
-            "Missing GHCR token for private base image pull. Set GHCR_TOKEN (preferred) "
+            "Missing GHCR token for private base image pull. Set GHCR_READ_TOKEN (preferred), GHCR_TOKEN, "
             f"or GITHUB_TOKEN in resolved environment ({runtime_environment_configuration_guidance(noun='it')}) "
             "with read:packages access."
         )
-    login_key = (GHCR_HOST, ghcr_username)
-    if login_key not in _REGISTRY_LOGINS_DONE:
-        login_result = subprocess.run(
-            ["docker", "login", GHCR_HOST, "-u", ghcr_username, "--password-stdin"],
-            input=f"{ghcr_token}\n",
-            capture_output=True,
-            text=True,
-            env=command_execution_env(),
-        )
-        if login_result.returncode != 0:
-            details = clean_optional_value(login_result.stderr) or clean_optional_value(login_result.stdout)
-            raise RuntimeCommandError(
-                "Docker login to GHCR failed. Ensure the token is valid and has package read permissions."
-                + (f"\nDocker reported: {details}" if details else "")
-            )
-        _REGISTRY_LOGINS_DONE.add(login_key)
+    ensure_registry_login(registry_host=GHCR_HOST, username=ghcr_username, token=ghcr_token, purpose="read")
     for image in ghcr_images:
         verify_base_image_access(image)
 
