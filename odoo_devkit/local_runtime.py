@@ -31,6 +31,15 @@ DEFAULT_ARTIFACT_IMAGE_PLATFORMS = ("linux/amd64", "linux/arm64")
 GIT_SHA_PATTERN = re.compile(r"[0-9a-fA-F]{7,40}")
 ARTIFACT_SOURCE_ENV_KEYS = ("ODOO_ADDON_REPOSITORIES", "OPENUPGRADE_ADDON_REPOSITORY")
 RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR = "ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON"
+ODOO_INSTANCE_OVERRIDES_PAYLOAD_ENV_KEY = "ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64"
+LEGACY_CONFIG_PARAM_PREFIX = "ENV_OVERRIDE_CONFIG_PARAM__"
+LEGACY_AUTHENTIK_PREFIX = "ENV_OVERRIDE_AUTHENTIK__"
+LEGACY_SHOPIFY_PREFIX = "ENV_OVERRIDE_SHOPIFY__"
+LEGACY_SETTING_OVERRIDE_PREFIXES = (
+    LEGACY_CONFIG_PARAM_PREFIX,
+    LEGACY_AUTHENTIK_PREFIX,
+    LEGACY_SHOPIFY_PREFIX,
+)
 
 PLATFORM_RUNTIME_ENV_KEYS = (
     "PLATFORM_CONTEXT",
@@ -1545,7 +1554,91 @@ def build_runtime_env_values(
             runtime_values[environment_key] = source_environment[environment_key]
     for runtime_key, runtime_value in runtime_selection.effective_runtime_env.items():
         runtime_values[runtime_key] = runtime_value
+    apply_typed_odoo_instance_override_payload(
+        runtime_values=runtime_values,
+        context_name=runtime_selection.context_name,
+        instance_name=runtime_selection.instance_name,
+    )
     return runtime_values
+
+
+def apply_typed_odoo_instance_override_payload(
+    *,
+    runtime_values: dict[str, str],
+    context_name: str,
+    instance_name: str,
+) -> None:
+    payload = build_typed_odoo_instance_override_payload(
+        runtime_values=runtime_values,
+        context_name=context_name,
+        instance_name=instance_name,
+    )
+    if payload is None:
+        return
+    if runtime_values.get(ODOO_INSTANCE_OVERRIDES_PAYLOAD_ENV_KEY, "").strip():
+        raise RuntimeCommandError(
+            f"{ODOO_INSTANCE_OVERRIDES_PAYLOAD_ENV_KEY} cannot be combined with legacy ENV_OVERRIDE_* setting inputs."
+        )
+    encoded_payload = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    runtime_values[ODOO_INSTANCE_OVERRIDES_PAYLOAD_ENV_KEY] = base64.b64encode(encoded_payload).decode("ascii")
+    for runtime_key in tuple(runtime_values):
+        if runtime_key.startswith(LEGACY_SETTING_OVERRIDE_PREFIXES):
+            runtime_values.pop(runtime_key, None)
+
+
+def build_typed_odoo_instance_override_payload(
+    *,
+    runtime_values: dict[str, str],
+    context_name: str,
+    instance_name: str,
+) -> dict[str, object] | None:
+    config_parameters: list[dict[str, object]] = []
+    addon_settings: list[dict[str, object]] = []
+    for runtime_key in sorted(runtime_values):
+        runtime_value = runtime_values[runtime_key]
+        if runtime_key.startswith(LEGACY_CONFIG_PARAM_PREFIX):
+            suffix = runtime_key[len(LEGACY_CONFIG_PARAM_PREFIX) :].strip().lower()
+            if not suffix:
+                continue
+            config_parameters.append(
+                {
+                    "key": suffix.replace("__", "."),
+                    "value": {"source": "literal", "value": runtime_value},
+                }
+            )
+            continue
+        if runtime_key.startswith(LEGACY_AUTHENTIK_PREFIX):
+            suffix = runtime_key[len(LEGACY_AUTHENTIK_PREFIX) :].strip().lower()
+            if not suffix:
+                continue
+            addon_settings.append(
+                {
+                    "addon": "authentik_sso",
+                    "setting": suffix,
+                    "value": {"source": "literal", "value": runtime_value},
+                }
+            )
+            continue
+        if runtime_key.startswith(LEGACY_SHOPIFY_PREFIX):
+            suffix = runtime_key[len(LEGACY_SHOPIFY_PREFIX) :].strip().lower()
+            if not suffix:
+                continue
+            addon_settings.append(
+                {
+                    "addon": "shopify",
+                    "setting": suffix,
+                    "value": {"source": "literal", "value": runtime_value},
+                }
+            )
+    if not config_parameters and not addon_settings:
+        return None
+    return {
+        "schema_version": 1,
+        "context": context_name,
+        "instance": instance_name,
+        "config_parameters": config_parameters,
+        "addon_settings": addon_settings,
+    }
 
 
 def apply_publish_artifact_input_manifest(

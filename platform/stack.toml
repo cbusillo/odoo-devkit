@@ -99,7 +99,6 @@ install_modules_add = [
 database = "opw"
 install_modules = [
     "opw_custom",
-    "environment_overrides",
 ]
 
 [contexts.opw.runtime_env]
