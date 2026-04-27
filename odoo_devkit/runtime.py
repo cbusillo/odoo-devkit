@@ -5,21 +5,22 @@ import sys
 from pathlib import Path
 
 from .local_runtime import (
+    DEFAULT_ARTIFACT_IMAGE_PLATFORMS,
     RuntimeCommandError,
     build_runtime,
     down_runtime,
     emit_key_value_payload,
     inspect_runtime,
     publish_runtime_artifact,
-    run_psql_command,
-    run_odoo_shell_command,
     run_bootstrap_workflow,
     run_init_workflow,
-    stream_runtime_logs,
+    run_odoo_shell_command,
     run_openupgrade_workflow,
+    run_psql_command,
     run_restore_workflow,
     run_update_workflow,
     select_runtime,
+    stream_runtime_logs,
     up_runtime,
 )
 from .manifest import WorkspaceManifest
@@ -245,6 +246,7 @@ def run_native_runtime_publish(
     image_tag: str,
     output_file: Path | None,
     no_cache: bool,
+    platforms: tuple[str, ...] = (),
 ) -> dict[str, object]:
     runtime_repo_path = resolve_runtime_repo_path(manifest)
     try:
@@ -255,6 +257,7 @@ def run_native_runtime_publish(
             image_tag=image_tag,
             output_file=output_file,
             no_cache=no_cache,
+            platforms=platforms or DEFAULT_ARTIFACT_IMAGE_PLATFORMS,
         )
     except RuntimeCommandError as error:
         raise ValueError(str(error)) from error
