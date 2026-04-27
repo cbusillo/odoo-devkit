@@ -10,14 +10,16 @@ class DockerScriptOverrideGuardTests(unittest.TestCase):
 
         self.assertIn("typed_override_payload_present", script)
         self.assertIn("ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64", script)
-        self.assertIn("environment.overrides addon is not installed", script)
+        self.assertIn("launchplane.settings", script)
+        self.assertIn("neither launchplane.settings nor environment.overrides is installed", script)
 
     def test_startup_fails_when_typed_override_payload_has_no_consumer(self) -> None:
         script = (REPO_ROOT / "docker/scripts/run_odoo_startup.py").read_text(encoding="utf-8")
 
         self.assertIn("typed_override_payload_present", script)
         self.assertIn("ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64", script)
-        self.assertIn("environment.overrides addon is not installed", script)
+        self.assertIn("launchplane.settings", script)
+        self.assertIn("neither launchplane.settings nor environment.overrides is installed", script)
 
 
 if __name__ == "__main__":

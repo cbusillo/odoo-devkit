@@ -388,17 +388,21 @@ def _apply_environment_overrides_if_available(settings: StartupSettings) -> None
 import os
 
 typed_override_payload_present = bool(os.environ.get('ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64', '').strip())
-if 'environment.overrides' in env.registry:
+if typed_override_payload_present and 'launchplane.settings' in env.registry:
+    env['launchplane.settings'].sudo().apply_from_env()
+elif 'environment.overrides' in env.registry:
     env['environment.overrides'].sudo().apply_from_env()
+elif 'launchplane.settings' in env.registry:
+    env['launchplane.settings'].sudo().apply_from_env()
 elif typed_override_payload_present:
     raise RuntimeError(
         'Launchplane supplied ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64, '
-        'but the environment.overrides addon is not installed.'
+        'but neither launchplane.settings nor environment.overrides is installed.'
     )
-elif 'authentik.sso.config' in env.registry:
+if 'authentik.sso.config' in env.registry:
     env['authentik.sso.config'].sudo().apply_from_env()
 env.cr.commit()
-print('environment_overrides_applied=true')
+print('launchplane_settings_applied=true')
 """
     _run_odoo_shell(settings, script, label="environment overrides")
 
