@@ -50,7 +50,6 @@ ENV_OVERRIDE_AUTHENTIK__GROUP_CLAIM = "groups"
 
 [contexts.cm.instances.local]
 install_modules_add = [
-    "environment_overrides",
     "fishbowl_import",
     "repairshopr_import",
     "cm_data_import",
@@ -83,14 +82,12 @@ ENV_OVERRIDE_CONFIG_PARAM__WEB__BASE__URL = "https://odoo.cellmechanic.com"
 
 [contexts.cm.instances.dev]
 install_modules_add = [
-    "environment_overrides",
     "fishbowl_import",
     "repairshopr_import",
 ]
 
 [contexts.cm.instances.testing]
 install_modules_add = [
-    "environment_overrides",
     "fishbowl_import",
     "repairshopr_import",
 ]
