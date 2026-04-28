@@ -158,6 +158,71 @@ attached_paths = ["sources/devkit"]
         self.assertNotIn("ENV_OVERRIDE_SHOPIFY__TEST_STORE", runtime_values)
         self.assertEqual(runtime_values["ENV_OVERRIDE_DISABLE_CRON"], "1")
 
+    def test_typed_odoo_instance_override_payload_from_stack_overrides(self) -> None:
+        runtime_values: dict[str, str] = {"ENV_OVERRIDE_DISABLE_CRON": "1"}
+        odoo_overrides = local_runtime.OdooOverrideDefinition(
+            config_parameters={"web.base.url": "https://opw-local.example.com"},
+            addon_settings={
+                "authentik_sso": {
+                    "base_url": "https://authentik.example.com",
+                    "group_claim": "groups",
+                }
+            },
+        )
+
+        local_runtime.apply_typed_odoo_instance_override_payload(
+            runtime_values=runtime_values,
+            context_name="opw",
+            instance_name="local",
+            odoo_overrides=odoo_overrides,
+        )
+
+        encoded_payload = runtime_values[local_runtime.ODOO_INSTANCE_OVERRIDES_PAYLOAD_ENV_KEY]
+        payload = json.loads(base64.b64decode(encoded_payload).decode("utf-8"))
+
+        self.assertEqual(
+            payload["config_parameters"],
+            [
+                {
+                    "key": "web.base.url",
+                    "value": {"source": "literal", "value": "https://opw-local.example.com"},
+                }
+            ],
+        )
+        self.assertEqual(
+            payload["addon_settings"],
+            [
+                {
+                    "addon": "authentik_sso",
+                    "setting": "base_url",
+                    "value": {"source": "literal", "value": "https://authentik.example.com"},
+                },
+                {
+                    "addon": "authentik_sso",
+                    "setting": "group_claim",
+                    "value": {"source": "literal", "value": "groups"},
+                },
+            ],
+        )
+        self.assertEqual(runtime_values["ENV_OVERRIDE_DISABLE_CRON"], "1")
+
+    def test_typed_odoo_instance_override_payload_rejects_stack_and_legacy_setting_mix(self) -> None:
+        runtime_values = {
+            "ENV_OVERRIDE_CONFIG_PARAM__WEB__BASE__URL": "https://opw-local.example.com",
+        }
+        odoo_overrides = local_runtime.OdooOverrideDefinition(
+            config_parameters={"web.base.url": "https://opw-other.example.com"},
+            addon_settings={},
+        )
+
+        with self.assertRaisesRegex(local_runtime.RuntimeCommandError, "cannot be combined"):
+            local_runtime.apply_typed_odoo_instance_override_payload(
+                runtime_values=runtime_values,
+                context_name="opw",
+                instance_name="local",
+                odoo_overrides=odoo_overrides,
+            )
+
     def test_typed_odoo_instance_override_payload_rejects_mixed_authority(self) -> None:
         runtime_values = {
             local_runtime.ODOO_INSTANCE_OVERRIDES_PAYLOAD_ENV_KEY: "already-set",

@@ -180,12 +180,16 @@ Notes
 - Local `platform runtime up` emits manifest-backed host addon mount
   paths for compose, so tenant checkouts can bind-mount `sources/tenant/addons`
   plus `sources/shared-addons` into the devkit-owned local runtime bundle.
-- Local runtime selection converts legacy setting-shaped inputs such as
-  `ENV_OVERRIDE_CONFIG_PARAM__*`, `ENV_OVERRIDE_AUTHENTIK__*`, and
-  `ENV_OVERRIDE_SHOPIFY__*` into the typed
-  `ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64` payload consumed by
-  `launchplane_settings`. The generated runtime env no longer emits those
-  legacy setting keys, while unrelated devkit control keys such as
+- Local runtime selection reads typed `odoo_overrides` tables from the stack and
+  renders the `ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64` payload consumed by
+  `launchplane_settings`. `config_parameters` tables write Odoo
+  `ir.config_parameter` keys, while `addon_settings.<addon>` tables write
+  supported addon settings such as `authentik_sso` values.
+- Legacy setting-shaped inputs such as `ENV_OVERRIDE_CONFIG_PARAM__*`,
+  `ENV_OVERRIDE_AUTHENTIK__*`, and `ENV_OVERRIDE_SHOPIFY__*` are still accepted
+  as a compatibility input and converted into the same typed payload, but they
+  cannot be mixed with stack `odoo_overrides`. The checked-in sample stack uses
+  typed `odoo_overrides` instead. Unrelated devkit control keys such as
   `ENV_OVERRIDE_DISABLE_CRON` remain available until they get their own typed
   local contract.
 - When `ODOO_CONTROL_PLANE_ROOT` points at a valid `launchplane`

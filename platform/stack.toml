@@ -44,9 +44,11 @@ install_modules = [
 
 [contexts.cm.runtime_env]
 ODOO_DEV_MODE = ""
-ENV_OVERRIDE_AUTHENTIK__BASE_URL = "https://authentik.cellmechanic.com"
-ENV_OVERRIDE_AUTHENTIK__DISABLE_PROVIDERS = "Odoo.com"
-ENV_OVERRIDE_AUTHENTIK__GROUP_CLAIM = "groups"
+
+[contexts.cm.odoo_overrides.addon_settings.authentik_sso]
+base_url = "https://authentik.cellmechanic.com"
+disable_providers = "Odoo.com"
+group_claim = "groups"
 
 [contexts.cm.instances.local]
 install_modules_add = [
@@ -60,17 +62,23 @@ install_modules_add = [
 ODOO_DEV_MODE = "reload"
 ODOO_WORKERS = 2
 COMPOSE_BUILD_TARGET = "development"
-ENV_OVERRIDE_CONFIG_PARAM__WEB__BASE__URL = "https://cm-local.shinycomputers.com"
+
+[contexts.cm.instances.local.odoo_overrides.config_parameters]
+"web.base.url" = "https://cm-local.shinycomputers.com"
 
 [contexts.cm.instances.dev.runtime_env]
 ODOO_WORKERS = 4
 COMPOSE_BUILD_TARGET = "production"
-ENV_OVERRIDE_CONFIG_PARAM__WEB__BASE__URL = "https://cm-dev.shinycomputers.com"
+
+[contexts.cm.instances.dev.odoo_overrides.config_parameters]
+"web.base.url" = "https://cm-dev.shinycomputers.com"
 
 [contexts.cm.instances.testing.runtime_env]
 ODOO_WORKERS = 4
 COMPOSE_BUILD_TARGET = "production"
-ENV_OVERRIDE_CONFIG_PARAM__WEB__BASE__URL = "https://cm-testing.shinycomputers.com"
+
+[contexts.cm.instances.testing.odoo_overrides.config_parameters]
+"web.base.url" = "https://cm-testing.shinycomputers.com"
 
 [contexts.cm.instances.prod.runtime_env]
 ODOO_WORKERS = 6
@@ -78,7 +86,9 @@ POSTGRES_SHARED_BUFFERS = "2GB"
 POSTGRES_EFFECTIVE_CACHE_SIZE = "6GB"
 POSTGRES_WORK_MEM = "64MB"
 COMPOSE_BUILD_TARGET = "production"
-ENV_OVERRIDE_CONFIG_PARAM__WEB__BASE__URL = "https://odoo.cellmechanic.com"
+
+[contexts.cm.instances.prod.odoo_overrides.config_parameters]
+"web.base.url" = "https://odoo.cellmechanic.com"
 
 [contexts.cm.instances.dev]
 install_modules_add = [
@@ -112,21 +122,27 @@ ODOO_WORKERS = 2
 ODOO_LIMIT_MEMORY_SOFT = 2147483648
 ODOO_LIMIT_MEMORY_HARD = 3221225472
 COMPOSE_BUILD_TARGET = "development"
-ENV_OVERRIDE_CONFIG_PARAM__WEB__BASE__URL = "https://opw-local.shinycomputers.com"
+
+[contexts.opw.instances.local.odoo_overrides.config_parameters]
+"web.base.url" = "https://opw-local.shinycomputers.com"
 
 [contexts.opw.instances.dev]
 
 [contexts.opw.instances.dev.runtime_env]
 ODOO_WORKERS = 4
 COMPOSE_BUILD_TARGET = "production"
-ENV_OVERRIDE_CONFIG_PARAM__WEB__BASE__URL = "https://opw-dev.shinycomputers.com"
+
+[contexts.opw.instances.dev.odoo_overrides.config_parameters]
+"web.base.url" = "https://opw-dev.shinycomputers.com"
 
 [contexts.opw.instances.testing]
 
 [contexts.opw.instances.testing.runtime_env]
 ODOO_WORKERS = 4
 COMPOSE_BUILD_TARGET = "production"
-ENV_OVERRIDE_CONFIG_PARAM__WEB__BASE__URL = "https://opw-testing.shinycomputers.com"
+
+[contexts.opw.instances.testing.odoo_overrides.config_parameters]
+"web.base.url" = "https://opw-testing.shinycomputers.com"
 
 [contexts.opw.instances.prod.runtime_env]
 ODOO_WORKERS = 6
@@ -134,4 +150,6 @@ POSTGRES_SHARED_BUFFERS = "2GB"
 POSTGRES_EFFECTIVE_CACHE_SIZE = "6GB"
 POSTGRES_WORK_MEM = "64MB"
 COMPOSE_BUILD_TARGET = "production"
-ENV_OVERRIDE_CONFIG_PARAM__WEB__BASE__URL = "https://opw-prod.shinycomputers.com"
+
+[contexts.opw.instances.prod.odoo_overrides.config_parameters]
+"web.base.url" = "https://opw-prod.shinycomputers.com"

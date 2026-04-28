@@ -189,10 +189,17 @@ _VERIFIED_IMAGE_ACCESS: set[str] = set()
 
 
 @dataclass(frozen=True)
+class OdooOverrideDefinition:
+    config_parameters: ScalarMap
+    addon_settings: dict[str, ScalarMap]
+
+
+@dataclass(frozen=True)
 class InstanceDefinition:
     database: str | None
     install_modules_add: tuple[str, ...]
     runtime_env: ScalarMap
+    odoo_overrides: OdooOverrideDefinition
 
 
 @dataclass(frozen=True)
@@ -200,6 +207,7 @@ class ContextDefinition:
     database: str | None
     install_modules: tuple[str, ...]
     runtime_env: ScalarMap
+    odoo_overrides: OdooOverrideDefinition
     update_modules: str
     instances: dict[str, InstanceDefinition]
 
@@ -211,6 +219,7 @@ class StackDefinition:
     state_root: str
     addons_path: tuple[str, ...]
     runtime_env: ScalarMap
+    odoo_overrides: OdooOverrideDefinition
     required_env_keys: tuple[str, ...]
     contexts: dict[str, ContextDefinition]
 
@@ -249,6 +258,7 @@ class RuntimeSelection:
     effective_source_repositories: tuple[str, ...]
     effective_source_selectors: tuple[str, ...]
     effective_runtime_env: dict[str, str]
+    effective_odoo_overrides: OdooOverrideDefinition
 
 
 @dataclass(frozen=True)
@@ -788,6 +798,7 @@ def resolve_manifest_runtime_stack_definition(*, manifest: WorkspaceManifest, st
         state_root=stack_definition.state_root,
         addons_path=tuple(effective_addons_paths),
         runtime_env=stack_definition.runtime_env,
+        odoo_overrides=stack_definition.odoo_overrides,
         required_env_keys=stack_definition.required_env_keys,
         contexts=stack_definition.contexts,
     )
@@ -938,6 +949,7 @@ def parse_stack_definition(payload: dict[str, object], *, stack_file_path: Path)
         state_root=_read_optional_string(payload, "state_root", scope="stack") or "",
         addons_path=_read_string_tuple(payload, "addons_path", scope="stack"),
         runtime_env=_read_optional_scalar_map(payload, "runtime_env", scope="stack"),
+        odoo_overrides=_read_optional_odoo_override_definition(payload, scope="stack"),
         required_env_keys=_read_optional_string_tuple(payload, "required_env_keys", scope="stack"),
         contexts=contexts,
     )
@@ -961,6 +973,7 @@ def _parse_context_definition(context_name: str, raw_context: object) -> Context
         database=_read_optional_string(context_table, "database", scope=f"contexts.{context_name}"),
         install_modules=_read_optional_string_tuple(context_table, "install_modules", scope=f"contexts.{context_name}"),
         runtime_env=_read_optional_scalar_map(context_table, "runtime_env", scope=f"contexts.{context_name}"),
+        odoo_overrides=_read_optional_odoo_override_definition(context_table, scope=f"contexts.{context_name}"),
         update_modules=_read_optional_string(context_table, "update_modules", scope=f"contexts.{context_name}") or "AUTO",
         instances=instances,
     )
@@ -983,6 +996,10 @@ def _parse_instance_definition(*, context_name: str, instance_name: str, raw_ins
         runtime_env=_read_optional_scalar_map(
             instance_table,
             "runtime_env",
+            scope=f"contexts.{context_name}.instances.{instance_name}",
+        ),
+        odoo_overrides=_read_optional_odoo_override_definition(
+            instance_table,
             scope=f"contexts.{context_name}.instances.{instance_name}",
         ),
     )
@@ -1011,6 +1028,7 @@ def expand_project_addons_paths(*, stack_definition: StackDefinition, stack_file
         state_root=stack_definition.state_root,
         addons_path=tuple(expanded_paths),
         runtime_env=stack_definition.runtime_env,
+        odoo_overrides=stack_definition.odoo_overrides,
         required_env_keys=stack_definition.required_env_keys,
         contexts=stack_definition.contexts,
     )
@@ -1034,6 +1052,25 @@ def _ensure_legacy_addon_source_keys_absent(
     formatted_keys = ", ".join(configured_keys)
     raise RuntimeCommandError(
         f"Legacy addon source keys are no longer supported in {scope}: {formatted_keys}. Move addon source selection into {replacement}."
+    )
+
+
+def empty_odoo_override_definition() -> OdooOverrideDefinition:
+    return OdooOverrideDefinition(config_parameters={}, addon_settings={})
+
+
+def merge_odoo_override_definitions(
+    *odoo_override_sources: OdooOverrideDefinition,
+) -> OdooOverrideDefinition:
+    config_parameters: ScalarMap = {}
+    addon_settings: dict[str, ScalarMap] = {}
+    for override_source in odoo_override_sources:
+        config_parameters.update(override_source.config_parameters)
+        for addon_name, setting_values in override_source.addon_settings.items():
+            addon_settings.setdefault(addon_name, {}).update(setting_values)
+    return OdooOverrideDefinition(
+        config_parameters=config_parameters,
+        addon_settings=addon_settings,
     )
 
 
@@ -1336,6 +1373,11 @@ def resolve_runtime_selection(
         context_definition=context_definition,
         instance_definition=instance_definition,
     )
+    effective_odoo_overrides = merge_effective_odoo_overrides(
+        stack_definition=stack_definition,
+        context_definition=context_definition,
+        instance_definition=instance_definition,
+    )
     base_web_port, base_longpoll_port, base_db_port = port_seed_for_context(context_name)
     instance_offset = port_offset_for_instance(instance_name)
     database_name = instance_definition.database or context_definition.database or context_name
@@ -1361,6 +1403,7 @@ def resolve_runtime_selection(
         effective_source_repositories=effective_source_repositories,
         effective_source_selectors=effective_source_selectors,
         effective_runtime_env=effective_runtime_env,
+        effective_odoo_overrides=effective_odoo_overrides,
     )
 
 
@@ -1401,6 +1444,19 @@ def merge_effective_runtime_env(
         for key, raw_value in runtime_source.items():
             effective_runtime_env[key] = str(raw_value)
     return effective_runtime_env
+
+
+def merge_effective_odoo_overrides(
+    *,
+    stack_definition: StackDefinition,
+    context_definition: ContextDefinition,
+    instance_definition: InstanceDefinition,
+) -> OdooOverrideDefinition:
+    return merge_odoo_override_definitions(
+        stack_definition.odoo_overrides,
+        context_definition.odoo_overrides,
+        instance_definition.odoo_overrides,
+    )
 
 
 def port_seed_for_context(context_name: str) -> tuple[int, int, int]:
@@ -1558,6 +1614,7 @@ def build_runtime_env_values(
         runtime_values=runtime_values,
         context_name=runtime_selection.context_name,
         instance_name=runtime_selection.instance_name,
+        odoo_overrides=runtime_selection.effective_odoo_overrides,
     )
     return runtime_values
 
@@ -1567,11 +1624,13 @@ def apply_typed_odoo_instance_override_payload(
     runtime_values: dict[str, str],
     context_name: str,
     instance_name: str,
+    odoo_overrides: OdooOverrideDefinition | None = None,
 ) -> None:
     payload = build_typed_odoo_instance_override_payload(
         runtime_values=runtime_values,
         context_name=context_name,
         instance_name=instance_name,
+        odoo_overrides=odoo_overrides,
     )
     if payload is None:
         return
@@ -1591,9 +1650,35 @@ def build_typed_odoo_instance_override_payload(
     runtime_values: dict[str, str],
     context_name: str,
     instance_name: str,
+    odoo_overrides: OdooOverrideDefinition | None = None,
 ) -> dict[str, object] | None:
     config_parameters: list[dict[str, object]] = []
     addon_settings: list[dict[str, object]] = []
+    effective_odoo_overrides = odoo_overrides or empty_odoo_override_definition()
+    has_typed_odoo_overrides = bool(effective_odoo_overrides.config_parameters or effective_odoo_overrides.addon_settings)
+    has_legacy_setting_overrides = any(runtime_key.startswith(LEGACY_SETTING_OVERRIDE_PREFIXES) for runtime_key in runtime_values)
+    if has_typed_odoo_overrides and has_legacy_setting_overrides:
+        raise RuntimeCommandError("Typed stack odoo_overrides cannot be combined with legacy ENV_OVERRIDE_* setting inputs.")
+    for config_key in sorted(effective_odoo_overrides.config_parameters):
+        config_parameters.append(
+            {
+                "key": config_key.strip().lower(),
+                "value": {
+                    "source": "literal",
+                    "value": effective_odoo_overrides.config_parameters[config_key],
+                },
+            }
+        )
+    for addon_name in sorted(effective_odoo_overrides.addon_settings):
+        setting_values = effective_odoo_overrides.addon_settings[addon_name]
+        for setting_name in sorted(setting_values):
+            addon_settings.append(
+                {
+                    "addon": addon_name.strip().lower(),
+                    "setting": setting_name.strip().lower(),
+                    "value": {"source": "literal", "value": setting_values[setting_name]},
+                }
+            )
     for runtime_key in sorted(runtime_values):
         runtime_value = runtime_values[runtime_key]
         if runtime_key.startswith(LEGACY_CONFIG_PARAM_PREFIX):
@@ -2902,3 +2987,42 @@ def _read_optional_scalar_map(source: dict[str, object], key: str, *, scope: str
             raise RuntimeCommandError(f"Expected {scope}.{key}.{raw_key} to be a scalar value")
         scalar_map[raw_key] = raw_value
     return scalar_map
+
+
+def _read_optional_odoo_override_definition(source: dict[str, object], *, scope: str) -> OdooOverrideDefinition:
+    override_table = _read_optional_table(source, "odoo_overrides", scope=scope)
+    if not override_table:
+        return empty_odoo_override_definition()
+
+    config_parameters = _read_optional_scalar_map(
+        override_table,
+        "config_parameters",
+        scope=f"{scope}.odoo_overrides",
+    )
+    raw_addon_settings = _read_optional_table(
+        override_table,
+        "addon_settings",
+        scope=f"{scope}.odoo_overrides",
+    )
+    addon_settings: dict[str, ScalarMap] = {}
+    for addon_name, raw_setting_values in raw_addon_settings.items():
+        if not isinstance(addon_name, str) or not addon_name.strip():
+            raise RuntimeCommandError(f"Expected {scope}.odoo_overrides.addon_settings addon names to be non-empty strings")
+        if not isinstance(raw_setting_values, dict):
+            raise RuntimeCommandError(f"Expected {scope}.odoo_overrides.addon_settings.{addon_name} to be a table")
+        setting_values: ScalarMap = {}
+        for setting_name, raw_setting_value in raw_setting_values.items():
+            if not isinstance(setting_name, str) or not setting_name.strip():
+                raise RuntimeCommandError(
+                    f"Expected {scope}.odoo_overrides.addon_settings.{addon_name} setting names to be non-empty strings"
+                )
+            if not isinstance(raw_setting_value, (str, int, float, bool)):
+                raise RuntimeCommandError(
+                    f"Expected {scope}.odoo_overrides.addon_settings.{addon_name}.{setting_name} to be a scalar value"
+                )
+            setting_values[setting_name] = raw_setting_value
+        addon_settings[addon_name.strip().lower()] = setting_values
+    return OdooOverrideDefinition(
+        config_parameters=config_parameters,
+        addon_settings=addon_settings,
+    )
