@@ -1128,27 +1128,16 @@ registry = Registry(payload['db'])
 with registry.cursor() as cr:
     env = api.Environment(cr, SUPERUSER_ID, {})
     typed_override_payload_present = bool(os.environ.get('ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64', '').strip())
-    if typed_override_payload_present and 'launchplane.settings' in env.registry:
-        env['launchplane.settings'].sudo().apply_from_env()
-        cr.commit()
-    elif 'environment.overrides' in env.registry:
-        env['environment.overrides'].sudo().apply_from_env()
-        cr.commit()
-    elif 'launchplane.settings' in env.registry:
+    if 'launchplane.settings' in env.registry:
         env['launchplane.settings'].sudo().apply_from_env()
         cr.commit()
     elif typed_override_payload_present:
         raise RuntimeError(
             'Launchplane supplied ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64, '
-            'but neither launchplane.settings nor environment.overrides is installed.'
+            'but launchplane.settings is not installed.'
         )
     else:
         print('Launchplane settings addon not installed; skipping settings apply.')
-    if 'authentik.sso.config' in env.registry:
-        env['authentik.sso.config'].sudo().apply_from_env()
-        cr.commit()
-    else:
-        print('Authentik SSO addon not installed; skipping Authentik overrides.')
 """).replace("__PAYLOAD__", json.dumps(payload))
 
         try:
