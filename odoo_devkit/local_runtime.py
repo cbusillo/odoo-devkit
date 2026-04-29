@@ -447,8 +447,10 @@ def publish_runtime_artifact(
     if github_token is not None:
         build_environment["GITHUB_TOKEN"] = github_token
 
+    artifact_image_digest: str | None = None
     with tempfile.TemporaryDirectory(prefix="odoo-artifact-") as temporary_directory_name:
         staged_context_root = Path(temporary_directory_name)
+        build_metadata_file = staged_context_root / "build-metadata.json"
         stage_artifact_build_context(
             manifest=manifest,
             runtime_repo_path=runtime_repo_path,
@@ -466,6 +468,8 @@ def publish_runtime_artifact(
             ",".join(normalized_platforms),
             "--tag",
             f"{normalized_image_repository}:{normalized_image_tag}",
+            "--metadata-file",
+            str(build_metadata_file),
             "--push",
         ]
         if github_token is not None:
@@ -488,6 +492,7 @@ def publish_runtime_artifact(
             command=build_command,
             environment_overrides=build_environment,
         )
+        artifact_image_digest = resolve_buildx_metadata_image_digest(build_metadata_file)
     tenant_repo_path = manifest.tenant_repo.resolve_path(manifest_directory=manifest.manifest_directory)
     if tenant_repo_path is None or not tenant_repo_path.exists():
         raise RuntimeCommandError("Tenant repo path must exist before publishing an artifact.")
@@ -516,7 +521,7 @@ def publish_runtime_artifact(
         addon_skip_flags=parse_csv_values(runtime_values.get("ODOO_PYTHON_SYNC_SKIP_ADDONS", "")),
         image_repository=normalized_image_repository,
         image_tag=normalized_image_tag,
-        image_digest=resolve_image_digest(f"{normalized_image_repository}:{normalized_image_tag}"),
+        image_digest=artifact_image_digest,
         enterprise_base_digest=resolve_image_digest(base_runtime_image),
         odoo_version=runtime_values.get("ODOO_VERSION", ""),
     )
@@ -2102,6 +2107,28 @@ def resolve_image_digest(image_reference: str) -> str:
     if digest_match is None:
         raise RuntimeCommandError(f"Unable to parse image digest from docker output for {candidate}.")
     return digest_match.group(1)
+
+
+def resolve_buildx_metadata_image_digest(metadata_file: Path) -> str:
+    try:
+        raw_metadata = metadata_file.read_text(encoding="utf-8")
+    except OSError as error:
+        raise RuntimeCommandError(f"Unable to read Buildx metadata file: {metadata_file}") from error
+    try:
+        metadata = json.loads(raw_metadata)
+    except json.JSONDecodeError as error:
+        raise RuntimeCommandError(f"Unable to parse Buildx metadata file as JSON: {metadata_file}") from error
+    if not isinstance(metadata, dict):
+        raise RuntimeCommandError(f"Buildx metadata file must contain a JSON object: {metadata_file}")
+
+    candidates = [metadata.get("containerimage.digest")]
+    descriptor = metadata.get("containerimage.descriptor")
+    if isinstance(descriptor, dict):
+        candidates.append(descriptor.get("digest"))
+    for candidate in candidates:
+        if isinstance(candidate, str) and re.fullmatch(r"sha256:[0-9a-fA-F]{64}", candidate.strip()):
+            return candidate.strip()
+    raise RuntimeCommandError(f"Buildx metadata file did not include a valid container image digest: {metadata_file}")
 
 
 def build_runtime_artifact_manifest_payload(

@@ -43,6 +43,8 @@ from odoo_devkit.workspace import sync_workspace
 
 
 class RuntimeCommandTests(unittest.TestCase):
+    artifact_image_digest = "sha256:" + "1" * 64
+
     def setUp(self) -> None:
         super().setUp()
         self.control_plane_root_temporary_directory = tempfile.TemporaryDirectory()
@@ -63,6 +65,10 @@ class RuntimeCommandTests(unittest.TestCase):
         self.environment_patch.stop()
         self.control_plane_root_temporary_directory.cleanup()
         super().tearDown()
+
+    def _write_buildx_metadata_for_command(self, command: list[str]) -> None:
+        metadata_file = Path(command[command.index("--metadata-file") + 1])
+        metadata_file.write_text(json.dumps({"containerimage.digest": self.artifact_image_digest}) + "\n", encoding="utf-8")
 
     def test_resolve_runtime_repo_path_prefers_explicit_repo(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -108,6 +114,31 @@ attached_paths = ["sources/devkit"]
             manifest = load_workspace_manifest(manifest_path)
 
             self.assertEqual(resolve_runtime_repo_path(manifest), runtime_repo_path.resolve())
+
+    def test_resolve_buildx_metadata_image_digest_reads_primary_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            metadata_file = Path(temporary_directory) / "build-metadata.json"
+            metadata_file.write_text(json.dumps({"containerimage.digest": self.artifact_image_digest}) + "\n", encoding="utf-8")
+
+            self.assertEqual(local_runtime.resolve_buildx_metadata_image_digest(metadata_file), self.artifact_image_digest)
+
+    def test_resolve_buildx_metadata_image_digest_reads_descriptor_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            metadata_file = Path(temporary_directory) / "build-metadata.json"
+            metadata_file.write_text(
+                json.dumps({"containerimage.descriptor": {"digest": self.artifact_image_digest}}) + "\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(local_runtime.resolve_buildx_metadata_image_digest(metadata_file), self.artifact_image_digest)
+
+    def test_resolve_buildx_metadata_image_digest_rejects_missing_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            metadata_file = Path(temporary_directory) / "build-metadata.json"
+            metadata_file.write_text("{}\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "valid container image digest"):
+                local_runtime.resolve_buildx_metadata_image_digest(metadata_file)
 
     def test_typed_odoo_instance_override_payload_from_legacy_setting_env(self) -> None:
         runtime_values = {
@@ -890,8 +921,10 @@ install_modules = ["opw_custom"]
                 _ = environment_overrides, allowed_return_codes
                 if command[:3] == ["docker", "buildx", "build"]:
                     captured_build_contexts.append(runtime_repo_path)
+                    self._write_buildx_metadata_for_command(command)
                     self.assertIn("--platform", command)
                     self.assertIn(",".join(local_runtime.DEFAULT_ARTIFACT_IMAGE_PLATFORMS), command)
+                    self.assertIn("--metadata-file", command)
                     self.assertIn("--push", command)
                     self.assertTrue((runtime_repo_path / "addons" / "opw_custom" / "__manifest__.py").exists())
                     self.assertTrue((runtime_repo_path / "addons" / "shared" / "shared_module" / "__manifest__.py").exists())
@@ -903,8 +936,8 @@ install_modules = ["opw_custom"]
                     with mock.patch("odoo_devkit.local_runtime.run_command", side_effect=fake_run_command):
                         with mock.patch(
                             "odoo_devkit.local_runtime.resolve_image_digest",
-                            side_effect=["sha256:" + "1" * 64, "sha256:" + "2" * 64],
-                        ):
+                            return_value="sha256:" + "2" * 64,
+                        ) as resolve_digest_mock:
                             payload = run_native_runtime_publish(
                                 manifest=manifest,
                                 image_repository="ghcr.io/example/opw-runtime",
@@ -914,8 +947,9 @@ install_modules = ["opw_custom"]
                             )
 
             self.assertTrue(captured_build_contexts)
+            resolve_digest_mock.assert_called_once_with("ghcr.io/example/runtime:19.0-runtime")
             self.assertEqual(payload["image"]["repository"], "ghcr.io/example/opw-runtime")
-            self.assertEqual(payload["image"]["digest"], "sha256:" + "1" * 64)
+            self.assertEqual(payload["image"]["digest"], self.artifact_image_digest)
             self.assertEqual(payload["enterprise_base_digest"], "sha256:" + "2" * 64)
             self.assertEqual(payload["build_flags"]["values"]["build_target"], "production")
             self.assertEqual(payload["image"]["tags"], ["opw-20260416-abcdef"])
@@ -972,6 +1006,7 @@ sources = [
                 _ = runtime_repo_path, environment_overrides, allowed_return_codes
                 if command[:3] == ["docker", "buildx", "build"]:
                     captured_build_args.extend(command)
+                    self._write_buildx_metadata_for_command(command)
 
             resolved_ref = "411f6b8e85cac72dc7aa2e2dc5540001043c327d"
 
@@ -997,10 +1032,7 @@ sources = [
                                 "odoo_devkit.local_runtime.resolve_source_repository_ref_to_git_sha",
                                 return_value=resolved_ref,
                             ) as resolve_ref_mock:
-                                with mock.patch(
-                                    "odoo_devkit.local_runtime.resolve_image_digest",
-                                    side_effect=["sha256:" + "1" * 64, "sha256:" + "2" * 64],
-                                ):
+                                with mock.patch("odoo_devkit.local_runtime.resolve_image_digest", return_value="sha256:" + "2" * 64):
                                     payload = run_native_runtime_publish(
                                         manifest=manifest,
                                         image_repository="ghcr.io/example/opw-runtime",
@@ -1122,6 +1154,7 @@ install_modules = ["opw_custom"]
                 _ = runtime_repo_path, environment_overrides, allowed_return_codes
                 if command[:3] == ["docker", "buildx", "build"]:
                     captured_build_args.extend(command)
+                    self._write_buildx_metadata_for_command(command)
 
             with self.assertRaisesRegex(ValueError, "Legacy addon source keys are no longer supported"):
                 run_native_runtime_publish(
@@ -1177,6 +1210,7 @@ sources = [
                 _ = runtime_repo_path, environment_overrides, allowed_return_codes
                 if command[:3] == ["docker", "buildx", "build"]:
                     captured_build_args.extend(command)
+                    self._write_buildx_metadata_for_command(command)
 
             resolved_ref = "411f6b8e85cac72dc7aa2e2dc5540001043c327d"
             with mock.patch(
@@ -1202,10 +1236,7 @@ sources = [
                                 "odoo_devkit.local_runtime.resolve_source_repository_ref_to_git_sha",
                                 return_value=resolved_ref,
                             ) as resolve_ref_mock:
-                                with mock.patch(
-                                    "odoo_devkit.local_runtime.resolve_image_digest",
-                                    side_effect=["sha256:" + "1" * 64, "sha256:" + "2" * 64],
-                                ):
+                                with mock.patch("odoo_devkit.local_runtime.resolve_image_digest", return_value="sha256:" + "2" * 64):
                                     payload = run_native_runtime_publish(
                                         manifest=manifest,
                                         image_repository="ghcr.io/example/opw-runtime",
@@ -1418,6 +1449,7 @@ sources = [
                 _ = runtime_repo_path, environment_overrides, allowed_return_codes
                 if command[:3] == ["docker", "buildx", "build"]:
                     captured_build_args.extend(command)
+                    self._write_buildx_metadata_for_command(command)
 
             exact_ref = "cbusillo/disable_odoo_online@411f6b8e85cac72dc7aa2e2dc5540001043c327d"
             with mock.patch(
@@ -1439,10 +1471,7 @@ sources = [
                 with mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_base_images"):
                     with mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_image_push"):
                         with mock.patch("odoo_devkit.local_runtime.run_command", side_effect=fake_run_command):
-                            with mock.patch(
-                                "odoo_devkit.local_runtime.resolve_image_digest",
-                                side_effect=["sha256:" + "1" * 64, "sha256:" + "2" * 64],
-                            ):
+                            with mock.patch("odoo_devkit.local_runtime.resolve_image_digest", return_value="sha256:" + "2" * 64):
                                 payload = run_native_runtime_publish(
                                     manifest=manifest,
                                     image_repository="ghcr.io/example/cm-runtime",

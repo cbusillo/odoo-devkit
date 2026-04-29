@@ -224,8 +224,9 @@ Notes
 - `platform runtime publish` is the release-handoff path. It stages tenant and
   shared addon sources into a clean build context, resolves configured addon
   repository selectors to exact git SHAs before build and artifact minting,
-  pushes the requested image tag, resolves the pushed digest, and writes a
-  control-plane-compatible artifact manifest JSON file.
+  pushes the requested image tag, reads the pushed image digest from Buildx's
+  build metadata output, and writes a control-plane-compatible artifact manifest
+  JSON file.
 - Publish-time GHCR credentials can be split by purpose. Private base image
   reads prefer `GHCR_READ_TOKEN`, artifact image pushes prefer `GHCR_TOKEN`,
   and private source checkout secrets still belong in the transient runtime
