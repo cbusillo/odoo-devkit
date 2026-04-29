@@ -8,6 +8,8 @@ dist/
 *.pyc
 .env
 .platform/
+.code/
+*.override.*
 platform/.env
 platform/secrets.toml
 tmp/
