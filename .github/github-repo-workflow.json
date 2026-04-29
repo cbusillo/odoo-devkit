@@ -1,5 +1,54 @@
 {
   "defaultBranch": "main",
+  "projectType": "odoo-workspace-devkit",
+  "docs": {
+    "index": "docs/README.md",
+    "overview": "README.md",
+    "architecture": "docs/ARCHITECTURE.md",
+    "roles": "docs/roles.md",
+    "workspaceCli": "docs/tooling/workspace-cli.md",
+    "artifactInputs": "docs/tooling/artifact-inputs.md",
+    "commandPatterns": "docs/tooling/command-patterns.md",
+    "tenantOverlay": "docs/tooling/tenant-overlay.md"
+  },
+  "qualityGate": {
+    "setup": {
+      "default": "uv sync --locked"
+    },
+    "test": {
+      "default": "uv run python -m unittest discover -s tests"
+    },
+    "format": {
+      "default": "uv run ruff format --check ."
+    },
+    "lint": {
+      "default": "uv run ruff check ."
+    },
+    "build": {
+      "package": "uv build"
+    },
+    "smoke": {
+      "cli": "uv run platform --help",
+      "workspaceSurface": "uv run platform workspace sync --manifest <proof-workspace.toml>"
+    },
+    "inspection": {
+      "tool": "jetbrains",
+      "ide": "PyCharm",
+      "scopePreference": ["changed_files", "directory", "whole_project"]
+    },
+    "docsRequiredWhen": [
+      "behavior changes",
+      "api changes",
+      "config changes",
+      "operations changes",
+      "ownership boundaries change",
+      "workspace manifest contract changes",
+      "workspace surface changes",
+      "runtime command behavior changes",
+      "tenant overlay template changes",
+      "PyCharm generation changes"
+    ]
+  },
   "importantWorkflows": ["CI"],
   "qaLabels": [],
   "deployLabels": [],
@@ -11,8 +60,41 @@
     "launchplane"
   ],
   "validatedThrough": ["odoo-tenant-cm", "odoo-tenant-opw"],
+  "githubSignals": {
+    "postMerge": {
+      "waitForActions": true,
+      "checkSecurityAndQuality": true
+    },
+    "capabilities": {
+      "codeScanning": "available",
+      "secretScanning": "available",
+      "dependabotAlerts": "available",
+      "securityAdvisories": "available"
+    },
+    "refreshWhen": [
+      "repo visibility changes",
+      "GitHub plan changes",
+      "security settings change",
+      "token permissions change"
+    ]
+  },
   "cleanup": {
     "deleteMergedLocalBranches": true,
     "removeMergedCleanWorktrees": true
+  },
+  "metadataFreshness": {
+    "updateWhen": [
+      "docs routing changes",
+      "validation gates change",
+      "primary commands change",
+      "important workflows change",
+      "repo relationship changes",
+      "validated-through repos change",
+      "cleanup policy changes",
+      "ownership boundaries change",
+      "workspace manifest contract changes",
+      "runtime command behavior changes",
+      "tenant overlay template changes"
+    ]
   }
 }

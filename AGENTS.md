@@ -56,9 +56,8 @@ into the generated workspace root.
 
 ## Validation
 
-- Run `uv run python -m unittest discover -s tests` for functional coverage.
-- Run `uv run ruff format --check .` and `uv run ruff check .` before closing a
-  substantial change.
+- Use [`.github/github-repo-workflow.json`](.github/github-repo-workflow.json)
+  for validation commands and quality gates.
 - For workspace-surface changes, also run a live `workspace sync` against the
   current proof manifest and inspect the generated root files, including
   `docs/session-prompt.md`.
