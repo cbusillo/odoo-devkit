@@ -184,7 +184,7 @@ def _render_workspace_agents(manifest: WorkspaceCockpitManifest) -> str:
     primary_repos = _repos_for_group(manifest, "primary")
     upstream_repos = _repos_for_group(manifest, "upstream_image")
     devkit_repo = _repo_for_role(manifest, "devkit")
-    sync_command = f"uv --directory {devkit_repo.path} run platform workspace sync-cockpit-root --config workspace-cockpit.toml"
+    sync_command = f"uv --project {devkit_repo.path} run platform workspace sync-cockpit-root --config workspace-cockpit.toml"
     repo_map_lines = "\n".join(_format_repo_map_line(repo) for repo in primary_repos)
     upstream_lines = "\n".join(_format_repo_map_line(repo) for repo in upstream_repos)
     first_read_lines = _render_markdown_bullets(manifest.agents_first_read_lines)
@@ -225,7 +225,7 @@ def _render_workspace_docs_index(manifest: WorkspaceCockpitManifest) -> str:
     upstream_lines = "\n".join(
         f"- {repo.label}: [{_docs_link_target(repo.path)}]({_docs_link_target(repo.path)})" for repo in upstream_repos
     )
-    sync_command = f"uv --directory {devkit_repo.path} run platform workspace sync-cockpit-root --config workspace-cockpit.toml"
+    sync_command = f"uv --project {devkit_repo.path} run platform workspace sync-cockpit-root --config workspace-cockpit.toml"
     external_reference_lines = _render_markdown_bullets(manifest.docs_external_reference_lines)
     working_split_lines = _render_markdown_bullets(manifest.docs_working_split_lines)
     operational_note_lines = _render_markdown_bullets(manifest.docs_operational_note_lines)
@@ -311,7 +311,7 @@ def _format_repo_map_line(repo: WorkspaceCockpitRepoDefinition) -> str:
 
 
 def _status_command(devkit_repo: WorkspaceCockpitRepoDefinition) -> str:
-    return f"uv --directory {devkit_repo.path} run platform workspace status-cockpit-root --config workspace-cockpit.toml"
+    return f"uv --project {devkit_repo.path} run platform workspace status-cockpit-root --config workspace-cockpit.toml"
 
 
 def _render_markdown_bullets(lines: tuple[str, ...]) -> str:
@@ -325,6 +325,7 @@ def _render_plain_bullets(lines: tuple[str, ...]) -> str:
 def _default_agents_first_read_lines() -> tuple[str, ...]:
     return (
         "Open [docs/README.md](docs/README.md) in this workspace root first.",
+        "If present, open [AGENTS.override.md](AGENTS.override.md) for local, non-secret operator details before touching infra, SSH, tunnels, or remote service configuration.",
         "Use [sources/devkit/AGENTS.md](sources/devkit/AGENTS.md) for the canonical shared operating guide.",
         "Use [sources/devkit/docs/README.md](sources/devkit/docs/README.md) for the canonical shared docs index.",
         "Use the tenant-specific `workspace.toml` manifests when you need to run current local runtime commands through `odoo-devkit`.",
@@ -334,9 +335,9 @@ def _default_agents_first_read_lines() -> tuple[str, ...]:
 def _default_agents_ownership_lines() -> tuple[str, ...]:
     return (
         "`odoo-devkit` owns shared DX/runtime/workspace behavior plus local runtime and explicit data workflows.",
-        "`harbor` owns remote release actions, deployment truth, release tuples, and promotion evidence.",
+        "`launchplane` owns remote release actions, deployment truth, release tuples, and promotion evidence.",
         "Stable remote lanes are `testing` and `prod`.",
-        "Harbor PR previews replace any durable shared `dev` lane.",
+        "Launchplane PR previews replace any durable shared `dev` lane.",
     )
 
 
@@ -359,9 +360,9 @@ def _default_docs_external_reference_lines() -> tuple[str, ...]:
 def _default_docs_working_split_lines() -> tuple[str, ...]:
     return (
         "Use `odoo-devkit` for shared DX/runtime/workspace behavior and for local runtime plus explicit data workflows.",
-        "Use `harbor` for remote release actions, deployment truth, release tuples, and promotion evidence.",
+        "Use `launchplane` for remote release actions, deployment truth, release tuples, and promotion evidence.",
         "Stable remote lanes are `testing` and `prod`.",
-        "Harbor PR previews replace any durable shared `dev` lane.",
+        "Launchplane PR previews replace any durable shared `dev` lane.",
     )
 
 
@@ -375,9 +376,9 @@ def _default_session_prompt_rule_lines() -> tuple[str, ...]:
     return (
         "Treat repos under sources/ as the primary system under construction.",
         "Use odoo-devkit for shared DX/runtime/workspace behavior and local/data workflows.",
-        "Use harbor for remote release actions, deployment truth, release tuples, and promotion evidence.",
+        "Use launchplane for remote release actions, deployment truth, release tuples, and promotion evidence.",
         "Stable remote lanes are testing and prod.",
-        "Harbor PR previews replace any durable shared dev lane.",
+        "Launchplane PR previews replace any durable shared dev lane.",
         "Do not bring odoo-ai into the normal workspace context unless the task is explicit archaeology.",
         "Keep tenant repos thin and tenant-specific; fix shared behavior in devkit.",
         "When `workspace-cockpit.toml`, the workspace root, and source repos disagree, treat the source repos as the source of truth, then regenerate the cockpit.",

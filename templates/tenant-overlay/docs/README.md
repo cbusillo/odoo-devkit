@@ -8,9 +8,9 @@ This docs index is intentionally thin.
 - Use `sources/devkit/docs/README.md` for shared DX/runtime/bootstrap docs.
 - Use the generated tenant-root run configurations when you need to call the
   current runtime commands in the sibling `odoo-devkit` repo.
-- Use `harbor` for remote release actions such as ship, promote,
+- Use `launchplane` for remote release actions such as ship, promote,
   and gate execution. Stable remote lanes are `testing` and `prod`; PR
-  previews belong to Harbor preview workflows instead of a durable `dev` lane.
+  previews belong to Launchplane preview workflows instead of a durable `dev` lane.
 - Keep this tenant docs tree focused on tenant-owned domain workflows,
   architecture notes, and operational quirks.
 
