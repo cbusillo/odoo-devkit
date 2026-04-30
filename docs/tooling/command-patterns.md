@@ -70,5 +70,7 @@ uv run platform workspace scaffold-tenant-overlay \
 
 - Do not hand-edit generated workspace-root cockpit files.
 - If the workspace surface is wrong, fix `odoo-devkit` and re-sync.
+- Keep implementation-specific, non-secret local facts in an untracked
+  `AGENTS.override.md`; keep credentials in `.env`.
 - Keep tenant repo docs thin; use the generated workspace docs index for shared
   guidance.

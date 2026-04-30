@@ -95,6 +95,8 @@ Purpose
   of hand-maintaining root markdown files.
 - Generate `AGENTS.md`, `docs/README.md`, and `docs/session-prompt.md` from
   that config.
+- Point operators to an optional local `AGENTS.override.md` for non-secret
+  implementation facts that must not be baked into generated shared docs.
 - Keep non-repo workspace roots thin, link-heavy, and synced from
   `odoo-devkit` instead of hand-maintaining the same entrypoint docs.
 
@@ -107,6 +109,8 @@ Purpose
   tenant `workspace sync` surface.
 - Re-render both repo listings and section-level guidance bullets from the
   tracked cockpit config.
+- Preserve local-only notes by linking to `AGENTS.override.md` instead of
+  copying implementation details into generated markdown.
 
 ## `workspace status-cockpit-root`
 

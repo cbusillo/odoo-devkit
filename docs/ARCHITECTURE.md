@@ -54,7 +54,10 @@ When
 - Materialized `sources/tenant`, `sources/devkit`, and optional
   `sources/shared-addons`.
 - Generated runtime output under `.generated/`.
-- Disposable local state under `state/`.
+- Legacy or disposable local runtime output under `state/`, when an older
+  workspace still has it.
+- Optional local `AGENTS.override.md` for non-secret implementation facts that
+  should stay out of generated docs. Secrets still belong in `.env`.
 
 ### Control plane
 
@@ -81,11 +84,12 @@ When
     README.md
   workspace.lock.toml
   .generated/
+  AGENTS.override.md  # optional local, untracked, non-secret operator notes
   sources/
     tenant/
     devkit/
     shared-addons/
-  state/
+  state/  # legacy or disposable local runtime output when present
 ```
 
 ## Design Goal

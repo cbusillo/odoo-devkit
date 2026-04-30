@@ -137,6 +137,7 @@ repo_name = "odoo-docker"
 
             self.assertIn("schema_version = 1", manifest_text)
             self.assertIn("workspace-cockpit.toml", agents_text)
+            self.assertIn("AGENTS.override.md", agents_text)
             self.assertIn("sources/devkit", agents_text)
             self.assertIn("sync-cockpit-root", docs_index_text)
             self.assertIn("status-cockpit-root", docs_index_text)
@@ -202,12 +203,14 @@ repo_name = "harbor"
             self.assertIn("[guidance.session_prompt]", manifest_text)
             self.assertIn("sources/devkit/AGENTS.md", agents_text)
             self.assertIn("sources/devkit/docs/README.md", agents_text)
+            self.assertIn("AGENTS.override.md", agents_text)
             self.assertIn("Shared operating guide", docs_index_text)
             self.assertIn("Shared workspace CLI guide", docs_index_text)
             self.assertIn("workspace-cockpit.toml", agents_text)
+            self.assertIn("uv --project sources/devkit", agents_text)
             self.assertIn("status-cockpit-root", agents_text)
             self.assertIn("workspace root, and source repos", session_prompt_text)
-            self.assertIn("harbor for remote release actions", session_prompt_text)
+            self.assertIn("launchplane for remote release actions", session_prompt_text)
 
 
 class WorkspaceCockpitSyncTests(unittest.TestCase):
@@ -265,7 +268,9 @@ repo_name = "odoo-docker"
 
             self.assertEqual(result.output_directory, output_directory)
             self.assertIn(output_directory / "AGENTS.md", result.written_paths)
-            self.assertIn("sources/shared-addons", (output_directory / "AGENTS.md").read_text(encoding="utf-8"))
+            agents_text = (output_directory / "AGENTS.md").read_text(encoding="utf-8")
+            self.assertIn("sources/shared-addons", agents_text)
+            self.assertIn("AGENTS.override.md", agents_text)
             self.assertIn("Public base image", (output_directory / "docs" / "README.md").read_text(encoding="utf-8"))
             self.assertIn("source repos as the source of truth", (output_directory / "docs" / "session-prompt.md").read_text(encoding="utf-8"))
 
