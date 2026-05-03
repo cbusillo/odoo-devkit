@@ -253,11 +253,7 @@ def _render_workspace_session_prompt(
     shared_addons_repo_path: Path | None,
 ) -> str:
     shared_addons_source_path = shared_addons_repo_path.resolve() if shared_addons_repo_path is not None else None
-    shared_addons_line = (
-        f"- sources/shared-addons -> {shared_addons_source_path}\n"
-        if shared_addons_source_path is not None
-        else ""
-    )
+    shared_addons_line = f"- sources/shared-addons -> {shared_addons_source_path}\n" if shared_addons_source_path is not None else ""
     return (
         "# Session Prompt Template\n\n"
         "Use this as a starting prompt for a new Every Code session from the generated workspace root.\n\n"

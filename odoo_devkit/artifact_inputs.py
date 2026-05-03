@@ -164,9 +164,7 @@ def _read_source_definitions(
         exact_ref = _read_optional_string(entry, "exact_ref", scope=entry_scope)
         selector = _read_optional_string(entry, "selector", scope=entry_scope)
         if bool(exact_ref) == bool(selector):
-            raise ArtifactInputsError(
-                f"{entry_scope} must set exactly one of exact_ref or selector."
-            )
+            raise ArtifactInputsError(f"{entry_scope} must set exactly one of exact_ref or selector.")
         definitions.append(
             ArtifactInputSourceDefinition(
                 repository=repository,

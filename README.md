@@ -22,9 +22,10 @@ The current workspace flow:
 
 For remote environments, the stable lane model is `testing` plus `prod`.
 Launchplane-managed PR previews are a separate control-plane concern rather
-than a third durable runtime lane exposed through `platform runtime`. Remote release
-or promotion flow is artifact-backed and belongs in `launchplane`, not
-in branch-oriented `odoo-devkit` commands.
+than a third durable runtime lane exposed through `platform runtime`.
+`odoo-devkit` can publish artifact images for handoff, but remote ship,
+promote, gate, and preview lifecycle flow belongs in `launchplane`, not in
+branch-oriented `odoo-devkit` commands.
 
 ## Command surface
 

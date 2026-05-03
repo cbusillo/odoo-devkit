@@ -85,9 +85,7 @@ def load_workspace_cockpit_manifest(manifest_path: Path) -> WorkspaceCockpitMani
             _read_string_tuple(docs_table, "external_reference_boundary") or _default_docs_external_reference_lines()
         ),
         docs_working_split_lines=_read_string_tuple(docs_table, "working_split") or _default_docs_working_split_lines(),
-        docs_operational_note_lines=(
-            _read_string_tuple(docs_table, "operational_notes") or _default_docs_operational_note_lines()
-        ),
+        docs_operational_note_lines=(_read_string_tuple(docs_table, "operational_notes") or _default_docs_operational_note_lines()),
         session_prompt_rule_lines=(
             _read_string_tuple(session_prompt_table, "working_rules") or _default_session_prompt_rule_lines()
         ),
@@ -367,9 +365,7 @@ def _default_docs_working_split_lines() -> tuple[str, ...]:
 
 
 def _default_docs_operational_note_lines() -> tuple[str, ...]:
-    return (
-        "Historical plans remain available under `/Users/cbusillo/.codex/plans/` when you need rationale or prior sequencing.",
-    )
+    return ("Historical plans remain available under `/Users/cbusillo/.codex/plans/` when you need rationale or prior sequencing.",)
 
 
 def _default_session_prompt_rule_lines() -> tuple[str, ...]:
