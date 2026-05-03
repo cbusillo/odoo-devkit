@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import stat
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -70,5 +71,10 @@ def write_pycharm_odoo_conf(
         f"; instance={instance_name}",
         "; generated_for=pycharm",
     ]
+    # PyCharm Odoo tooling needs the local database password in the generated
+    # config. The file lives under the tenant-local .platform tree and is
+    # restricted to the current user when the platform permits chmod.
+    # codeql[py/clear-text-storage-sensitive-data]
     ide_config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    ide_config_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
     return ide_config_path

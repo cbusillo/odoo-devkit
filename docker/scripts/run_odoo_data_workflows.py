@@ -1378,7 +1378,7 @@ with registry.cursor() as cr:
     cr.commit()
 """).replace("__PAYLOAD__", json.dumps(payload))
 
-            _logger.info("Hardening admin credentials (password=%s, email=%s)", set_password, set_email)
+            _logger.info("Applying admin hardening updates.")
             self._run_odoo_shell(script, "admin hardening")
             self._reset_db_connection()
 

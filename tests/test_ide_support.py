@@ -37,6 +37,7 @@ class DevkitIdeSupportTests(unittest.TestCase):
             )
             self.assertNotIn("/.platform/ide/", rendered_conf)
             self.assertIn("db_port = 5432", rendered_conf)
+            self.assertEqual(written_conf.stat().st_mode & 0o777, 0o600)
 
     def test_write_pycharm_odoo_conf_prefers_explicit_host_addons_paths(self) -> None:
         with TemporaryDirectory() as temporary_directory_name:
