@@ -81,7 +81,8 @@ Purpose
 Purpose
 
 - Report whether the workspace exists.
-- Report whether the lock file and workspace-root docs surface exist.
+- Report whether the lock file and workspace-root cockpit files exist:
+  `AGENTS.md`, `docs/README.md`, and `docs/session-prompt.md`.
 - Report the tenant/devkit/shared-addons source paths and attached IDE roots.
 
 ## `workspace scaffold-cockpit-root`

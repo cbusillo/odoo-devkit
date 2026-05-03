@@ -209,7 +209,8 @@ repo_name = "harbor"
             self.assertIn("workspace-cockpit.toml", agents_text)
             self.assertIn("uv --project sources/devkit", agents_text)
             self.assertIn("status-cockpit-root", agents_text)
-            self.assertIn("workspace root, and source repos", session_prompt_text)
+            self.assertIn("When cockpit-root files disagree", session_prompt_text)
+            self.assertIn("repo-owned code/docs", session_prompt_text)
             self.assertIn("launchplane for remote release actions", session_prompt_text)
 
 
@@ -272,9 +273,9 @@ repo_name = "odoo-docker"
             self.assertIn("sources/shared-addons", agents_text)
             self.assertIn("AGENTS.override.md", agents_text)
             self.assertIn("Public base image", (output_directory / "docs" / "README.md").read_text(encoding="utf-8"))
-            self.assertIn(
-                "source repos as the source of truth", (output_directory / "docs" / "session-prompt.md").read_text(encoding="utf-8")
-            )
+            session_prompt_text = (output_directory / "docs" / "session-prompt.md").read_text(encoding="utf-8")
+            self.assertIn("workspace-cockpit.toml", session_prompt_text)
+            self.assertIn("repo-owned code/docs", session_prompt_text)
 
     def test_workspace_cockpit_status_reports_current_missing_and_stale_files(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

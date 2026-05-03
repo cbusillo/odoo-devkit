@@ -16,7 +16,7 @@ preview lifecycle for stable remote lanes live in `launchplane`.
 - [tooling/workspace-cli.md](tooling/workspace-cli.md) for the workspace
   command surface and generated-output contract.
 - [tooling/artifact-inputs.md](tooling/artifact-inputs.md) for the repo-owned
-  publish input manifest shape.
+  runtime and publish source-input contract.
 - [tooling/command-patterns.md](tooling/command-patterns.md) for concrete
   workspace command examples.
 - [tooling/tenant-overlay.md](tooling/tenant-overlay.md) for the thin tenant
