@@ -76,5 +76,10 @@ def write_pycharm_odoo_conf(
     # restricted to the current user when the platform permits chmod.
     # codeql[py/clear-text-storage-sensitive-data]
     ide_config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    ide_config_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    try:
+        ide_config_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    except OSError:
+        # Best effort only: some filesystems and mounts do not support mode
+        # changes, but the generated config is still usable.
+        pass
     return ide_config_path
