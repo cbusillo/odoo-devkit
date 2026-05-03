@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/../odoo-control-plane/.idea/odoo-control-plane.iml" filepath="$PROJECT_DIR$/../odoo-control-plane/.idea/odoo-control-plane.iml" />
+      <module fileurl="file://$PROJECT_DIR$/../launchplane/.idea/launchplane.iml" filepath="$PROJECT_DIR$/../launchplane/.idea/launchplane.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/odoo-devkit.iml" filepath="$PROJECT_DIR$/.idea/odoo-devkit.iml" />
       <module fileurl="file://$PROJECT_DIR$/../odoo-docker/.idea/odoo-docker.iml" filepath="$PROJECT_DIR$/../odoo-docker/.idea/odoo-docker.iml" />
       <module fileurl="file://$PROJECT_DIR$/../odoo-enterprise-docker/.idea/odoo-enterprise-docker.iml" filepath="$PROJECT_DIR$/../odoo-enterprise-docker/.idea/odoo-enterprise-docker.iml" />
