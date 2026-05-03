@@ -72,7 +72,7 @@ class TenantOverlayScaffoldTests(unittest.TestCase):
             workspace_status_text = (output_directory / "scripts" / "workspace-status").read_text(encoding="utf-8")
 
             self.assertIn('name = "odoo-devkit"', manifest_text)
-            self.assertIn('[repos.runtime]', manifest_text)
+            self.assertIn("[repos.runtime]", manifest_text)
             self.assertIn('path = "../odoo-devkit"', manifest_text)
             self.assertIn('name = "odoo-shared-addons"', manifest_text)
             self.assertIn('path = "../odoo-shared-addons"', manifest_text)
@@ -272,7 +272,9 @@ repo_name = "odoo-docker"
             self.assertIn("sources/shared-addons", agents_text)
             self.assertIn("AGENTS.override.md", agents_text)
             self.assertIn("Public base image", (output_directory / "docs" / "README.md").read_text(encoding="utf-8"))
-            self.assertIn("source repos as the source of truth", (output_directory / "docs" / "session-prompt.md").read_text(encoding="utf-8"))
+            self.assertIn(
+                "source repos as the source of truth", (output_directory / "docs" / "session-prompt.md").read_text(encoding="utf-8")
+            )
 
     def test_workspace_cockpit_status_reports_current_missing_and_stale_files(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -317,7 +319,9 @@ repo_name = "harbor"
             (output_directory / "AGENTS.md").write_text("stale\n", encoding="utf-8")
             stale_result = workspace_cockpit_status(manifest=manifest, output_directory=output_directory)
             self.assertFalse(stale_result.is_current)
-            stale_agents_status = next(file_status for file_status in stale_result.file_statuses if file_status.path.name == "AGENTS.md")
+            stale_agents_status = next(
+                file_status for file_status in stale_result.file_statuses if file_status.path.name == "AGENTS.md"
+            )
             self.assertTrue(stale_agents_status.exists)
             self.assertFalse(stale_agents_status.matches_expected)
 

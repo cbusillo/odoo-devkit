@@ -66,14 +66,10 @@ def load_dokploy_source_of_truth(repo_root: Path) -> DokploySourceOfTruth | None
         for target_index, raw_target in enumerate(targets_payload, start=1)
     )
     if control_plane_root is not None:
-        missing_target_id_routes = [
-            f"{target.context}/{target.instance}" for target in targets if not target.target_id.strip()
-        ]
+        missing_target_id_routes = [f"{target.context}/{target.instance}" for target in targets if not target.target_id.strip()]
         if missing_target_id_routes:
             missing_joined = ", ".join(missing_target_id_routes)
-            target_ids_display = (
-                str(target_ids_file_path) if target_ids_file_path is not None else "config/dokploy-targets.toml"
-            )
+            target_ids_display = str(target_ids_file_path) if target_ids_file_path is not None else "config/dokploy-targets.toml"
             raise RuntimeCommandError(
                 "Control-plane Dokploy route catalog resolved through ODOO_CONTROL_PLANE_ROOT is missing pinned target ids for "
                 f"{missing_joined}. Define them in {target_ids_display} or inline target_id values in {source_file_path}."
@@ -154,12 +150,9 @@ def _apply_dokploy_target_id_catalog(
         merged_targets.append(merged_target)
 
     if remaining_routes:
-        unknown_routes = ", ".join(
-            f"{context_name}/{instance_name}" for context_name, instance_name in sorted(remaining_routes)
-        )
+        unknown_routes = ", ".join(f"{context_name}/{instance_name}" for context_name, instance_name in sorted(remaining_routes))
         raise RuntimeCommandError(
-            "Dokploy target-id catalog contains route(s) that are not present in the control-plane route catalog: "
-            f"{unknown_routes}"
+            f"Dokploy target-id catalog contains route(s) that are not present in the control-plane route catalog: {unknown_routes}"
         )
 
     merged_payload["targets"] = merged_targets
