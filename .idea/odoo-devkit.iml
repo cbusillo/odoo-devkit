@@ -7,7 +7,7 @@
     </content>
     <orderEntry type="jdk" jdkName="uv (odoo-devkit)" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
-    <orderEntry type="module" module-name="odoo-control-plane" />
+    <orderEntry type="module" module-name="launchplane" />
     <orderEntry type="module" module-name="odoo-docker" />
     <orderEntry type="module" module-name="odoo-enterprise-docker" />
   </component>

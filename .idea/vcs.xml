@@ -12,7 +12,7 @@
   </component>
   <component name="VcsDirectoryMappings">
     <mapping directory="" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/../odoo-control-plane" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../launchplane" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/../odoo-docker" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/../odoo-enterprise-docker" vcs="Git" />
   </component>
