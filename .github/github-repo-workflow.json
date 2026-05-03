@@ -54,6 +54,8 @@
   "deployLabels": [],
   "healthUrls": [],
   "relatedRepos": [
+    "disable_odoo_online",
+    "odoo-docker",
     "odoo-shared-addons",
     "odoo-tenant-cm",
     "odoo-tenant-opw",

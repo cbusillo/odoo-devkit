@@ -377,7 +377,7 @@ def _default_session_prompt_rule_lines() -> tuple[str, ...]:
         "Launchplane PR previews replace any durable shared dev lane.",
         "Do not bring odoo-ai into the normal workspace context unless the task is explicit archaeology.",
         "Keep tenant repos thin and tenant-specific; fix shared behavior in devkit.",
-        "When `workspace-cockpit.toml`, the workspace root, and source repos disagree, treat the source repos as the source of truth, then regenerate the cockpit.",
+        "When cockpit-root files disagree, update `workspace-cockpit.toml` for cockpit guidance or the relevant source repo for repo-owned code/docs, then regenerate the cockpit.",
     )
 
 
