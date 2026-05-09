@@ -207,6 +207,11 @@ Notes
 - Native non-local ownership currently covers Dokploy-backed `restore`,
   `workflow bootstrap`, and `workflow update`; anything else should fail closed
   unless `odoo-devkit` grows an explicit remote contract for it.
+- Public and non-local Odoo runtimes fail closed on unsafe startup credentials:
+  the master password must be present and non-default, and an explicit admin
+  password must be configured before the startup wrapper marks the runtime
+  usable. Local developer runtimes may omit the admin password, but previews,
+  testing, and prod must not expose an Odoo database with default credentials.
 - Release/deploy ownership for remote environments stays in
   `launchplane`, even when the same tenant manifest is used to anchor
   local runtime context.
