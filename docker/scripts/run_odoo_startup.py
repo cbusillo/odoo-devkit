@@ -35,6 +35,9 @@ RUNTIME_OPTION_MAP: tuple[tuple[str, str], ...] = (
     ("ODOO_LIMIT_MEMORY_HARD", "limit_memory_hard"),
 )
 
+UNSAFE_MASTER_PASSWORDS = {"admin"}
+LOCAL_INSTANCE_NAMES = {"", "local", "dev", "development"}
+
 
 @dataclass(frozen=True)
 class StartupSettings:
@@ -115,6 +118,19 @@ def _load_settings(argument_namespace: argparse.Namespace) -> StartupSettings:
         ready_timeout_seconds=180,
         poll_interval_seconds=2.0,
     )
+
+
+def _is_public_runtime(settings: StartupSettings) -> bool:
+    return settings.platform_instance.strip().lower() not in LOCAL_INSTANCE_NAMES
+
+
+def _enforce_public_credential_preflight(settings: StartupSettings) -> None:
+    if not _is_public_runtime(settings):
+        return
+    if settings.master_password.strip().lower() in UNSAFE_MASTER_PASSWORDS:
+        raise RuntimeError("Insecure configuration: ODOO_MASTER_PASSWORD must not use a default value for public runtimes.")
+    if not settings.admin_password:
+        raise RuntimeError("Insecure configuration: ODOO_ADMIN_PASSWORD must be set for public runtimes.")
 
 
 def _write_runtime_config(settings: StartupSettings) -> None:
@@ -482,6 +498,7 @@ def _wait_for_data_workflow_lock(settings: StartupSettings) -> None:
 def main() -> None:
     arguments = _parse_arguments()
     settings = _load_settings(arguments)
+    _enforce_public_credential_preflight(settings)
     _write_runtime_config(settings)
     _wait_for_database(settings)
     _wait_for_data_workflow_lock(settings)
@@ -489,7 +506,7 @@ def main() -> None:
     _run_initialization_if_needed(settings)
     _apply_environment_overrides_if_available(settings)
     _apply_admin_password_if_configured(settings)
-    if settings.admin_password:
+    if settings.admin_password or _is_public_runtime(settings):
         _assert_active_admin_password_is_not_default(settings)
 
     print("[platform-startup] starting Odoo web server", flush=True)

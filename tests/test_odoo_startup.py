@@ -36,6 +36,35 @@ odoo_startup = _load_startup_module()
 
 
 class OdooStartupDependencySyncTests(unittest.TestCase):
+    @staticmethod
+    def _settings(
+        *,
+        platform_instance: str = "local",
+        master_password: str = "master-password",
+        admin_password: str = "",
+    ) -> object:
+        return odoo_startup.StartupSettings(
+            config_path="/tmp/generated.conf",
+            base_config_path="/tmp/base.conf",
+            platform_instance=platform_instance,
+            database_name="opw",
+            database_host="database",
+            database_port=5432,
+            database_user="odoo",
+            database_password="database-password",
+            master_password=master_password,
+            admin_login="admin",
+            admin_password=admin_password,
+            addons_path="/odoo/addons",
+            data_dir="/volumes/data",
+            list_db="False",
+            install_modules=("opw_custom",),
+            data_workflow_lock_file="/volumes/data/.data_workflow_in_progress",
+            data_workflow_lock_timeout_seconds=7200,
+            ready_timeout_seconds=180,
+            poll_interval_seconds=2.0,
+        )
+
     def test_load_settings_reads_platform_instance(self) -> None:
         environment = {
             "PLATFORM_INSTANCE": "local",
@@ -55,27 +84,7 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
 
     @staticmethod
     def test_sync_python_dependencies_runs_for_local_dev_runtime() -> None:
-        settings = odoo_startup.StartupSettings(
-            config_path="/tmp/generated.conf",
-            base_config_path="/tmp/base.conf",
-            platform_instance="local",
-            database_name="opw",
-            database_host="database",
-            database_port=5432,
-            database_user="odoo",
-            database_password="database-password",
-            master_password="master-password",
-            admin_login="admin",
-            admin_password="",
-            addons_path="/odoo/addons",
-            data_dir="/volumes/data",
-            list_db="False",
-            install_modules=("opw_custom",),
-            data_workflow_lock_file="/volumes/data/.data_workflow_in_progress",
-            data_workflow_lock_timeout_seconds=7200,
-            ready_timeout_seconds=180,
-            poll_interval_seconds=2.0,
-        )
+        settings = OdooStartupDependencySyncTests._settings(platform_instance="local")
 
         with (
             patch.dict(os.environ, {"ODOO_DEV_MODE": "reload"}, clear=True),
@@ -87,32 +96,42 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
 
     @staticmethod
     def test_sync_python_dependencies_skips_non_local_runtime() -> None:
-        settings = odoo_startup.StartupSettings(
-            config_path="/tmp/generated.conf",
-            base_config_path="/tmp/base.conf",
-            platform_instance="prod",
-            database_name="opw",
-            database_host="database",
-            database_port=5432,
-            database_user="odoo",
-            database_password="database-password",
-            master_password="master-password",
-            admin_login="admin",
-            admin_password="",
-            addons_path="/odoo/addons",
-            data_dir="/volumes/data",
-            list_db="False",
-            install_modules=("opw_custom",),
-            data_workflow_lock_file="/volumes/data/.data_workflow_in_progress",
-            data_workflow_lock_timeout_seconds=7200,
-            ready_timeout_seconds=180,
-            poll_interval_seconds=2.0,
-        )
+        settings = OdooStartupDependencySyncTests._settings(platform_instance="prod")
 
         with patch.object(odoo_startup, "_install_local_addon_dependencies") as mocked_install_dependencies:
             odoo_startup._sync_python_dependencies_if_needed(settings)
 
         mocked_install_dependencies.assert_not_called()
+
+    def test_public_runtime_rejects_default_master_password(self) -> None:
+        settings = self._settings(
+            platform_instance="preview",
+            master_password="admin",
+            admin_password="safe-admin-password",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "ODOO_MASTER_PASSWORD"):
+            odoo_startup._enforce_public_credential_preflight(settings)
+
+    def test_public_runtime_requires_configured_admin_password(self) -> None:
+        settings = self._settings(platform_instance="testing", admin_password="")
+
+        with self.assertRaisesRegex(RuntimeError, "ODOO_ADMIN_PASSWORD"):
+            odoo_startup._enforce_public_credential_preflight(settings)
+
+    def test_public_runtime_accepts_non_default_configured_credentials(self) -> None:
+        settings = self._settings(
+            platform_instance="prod",
+            master_password="master-password",
+            admin_password="safe-admin-password",
+        )
+
+        odoo_startup._enforce_public_credential_preflight(settings)
+
+    def test_local_runtime_allows_missing_admin_password(self) -> None:
+        settings = self._settings(platform_instance="local", admin_password="")
+
+        odoo_startup._enforce_public_credential_preflight(settings)
 
 
 if __name__ == "__main__":
