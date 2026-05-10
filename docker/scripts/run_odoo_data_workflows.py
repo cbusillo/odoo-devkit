@@ -51,6 +51,15 @@ class ExitCode(IntEnum):
     RESTORE_FAILED = 40
 
 
+RUNTIME_SCRIPTS_PATH = "/volumes/scripts"
+
+
+def _prepend_pythonpath(environment: dict[str, str], path: str) -> None:
+    python_path_parts = [part for part in environment.get("PYTHONPATH", "").split(os.pathsep) if part and part != path]
+    python_path_parts.insert(0, path)
+    environment["PYTHONPATH"] = os.pathsep.join(python_path_parts)
+
+
 def _format_bytes(num_bytes: int) -> str:
     units = ["B", "KiB", "MiB", "GiB", "TiB"]
     value = float(num_bytes)
@@ -375,6 +384,7 @@ class OdooDataWorkflowRunner:
         self.env_file = env_file
         self.os_env = os.environ.copy()
         self.os_env["PGPASSWORD"] = self.local.db_password.get_secret_value()
+        _prepend_pythonpath(self.os_env, RUNTIME_SCRIPTS_PATH)
         if self.local.data_workflow_ssh_dir:
             self.os_env["DATA_WORKFLOW_SSH_DIR"] = str(self.local.data_workflow_ssh_dir)
         self._ssh_identity: Path | None = None
