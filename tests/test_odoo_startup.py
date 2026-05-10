@@ -133,6 +133,32 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
 
         odoo_startup._enforce_public_credential_preflight(settings)
 
+    def test_odoo_shell_subprocess_can_import_runtime_script_helpers(self) -> None:
+        settings = self._settings()
+
+        with (
+            patch.dict(os.environ, {"PYTHONPATH": "/opt/custom:/volumes/scripts"}, clear=True),
+            patch.object(odoo_startup.subprocess, "run") as run_mock,
+        ):
+            odoo_startup._run_odoo_shell(settings, "from odoo_website_bootstrap import apply_website_bootstrap", label="test")
+
+        run_mock.assert_called_once()
+        environment = run_mock.call_args.kwargs["env"]
+        self.assertEqual(environment["PYTHONPATH"], "/volumes/scripts:/opt/custom")
+
+    def test_odoo_shell_subprocess_prepends_runtime_scripts_to_pythonpath(self) -> None:
+        settings = self._settings()
+
+        with (
+            patch.dict(os.environ, {"PYTHONPATH": "/opt/custom"}, clear=True),
+            patch.object(odoo_startup.subprocess, "run") as run_mock,
+        ):
+            odoo_startup._run_odoo_shell(settings, "from odoo_website_bootstrap import apply_website_bootstrap", label="test")
+
+        run_mock.assert_called_once()
+        environment = run_mock.call_args.kwargs["env"]
+        self.assertEqual(environment["PYTHONPATH"], "/volumes/scripts:/opt/custom")
+
 
 if __name__ == "__main__":
     unittest.main()

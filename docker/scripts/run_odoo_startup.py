@@ -37,6 +37,7 @@ RUNTIME_OPTION_MAP: tuple[tuple[str, str], ...] = (
 
 UNSAFE_MASTER_PASSWORDS = {"admin"}
 LOCAL_INSTANCE_NAMES = {"", "local", "dev", "development"}
+RUNTIME_SCRIPTS_PATH = "/volumes/scripts"
 
 
 @dataclass(frozen=True)
@@ -283,9 +284,19 @@ def _build_odoo_shell_command(settings: StartupSettings) -> list[str]:
     ]
 
 
+def _odoo_shell_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    python_path_parts = [
+        part for part in environment.get("PYTHONPATH", "").split(os.pathsep) if part and part != RUNTIME_SCRIPTS_PATH
+    ]
+    python_path_parts.insert(0, RUNTIME_SCRIPTS_PATH)
+    environment["PYTHONPATH"] = os.pathsep.join(python_path_parts)
+    return environment
+
+
 def _run_odoo_shell(settings: StartupSettings, script_text: str, *, label: str) -> None:
     print(f"[platform-startup] running {label}", flush=True)
-    subprocess.run(_build_odoo_shell_command(settings), input=script_text.encode(), check=True)
+    subprocess.run(_build_odoo_shell_command(settings), input=script_text.encode(), env=_odoo_shell_environment(), check=True)
 
 
 def _addon_has_optional_dependency(pyproject_path: Path, extra_name: str) -> bool:

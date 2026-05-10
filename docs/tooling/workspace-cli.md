@@ -218,6 +218,9 @@ Notes
   password must be configured before the startup wrapper marks the runtime
   usable. Local developer runtimes may omit the admin password, but previews,
   testing, and prod must not expose an Odoo database with default credentials.
+- Devkit-managed startup and data workflow Odoo shell subprocesses prepend
+  `/volumes/scripts` to `PYTHONPATH` so shipped runtime helpers remain
+  importable from generated shell snippets.
 - Release/deploy ownership for remote environments stays in
   `launchplane`, even when the same tenant manifest is used to anchor
   local runtime context.
