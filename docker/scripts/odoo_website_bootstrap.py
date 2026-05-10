@@ -38,6 +38,17 @@ def _write_existing_fields(record: Any, values: dict[str, object]) -> None:
         record.sudo().write(filtered_values)
 
 
+def _homepage_values(website: Any, *, homepage_url: str, homepage_page: Any | None) -> dict[str, object]:
+    values: dict[str, object] = {}
+    if homepage_page and "homepage_id" in website._fields:
+        values["homepage_id"] = homepage_page.id
+    if homepage_url and "homepage_url" in website._fields:
+        values["homepage_url"] = homepage_url
+    if homepage_url and homepage_page is None and "homepage_id" in website._fields:
+        values["homepage_id"] = False
+    return values
+
+
 def _module_is_installed(env: Any, module_name: object) -> bool:
     normalized_module_name = str(module_name or "").strip()
     if not normalized_module_name:
@@ -156,21 +167,23 @@ def apply_website_bootstrap(env: Any, parsed_payload: dict[str, object] | None) 
         if "website_id" in homepage_page._fields:
             page_values["website_id"] = website.id
         _write_existing_fields(homepage_page, page_values)
-        _write_existing_fields(website, {"homepage_id": homepage_page.id})
     elif primary_page_xmlid:
         raise RuntimeError(f"Website bootstrap primary page XML ID not found: {primary_page_xmlid}")
+    _write_existing_fields(website, _homepage_values(website, homepage_url=homepage_url, homepage_page=homepage_page))
 
     raw_routes_source = website_payload.get("routes_source")
     routes_source = raw_routes_source if isinstance(raw_routes_source, dict) else {}
     fallback_module = str(routes_source.get("module") or "").strip()
     if homepage_url and not homepage_page:
-        _verify_route(
+        route_page = _verify_route(
             env, website, {"url": homepage_url, "module": fallback_module, "published": True}, fallback_module=fallback_module
         )
+        _write_existing_fields(website, _homepage_values(website, homepage_url=homepage_url, homepage_page=route_page))
     for route_payload in website_payload.get("routes") or []:
         if isinstance(route_payload, dict):
             route_page = _verify_route(env, website, route_payload, fallback_module=fallback_module)
-            if route_page and bool(route_payload.get("homepage")):
-                _write_existing_fields(website, {"homepage_id": route_page.id})
+            if bool(route_payload.get("homepage")):
+                route_url = str(route_payload.get("url") or "").strip()
+                _write_existing_fields(website, _homepage_values(website, homepage_url=route_url, homepage_page=route_page))
 
     print("website_bootstrap_applied=true")
