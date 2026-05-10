@@ -157,6 +157,7 @@ DATA_WORKFLOW_SCRIPT_ENV_KEYS = {
     "ODOO_KEY",
     "ODOO_ADMIN_LOGIN",
     "ODOO_ADMIN_PASSWORD",
+    ODOO_INSTANCE_OVERRIDES_PAYLOAD_ENV_KEY,
     "ODOO_DATA_WORKFLOW_LOCK_FILE",
     "ODOO_UPSTREAM_HOST",
     "ODOO_UPSTREAM_USER",
@@ -192,6 +193,31 @@ _VERIFIED_IMAGE_ACCESS: set[str] = set()
 class OdooOverrideDefinition:
     config_parameters: ScalarMap
     addon_settings: dict[str, ScalarMap]
+
+
+@dataclass(frozen=True)
+class WebsiteBootstrapRouteDefinition:
+    name: str
+    url: str
+    module: str | None
+    published: bool
+    homepage: bool
+
+
+@dataclass(frozen=True)
+class WebsiteBootstrapDefinition:
+    tenant: str
+    install_modules: tuple[str, ...]
+    name: str
+    default_lang: str | None
+    homepage_url: str | None
+    primary_page_xmlid: str | None
+    logo_path: str | None
+    logo_alt: str | None
+    canonical_urls: dict[str, str]
+    pages_source: dict[str, object]
+    routes_source: dict[str, object]
+    routes: tuple[WebsiteBootstrapRouteDefinition, ...]
 
 
 @dataclass(frozen=True)
@@ -259,6 +285,7 @@ class RuntimeSelection:
     effective_source_selectors: tuple[str, ...]
     effective_runtime_env: dict[str, str]
     effective_odoo_overrides: OdooOverrideDefinition
+    website_bootstrap: WebsiteBootstrapDefinition | None
 
 
 @dataclass(frozen=True)
@@ -756,12 +783,14 @@ def load_runtime_context(
         manifest=manifest,
         stack_definition=loaded_stack.stack_definition,
     )
+    website_bootstrap = load_website_bootstrap_definition(manifest=manifest)
     runtime_selection = resolve_runtime_selection(
         stack_definition=effective_stack_definition,
         artifact_inputs_definition=artifact_inputs_definition,
         context_name=manifest.runtime.context,
         instance_name=manifest.runtime.instance,
         repo_root=runtime_repo_path,
+        website_bootstrap=website_bootstrap,
     )
     runtime_env_file = runtime_env_file_for_scope(
         repo_root=runtime_repo_path,
@@ -806,6 +835,81 @@ def resolve_manifest_runtime_stack_definition(*, manifest: WorkspaceManifest, st
         odoo_overrides=stack_definition.odoo_overrides,
         required_env_keys=stack_definition.required_env_keys,
         contexts=stack_definition.contexts,
+    )
+
+
+def load_website_bootstrap_definition(*, manifest: WorkspaceManifest) -> WebsiteBootstrapDefinition | None:
+    tenant_repo_path = manifest.tenant_repo.resolve_path(manifest_directory=manifest.manifest_directory)
+    candidate_paths: list[Path] = []
+    if tenant_repo_path is not None:
+        candidate_paths.append(tenant_repo_path / "website-bootstrap.toml")
+    manifest_candidate_path = manifest.manifest_directory / "website-bootstrap.toml"
+    if manifest_candidate_path not in candidate_paths:
+        candidate_paths.append(manifest_candidate_path)
+
+    bootstrap_path = next((candidate_path for candidate_path in candidate_paths if candidate_path.exists()), None)
+    if bootstrap_path is None:
+        return None
+
+    try:
+        payload = tomllib.loads(bootstrap_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        raise RuntimeCommandError(f"Invalid website bootstrap file {bootstrap_path}: {error}") from error
+    return parse_website_bootstrap_definition(payload, bootstrap_path=bootstrap_path, context_name=manifest.runtime.context)
+
+
+def parse_website_bootstrap_definition(
+    payload: dict[str, object],
+    *,
+    bootstrap_path: Path,
+    context_name: str,
+) -> WebsiteBootstrapDefinition:
+    schema_version = _read_required_int(payload, "schema_version")
+    if schema_version != 1:
+        raise RuntimeCommandError(f"Unsupported website bootstrap schema_version in {bootstrap_path}: {schema_version}")
+    tenant = _read_required_string(payload, "tenant", scope="website-bootstrap")
+    if tenant != context_name:
+        raise RuntimeCommandError(
+            f"Website bootstrap tenant {tenant!r} does not match runtime context {context_name!r} in {bootstrap_path}."
+        )
+    odoo_table = _read_optional_table(payload, "odoo", scope="website-bootstrap")
+    website_table = _read_required_table(payload, "website", scope="website-bootstrap")
+    routes: list[WebsiteBootstrapRouteDefinition] = []
+    raw_routes = website_table.get("routes")
+    if raw_routes is not None:
+        if not isinstance(raw_routes, list):
+            raise RuntimeCommandError("Expected website-bootstrap.website.routes to be an array of tables when present")
+        for index, raw_route in enumerate(raw_routes):
+            route_table = _ensure_table(raw_route, scope=f"website-bootstrap.website.routes[{index}]")
+            routes.append(
+                WebsiteBootstrapRouteDefinition(
+                    name=_read_optional_string(route_table, "name", scope=f"website-bootstrap.website.routes[{index}]") or "",
+                    url=_read_required_string(route_table, "url", scope=f"website-bootstrap.website.routes[{index}]"),
+                    module=_read_optional_string(route_table, "module", scope=f"website-bootstrap.website.routes[{index}]"),
+                    published=_read_optional_bool(route_table, "published", default=True),
+                    homepage=_read_optional_bool(route_table, "homepage", default=False),
+                )
+            )
+    return WebsiteBootstrapDefinition(
+        tenant=tenant,
+        install_modules=_read_optional_string_tuple(odoo_table, "install_modules", scope="website-bootstrap.odoo"),
+        name=_read_required_string(website_table, "name", scope="website-bootstrap.website"),
+        default_lang=_read_optional_string(website_table, "default_lang", scope="website-bootstrap.website"),
+        homepage_url=_read_optional_string(website_table, "homepage_url", scope="website-bootstrap.website"),
+        primary_page_xmlid=_read_optional_string(website_table, "primary_page_xmlid", scope="website-bootstrap.website"),
+        logo_path=_read_optional_string(website_table, "logo_path", scope="website-bootstrap.website"),
+        logo_alt=_read_optional_string(website_table, "logo_alt", scope="website-bootstrap.website"),
+        canonical_urls={
+            key.strip(): value.strip()
+            for key, value in _read_optional_string_map(
+                website_table,
+                "canonical_urls",
+                scope="website-bootstrap.website",
+            ).items()
+        },
+        pages_source=_read_optional_table(website_table, "pages_source", scope="website-bootstrap.website"),
+        routes_source=_read_optional_table(website_table, "routes_source", scope="website-bootstrap.website"),
+        routes=tuple(routes),
     )
 
 
@@ -1351,6 +1455,7 @@ def resolve_runtime_selection(
     context_name: str,
     instance_name: str,
     repo_root: Path,
+    website_bootstrap: WebsiteBootstrapDefinition | None = None,
 ) -> RuntimeSelection:
     context_definition = stack_definition.contexts.get(context_name)
     if context_definition is None:
@@ -1365,6 +1470,8 @@ def resolve_runtime_selection(
     effective_install_modules = merge_effective_modules(
         context_definition=context_definition, instance_definition=instance_definition
     )
+    if website_bootstrap is not None:
+        effective_install_modules = dedupe_module_names((*effective_install_modules, *website_bootstrap.install_modules))
     effective_source_repositories = resolve_runtime_source_repositories(
         artifact_inputs_definition=artifact_inputs_definition,
         context_name=context_name,
@@ -1409,6 +1516,7 @@ def resolve_runtime_selection(
         effective_source_selectors=effective_source_selectors,
         effective_runtime_env=effective_runtime_env,
         effective_odoo_overrides=effective_odoo_overrides,
+        website_bootstrap=website_bootstrap,
     )
 
 
@@ -1418,6 +1526,16 @@ def merge_effective_modules(*, context_definition: ContextDefinition, instance_d
         if module_name not in effective_install_modules:
             effective_install_modules.append(module_name)
     return tuple(effective_install_modules)
+
+
+def dedupe_module_names(module_names: Iterable[str]) -> tuple[str, ...]:
+    effective_module_names: list[str] = []
+    for module_name in module_names:
+        normalized_module_name = module_name.strip()
+        if not normalized_module_name or normalized_module_name in effective_module_names:
+            continue
+        effective_module_names.append(normalized_module_name)
+    return tuple(effective_module_names)
 
 
 def resolve_runtime_source_repositories(
@@ -1620,6 +1738,7 @@ def build_runtime_env_values(
         context_name=runtime_selection.context_name,
         instance_name=runtime_selection.instance_name,
         odoo_overrides=runtime_selection.effective_odoo_overrides,
+        website_bootstrap=runtime_selection.website_bootstrap,
     )
     return runtime_values
 
@@ -1630,12 +1749,14 @@ def apply_typed_odoo_instance_override_payload(
     context_name: str,
     instance_name: str,
     odoo_overrides: OdooOverrideDefinition | None = None,
+    website_bootstrap: WebsiteBootstrapDefinition | None = None,
 ) -> None:
     payload = build_typed_odoo_instance_override_payload(
         runtime_values=runtime_values,
         context_name=context_name,
         instance_name=instance_name,
         odoo_overrides=odoo_overrides,
+        website_bootstrap=website_bootstrap,
     )
     if payload is None:
         return
@@ -1656,6 +1777,7 @@ def build_typed_odoo_instance_override_payload(
     context_name: str,
     instance_name: str,
     odoo_overrides: OdooOverrideDefinition | None = None,
+    website_bootstrap: WebsiteBootstrapDefinition | None = None,
 ) -> dict[str, object] | None:
     config_parameters: list[dict[str, object]] = []
     addon_settings: list[dict[str, object]] = []
@@ -1720,15 +1842,56 @@ def build_typed_odoo_instance_override_payload(
                     "value": {"source": "literal", "value": runtime_value},
                 }
             )
-    if not config_parameters and not addon_settings:
+    website_bootstrap_payload = render_website_bootstrap_payload(
+        website_bootstrap=website_bootstrap,
+        instance_name=instance_name,
+    )
+    if not config_parameters and not addon_settings and website_bootstrap_payload is None:
         return None
-    return {
+    payload: dict[str, object] = {
         "schema_version": 1,
         "context": context_name,
         "instance": instance_name,
         "config_parameters": config_parameters,
         "addon_settings": addon_settings,
     }
+    if website_bootstrap_payload is not None:
+        payload["website_bootstrap"] = website_bootstrap_payload
+    return payload
+
+
+def render_website_bootstrap_payload(
+    *,
+    website_bootstrap: WebsiteBootstrapDefinition | None,
+    instance_name: str,
+) -> dict[str, object] | None:
+    if website_bootstrap is None:
+        return None
+    canonical_url = website_bootstrap.canonical_urls.get(instance_name, "").strip()
+    routes = [
+        {
+            "name": route.name,
+            "url": route.url,
+            "module": route.module or "",
+            "published": route.published,
+            "homepage": route.homepage,
+        }
+        for route in website_bootstrap.routes
+    ]
+    payload: dict[str, object] = {
+        "tenant": website_bootstrap.tenant,
+        "name": website_bootstrap.name,
+        "default_lang": website_bootstrap.default_lang or "",
+        "homepage_url": website_bootstrap.homepage_url or "",
+        "primary_page_xmlid": website_bootstrap.primary_page_xmlid or "",
+        "logo_path": website_bootstrap.logo_path or "",
+        "logo_alt": website_bootstrap.logo_alt or "",
+        "canonical_url": canonical_url,
+        "pages_source": website_bootstrap.pages_source,
+        "routes_source": website_bootstrap.routes_source,
+        "routes": routes,
+    }
+    return payload
 
 
 def apply_publish_artifact_input_manifest(
@@ -3014,6 +3177,31 @@ def _read_optional_scalar_map(source: dict[str, object], key: str, *, scope: str
             raise RuntimeCommandError(f"Expected {scope}.{key}.{raw_key} to be a scalar value")
         scalar_map[raw_key] = raw_value
     return scalar_map
+
+
+def _read_optional_string_map(source: dict[str, object], key: str, *, scope: str) -> dict[str, str]:
+    value = source.get(key)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise RuntimeCommandError(f"Expected {scope}.{key} to be a table when present")
+    string_map: dict[str, str] = {}
+    for raw_key, raw_value in value.items():
+        if not isinstance(raw_key, str) or not raw_key.strip():
+            raise RuntimeCommandError(f"Expected {scope}.{key} keys to be non-empty strings")
+        if not isinstance(raw_value, str):
+            raise RuntimeCommandError(f"Expected {scope}.{key}.{raw_key} to be a string")
+        string_map[raw_key] = raw_value
+    return string_map
+
+
+def _read_optional_bool(source: dict[str, object], key: str, *, default: bool) -> bool:
+    value = source.get(key)
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise RuntimeCommandError(f"Expected {key} to be a boolean when present")
+    return value
 
 
 def _read_optional_odoo_override_definition(source: dict[str, object], *, scope: str) -> OdooOverrideDefinition:

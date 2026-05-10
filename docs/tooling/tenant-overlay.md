@@ -28,6 +28,8 @@ When
 - tenant-specific docs
 - tracked `workspace.toml`
 - tracked `artifact-inputs.toml` for runtime and publish-time source inputs
+- tracked `website-bootstrap.toml` when the tenant needs Launchplane/devkit to
+  rebuild public website identity, canonical URL, homepage route, or logo state
 - tenant-owned code
 
 ## Tenant Root Should Not Contain
@@ -57,6 +59,9 @@ When
 - The scaffold includes a repo-owned `artifact-inputs.toml` beside
   `workspace.toml` so source selection lives in the tenant repo instead of
   depending on implicit runtime defaults.
+- Website bootstrap intent, when present, also lives beside `workspace.toml` as
+  `website-bootstrap.toml`. Devkit consumes that file during runtime selection
+  and data workflows apply the resulting typed payload after module install.
 - Release actions for remote environments still belong in
   `launchplane`, not in tenant-root `platform runtime` commands.
 - The generated `Workspace Sync` and `Workspace Status` entrypoints call the

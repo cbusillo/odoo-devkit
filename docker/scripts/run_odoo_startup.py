@@ -401,16 +401,22 @@ print('admin_password_updated=true')
 
 def _apply_environment_overrides_if_available(settings: StartupSettings) -> None:
     script = """
-import os
+from odoo_website_bootstrap import (
+    apply_website_bootstrap,
+    load_instance_override_payload,
+    payload_has_launchplane_settings,
+)
 
-typed_override_payload_present = bool(os.environ.get('ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64', '').strip())
+instance_override_payload = load_instance_override_payload()
+typed_override_payload_present = instance_override_payload is not None
 if 'launchplane.settings' in env.registry:
     env['launchplane.settings'].sudo().apply_from_env()
-elif typed_override_payload_present:
+elif payload_has_launchplane_settings(instance_override_payload):
     raise RuntimeError(
         'Launchplane supplied ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64, '
         'but launchplane.settings is not installed.'
     )
+apply_website_bootstrap(env, instance_override_payload)
 env.cr.commit()
 print('launchplane_settings_applied=true')
 """

@@ -1119,25 +1119,33 @@ class OdooDataWorkflowRunner:
         }
         script = textwrap.dedent("""
 import json
-import os
 from odoo import api, SUPERUSER_ID
 from odoo.modules.registry import Registry
+from odoo_website_bootstrap import (
+    apply_website_bootstrap,
+    load_instance_override_payload,
+    payload_has_launchplane_settings,
+)
 
 payload = json.loads('__PAYLOAD__')
+
 registry = Registry(payload['db'])
 with registry.cursor() as cr:
     env = api.Environment(cr, SUPERUSER_ID, {})
-    typed_override_payload_present = bool(os.environ.get('ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64', '').strip())
+    instance_override_payload = load_instance_override_payload()
+    typed_override_payload_present = instance_override_payload is not None
     if 'launchplane.settings' in env.registry:
         env['launchplane.settings'].sudo().apply_from_env()
         cr.commit()
-    elif typed_override_payload_present:
+    elif payload_has_launchplane_settings(instance_override_payload):
         raise RuntimeError(
             'Launchplane supplied ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64, '
             'but launchplane.settings is not installed.'
         )
     else:
         print('Launchplane settings addon not installed; skipping settings apply.')
+    apply_website_bootstrap(env, instance_override_payload)
+    cr.commit()
 """).replace("__PAYLOAD__", json.dumps(payload))
 
         try:
