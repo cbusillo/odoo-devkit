@@ -237,6 +237,60 @@ attached_paths = ["sources/devkit"]
         )
         self.assertEqual(runtime_values["ENV_OVERRIDE_DISABLE_CRON"], "1")
 
+    def test_typed_odoo_instance_override_payload_includes_website_bootstrap(self) -> None:
+        runtime_values: dict[str, str] = {}
+        website_bootstrap = local_runtime.WebsiteBootstrapDefinition(
+            tenant="opw",
+            install_modules=("opw_custom",),
+            name="OPW",
+            default_lang="en_US",
+            homepage_url="/shop",
+            primary_page_xmlid=None,
+            logo_path="addons/opw_custom/static/description/icon.png",
+            logo_alt="OPW",
+            canonical_urls={"local": "https://opw-local.example.com"},
+            pages_source={},
+            routes_source={"kind": "controller", "module": "website_sale", "homepage_url": "/shop"},
+            routes=(
+                local_runtime.WebsiteBootstrapRouteDefinition(
+                    name="Shop",
+                    url="/shop",
+                    module="website_sale",
+                    published=True,
+                    homepage=True,
+                ),
+            ),
+        )
+
+        local_runtime.apply_typed_odoo_instance_override_payload(
+            runtime_values=runtime_values,
+            context_name="opw",
+            instance_name="local",
+            website_bootstrap=website_bootstrap,
+        )
+
+        encoded_payload = runtime_values[local_runtime.ODOO_INSTANCE_OVERRIDES_PAYLOAD_ENV_KEY]
+        payload = json.loads(base64.b64decode(encoded_payload).decode("utf-8"))
+
+        self.assertEqual(payload["config_parameters"], [])
+        self.assertEqual(payload["addon_settings"], [])
+        self.assertEqual(payload["website_bootstrap"]["canonical_url"], "https://opw-local.example.com")
+        self.assertEqual(payload["website_bootstrap"]["homepage_url"], "/shop")
+        self.assertEqual(payload["website_bootstrap"]["routes"][0]["module"], "website_sale")
+
+    def test_data_workflow_script_environment_keeps_typed_payload(self) -> None:
+        environment = {
+            local_runtime.ODOO_INSTANCE_OVERRIDES_PAYLOAD_ENV_KEY: "encoded-payload",
+            "ODOO_DB_NAME": "opw",
+            "UNRELATED": "value",
+        }
+
+        filtered_environment = local_runtime.data_workflow_script_environment(environment)
+
+        self.assertEqual(filtered_environment[local_runtime.ODOO_INSTANCE_OVERRIDES_PAYLOAD_ENV_KEY], "encoded-payload")
+        self.assertEqual(filtered_environment["ODOO_DB_NAME"], "opw")
+        self.assertNotIn("UNRELATED", filtered_environment)
+
     def test_typed_odoo_instance_override_payload_rejects_stack_and_legacy_setting_mix(self) -> None:
         runtime_values = {
             "ENV_OVERRIDE_CONFIG_PARAM__WEB__BASE__URL": "https://opw-local.example.com",
@@ -816,6 +870,64 @@ install_modules = ["opw_custom"]
                 "ODOO_ADDONS_PATH=/odoo/addons,/opt/project/addons,/opt/project/addons/shared",
                 runtime_env_text,
             )
+
+    def test_native_runtime_select_includes_website_bootstrap_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = temp_root / "tenant-repo"
+            runtime_repo_path = temp_root / "runtime-repo"
+            tenant_repo_path.mkdir(parents=True, exist_ok=True)
+            (tenant_repo_path / "addons").mkdir(parents=True, exist_ok=True)
+            self._write_runtime_repo(runtime_repo_path)
+            (tenant_repo_path / "website-bootstrap.toml").write_text(
+                """
+schema_version = 1
+tenant = "opw"
+
+[odoo]
+install_modules = ["opw_custom", "website_sale"]
+
+[website]
+name = "OPW"
+default_lang = "en_US"
+homepage_url = "/shop"
+logo_path = "addons/opw_custom/static/description/icon.png"
+logo_alt = "OPW"
+
+[website.routes_source]
+kind = "controller"
+module = "website_sale"
+homepage_url = "/shop"
+
+[website.canonical_urls]
+local = "https://opw-local.example.com"
+testing = "https://opw-testing.example.com"
+
+[[website.routes]]
+name = "Shop"
+url = "/shop"
+module = "website_sale"
+published = true
+homepage = true
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+            manifest_path = self._write_manifest(tenant_repo_path=tenant_repo_path, runtime_repo_path=runtime_repo_path)
+
+            manifest = load_workspace_manifest(manifest_path)
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                exit_code = run_native_runtime_select(manifest=manifest)
+
+            self.assertEqual(exit_code, 0)
+            runtime_values = local_runtime.parse_env_file(runtime_repo_path / ".platform" / "env" / "opw.local.env")
+            self.assertEqual(runtime_values["ODOO_INSTALL_MODULES"], "opw_custom,website_sale")
+            encoded_payload = runtime_values[local_runtime.ODOO_INSTANCE_OVERRIDES_PAYLOAD_ENV_KEY]
+            payload = json.loads(base64.b64decode(encoded_payload).decode("utf-8"))
+            self.assertEqual(payload["website_bootstrap"]["canonical_url"], "https://opw-local.example.com")
+            self.assertEqual(payload["website_bootstrap"]["routes_source"]["module"], "website_sale")
+            self.assertEqual(payload["website_bootstrap"]["routes"][0]["url"], "/shop")
 
     def test_native_runtime_up_runs_compose_up_without_build_when_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

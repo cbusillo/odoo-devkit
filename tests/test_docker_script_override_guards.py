@@ -9,9 +9,12 @@ class DockerScriptOverrideGuardTests(unittest.TestCase):
         script = (REPO_ROOT / "docker/scripts/run_odoo_data_workflows.py").read_text(encoding="utf-8")
 
         self.assertIn("typed_override_payload_present", script)
+        self.assertIn("_payload_has_launchplane_settings", script)
         self.assertIn("ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64", script)
         self.assertIn("launchplane.settings", script)
         self.assertIn("but launchplane.settings is not installed", script)
+        self.assertIn("_apply_website_bootstrap", script)
+        self.assertIn("website_bootstrap_applied=true", script)
         self.assertNotIn("environment.overrides", script)
         self.assertNotIn("authentik.sso.config", script)
 
@@ -19,9 +22,12 @@ class DockerScriptOverrideGuardTests(unittest.TestCase):
         script = (REPO_ROOT / "docker/scripts/run_odoo_startup.py").read_text(encoding="utf-8")
 
         self.assertIn("typed_override_payload_present", script)
+        self.assertIn("_payload_has_launchplane_settings", script)
         self.assertIn("ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64", script)
         self.assertIn("launchplane.settings", script)
         self.assertIn("but launchplane.settings is not installed", script)
+        self.assertIn("_apply_website_bootstrap", script)
+        self.assertIn("website_bootstrap_applied=true", script)
         self.assertNotIn("environment.overrides", script)
         self.assertNotIn("authentik.sso.config", script)
 
