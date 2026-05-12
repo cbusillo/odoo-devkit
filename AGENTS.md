@@ -56,7 +56,7 @@ into the generated workspace root.
 
 ## Validation
 
-- Use [`.github/github-repo-workflow.json`](.github/github-repo-workflow.json)
+- Use [`.github/github.json`](.github/github.json)
   for validation commands and quality gates.
 - For workspace-surface changes, also run a live `workspace sync` against the
   current proof manifest and inspect the generated root files, including
