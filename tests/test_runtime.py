@@ -1627,6 +1627,7 @@ sources = [
             repository="cbusillo/disable_odoo_online",
             ref="main",
             github_token="env-token",
+            github_token_source="env:GITHUB_TOKEN",
         )
         self.assertEqual(
             resolved_values["ODOO_ADDON_REPOSITORIES"],
@@ -1664,6 +1665,7 @@ sources = [
             repository="cbusillo/disable_odoo_online",
             ref="main",
             github_token="source-env-token",
+            github_token_source="env:ODOO_DEVKIT_SOURCE_GITHUB_TOKEN",
         )
 
     def test_resolve_artifact_runtime_source_refs_supports_ci_source_token_env(self) -> None:
@@ -1687,6 +1689,7 @@ sources = [
             repository="cbusillo/disable_odoo_online",
             ref="main",
             github_token="ci-source-token",
+            github_token_source="env:ODOO_SOURCE_GITHUB_TOKEN",
         )
 
     def test_resolve_artifact_runtime_source_refs_prefers_runtime_github_token(self) -> None:
@@ -1705,6 +1708,7 @@ sources = [
             repository="cbusillo/disable_odoo_online",
             ref="main",
             github_token="source-token",
+            github_token_source="runtime:GITHUB_TOKEN",
         )
 
     def test_resolve_source_repository_ref_to_git_sha_rejects_ambiguous_matches(self) -> None:

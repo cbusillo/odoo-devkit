@@ -2088,7 +2088,7 @@ def resolve_artifact_runtime_source_repository_refs(
     runtime_values: dict[str, str],
 ) -> tuple[dict[str, str], tuple[dict[str, str], ...]]:
     resolved_values = dict(runtime_values)
-    github_token = resolve_source_github_token(runtime_values)
+    github_token, github_token_source = resolve_source_github_token(runtime_values)
     selector_metadata: list[dict[str, str]] = []
     for env_key in ARTIFACT_SOURCE_ENV_KEYS:
         raw_value = runtime_values.get(env_key, "")
@@ -2103,6 +2103,7 @@ def resolve_artifact_runtime_source_repository_refs(
                     repository=repository,
                     ref=ref,
                     github_token=github_token,
+                    github_token_source=github_token_source,
                 )
                 selector_metadata.append(
                     {
@@ -2116,13 +2117,24 @@ def resolve_artifact_runtime_source_repository_refs(
     return resolved_values, tuple(selector_metadata)
 
 
-def resolve_source_github_token(runtime_values: dict[str, str]) -> str | None:
-    return clean_optional_value(runtime_values.get("GITHUB_TOKEN")) or first_clean_optional_value(
-        os.environ.get(environment_key) for environment_key in (*SOURCE_GITHUB_TOKEN_ENV_KEYS, "GITHUB_TOKEN", "GH_TOKEN")
-    )
+def resolve_source_github_token(runtime_values: dict[str, str]) -> tuple[str | None, str]:
+    configured_token = clean_optional_value(runtime_values.get("GITHUB_TOKEN"))
+    if configured_token is not None:
+        return configured_token, "runtime:GITHUB_TOKEN"
+    for environment_key in (*SOURCE_GITHUB_TOKEN_ENV_KEYS, "GITHUB_TOKEN", "GH_TOKEN"):
+        environment_token = clean_optional_value(os.environ.get(environment_key))
+        if environment_token is not None:
+            return environment_token, f"env:{environment_key}"
+    return None, "none"
 
 
-def resolve_source_repository_ref_to_git_sha(*, repository: str, ref: str, github_token: str | None = None) -> str:
+def resolve_source_repository_ref_to_git_sha(
+    *,
+    repository: str,
+    ref: str,
+    github_token: str | None = None,
+    github_token_source: str = "unknown",
+) -> str:
     normalized_repository = repository.strip()
     normalized_ref = ref.strip()
     if GIT_SHA_PATTERN.fullmatch(normalized_ref):
@@ -2139,6 +2151,7 @@ def resolve_source_repository_ref_to_git_sha(*, repository: str, ref: str, githu
                 "GIT_CONFIG_VALUE_0": f"AUTHORIZATION: basic {encoded_auth}",
             }
         )
+    print(f"artifact_source_token_source={github_token_source} auth_header_configured={str(normalized_token is not None).lower()}")
     ls_remote_result = subprocess.run(
         ["git", "ls-remote", "--refs", remote_url, normalized_ref],
         capture_output=True,
