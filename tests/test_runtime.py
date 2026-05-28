@@ -1619,10 +1619,8 @@ sources = [
                 "odoo_devkit.local_runtime.resolve_source_repository_ref_to_git_sha",
                 return_value="411f6b8e85cac72dc7aa2e2dc5540001043c327d",
             ) as resolve_ref_mock:
-                resolved_values, selector_metadata = (
-                    local_runtime.resolve_artifact_runtime_source_repository_refs(
-                        runtime_values=runtime_values
-                    )
+                resolved_values, selector_metadata = local_runtime.resolve_artifact_runtime_source_repository_refs(
+                    runtime_values=runtime_values
                 )
 
         resolve_ref_mock.assert_called_once_with(
@@ -1645,6 +1643,52 @@ sources = [
             ),
         )
 
+    def test_resolve_artifact_runtime_source_refs_uses_dedicated_source_token_env(self) -> None:
+        runtime_values = {
+            "ODOO_ADDON_REPOSITORIES": "cbusillo/disable_odoo_online@main",
+        }
+        with mock.patch.dict(
+            os.environ,
+            {
+                "ODOO_DEVKIT_SOURCE_GITHUB_TOKEN": "source-env-token",
+                "GITHUB_TOKEN": "github-env-token",
+            },
+        ):
+            with mock.patch(
+                "odoo_devkit.local_runtime.resolve_source_repository_ref_to_git_sha",
+                return_value="411f6b8e85cac72dc7aa2e2dc5540001043c327d",
+            ) as resolve_ref_mock:
+                local_runtime.resolve_artifact_runtime_source_repository_refs(runtime_values=runtime_values)
+
+        resolve_ref_mock.assert_called_once_with(
+            repository="cbusillo/disable_odoo_online",
+            ref="main",
+            github_token="source-env-token",
+        )
+
+    def test_resolve_artifact_runtime_source_refs_supports_ci_source_token_env(self) -> None:
+        runtime_values = {
+            "ODOO_ADDON_REPOSITORIES": "cbusillo/disable_odoo_online@main",
+        }
+        with mock.patch.dict(
+            os.environ,
+            {
+                "ODOO_SOURCE_GITHUB_TOKEN": "ci-source-token",
+                "GITHUB_TOKEN": "github-env-token",
+            },
+        ):
+            with mock.patch(
+                "odoo_devkit.local_runtime.resolve_source_repository_ref_to_git_sha",
+                return_value="411f6b8e85cac72dc7aa2e2dc5540001043c327d",
+            ) as resolve_ref_mock:
+                local_runtime.resolve_artifact_runtime_source_repository_refs(runtime_values=runtime_values)
+
+        resolve_ref_mock.assert_called_once_with(
+            repository="cbusillo/disable_odoo_online",
+            ref="main",
+            github_token="ci-source-token",
+        )
+
     def test_resolve_artifact_runtime_source_refs_prefers_runtime_github_token(self) -> None:
         runtime_values = {
             "GITHUB_TOKEN": "source-token",
@@ -1655,9 +1699,7 @@ sources = [
                 "odoo_devkit.local_runtime.resolve_source_repository_ref_to_git_sha",
                 return_value="411f6b8e85cac72dc7aa2e2dc5540001043c327d",
             ) as resolve_ref_mock:
-                local_runtime.resolve_artifact_runtime_source_repository_refs(
-                    runtime_values=runtime_values
-                )
+                local_runtime.resolve_artifact_runtime_source_repository_refs(runtime_values=runtime_values)
 
         resolve_ref_mock.assert_called_once_with(
             repository="cbusillo/disable_odoo_online",

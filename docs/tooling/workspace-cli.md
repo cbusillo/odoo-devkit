@@ -249,9 +249,11 @@ Notes
 - Publish-time GHCR credentials can be split by purpose. Private base image
   reads prefer `GHCR_READ_TOKEN`, artifact image pushes prefer `GHCR_TOKEN`,
   and private source checkout secrets still belong in the transient runtime
-  payload as `GITHUB_TOKEN`. This lets CI use a repo-scoped package-write token
-  for the tenant artifact while using a separate read token for shared private
-  base images.
+  payload as `GITHUB_TOKEN`. For selector resolution before the build context
+  exists, CI can also provide `ODOO_DEVKIT_SOURCE_GITHUB_TOKEN` or
+  `ODOO_SOURCE_GITHUB_TOKEN`. This lets CI use a repo-scoped package-write
+  token for the tenant artifact while using separate credentials for shared
+  private source repositories and private base images.
 - When a repo-owned `artifact-inputs.toml` lives beside `workspace.toml`,
   `platform runtime` commands use it as the repo-owned source-input contract.
   Runtime and publish do not fall back to `stack.toml` source selector fields.
