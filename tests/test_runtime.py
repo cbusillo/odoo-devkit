@@ -1157,6 +1157,7 @@ sources = [
                 repository="cbusillo/disable_odoo_online",
                 ref="main",
                 github_token="gh-token",
+                github_token_source="runtime:GITHUB_TOKEN",
             )
             addon_build_arg = next(argument for argument in captured_build_args if argument.startswith("ODOO_ADDON_REPOSITORIES="))
             self.assertEqual(
@@ -1361,6 +1362,7 @@ sources = [
                 repository="cbusillo/disable_odoo_online",
                 ref="release-19",
                 github_token="gh-token",
+                github_token_source="runtime:GITHUB_TOKEN",
             )
             addon_build_arg = next(argument for argument in captured_build_args if argument.startswith("ODOO_ADDON_REPOSITORIES="))
             self.assertEqual(
