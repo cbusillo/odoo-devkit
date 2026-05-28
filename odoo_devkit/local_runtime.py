@@ -2087,7 +2087,9 @@ def resolve_artifact_runtime_source_repository_refs(
     runtime_values: dict[str, str],
 ) -> tuple[dict[str, str], tuple[dict[str, str], ...]]:
     resolved_values = dict(runtime_values)
-    github_token = resolve_github_token_for_build(runtime_values)
+    github_token = clean_optional_value(runtime_values.get("GITHUB_TOKEN")) or first_clean_optional_value(
+        (os.environ.get("GITHUB_TOKEN"), os.environ.get("GH_TOKEN"))
+    )
     selector_metadata: list[dict[str, str]] = []
     for env_key in ARTIFACT_SOURCE_ENV_KEYS:
         raw_value = runtime_values.get(env_key, "")
