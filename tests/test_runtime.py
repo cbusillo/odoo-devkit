@@ -1610,6 +1610,33 @@ sources = [
                     ref="main",
                 )
 
+    def test_resolve_source_repository_ref_to_git_sha_uses_credential_helper(self) -> None:
+        with mock.patch(
+            "odoo_devkit.local_runtime.subprocess.run",
+            return_value=mock.Mock(
+                returncode=0,
+                stdout="411f6b8e85cac72dc7aa2e2dc5540001043c327d\trefs/heads/main\n",
+                stderr="",
+            ),
+        ) as run_mock:
+            resolved_ref = local_runtime.resolve_source_repository_ref_to_git_sha(
+                repository="cbusillo/disable_odoo_online",
+                ref="main",
+                github_token="source-token",
+            )
+
+        self.assertEqual(resolved_ref, "411f6b8e85cac72dc7aa2e2dc5540001043c327d")
+        execution_env = run_mock.call_args.kwargs["env"]
+        self.assertEqual(execution_env["ODOO_DEVKIT_GITHUB_TOKEN"], "source-token")
+        self.assertEqual(execution_env["GIT_CONFIG_COUNT"], "2")
+        self.assertEqual(execution_env["GIT_CONFIG_KEY_0"], "credential.https://github.com.helper")
+        self.assertEqual(
+            execution_env["GIT_CONFIG_VALUE_0"],
+            "!f() { echo username=x-access-token; echo password=$ODOO_DEVKIT_GITHUB_TOKEN; }; f",
+        )
+        self.assertEqual(execution_env["GIT_CONFIG_KEY_1"], "credential.useHttpPath")
+        self.assertEqual(execution_env["GIT_CONFIG_VALUE_1"], "true")
+
     def test_resolve_artifact_runtime_source_refs_uses_environment_token_fallback(self) -> None:
         runtime_values = {
             "ODOO_ADDON_REPOSITORIES": "cbusillo/disable_odoo_online@main",
