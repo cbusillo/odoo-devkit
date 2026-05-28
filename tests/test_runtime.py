@@ -1610,6 +1610,41 @@ sources = [
                     ref="main",
                 )
 
+    def test_resolve_artifact_runtime_source_refs_uses_environment_token_fallback(self) -> None:
+        runtime_values = {
+            "ODOO_ADDON_REPOSITORIES": "cbusillo/disable_odoo_online@main",
+        }
+        with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "env-token"}):
+            with mock.patch(
+                "odoo_devkit.local_runtime.resolve_source_repository_ref_to_git_sha",
+                return_value="411f6b8e85cac72dc7aa2e2dc5540001043c327d",
+            ) as resolve_ref_mock:
+                resolved_values, selector_metadata = (
+                    local_runtime.resolve_artifact_runtime_source_repository_refs(
+                        runtime_values=runtime_values
+                    )
+                )
+
+        resolve_ref_mock.assert_called_once_with(
+            repository="cbusillo/disable_odoo_online",
+            ref="main",
+            github_token="env-token",
+        )
+        self.assertEqual(
+            resolved_values["ODOO_ADDON_REPOSITORIES"],
+            "cbusillo/disable_odoo_online@411f6b8e85cac72dc7aa2e2dc5540001043c327d",
+        )
+        self.assertEqual(
+            selector_metadata,
+            (
+                {
+                    "repository": "cbusillo/disable_odoo_online",
+                    "selector": "main",
+                    "resolved_ref": "411f6b8e85cac72dc7aa2e2dc5540001043c327d",
+                },
+            ),
+        )
+
     def test_resolve_source_repository_ref_to_git_sha_rejects_ambiguous_matches(self) -> None:
         ambiguous_stdout = (
             "1111111111111111111111111111111111111111\trefs/heads/main\n2222222222222222222222222222222222222222\trefs/tags/main\n"
