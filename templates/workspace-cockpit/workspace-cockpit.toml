@@ -1,5 +1,5 @@
 schema_version = 1
-plans_directory = "~/.codex/plans"
+plans_directory = "~/.code/plans"
 
 [guidance.agents]
 first_reads = [
@@ -34,7 +34,7 @@ working_split = [
   "Launchplane PR previews replace any durable shared `dev` lane.",
 ]
 operational_notes = [
-  "Historical plans remain available under `/Users/cbusillo/.codex/plans/` when you need rationale or prior sequencing.",
+  "Historical plans normally live under `/Users/cbusillo/.code/plans/`; check `/Users/cbusillo/.codex/plans/` only for legacy rationale or prior sequencing.",
 ]
 
 [guidance.session_prompt]

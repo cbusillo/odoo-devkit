@@ -4,7 +4,7 @@ title: Shared Roles
 
 Purpose
 
-- Define role expectations and outputs for Codex work that applies across
+- Define role expectations and outputs for Every Code work that applies across
   tenant repos and the generated workspace root.
 
 When
