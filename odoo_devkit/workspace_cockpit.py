@@ -365,7 +365,9 @@ def _default_docs_working_split_lines() -> tuple[str, ...]:
 
 
 def _default_docs_operational_note_lines() -> tuple[str, ...]:
-    return ("Historical plans normally live under `/Users/cbusillo/.code/plans/`; check `/Users/cbusillo/.codex/plans/` only for legacy rationale or prior sequencing.",)
+    return (
+        "Historical plans normally live under `/Users/cbusillo/.code/plans/`; check `/Users/cbusillo/.codex/plans/` only for legacy rationale or prior sequencing.",
+    )
 
 
 def _default_session_prompt_rule_lines() -> tuple[str, ...]:

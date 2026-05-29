@@ -135,7 +135,10 @@ command = ["uv", "--directory", "$PROJECT_DIR$/../odoo-devkit", "run", "platform
             self.assertIn(str((tenant_repo_path / "addons" / "shared").resolve()), workspace_docs_index_contents)
             self.assertIn("Stable remote lanes are `testing` and `prod`", workspace_docs_index_contents)
             self.assertIn("Launchplane PR previews replace a durable `dev` lane", workspace_docs_index_contents)
-            self.assertIn("release actions for remote environments belong in `launchplane`", workspace_docs_index_contents)
+            self.assertIn(
+                "remote restore/bootstrap/update and release actions belong in `launchplane`",
+                workspace_docs_index_contents,
+            )
 
             workspace_session_prompt_contents = result.workspace_session_prompt_path.read_text(encoding="utf-8")
             self.assertIn("Session Prompt Template", workspace_session_prompt_contents)
@@ -577,7 +580,10 @@ attached_paths = ["sources/devkit"]
             self.assertIn("Legacy or disposable local runtime output", workspace_agents_contents)
             self.assertIn("sources/tenant/scripts/workspace-sync", workspace_docs_contents)
             self.assertIn("sources/tenant/scripts/workspace-status", workspace_docs_contents)
-            self.assertIn("launchplane for remote release actions", workspace_session_prompt_contents)
+            self.assertIn(
+                "launchplane for remote release and non-local data actions",
+                workspace_session_prompt_contents,
+            )
 
     def test_cli_parser_accepts_workspace_run_remainder(self) -> None:
         parser = build_parser()

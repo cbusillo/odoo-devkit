@@ -1980,7 +1980,7 @@ sources = [
             self.assertIn(">", output)
             self.assertIn("odoo-shell.log", output)
 
-    def test_native_runtime_restore_returns_none_for_non_local_instance(self) -> None:
+    def test_native_runtime_restore_rejects_non_local_instance(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
             tenant_repo_path = temp_root / "tenant-repo"
@@ -1994,14 +1994,10 @@ sources = [
             )
             manifest = load_workspace_manifest(manifest_path)
 
-            with mock.patch("odoo_devkit.runtime.run_remote_restore_workflow") as remote_restore:
-                with contextlib.redirect_stdout(io.StringIO()):
-                    exit_code = run_native_runtime_restore(manifest=manifest)
+            with self.assertRaisesRegex(ValueError, "belongs in Launchplane"):
+                run_native_runtime_restore(manifest=manifest)
 
-            self.assertEqual(exit_code, 0)
-            remote_restore.assert_called_once_with(manifest=manifest, runtime_repo_path=runtime_repo_path.resolve())
-
-    def test_native_runtime_workflow_runs_remote_update_for_non_local_instance(self) -> None:
+    def test_native_runtime_workflow_rejects_non_local_update(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
             tenant_repo_path = temp_root / "tenant-repo"
@@ -2015,14 +2011,10 @@ sources = [
             )
             manifest = load_workspace_manifest(manifest_path)
 
-            with mock.patch("odoo_devkit.runtime.run_remote_update_workflow") as remote_update:
-                with contextlib.redirect_stdout(io.StringIO()):
-                    exit_code = run_native_runtime_workflow(manifest=manifest, workflow="update")
+            with self.assertRaisesRegex(ValueError, "belongs in Launchplane"):
+                run_native_runtime_workflow(manifest=manifest, workflow="update")
 
-            self.assertEqual(exit_code, 0)
-            remote_update.assert_called_once_with(manifest=manifest, runtime_repo_path=runtime_repo_path.resolve())
-
-    def test_native_runtime_workflow_runs_remote_bootstrap_for_non_local_instance(self) -> None:
+    def test_native_runtime_workflow_rejects_non_local_bootstrap(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
             tenant_repo_path = temp_root / "tenant-repo"
@@ -2036,12 +2028,8 @@ sources = [
             )
             manifest = load_workspace_manifest(manifest_path)
 
-            with mock.patch("odoo_devkit.runtime.run_remote_bootstrap_workflow") as remote_bootstrap:
-                with contextlib.redirect_stdout(io.StringIO()):
-                    exit_code = run_native_runtime_workflow(manifest=manifest, workflow="bootstrap")
-
-            self.assertEqual(exit_code, 0)
-            remote_bootstrap.assert_called_once_with(manifest=manifest, runtime_repo_path=runtime_repo_path.resolve())
+            with self.assertRaisesRegex(ValueError, "belongs in Launchplane"):
+                run_native_runtime_workflow(manifest=manifest, workflow="bootstrap")
 
     def test_native_runtime_logs_runs_local_helper(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -2387,10 +2375,12 @@ sources = [
             with self.assertRaisesRegex(ValueError, "requires --instance local"):
                 run_native_runtime_workflow(manifest=manifest, workflow="openupgrade")
 
-    def test_cli_runtime_workflow_rejects_non_local_local_only_workflows_without_platform_fallback(self) -> None:
+    def test_cli_runtime_workflow_rejects_non_local_mutations_without_platform_fallback(self) -> None:
         workflow_cases = (
             ("init", "dev"),
             ("openupgrade", "testing"),
+            ("bootstrap", "prod"),
+            ("update", "testing"),
         )
         for workflow_name, instance_name in workflow_cases:
             with self.subTest(workflow=workflow_name, instance=instance_name):
@@ -2412,8 +2402,54 @@ sources = [
                             _handle_runtime_workflow(arguments)
 
                     self.assertIsInstance(captured_exit.exception.code, str)
-                    self.assertIn("requires --instance local", str(captured_exit.exception.code))
+                    self.assertTrue(
+                        "requires --instance local" in str(captured_exit.exception.code)
+                        or "belongs in Launchplane" in str(captured_exit.exception.code)
+                    )
                     platform_command.assert_not_called()
+
+    def test_cli_runtime_workflow_rejects_unknown_workflows_without_platform_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = temp_root / "tenant-repo"
+            runtime_repo_path = temp_root / "runtime-repo"
+            tenant_repo_path.mkdir(parents=True, exist_ok=True)
+            runtime_repo_path.mkdir(parents=True, exist_ok=True)
+            manifest_path = self._write_manifest(
+                tenant_repo_path=tenant_repo_path,
+                runtime_repo_path=runtime_repo_path,
+            )
+            arguments = argparse.Namespace(manifest=manifest_path, workflow="custom-remote-flow")
+
+            with mock.patch("odoo_devkit.cli.run_runtime_platform_command") as platform_command:
+                with self.assertRaises(SystemExit) as captured_exit:
+                    _handle_runtime_workflow(arguments)
+
+            self.assertIsInstance(captured_exit.exception.code, str)
+            self.assertIn("Unsupported runtime workflow", str(captured_exit.exception.code))
+            platform_command.assert_not_called()
+
+    def test_cli_runtime_restore_rejects_non_local_without_platform_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = temp_root / "tenant-repo"
+            runtime_repo_path = temp_root / "runtime-repo"
+            tenant_repo_path.mkdir(parents=True, exist_ok=True)
+            runtime_repo_path.mkdir(parents=True, exist_ok=True)
+            manifest_path = self._write_manifest(
+                tenant_repo_path=tenant_repo_path,
+                runtime_repo_path=runtime_repo_path,
+                instance_name="testing",
+            )
+            arguments = argparse.Namespace(manifest=manifest_path, runtime_instance=None)
+
+            with mock.patch("odoo_devkit.cli.run_runtime_platform_command") as platform_command:
+                with self.assertRaises(SystemExit) as captured_exit:
+                    _handle_runtime_restore(arguments)
+
+            self.assertIsInstance(captured_exit.exception.code, str)
+            self.assertIn("belongs in Launchplane", str(captured_exit.exception.code))
+            platform_command.assert_not_called()
 
     @staticmethod
     def _runtime_data_workflow_side_effect() -> mock.Mock:

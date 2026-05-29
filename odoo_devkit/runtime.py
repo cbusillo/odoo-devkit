@@ -24,9 +24,14 @@ from .local_runtime import (
     up_runtime,
 )
 from .manifest import WorkspaceManifest
-from .remote_runtime import run_remote_bootstrap_workflow, run_remote_restore_workflow, run_remote_update_workflow
 
 LOCAL_ONLY_NATIVE_WORKFLOWS = frozenset({"init", "openupgrade"})
+NATIVE_RUNTIME_WORKFLOWS = LOCAL_ONLY_NATIVE_WORKFLOWS | frozenset({"bootstrap", "update"})
+LAUNCHPLANE_REMOTE_RUNTIME_GUIDANCE = (
+    "Non-local Odoo runtime mutation belongs in Launchplane. "
+    "Use the Launchplane service, operator UI, or reusable Launchplane workflow for "
+    "non-local restore, bootstrap, update, promotion, rollback, and deploy flows."
+)
 
 
 def runtime_target_is_local(manifest: WorkspaceManifest) -> bool:
@@ -44,6 +49,22 @@ def _raise_local_only_runtime_command_error(*, command_name: str, manifest: Work
     raise ValueError(
         f"platform runtime {command_name} manages local host runtime only and requires --instance local. "
         f"Received {manifest.runtime.context}/{manifest.runtime.instance}."
+    )
+
+
+def _raise_launchplane_owned_runtime_command_error(*, command_name: str, manifest: WorkspaceManifest) -> None:
+    raise ValueError(
+        f"platform runtime {command_name} does not mutate non-local Odoo targets. "
+        f"Received {manifest.runtime.context}/{manifest.runtime.instance}. "
+        f"{LAUNCHPLANE_REMOTE_RUNTIME_GUIDANCE}"
+    )
+
+
+def _raise_launchplane_owned_workflow_error(*, workflow: str, manifest: WorkspaceManifest) -> None:
+    raise ValueError(
+        f"platform runtime workflow {workflow!r} does not mutate non-local Odoo targets. "
+        f"Received {manifest.runtime.context}/{manifest.runtime.instance}. "
+        f"{LAUNCHPLANE_REMOTE_RUNTIME_GUIDANCE}"
     )
 
 
@@ -281,16 +302,18 @@ def run_native_runtime_down(*, manifest: WorkspaceManifest, volumes: bool) -> in
 
 def run_native_runtime_workflow(*, manifest: WorkspaceManifest, workflow: str) -> int | None:
     normalized_workflow = workflow.strip().lower()
+    if normalized_workflow not in NATIVE_RUNTIME_WORKFLOWS:
+        supported_workflows = ", ".join(sorted(NATIVE_RUNTIME_WORKFLOWS))
+        raise ValueError(f"Unsupported runtime workflow {workflow!r}. Supported workflows: {supported_workflows}.")
     runtime_repo_path = resolve_runtime_repo_path(manifest)
     local_runtime_target = runtime_target_is_local(manifest)
     try:
+        if not local_runtime_target and normalized_workflow in {"bootstrap", "update"}:
+            _raise_launchplane_owned_workflow_error(workflow=normalized_workflow, manifest=manifest)
         if normalized_workflow in LOCAL_ONLY_NATIVE_WORKFLOWS and not local_runtime_target:
             _raise_local_only_workflow_error(workflow=normalized_workflow, manifest=manifest)
         if normalized_workflow == "bootstrap":
-            if local_runtime_target:
-                run_bootstrap_workflow(manifest=manifest, runtime_repo_path=runtime_repo_path)
-            else:
-                run_remote_bootstrap_workflow(manifest=manifest, runtime_repo_path=runtime_repo_path)
+            run_bootstrap_workflow(manifest=manifest, runtime_repo_path=runtime_repo_path)
             print(f"bootstrap={manifest.runtime.context}-{manifest.runtime.instance}")
             print("workflow=bootstrap")
             return 0
@@ -300,10 +323,7 @@ def run_native_runtime_workflow(*, manifest: WorkspaceManifest, workflow: str) -
             print("workflow=init")
             return 0
         if normalized_workflow == "update":
-            if local_runtime_target:
-                run_update_workflow(manifest=manifest, runtime_repo_path=runtime_repo_path)
-            else:
-                run_remote_update_workflow(manifest=manifest, runtime_repo_path=runtime_repo_path)
+            run_update_workflow(manifest=manifest, runtime_repo_path=runtime_repo_path)
             print(f"update={manifest.runtime.context}-{manifest.runtime.instance}")
             print("workflow=update")
             return 0
@@ -318,12 +338,11 @@ def run_native_runtime_workflow(*, manifest: WorkspaceManifest, workflow: str) -
 
 
 def run_native_runtime_restore(*, manifest: WorkspaceManifest) -> int | None:
+    if not runtime_target_is_local(manifest):
+        _raise_launchplane_owned_runtime_command_error(command_name="restore", manifest=manifest)
     runtime_repo_path = resolve_runtime_repo_path(manifest)
     try:
-        if runtime_target_is_local(manifest):
-            run_restore_workflow(manifest=manifest, runtime_repo_path=runtime_repo_path)
-        else:
-            run_remote_restore_workflow(manifest=manifest, runtime_repo_path=runtime_repo_path)
+        run_restore_workflow(manifest=manifest, runtime_repo_path=runtime_repo_path)
     except RuntimeCommandError as error:
         raise ValueError(str(error)) from error
     print(f"restore={manifest.runtime.context}-{manifest.runtime.instance}")

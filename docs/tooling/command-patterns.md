@@ -11,9 +11,9 @@ When
 
 ## Quick Start
 
-These examples are workspace and local/data-workflow patterns. Remote release
-actions such as ship, promote, and Launchplane preview lifecycle belong in
-`launchplane`.
+These examples are workspace, local runtime, and artifact-handoff patterns.
+Remote release and non-local data actions such as ship, promote, restore,
+bootstrap, update, and Launchplane preview lifecycle belong in `launchplane`.
 
 - Sync the current tenant workspace:
 

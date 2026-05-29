@@ -1028,10 +1028,9 @@ def assert_local_instance(*, instance_name: str, operation_name: str) -> None:
         return
     raise RuntimeCommandError(
         f"{operation_name} manages local host runtime only and requires --instance local. "
-        "Use control-plane ship/promote workflows for release actions, or the "
-        "explicit Dokploy-managed data workflows (`platform runtime restore` "
-        "or `platform runtime workflow --workflow bootstrap|update`) when you "
-        "need a remote data operation."
+        "Use Launchplane service routes, operator UI, or reusable Launchplane "
+        "workflows for release actions and non-local restore/bootstrap/update "
+        "operations."
     )
 
 

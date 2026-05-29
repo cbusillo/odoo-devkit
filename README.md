@@ -24,8 +24,8 @@ For remote environments, the stable lane model is `testing` plus `prod`.
 Launchplane-managed PR previews are a separate control-plane concern rather
 than a third durable runtime lane exposed through `platform runtime`.
 `odoo-devkit` can publish artifact images for handoff, but remote ship,
-promote, gate, and preview lifecycle flow belongs in `launchplane`, not in
-branch-oriented `odoo-devkit` commands.
+promote, gate, restore, bootstrap, update, and preview lifecycle flow belongs
+in `launchplane`, not in branch-oriented `odoo-devkit` commands.
 
 ## Command surface
 
@@ -72,8 +72,8 @@ those workspaces.
   truth for handwritten tenant code.
 - Local runtime assets live in `odoo-devkit` itself. Tenant scaffolds keep
   `[repos.runtime]` pointed at the sibling `odoo-devkit` checkout so the same
-  tracked tenant manifest can target local runtime work and explicit
-  Dokploy-managed data workflows.
+  tracked tenant manifest can target local runtime work and artifact handoff
+  without growing a repo-local remote mutation surface.
 - Runtime repo ownership remains explicit. When `[repos.runtime]` is present it
   may be path-based or repo-addressable,
   `workspace sync` materializes repo-addressed runtime inputs into
@@ -90,14 +90,10 @@ Current runtime ownership is intentionally narrow and explicit:
   `odoo-shell`, `restore`,
   `workflow bootstrap`, `workflow init`, `workflow update`, and
   `workflow openupgrade`.
-- Dokploy-managed non-local runtime targets also run natively inside
-  `odoo-devkit` for `restore`, `workflow bootstrap`, and `workflow update`
-  using the runtime repo's generated env plus Dokploy target metadata from the
-  control-plane-owned `config/dokploy.toml` and
-  `config/dokploy-targets.toml` catalogs resolved through
-  `ODOO_CONTROL_PLANE_ROOT`.
-- Those non-local targets are the stable remote lanes (`testing`, `prod`). PR
-  preview lifecycle and release orchestration stay outside `platform runtime`.
+- Non-local runtime mutation is not a devkit command surface. Stable remote
+  lanes (`testing`, `prod`) route through Launchplane service APIs, operator UI,
+  or reusable Launchplane workflows. PR preview lifecycle also stays outside
+  `platform runtime`.
 - Release actions such as ship, promote, and gate execution belong in
   `launchplane`, not under `platform runtime`.
 - non-local `workflow init` and `workflow openupgrade` remain local-only and
@@ -121,19 +117,15 @@ Current runtime ownership is intentionally narrow and explicit:
 uv run python -m unittest discover -s tests
 ```
 
-For tenant repos that keep `instance = "local"` in the tracked manifest, use
-an explicit runtime target override only for Dokploy-managed data workflows.
-Release actions should run through `launchplane`. Data workflow
-examples:
+For tenant repos that keep `instance = "local"` in the tracked manifest,
+`--instance testing` or `--instance prod` is not a shortcut for remote
+mutation. Release and non-local data actions should run through `launchplane`.
+Local and artifact-handoff examples:
 
 ```bash
-uv --directory ../odoo-devkit run platform runtime restore \
-  --manifest ./workspace.toml \
-  --instance testing
 uv --directory ../odoo-devkit run platform runtime workflow \
   --manifest ./workspace.toml \
-  --workflow bootstrap \
-  --instance testing
+  --workflow bootstrap
 uv --directory ../odoo-devkit run platform runtime publish \
   --manifest ./workspace.toml \
   --instance testing \
