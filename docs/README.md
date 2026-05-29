@@ -12,7 +12,7 @@ preview lifecycle for stable remote lanes live in `launchplane`.
 - [../README.md](../README.md) for the current bootstrap scope and command
   surface.
 - [ARCHITECTURE.md](ARCHITECTURE.md) for the workspace-first ownership model.
-- [roles.md](roles.md) for shared Codex role expectations.
+- [roles.md](roles.md) for shared Every Code role expectations.
 - [tooling/workspace-cli.md](tooling/workspace-cli.md) for the workspace
   command surface and generated-output contract.
 - [tooling/artifact-inputs.md](tooling/artifact-inputs.md) for the repo-owned
