@@ -372,23 +372,13 @@ def _handle_runtime_down(arguments: argparse.Namespace) -> None:
 def _handle_runtime_workflow(arguments: argparse.Namespace) -> None:
     manifest = _load_runtime_manifest(arguments)
     native_exit_code = _run_runtime_handler(lambda: run_native_runtime_workflow(manifest=manifest, workflow=arguments.workflow))
-    if native_exit_code is not None:
-        raise SystemExit(native_exit_code)
-    exit_code = run_runtime_platform_command(
-        manifest=manifest,
-        platform_subcommand="run",
-        platform_arguments=("--workflow", arguments.workflow),
-    )
-    raise SystemExit(exit_code)
+    raise SystemExit(native_exit_code)
 
 
 def _handle_runtime_restore(arguments: argparse.Namespace) -> None:
     manifest = _load_runtime_manifest(arguments)
     native_exit_code = _run_runtime_handler(lambda: run_native_runtime_restore(manifest=manifest))
-    if native_exit_code is not None:
-        raise SystemExit(native_exit_code)
-    exit_code = run_runtime_platform_command(manifest=manifest, platform_subcommand="restore")
-    raise SystemExit(exit_code)
+    raise SystemExit(native_exit_code)
 
 
 def _handle_runtime_inspect(arguments: argparse.Namespace) -> None:

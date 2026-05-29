@@ -10,12 +10,9 @@ Runtime ownership is split by target type:
   `logs`, `psql`, `odoo-shell`,
   `restore`, and
   `platform runtime workflow --workflow bootstrap|init|update|openupgrade`.
-- Dokploy-managed non-local data workflows run natively in `odoo-devkit`
-  for `platform runtime restore` and
-  `platform runtime workflow --workflow bootstrap|update`.
-- Those non-local targets are the stable remote lanes (`testing`, `prod`). PR
-  previews belong to Launchplane preview workflows in `launchplane`, not to
-  `platform runtime` as another durable lane.
+- Non-local restore/bootstrap/update, release, and preview lifecycle flow
+  belongs in Launchplane. `platform runtime` fails closed for shared/testing/prod
+  mutation instead of shelling into a sibling runtime checkout.
 - non-local `platform runtime workflow --workflow init|openupgrade` remains
   local-only and fail early with a clear `--instance local` requirement.
 - Release actions such as ship, promote, and gate execution belong in
@@ -153,9 +150,9 @@ Purpose
 - Expose the local runtime command surface through `odoo-devkit` so tenant
   overlays and generated PyCharm run configurations do not need to call a
   sibling runtime repo directly.
-- Resolve the runtime target from `workspace.toml` and execute the supported
-  local or Dokploy-backed workflow natively against the repo declared in
-  `[repos.runtime]`.
+- Resolve the runtime target from `workspace.toml` and execute supported local
+  workflows natively against `odoo-devkit`, while leaving non-local mutation to
+  Launchplane service routes and reusable workflows.
 
 Notes
 
@@ -166,15 +163,8 @@ Notes
   at a different `origin` than the manifest declares.
 - Keep the runtime repo explicit in the manifest. Tenant scaffolds point
   `[repos.runtime]` at the sibling `odoo-devkit` checkout so the same tracked
-  manifest can keep `instance = "local"` by default while still targeting
-  Dokploy-managed data restore/bootstrap/update flows through an explicit
-  runtime `--instance` override.
-- Keep the runtime repo explicit in the manifest for non-local targets because
-  `odoo-devkit` may still need external runtime metadata from that repo or its
-  managed `sources/runtime` checkout. Dokploy target definitions prefer the
-  control-plane-owned `config/dokploy.toml` route catalog and
-  `config/dokploy-targets.toml` target-id catalog resolved through
-  `ODOO_CONTROL_PLANE_ROOT`.
+  manifest can keep `instance = "local"` by default while artifact publish can
+  still stage runtime inputs for Launchplane handoff.
 - Runtime ownership remains fail-closed and explicit for non-local targets.
   `odoo-devkit` does not guess a runtime repo from `[repos.shared_addons]`,
   even if that path points at a sibling `odoo-shared-addons` checkout.
@@ -210,9 +200,9 @@ Notes
   treated as a hard conflict so environment authority stays single-source, and
   build/restore requirements are expected to live in `launchplane`'s
   `config/runtime-environments.toml` surface.
-- Native non-local ownership currently covers Dokploy-backed `restore`,
-  `workflow bootstrap`, and `workflow update`; anything else should fail closed
-  unless `odoo-devkit` grows an explicit remote contract for it.
+- Non-local `restore`, `workflow bootstrap`, and `workflow update` now fail
+  closed with Launchplane handoff guidance. Devkit should not grow arbitrary
+  checkout remote mutation flows; add or use a Launchplane service route first.
 - Public and non-local Odoo runtimes fail closed on unsafe startup credentials:
   the master password must be present and non-default, and an explicit admin
   password must be configured before the startup wrapper marks the runtime
@@ -224,12 +214,10 @@ Notes
 - Release/deploy ownership for remote environments stays in
   `launchplane`, even when the same tenant manifest is used to anchor
   local runtime context.
-- The runtime CLI accepts `--instance <name>` so a tenant repo can keep one
-  tracked local-first manifest and still run remote data workflows like
-  `platform runtime restore --manifest ./workspace.toml --instance testing`.
-- Do not treat `--instance` as a general environment-expansion hook. The
-  stable remote lane model is `testing` plus `prod`; preview runtime belongs
-  in Launchplane preview records and generation workflows instead.
+- The runtime CLI accepts `--instance <name>` for selection and artifact
+  context, but it is not a remote mutation hook. The stable remote lane model is
+  `testing` plus `prod`; those mutations belong in Launchplane service routes
+  and reusable workflows.
 - `platform runtime logs` and `platform runtime psql` are intentionally
   local-only helpers for manifest-backed debugging. They require
   `--instance local` and fail closed for non-local targets instead of falling

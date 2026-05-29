@@ -54,15 +54,15 @@ When
   runtime assets come from `odoo-devkit` itself.
 - The scaffold also keeps `[repos.runtime]` pointed at the sibling
   `../odoo-devkit` checkout so the same tracked manifest can keep
-  `instance = "local"` while still running Dokploy-managed data workflows
-  through an explicit runtime `--instance` override.
+  `instance = "local"` while artifact publish can stage runtime inputs for
+  Launchplane handoff.
 - The scaffold includes a repo-owned `artifact-inputs.toml` beside
   `workspace.toml` so source selection lives in the tenant repo instead of
   depending on implicit runtime defaults.
 - Website bootstrap intent, when present, also lives beside `workspace.toml` as
   `website-bootstrap.toml`. Devkit consumes that file during runtime selection
   and data workflows apply the resulting typed payload after module install.
-- Release actions for remote environments still belong in
+- Remote release and non-local data actions for shared/testing/prod belong in
   `launchplane`, not in tenant-root `platform runtime` commands.
 - The generated `Workspace Sync` and `Workspace Status` entrypoints call the
   tenant-root helper scripts so the manifest stays anchored at the tenant repo

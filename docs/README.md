@@ -3,8 +3,9 @@
 This repo owns the shared DX/runtime contract used to assemble tenant
 workspaces.
 
-It does not own remote release actions. Ship, promote, gate, and Launchplane
-preview lifecycle for stable remote lanes live in `launchplane`.
+It does not own remote release or non-local data actions. Ship, promote, gate,
+restore, bootstrap, update, and Launchplane preview lifecycle for stable remote
+lanes live in `launchplane`.
 
 ## Start Here
 
