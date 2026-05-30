@@ -105,6 +105,11 @@ Current runtime ownership is intentionally narrow and explicit:
 - The shared tenant compose database service stays pinned to `postgres:17`
   while existing tenant DB volumes still use the legacy
   `/var/lib/postgresql/data` layout.
+- The shared local compose contract includes the image-owned Launchplane runtime
+  addon root `/opt/launchplane/addons` and loads
+  `base,web,launchplane_runtime_health` as server-wide modules by default.
+  `/web/health` remains the local container liveness check; Launchplane runtime
+  identity evidence is exposed by the base image at `/launchplane/health`.
 - A Postgres major-version bump is not a routine dependency refresh on this
   surface. Treat it as explicit migration work with a documented upgrade path
   for existing tenant data volumes.
