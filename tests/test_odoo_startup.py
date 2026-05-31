@@ -81,6 +81,27 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
             settings = odoo_startup._load_settings(argparse.Namespace(config_path="/tmp/generated.conf"))
 
         self.assertEqual(settings.platform_instance, "local")
+        self.assertEqual(settings.addons_path, "/opt/launchplane/addons,/odoo/addons")
+
+    def test_load_settings_preserves_launchplane_addon_path_first(self) -> None:
+        environment = {
+            "PLATFORM_INSTANCE": "local",
+            "ODOO_DB_NAME": "opw",
+            "ODOO_DB_HOST": "database",
+            "ODOO_DB_PORT": "5432",
+            "ODOO_DB_USER": "odoo",
+            "ODOO_DB_PASSWORD": "database-password",
+            "ODOO_MASTER_PASSWORD": "master-password",
+            "ODOO_ADDONS_PATH": "/opt/project/addons,/opt/launchplane/addons,/odoo/addons",
+        }
+
+        with patch.dict(os.environ, environment, clear=True):
+            settings = odoo_startup._load_settings(argparse.Namespace(config_path="/tmp/generated.conf"))
+
+        self.assertEqual(
+            settings.addons_path,
+            "/opt/launchplane/addons,/opt/project/addons,/odoo/addons",
+        )
 
     @staticmethod
     def test_sync_python_dependencies_runs_for_local_dev_runtime() -> None:
@@ -158,6 +179,17 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
         run_mock.assert_called_once()
         environment = run_mock.call_args.kwargs["env"]
         self.assertEqual(environment["PYTHONPATH"], "/volumes/scripts:/opt/custom")
+
+    def test_admin_hardening_skips_missing_configured_admin(self) -> None:
+        settings = self._settings(platform_instance="testing", admin_password="safe-admin-password")
+
+        with patch.object(odoo_startup, "_run_odoo_shell") as run_shell:
+            odoo_startup._apply_admin_password_if_configured(settings)
+
+        run_shell.assert_called_once()
+        script_text = run_shell.call_args.args[1]
+        self.assertIn("configured_admin_user_found=false", script_text)
+        self.assertNotIn("Configured admin user not found", script_text)
 
 
 if __name__ == "__main__":
