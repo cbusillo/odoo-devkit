@@ -60,6 +60,61 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
 
         self.assertEqual(runner.os_env["PYTHONPATH"], "/volumes/scripts:/opt/custom")
 
+    def test_post_deploy_maintenance_runs_overrides_and_service_user_provisioning(self) -> None:
+        calls: list[str] = []
+        runner = odoo_data_workflows.OdooDataWorkflowRunner(self._local_settings(), upstream=None, env_file=None)
+
+        with (
+            patch.object(runner, "update_addons", side_effect=lambda **_kwargs: calls.append("update_addons")),
+            patch.object(runner, "connect_to_db", side_effect=lambda: calls.append("connect_to_db")),
+            patch.object(
+                runner,
+                "reconcile_missing_manifest_install_queue",
+                side_effect=lambda: calls.append("reconcile_missing_manifest_install_queue"),
+            ),
+            patch.object(
+                runner,
+                "assert_install_queue_is_resolvable",
+                side_effect=lambda: calls.append("assert_install_queue_is_resolvable"),
+            ),
+            patch.object(
+                runner,
+                "apply_environment_overrides",
+                side_effect=lambda: calls.append("apply_environment_overrides"),
+            ),
+            patch.object(runner, "ensure_admin_user", side_effect=lambda: calls.append("ensure_admin_user")),
+            patch.object(
+                runner,
+                "assert_core_schema_healthy",
+                side_effect=lambda: calls.append("assert_core_schema_healthy"),
+            ),
+            patch.object(runner, "ensure_gpt_users", side_effect=lambda: calls.append("ensure_gpt_users")),
+            patch.object(runner, "sanitize_database", side_effect=lambda: calls.append("sanitize_database")),
+        ):
+            runner.run_post_deploy_maintenance()
+
+        self.assertEqual(
+            calls,
+            [
+                "update_addons",
+                "connect_to_db",
+                "reconcile_missing_manifest_install_queue",
+                "assert_install_queue_is_resolvable",
+                "apply_environment_overrides",
+                "ensure_admin_user",
+                "connect_to_db",
+                "assert_core_schema_healthy",
+                "ensure_gpt_users",
+            ],
+        )
+        self.assertNotIn("sanitize_database", calls)
+
+    def test_update_only_and_post_deploy_maintenance_are_mutually_exclusive(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            result = odoo_data_workflows.main(["--update-only", "--post-deploy-maintenance"])
+
+        self.assertEqual(result, odoo_data_workflows.ExitCode.INVALID_ARGS)
+
 
 if __name__ == "__main__":
     unittest.main()
