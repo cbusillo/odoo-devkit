@@ -38,6 +38,7 @@ RUNTIME_OPTION_MAP: tuple[tuple[str, str], ...] = (
 UNSAFE_MASTER_PASSWORDS = {"admin"}
 LOCAL_INSTANCE_NAMES = {"", "local", "dev", "development"}
 RUNTIME_SCRIPTS_PATH = "/volumes/scripts"
+LAUNCHPLANE_ADDONS_PATH = "/opt/launchplane/addons"
 
 
 @dataclass(frozen=True)
@@ -75,6 +76,16 @@ def _split_modules(raw_modules: str) -> tuple[str, ...]:
     return tuple(parsed_modules)
 
 
+def _normalize_comma_list_with_first_item(first_item: str, raw_list: str) -> str:
+    normalized_items = [first_item]
+    for raw_item in raw_list.split(","):
+        item = raw_item.strip()
+        if not item or item in normalized_items:
+            continue
+        normalized_items.append(item)
+    return ",".join(normalized_items)
+
+
 def _parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Bootstrap Odoo database and launch web server")
     parser.add_argument("-c", "--config", dest="config_path", required=True)
@@ -106,7 +117,10 @@ def _load_settings(argument_namespace: argparse.Namespace) -> StartupSettings:
         master_password=master_password,
         admin_login=os.environ.get("ODOO_ADMIN_LOGIN", "").strip() or "admin",
         admin_password=os.environ.get("ODOO_ADMIN_PASSWORD", "").strip(),
-        addons_path=os.environ.get("ODOO_ADDONS_PATH", "").strip(),
+        addons_path=_normalize_comma_list_with_first_item(
+            LAUNCHPLANE_ADDONS_PATH,
+            os.environ.get("ODOO_ADDONS_PATH", "").strip(),
+        ),
         data_dir=os.environ.get("ODOO_DATA_DIR", "/volumes/data").strip() or "/volumes/data",
         list_db=os.environ.get("ODOO_LIST_DB", "False").strip() or "False",
         install_modules=install_modules,
@@ -401,11 +415,11 @@ admin_user = env['res.users'].sudo().with_context(active_test=False).search(
     limit=1,
 )
 if not admin_user:
-    raise ValueError(f"Configured admin user not found: {payload['login']}")
-
-admin_user.with_context(no_reset_password=True).sudo().write({'password': payload['password']})
-env.cr.commit()
-print('admin_password_updated=true')
+    print(f"configured_admin_user_found=false login={payload['login']}")
+else:
+    admin_user.with_context(no_reset_password=True).sudo().write({'password': payload['password']})
+    env.cr.commit()
+    print('admin_password_updated=true')
 """.replace("__PAYLOAD__", json.dumps(payload))
     _run_odoo_shell(settings, script, label="admin hardening")
 

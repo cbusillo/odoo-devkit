@@ -110,8 +110,16 @@ Current runtime ownership is intentionally narrow and explicit:
   `base,web,launchplane_runtime_health` as server-wide modules by default.
   Keep that addon root in the rendered `ODOO_ADDONS_PATH` so startup scripts,
   generated Odoo config, and wrapper-normalized server commands agree.
+  Startup shell phases normalize `/opt/launchplane/addons` into their generated
+  config before running database updates so server-wide runtime health stays
+  loadable even when downstream image layers override `ODOO_ADDONS_PATH`.
   `/web/health` remains the local container liveness check; Launchplane runtime
   identity evidence is exposed by the base image at `/launchplane/health`.
+- Public runtimes require `ODOO_ADMIN_PASSWORD`, but startup skips admin
+  hardening when the configured `ODOO_ADMIN_LOGIN` is absent in a restored
+  tenant database. This preserves boot for tenant databases that renamed or
+  removed the default `admin` login while still checking active default admin
+  passwords when matching users exist.
 - A Postgres major-version bump is not a routine dependency refresh on this
   surface. Treat it as explicit migration work with a documented upgrade path
   for existing tenant data volumes.
