@@ -5,6 +5,7 @@ addons_path = [
     "/odoo/odoo/addons",
     "/opt/project/addons",
     "/opt/extra_addons",
+    "/opt/launchplane/addons",
     "/opt/enterprise",
 ]
 required_env_keys = [

@@ -25,6 +25,7 @@ class DevkitIdeSupportTests(unittest.TestCase):
                     "/odoo/odoo/addons",
                     "/opt/project/addons",
                     "/opt/extra_addons",
+                    "/opt/launchplane/addons",
                     "/opt/enterprise",
                 ),
                 source_environment={"ODOO_DB_USER": "odoo", "ODOO_DB_PASSWORD": "pw"},
@@ -33,7 +34,7 @@ class DevkitIdeSupportTests(unittest.TestCase):
             self.assertEqual(written_conf, repo_root / ".platform" / "ide" / "cm.local.odoo.conf")
             rendered_conf = written_conf.read_text(encoding="utf-8")
             self.assertIn(
-                f"addons_path = /odoo/addons,/odoo/odoo/addons,{repo_root / 'addons'},/opt/extra_addons,/opt/enterprise",
+                f"addons_path = /odoo/addons,/odoo/odoo/addons,{repo_root / 'addons'},/opt/extra_addons,/opt/launchplane/addons,/opt/enterprise",
                 rendered_conf,
             )
             self.assertNotIn("/.platform/ide/", rendered_conf)
