@@ -699,7 +699,12 @@ sources = [
             self.assertIn("DOCKER_IMAGE=odoo-opw-local", runtime_env_text)
             self.assertIn("ODOO_ADDON_REPOSITORIES=cbusillo/disable_odoo_online@main", runtime_env_text)
             self.assertIn(f"ODOO_PROJECT_ADDONS_HOST_PATH={(tenant_repo_path / 'addons').resolve()}", runtime_env_text)
-            self.assertIn("ODOO_ADDONS_PATH=/odoo/addons,/opt/project/addons,/opt/project/addons/shared", runtime_env_text)
+            addons_path_line = next(
+                line for line in runtime_env_text.splitlines() if line.startswith("ODOO_ADDONS_PATH=")
+            )
+            self.assertIn("/opt/project/addons", addons_path_line)
+            self.assertIn("/opt/project/addons/shared", addons_path_line)
+            self.assertIn("/opt/launchplane/addons", addons_path_line)
             pycharm_conf_text = pycharm_conf_file.read_text(encoding="utf-8")
             self.assertIn("db_port = 15432", pycharm_conf_text)
             self.assertIn(f"addons_path = {(tenant_repo_path / 'addons').resolve()}", pycharm_conf_text)
@@ -716,7 +721,7 @@ sources = [
                 """
 schema_version = 1
 odoo_version = "19.0"
-addons_path = ["/odoo/addons", "/opt/project/addons"]
+addons_path = ["/odoo/addons", "/opt/launchplane/addons", "/opt/project/addons"]
 addon_repository_selectors = ["cbusillo/disable_odoo_online@main"]
 required_env_keys = ["ODOO_MASTER_PASSWORD", "ODOO_DB_USER", "ODOO_DB_PASSWORD"]
 
@@ -866,10 +871,12 @@ install_modules = ["opw_custom"]
             self.assertIn("DOCKER_IMAGE=odoo-opw-local", runtime_env_text)
             self.assertIn(f"ODOO_PROJECT_ADDONS_HOST_PATH={(tenant_repo_path / 'addons').resolve()}", runtime_env_text)
             self.assertIn(f"ODOO_SHARED_ADDONS_HOST_PATH={shared_addons_repo_path.resolve()}", runtime_env_text)
-            self.assertIn(
-                "ODOO_ADDONS_PATH=/odoo/addons,/opt/project/addons,/opt/project/addons/shared",
-                runtime_env_text,
+            addons_path_line = next(
+                line for line in runtime_env_text.splitlines() if line.startswith("ODOO_ADDONS_PATH=")
             )
+            self.assertIn("/opt/project/addons", addons_path_line)
+            self.assertIn("/opt/project/addons/shared", addons_path_line)
+            self.assertIn("/opt/launchplane/addons", addons_path_line)
 
     def test_native_runtime_select_includes_website_bootstrap_payload(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1224,7 +1231,7 @@ sources = [
                 """
 schema_version = 1
 odoo_version = "19.0"
-addons_path = ["/odoo/addons", "/opt/project/addons"]
+addons_path = ["/odoo/addons", "/opt/launchplane/addons", "/opt/project/addons"]
 addon_repository_selectors = ["cbusillo/disable_odoo_online@main"]
 required_env_keys = ["ODOO_MASTER_PASSWORD", "ODOO_DB_USER", "ODOO_DB_PASSWORD"]
 
@@ -2571,7 +2578,7 @@ attached_paths = ["sources/devkit"]
             """
 schema_version = 1
 odoo_version = "19.0"
-addons_path = ["/odoo/addons", "/opt/project/addons"]
+addons_path = ["/odoo/addons", "/opt/launchplane/addons", "/opt/project/addons"]
 required_env_keys = ["ODOO_MASTER_PASSWORD", "ODOO_DB_USER", "ODOO_DB_PASSWORD"]
 
 [contexts.opw]

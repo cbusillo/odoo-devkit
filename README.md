@@ -108,6 +108,8 @@ Current runtime ownership is intentionally narrow and explicit:
 - The shared local compose contract includes the image-owned Launchplane runtime
   addon root `/opt/launchplane/addons` and loads
   `base,web,launchplane_runtime_health` as server-wide modules by default.
+  Keep that addon root in the rendered `ODOO_ADDONS_PATH` so startup scripts,
+  generated Odoo config, and wrapper-normalized server commands agree.
   `/web/health` remains the local container liveness check; Launchplane runtime
   identity evidence is exposed by the base image at `/launchplane/health`.
 - A Postgres major-version bump is not a routine dependency refresh on this
