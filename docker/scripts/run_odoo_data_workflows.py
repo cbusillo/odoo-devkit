@@ -90,6 +90,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Run addon update only (no restore/bootstrap)",
     )
+    parser.add_argument(
+        "--post-deploy-maintenance",
+        action="store_true",
+        help="Run addon update plus non-destructive post-deploy overrides and service-user provisioning",
+    )
     return parser.parse_args(argv)
 
 
@@ -113,6 +118,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     bootstrap = args.bootstrap or local_settings.bootstrap
     no_sanitize = args.no_sanitize or local_settings.no_sanitize
     update_only = bool(args.update_only)
+    post_deploy_maintenance = bool(args.post_deploy_maintenance)
+    if update_only and post_deploy_maintenance:
+        _logger.error("--update-only cannot be combined with --post-deploy-maintenance")
+        return ExitCode.INVALID_ARGS
 
     upstream_settings: UpstreamServerSettings | None = None
     upstream_settings_error: ValidationError | None = None
@@ -131,6 +140,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if update_only:
             workflow_runner.update_addons(reason="post-deploy upgrade")
             _logger.info("Addon update completed successfully.")
+            return ExitCode.SUCCESS
+
+        if post_deploy_maintenance:
+            workflow_runner.run_post_deploy_maintenance()
             return ExitCode.SUCCESS
 
         if bootstrap:
@@ -1493,6 +1506,19 @@ with registry.cursor() as cr:
         self.assert_core_schema_healthy()
         self.ensure_gpt_users()
         _logger.info("Bootstrap completed successfully.")
+
+    def run_post_deploy_maintenance(self) -> None:
+        _logger.info("Starting post-deploy maintenance for database '%s'", self.local.db_name)
+        self.update_addons(reason="post-deploy upgrade")
+        self.connect_to_db()
+        self.reconcile_missing_manifest_install_queue()
+        self.assert_install_queue_is_resolvable()
+        self.apply_environment_overrides()
+        self.ensure_admin_user()
+        self.connect_to_db()
+        self.assert_core_schema_healthy()
+        self.ensure_gpt_users()
+        _logger.info("Post-deploy maintenance completed successfully.")
 
     def compute_update_module_list(self) -> list[str]:
         """Return sorted addon names discovered from local addon directories."""
