@@ -699,9 +699,7 @@ sources = [
             self.assertIn("DOCKER_IMAGE=odoo-opw-local", runtime_env_text)
             self.assertIn("ODOO_ADDON_REPOSITORIES=cbusillo/disable_odoo_online@main", runtime_env_text)
             self.assertIn(f"ODOO_PROJECT_ADDONS_HOST_PATH={(tenant_repo_path / 'addons').resolve()}", runtime_env_text)
-            addons_path_line = next(
-                line for line in runtime_env_text.splitlines() if line.startswith("ODOO_ADDONS_PATH=")
-            )
+            addons_path_line = next(line for line in runtime_env_text.splitlines() if line.startswith("ODOO_ADDONS_PATH="))
             self.assertIn("/opt/project/addons", addons_path_line)
             self.assertIn("/opt/project/addons/shared", addons_path_line)
             self.assertIn("/opt/launchplane/addons", addons_path_line)
@@ -871,9 +869,7 @@ install_modules = ["opw_custom"]
             self.assertIn("DOCKER_IMAGE=odoo-opw-local", runtime_env_text)
             self.assertIn(f"ODOO_PROJECT_ADDONS_HOST_PATH={(tenant_repo_path / 'addons').resolve()}", runtime_env_text)
             self.assertIn(f"ODOO_SHARED_ADDONS_HOST_PATH={shared_addons_repo_path.resolve()}", runtime_env_text)
-            addons_path_line = next(
-                line for line in runtime_env_text.splitlines() if line.startswith("ODOO_ADDONS_PATH=")
-            )
+            addons_path_line = next(line for line in runtime_env_text.splitlines() if line.startswith("ODOO_ADDONS_PATH="))
             self.assertIn("/opt/project/addons", addons_path_line)
             self.assertIn("/opt/project/addons/shared", addons_path_line)
             self.assertIn("/opt/launchplane/addons", addons_path_line)
@@ -1604,6 +1600,161 @@ sources = [
             self.assertIn(
                 {"repository": "cbusillo/disable_odoo_online", "ref": exact_ref.rsplit("@", 1)[1]},
                 payload["addon_sources"],
+            )
+
+    def test_native_runtime_publish_rejects_unknown_context_without_explicit_runtime_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = self._create_git_repo(temp_root / "tenant-repo")
+            runtime_repo_path = self._create_git_repo(temp_root / "runtime-repo")
+            (tenant_repo_path / "addons" / "cm_website").mkdir(parents=True, exist_ok=True)
+            (tenant_repo_path / "addons" / "cm_website" / "__manifest__.py").write_text("{}\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=tenant_repo_path, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "tenant website"], cwd=tenant_repo_path, check=True, capture_output=True)
+            self._write_runtime_repo(runtime_repo_path)
+            subprocess.run(["git", "add", "."], cwd=runtime_repo_path, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "runtime files"], cwd=runtime_repo_path, check=True, capture_output=True)
+            manifest_path = self._write_manifest(
+                tenant_repo_path=tenant_repo_path,
+                runtime_repo_path=runtime_repo_path,
+                addons_paths=("addons",),
+                context_name="cm_website",
+                database_name="cm_website_testing",
+                instance_name="testing",
+            )
+            subprocess.run(["git", "add", "workspace.toml"], cwd=tenant_repo_path, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "workspace manifest"], cwd=tenant_repo_path, check=True, capture_output=True)
+            manifest = load_workspace_manifest(manifest_path)
+
+            with mock.patch.dict(os.environ, {local_runtime.RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR: ""}):
+                with mock.patch(
+                    "odoo_devkit.local_runtime.load_environment",
+                    return_value=local_runtime.LoadedEnvironment(
+                        env_file_path=self.control_plane_root / ".generated" / "runtime-env" / "cm_website.testing.env",
+                        merged_values={
+                            "ODOO_MASTER_PASSWORD": "control-plane-master",
+                            "ODOO_DB_USER": "odoo",
+                            "ODOO_DB_PASSWORD": "control-plane-secret",
+                        },
+                        collisions=(),
+                    ),
+                ):
+                    with self.assertRaisesRegex(ValueError, "Unknown context 'cm_website'"):
+                        run_native_runtime_publish(
+                            manifest=manifest,
+                            image_repository="ghcr.io/example/cm-website-runtime",
+                            image_tag="cm_website-20260606-abcdef",
+                            output_file=None,
+                            no_cache=False,
+                            platforms=("linux/amd64",),
+                        )
+
+    def test_native_runtime_publish_synthesizes_context_from_explicit_runtime_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = self._create_git_repo(temp_root / "tenant-repo")
+            runtime_repo_path = self._create_git_repo(temp_root / "runtime-repo")
+            (tenant_repo_path / "addons" / "cm_website").mkdir(parents=True, exist_ok=True)
+            (tenant_repo_path / "addons" / "cm_website" / "__manifest__.py").write_text("{}\n", encoding="utf-8")
+            (tenant_repo_path / "website-bootstrap.toml").write_text(
+                """
+schema_version = 1
+tenant = "cm_website"
+
+[odoo]
+install_modules = ["cm_website"]
+
+[website]
+name = "Cell Mechanic"
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+            subprocess.run(["git", "add", "."], cwd=tenant_repo_path, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "tenant website"], cwd=tenant_repo_path, check=True, capture_output=True)
+            self._write_runtime_repo(runtime_repo_path)
+            subprocess.run(["git", "add", "."], cwd=runtime_repo_path, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "runtime files"], cwd=runtime_repo_path, check=True, capture_output=True)
+            manifest_path = self._write_manifest(
+                tenant_repo_path=tenant_repo_path,
+                runtime_repo_path=runtime_repo_path,
+                addons_paths=("addons",),
+                context_name="cm_website",
+                database_name="cm_website_testing",
+                instance_name="testing",
+            )
+            (tenant_repo_path / "artifact-inputs.toml").write_text(
+                """
+schema_version = 1
+sources = [
+  { repository = "cbusillo/disable_odoo_online", selector = "main" },
+]
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+            subprocess.run(
+                ["git", "add", "workspace.toml", "artifact-inputs.toml"],
+                cwd=tenant_repo_path,
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(["git", "commit", "-m", "workspace manifest"], cwd=tenant_repo_path, check=True, capture_output=True)
+            manifest = load_workspace_manifest(manifest_path)
+
+            captured_build_args: list[str] = []
+
+            def fake_run_command(
+                *,
+                runtime_repo_path: Path,
+                command: list[str],
+                environment_overrides: object | None = None,
+                allowed_return_codes: object | None = None,
+            ) -> None:
+                _ = runtime_repo_path, environment_overrides, allowed_return_codes
+                if command[:3] == ["docker", "buildx", "build"]:
+                    captured_build_args.extend(command)
+                    self._write_buildx_metadata_for_command(command)
+
+            explicit_payload = {
+                "context": "cm_website",
+                "instance": "testing",
+                "environment": {
+                    "ODOO_MASTER_PASSWORD": "control-plane-master",
+                    "ODOO_DB_USER": "odoo",
+                    "ODOO_DB_PASSWORD": "control-plane-secret",
+                    "GITHUB_TOKEN": "gh-token",
+                    "ODOO_BASE_RUNTIME_IMAGE": "ghcr.io/example/runtime:19.0-runtime",
+                    "ODOO_BASE_DEVTOOLS_IMAGE": "ghcr.io/example/devtools:19.0-devtools",
+                },
+            }
+            with mock.patch.dict(
+                os.environ,
+                {local_runtime.RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR: json.dumps(explicit_payload)},
+            ):
+                with mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_base_images"):
+                    with mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_image_push"):
+                        with mock.patch("odoo_devkit.local_runtime.run_command", side_effect=fake_run_command):
+                            with mock.patch(
+                                "odoo_devkit.local_runtime.resolve_source_repository_ref_to_git_sha",
+                                return_value="411f6b8e85cac72dc7aa2e2dc5540001043c327d",
+                            ):
+                                with mock.patch("odoo_devkit.local_runtime.resolve_image_digest", return_value="sha256:" + "2" * 64):
+                                    payload = run_native_runtime_publish(
+                                        manifest=manifest,
+                                        image_repository="ghcr.io/example/cm-website-runtime",
+                                        image_tag="cm_website-20260606-abcdef",
+                                        output_file=None,
+                                        no_cache=False,
+                                        platforms=("linux/amd64",),
+                                    )
+
+            self.assertTrue(payload["artifact_id"].startswith("artifact-cm_website-"))
+            self.assertEqual(payload["image"]["repository"], "ghcr.io/example/cm-website-runtime")
+            self.assertEqual(payload["image"]["tags"], ["cm_website-20260606-abcdef"])
+            self.assertIn(
+                "ODOO_ADDON_REPOSITORIES=cbusillo/disable_odoo_online@411f6b8e85cac72dc7aa2e2dc5540001043c327d",
+                captured_build_args,
             )
 
     def test_resolve_source_repository_ref_to_git_sha_rejects_missing_remote_ref(self) -> None:
@@ -2506,6 +2657,8 @@ sources = [
         runtime_repo_path: Path,
         shared_addons_repo_path: Path | None = None,
         addons_paths: tuple[str, ...] = ("sources/tenant/addons",),
+        context_name: str = "opw",
+        database_name: str = "opw",
         instance_name: str = "local",
         artifact_inputs_file: str | None = None,
     ) -> Path:
@@ -2530,10 +2683,10 @@ inputs_file = "{artifact_inputs_file}"
         manifest_path.write_text(
             f"""
 schema_version = 1
-tenant = "opw"
+tenant = "{context_name}"
 
 [workspace]
-name = "opw"
+name = "{context_name}"
 python = "3.13"
 
 [repos.tenant]
@@ -2546,9 +2699,9 @@ path = "{runtime_repo_path}"
 {shared_addons_block}
 
 [runtime]
-context = "opw"
+context = "{context_name}"
 instance = "{instance_name}"
-database = "opw"
+database = "{database_name}"
 addons_paths = [{rendered_addons_paths}]
 {artifacts_block}
 

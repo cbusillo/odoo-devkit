@@ -234,6 +234,10 @@ Notes
   pushes the requested image tag, reads the pushed image digest from Buildx's
   build metadata output, and writes a control-plane-compatible artifact manifest
   JSON file.
+- When Launchplane supplies `ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON`, publish can
+  synthesize the selected manifest context from that explicit payload instead of
+  requiring every Launchplane-owned product context to be listed in the shared
+  devkit stack. Unknown contexts still fail closed without the explicit payload.
 - Publish-time GHCR credentials can be split by purpose. Private base image
   reads prefer `GHCR_READ_TOKEN`, artifact image pushes prefer `GHCR_TOKEN`,
   and private source checkout secrets still belong in the transient runtime
