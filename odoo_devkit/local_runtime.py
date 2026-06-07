@@ -783,6 +783,7 @@ def load_runtime_context(
     effective_stack_definition = resolve_manifest_runtime_stack_definition(
         manifest=manifest,
         stack_definition=loaded_stack.stack_definition,
+        allow_runtime_payload_context=explicit_runtime_environment_payload_is_configured(),
     )
     website_bootstrap = load_website_bootstrap_definition(manifest=manifest)
     runtime_selection = resolve_runtime_selection(
@@ -809,7 +810,25 @@ def load_runtime_context(
     )
 
 
-def resolve_manifest_runtime_stack_definition(*, manifest: WorkspaceManifest, stack_definition: StackDefinition) -> StackDefinition:
+def resolve_manifest_runtime_stack_definition(
+    *,
+    manifest: WorkspaceManifest,
+    stack_definition: StackDefinition,
+    allow_runtime_payload_context: bool = False,
+) -> StackDefinition:
+    effective_stack_definition = resolve_manifest_runtime_addons_paths(
+        manifest=manifest,
+        stack_definition=stack_definition,
+    )
+    if allow_runtime_payload_context:
+        return synthesize_runtime_payload_context(
+            manifest=manifest,
+            stack_definition=effective_stack_definition,
+        )
+    return effective_stack_definition
+
+
+def resolve_manifest_runtime_addons_paths(*, manifest: WorkspaceManifest, stack_definition: StackDefinition) -> StackDefinition:
     project_addons_paths = resolve_manifest_container_addons_paths(manifest=manifest)
     if not project_addons_paths:
         return stack_definition
@@ -836,6 +855,41 @@ def resolve_manifest_runtime_stack_definition(*, manifest: WorkspaceManifest, st
         odoo_overrides=stack_definition.odoo_overrides,
         required_env_keys=stack_definition.required_env_keys,
         contexts=stack_definition.contexts,
+    )
+
+
+def explicit_runtime_environment_payload_is_configured() -> bool:
+    return bool(os.environ.get(RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR, "").strip())
+
+
+def synthesize_runtime_payload_context(*, manifest: WorkspaceManifest, stack_definition: StackDefinition) -> StackDefinition:
+    if manifest.runtime.context in stack_definition.contexts:
+        return stack_definition
+    contexts = dict(stack_definition.contexts)
+    contexts[manifest.runtime.context] = ContextDefinition(
+        database=manifest.runtime.database,
+        install_modules=(),
+        runtime_env={},
+        odoo_overrides=empty_odoo_override_definition(),
+        update_modules="AUTO",
+        instances={
+            manifest.runtime.instance: InstanceDefinition(
+                database=manifest.runtime.database,
+                install_modules_add=(),
+                runtime_env={},
+                odoo_overrides=empty_odoo_override_definition(),
+            )
+        },
+    )
+    return StackDefinition(
+        schema_version=stack_definition.schema_version,
+        odoo_version=stack_definition.odoo_version,
+        state_root=stack_definition.state_root,
+        addons_path=stack_definition.addons_path,
+        runtime_env=stack_definition.runtime_env,
+        odoo_overrides=stack_definition.odoo_overrides,
+        required_env_keys=stack_definition.required_env_keys,
+        contexts=contexts,
     )
 
 
