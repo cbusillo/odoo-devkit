@@ -36,3 +36,4 @@ platform/.env
 platform/secrets.toml
 tmp/
 docker-compose.override.yml
+/handoff*.md
