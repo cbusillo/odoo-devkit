@@ -58,7 +58,6 @@
   ],
   "qaLabels": [],
   "deployLabels": [],
-  "healthUrls": [],
   "relatedRepos": [
     "disable_odoo_online",
     "odoo-docker",
