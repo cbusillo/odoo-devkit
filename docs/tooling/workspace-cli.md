@@ -182,10 +182,12 @@ Notes
   supported addon settings such as `authentik_sso` values.
 - When a tenant repo contains `website-bootstrap.toml` beside `workspace.toml`,
   runtime selection also folds that non-secret website intent into the same
-  typed payload. The bootstrap contract can add install modules, select the
-  lane canonical URL, identify a homepage page or controller route, and point at
-  a repo-local logo asset. Data workflows and startup apply that state
-  idempotently after modules are installed, without hard-coded tenant defaults.
+  typed payload. The bootstrap contract can add install modules, provide the
+  local canonical URL, identify a homepage page or controller route, and point
+  at a repo-local logo asset. Shared/testing/prod canonical URLs are
+  Launchplane-owned runtime records. Data workflows and startup apply bootstrap
+  state idempotently after modules are installed, without hard-coded tenant
+  defaults.
 - Legacy setting-shaped inputs such as `ENV_OVERRIDE_CONFIG_PARAM__*`,
   `ENV_OVERRIDE_AUTHENTIK__*`, and `ENV_OVERRIDE_SHOPIFY__*` are still accepted
   as a compatibility input and converted into the same typed payload, but they
