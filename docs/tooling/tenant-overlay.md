@@ -29,7 +29,8 @@ When
 - tracked `workspace.toml`
 - tracked `artifact-inputs.toml` for runtime and publish-time source inputs
 - tracked `website-bootstrap.toml` when the tenant needs Launchplane/devkit to
-  rebuild public website identity, canonical URL, homepage route, or logo state
+  rebuild public website identity, local canonical URL, homepage route, or logo
+  state
 - tenant-owned code
 
 ## Tenant Root Should Not Contain
