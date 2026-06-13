@@ -76,10 +76,14 @@ class FakeModel:
     def sudo(self) -> FakeModel:
         return self
 
-    def search(self, *unused_args: object, **unused_kwargs: object) -> FakeRecord:
-        self.searches.append((unused_args, unused_kwargs))
+    def search(self, *args: object, **kwargs: object) -> FakeRecord:
+        self.searches.append((args, kwargs))
         if self.records is not None:
-            return self.records[0] if self.records else FakeRecord(truthy=False)
+            if not self.records:
+                return FakeRecord(truthy=False)
+            if len(self.records) > 1:
+                return self.records.pop(0)
+            return self.records[0]
         return self.record
 
     def create(self, values: dict[str, object]) -> FakeRecord:
@@ -186,10 +190,13 @@ class WebsiteBootstrapHelperTests(unittest.TestCase):
 
     def test_page_backed_homepage_requires_primary_page_and_persists_it(self) -> None:
         env = FakeEnv()
+        env.website._fields.add("sequence")
+        env.website.sequence = 10
+        view = FakeRecord(record_id=142, fields=("website_id",), values={"model_name": "ir.ui.view"})
         page = FakeRecord(
             record_id=42,
-            fields=("is_published", "website_published", "website_id"),
-            values={"model_name": "website.page"},
+            fields=("is_published", "website_published", "website_id", "view_id"),
+            values={"model_name": "website.page", "view_id": view},
         )
         env.refs["cm_website.website_page_cell_mechanic"] = page
         payload = {
@@ -207,11 +214,58 @@ class WebsiteBootstrapHelperTests(unittest.TestCase):
             },
         }
 
-        website_bootstrap.apply_website_bootstrap(env, payload)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            website_bootstrap.apply_website_bootstrap(env, payload)
 
         self.assertEqual(env.website.homepage_id, page.id)
         self.assertEqual(env.website.homepage_url, "/cell-mechanic")
+        self.assertEqual(env.website.sequence, 0)
+        self.assertIn({"name": "Cell Mechanic", "domain": "cm-website-testing.example.com", "sequence": 0}, env.website.writes)
         self.assertIn({"is_published": True, "website_published": True, "website_id": 1}, page.writes)
+        self.assertIn({"website_id": 1}, view.writes)
+        self.assertIn("website_bootstrap_homepage_page_website_matches=true", output.getvalue())
+        self.assertIn("website_bootstrap_homepage_view_website_matches=true", output.getvalue())
+        self.assertIn("website_bootstrap_page_website_bound_count=1", output.getvalue())
+        self.assertIn("website_bootstrap_view_website_bound_count=1", output.getvalue())
+
+    def test_url_lookup_reclaims_page_bound_to_stale_website(self) -> None:
+        env = FakeEnv()
+        target_website = FakeRecord(
+            record_id=1,
+            fields=("name", "domain", "homepage_id", "homepage_url", "logo", "sequence"),
+            values={"name": "My Website", "domain": "", "sequence": 10},
+        )
+        stale_website = FakeRecord(
+            record_id=2,
+            fields=("name", "domain", "homepage_id", "homepage_url", "logo", "sequence"),
+            values={"name": "Old Target", "domain": "old.example.com", "sequence": 10},
+        )
+        stale_page = FakeRecord(
+            record_id=45,
+            fields=("is_published", "website_published", "website_id"),
+            values={"model_name": "website.page", "website_id": stale_website},
+        )
+        env.website = target_website
+        env.default_website = target_website
+        env.pages = FakeModel(records=[FakeRecord(truthy=False), stale_page], fields=("website_id",))
+        payload = {
+            "website_bootstrap": {
+                "name": "Cell Mechanic",
+                "canonical_url": "https://cm-website-testing.example.com",
+                "homepage_url": "/cell-mechanic",
+            }
+        }
+
+        website_bootstrap.apply_website_bootstrap(env, payload)
+
+        self.assertEqual(target_website.homepage_id, stale_page.id)
+        self.assertEqual(stale_page.website_id, target_website.id)
+        self.assertIn({"is_published": True, "website_published": True, "website_id": target_website.id}, stale_page.writes)
+        self.assertIn(
+            (([("url", "=", "/cell-mechanic")],), {"order": "id", "limit": 1}),
+            env.pages.searches,
+        )
 
     def test_primary_page_website_wins_over_existing_canonical_domain_match(self) -> None:
         env = FakeEnv()
@@ -316,10 +370,11 @@ class WebsiteBootstrapHelperTests(unittest.TestCase):
 
     def test_route_homepage_readback_reports_final_route_homepage(self) -> None:
         env = FakeEnv()
+        route_view = FakeRecord(record_id=144, fields=("website_id",), values={"model_name": "ir.ui.view"})
         route_page = FakeRecord(
             record_id=44,
-            fields=("is_published", "website_published", "website_id"),
-            values={"model_name": "website.page"},
+            fields=("is_published", "website_published", "website_id", "view_id"),
+            values={"model_name": "website.page", "view_id": route_view},
         )
         env.pages = FakeModel(record=route_page, fields=("website_id",))
         payload = {
@@ -343,8 +398,14 @@ class WebsiteBootstrapHelperTests(unittest.TestCase):
 
         self.assertEqual(env.website.homepage_id, route_page.id)
         self.assertEqual(env.website.homepage_url, "/shop")
+        self.assertIn({"is_published": True, "website_published": True, "website_id": 1}, route_page.writes)
+        self.assertIn({"website_id": 1}, route_view.writes)
         self.assertIn("website_bootstrap_homepage_url_matches=true", output.getvalue())
         self.assertIn("website_bootstrap_homepage_matches_page=true", output.getvalue())
+        self.assertIn("website_bootstrap_homepage_page_website_matches=true", output.getvalue())
+        self.assertIn("website_bootstrap_homepage_view_website_matches=true", output.getvalue())
+        self.assertIn("website_bootstrap_page_website_bound_count=1", output.getvalue())
+        self.assertIn("website_bootstrap_view_website_bound_count=1", output.getvalue())
 
     def test_logo_readback_mismatch_fails_before_success_marker(self) -> None:
         env = FakeEnv()

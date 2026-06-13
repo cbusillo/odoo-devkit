@@ -3,7 +3,7 @@ import binascii
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlparse
 
 ODOO_INSTANCE_OVERRIDES_PAYLOAD_ENV_KEY = "ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64"
@@ -133,6 +133,12 @@ def _assert_field_record_id(record: Any, field_name: str, expected_record: Any, 
         raise RuntimeError(f"Website bootstrap failed to persist {label}: expected record {expected_id!r}, got {actual_id!r}.")
 
 
+def _field_record_matches(record: Any, field_name: str, expected_record: Any) -> bool:
+    if not record or field_name not in record._fields:
+        return False
+    return _record_id(_field_value(record, field_name)) == _record_id(expected_record)
+
+
 def _config_parameter_value(env: Any, key: str) -> str:
     parameter_model = env["ir.config_parameter"].sudo()
     get_param = getattr(parameter_model, "get_param", None)
@@ -163,6 +169,7 @@ def _marker_bool(value: bool) -> str:
 
 def _print_bootstrap_readback(
     *,
+    env: Any,
     website: Any,
     canonical_url: str,
     homepage_url: str,
@@ -170,6 +177,8 @@ def _print_bootstrap_readback(
     primary_page_xmlid: str,
     primary_page_xmlid_found: bool,
     logo_expected: bool,
+    page_website_bound_count: int,
+    view_website_bound_count: int,
 ) -> None:
     canonical_host = _canonical_host(canonical_url)
     website_domain = str(_field_value(website, "domain") or "") if "domain" in website._fields else ""
@@ -177,11 +186,16 @@ def _print_bootstrap_readback(
     actual_homepage = _field_value(website, "homepage_id") if "homepage_id" in website._fields else None
     actual_homepage_id = _record_id(actual_homepage)
     homepage_page_id = _record_id(homepage_page)
+    homepage_view = _field_value(homepage_page, "view_id") if homepage_page and "view_id" in homepage_page._fields else None
     logo_present = bool(_field_value(website, "logo")) if "logo" in website._fields else False
+    web_base_url_matches = False
+    if canonical_url:
+        web_base_url_matches = _config_parameter_value(env, "web.base.url") == canonical_url
 
     print(f"website_bootstrap_website_id={getattr(website, 'id', '')}")
     print(f"website_bootstrap_domain_set={_marker_bool(bool(website_domain))}")
     print(f"website_bootstrap_domain_matches_canonical={_marker_bool(bool(canonical_host) and website_domain == canonical_host)}")
+    print(f"website_bootstrap_web_base_url_matches={_marker_bool(not canonical_url or web_base_url_matches)}")
     print(f"website_bootstrap_homepage_url_set={_marker_bool(bool(actual_homepage_url))}")
     print(f"website_bootstrap_homepage_url_matches={_marker_bool(bool(homepage_url) and actual_homepage_url == homepage_url)}")
     print(f"website_bootstrap_homepage_page_found={_marker_bool(bool(homepage_page_id))}")
@@ -189,6 +203,14 @@ def _print_bootstrap_readback(
     print(
         f"website_bootstrap_homepage_matches_page={_marker_bool(bool(homepage_page_id) and actual_homepage_id == homepage_page_id)}"
     )
+    print(
+        f"website_bootstrap_homepage_page_website_matches={_marker_bool(_field_record_matches(homepage_page, 'website_id', website))}"
+    )
+    print(
+        f"website_bootstrap_homepage_view_website_matches={_marker_bool(_field_record_matches(homepage_view, 'website_id', website))}"
+    )
+    print(f"website_bootstrap_page_website_bound_count={page_website_bound_count}")
+    print(f"website_bootstrap_view_website_bound_count={view_website_bound_count}")
     print(f"website_bootstrap_logo_present={_marker_bool(not logo_expected or logo_present)}")
 
 
@@ -200,7 +222,7 @@ def _select_website(
     default_website: Any | None = None,
 ) -> Any:
     if primary_page and "website_id" in primary_page._fields:
-        page_website = _field_value(primary_page, "website_id")
+        page_website = cast(Any, _field_value(primary_page, "website_id"))
         if page_website:
             return page_website.sudo()
     canonical_host = _canonical_host(canonical_url)
@@ -226,6 +248,29 @@ def _clear_duplicate_canonical_domains(website_model: Any, *, website: Any, cano
     )
     if duplicates:
         duplicates.sudo().write({"domain": ""})
+
+
+def _bind_page_to_website(page: Any, website: Any, *, published: bool) -> tuple[bool, bool]:
+    if not page:
+        return False, False
+    page_values: dict[str, object] = {}
+    if published:
+        page_values.update({"is_published": True, "website_published": True})
+    page_bound = False
+    if "website_id" in page._fields:
+        page_values["website_id"] = website.id
+        page_bound = True
+    _write_existing_fields(page, page_values)
+    if page_bound:
+        _assert_field_record_id(page, "website_id", website, label="page website")
+
+    view = cast(Any, _field_value(page, "view_id")) if "view_id" in page._fields else None
+    view_bound = False
+    if view and "website_id" in view._fields:
+        _write_existing_fields(view, {"website_id": website.id})
+        _assert_field_record_id(view, "website_id", website, label="page view website")
+        view_bound = True
+    return page_bound, view_bound
 
 
 def _homepage_values(website: Any, *, homepage_url: str, homepage_page: Any | None) -> dict[str, object]:
@@ -283,10 +328,18 @@ def _find_website_page_by_xmlid(env: Any, *, xmlid: str) -> Any | None:
 def _find_website_page_by_url(env: Any, website: Any, *, url: str) -> Any | None:
     if not url:
         return None
+    page_model = env["website.page"].sudo()
     page_domain: list[Any] = [("url", "=", url)]
-    if "website_id" in env["website.page"]._fields:
+    if "website_id" in page_model._fields:
         page_domain = ["&", ("url", "=", url), "|", ("website_id", "=", False), ("website_id", "=", website.id)]
-    return env["website.page"].sudo().search(page_domain, order="website_id desc,id", limit=1)
+        scoped_page = page_model.search(page_domain, order="website_id desc,id", limit=1)
+        if scoped_page:
+            return scoped_page
+        # A previous partial bootstrap can leave the requested URL bound to a
+        # stale website. Reclaim the exact page so the selected website owns the
+        # public route instead of delegating it back to the stale binding.
+        return page_model.search([("url", "=", url)], order="id", limit=1)
+    return page_model.search(page_domain, order="id", limit=1)
 
 
 def _find_website_page(env: Any, website: Any, *, xmlid: str, url: str) -> tuple[Any | None, bool]:
@@ -305,8 +358,6 @@ def _verify_route(env: Any, website: Any, route_payload: dict[str, object], *, f
     module_name = str(route_payload.get("module") or fallback_module or "").strip()
     page = _find_website_page_by_url(env, website, url=route_url)
     if page:
-        if bool(route_payload.get("published", True)):
-            _write_existing_fields(page, {"is_published": True, "website_published": True})
         return page
     if module_name:
         if not _module_is_installed(env, module_name):
@@ -365,6 +416,8 @@ def apply_website_bootstrap(env: Any, parsed_payload: dict[str, object] | None) 
         _set_config_parameter(env, "web.base.url.freeze", "True")
         _clear_duplicate_canonical_domains(website_model, website=website, canonical_url=canonical_url)
         website_values["domain"] = _canonical_host(canonical_url)
+        if "sequence" in website._fields:
+            website_values["sequence"] = 0
     default_lang = str(website_payload.get("default_lang") or "").strip()
     if default_lang and "default_lang_id" in website._fields:
         lang = env["res.lang"].sudo().search([("code", "=", default_lang)], limit=1)
@@ -386,11 +439,12 @@ def apply_website_bootstrap(env: Any, parsed_payload: dict[str, object] | None) 
         _assert_binary_field_value(website, "logo", logo_value, label="website logo")
 
     homepage_page = primary_page or _find_website_page_by_url(env, website, url=homepage_url)
+    page_website_bound_count = 0
+    view_website_bound_count = 0
     if homepage_page:
-        page_values: dict[str, object] = {"is_published": True, "website_published": True}
-        if "website_id" in homepage_page._fields:
-            page_values["website_id"] = website.id
-        _write_existing_fields(homepage_page, page_values)
+        page_bound, view_bound = _bind_page_to_website(homepage_page, website, published=True)
+        page_website_bound_count += int(page_bound)
+        view_website_bound_count += int(view_bound)
     _write_existing_fields(website, _homepage_values(website, homepage_url=homepage_url, homepage_page=homepage_page))
     final_homepage_url = homepage_url
     final_homepage_page = homepage_page
@@ -402,11 +456,17 @@ def apply_website_bootstrap(env: Any, parsed_payload: dict[str, object] | None) 
         route_page = _verify_route(
             env, website, {"url": homepage_url, "module": fallback_module, "published": True}, fallback_module=fallback_module
         )
+        page_bound, view_bound = _bind_page_to_website(route_page, website, published=True)
+        page_website_bound_count += int(page_bound)
+        view_website_bound_count += int(view_bound)
         _write_existing_fields(website, _homepage_values(website, homepage_url=homepage_url, homepage_page=route_page))
         final_homepage_page = route_page
     for route_payload in website_payload.get("routes") or []:
         if isinstance(route_payload, dict):
             route_page = _verify_route(env, website, route_payload, fallback_module=fallback_module)
+            page_bound, view_bound = _bind_page_to_website(route_page, website, published=bool(route_payload.get("published", True)))
+            page_website_bound_count += int(page_bound)
+            view_website_bound_count += int(view_bound)
             if bool(route_payload.get("homepage")):
                 route_url = str(route_payload.get("url") or "").strip()
                 _write_existing_fields(website, _homepage_values(website, homepage_url=route_url, homepage_page=route_page))
@@ -419,6 +479,7 @@ def apply_website_bootstrap(env: Any, parsed_payload: dict[str, object] | None) 
         _assert_field_record_id(website, "homepage_id", final_homepage_page, label="homepage page")
 
     _print_bootstrap_readback(
+        env=env,
         website=website,
         canonical_url=canonical_url,
         homepage_url=final_homepage_url,
@@ -426,5 +487,7 @@ def apply_website_bootstrap(env: Any, parsed_payload: dict[str, object] | None) 
         primary_page_xmlid=primary_page_xmlid,
         primary_page_xmlid_found=primary_page_xmlid_found,
         logo_expected=logo_expected,
+        page_website_bound_count=page_website_bound_count,
+        view_website_bound_count=view_website_bound_count,
     )
     print("website_bootstrap_applied=true")
