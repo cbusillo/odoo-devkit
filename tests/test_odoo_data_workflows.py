@@ -65,6 +65,7 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
         runner = odoo_data_workflows.OdooDataWorkflowRunner(self._local_settings(), upstream=None, env_file=None)
 
         with (
+            patch.object(runner, "install_addons", side_effect=lambda **_kwargs: calls.append("install_addons")),
             patch.object(runner, "update_addons", side_effect=lambda **_kwargs: calls.append("update_addons")),
             patch.object(runner, "connect_to_db", side_effect=lambda: calls.append("connect_to_db")),
             patch.object(
@@ -96,6 +97,7 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
         self.assertEqual(
             calls,
             [
+                "install_addons",
                 "update_addons",
                 "connect_to_db",
                 "reconcile_missing_manifest_install_queue",

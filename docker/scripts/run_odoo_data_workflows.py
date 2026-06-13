@@ -1509,6 +1509,7 @@ with registry.cursor() as cr:
 
     def run_post_deploy_maintenance(self) -> None:
         _logger.info("Starting post-deploy maintenance for database '%s'", self.local.db_name)
+        self.install_addons(reason="post-deploy install")
         self.update_addons(reason="post-deploy upgrade")
         self.connect_to_db()
         self.reconcile_missing_manifest_install_queue()
