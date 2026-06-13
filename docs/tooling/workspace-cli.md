@@ -188,7 +188,10 @@ Notes
   Launchplane-owned runtime records. Data workflows and startup apply bootstrap
   state idempotently after modules are installed, verify required public website
   identity fields before reporting success, and avoid hard-coded tenant
-  defaults.
+  defaults. Page-backed bootstrap also binds discovered `website.page` records,
+  their website-specific views when available, and route readback markers to the
+  selected website so post-deploy proof can distinguish payload rendering from
+  public website identity persistence.
 - Legacy setting-shaped inputs such as `ENV_OVERRIDE_CONFIG_PARAM__*`,
   `ENV_OVERRIDE_AUTHENTIK__*`, and `ENV_OVERRIDE_SHOPIFY__*` are still accepted
   as a compatibility input and converted into the same typed payload, but they
