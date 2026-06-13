@@ -115,6 +115,10 @@ Current runtime ownership is intentionally narrow and explicit:
   loadable even when downstream image layers override `ODOO_ADDONS_PATH`.
   `/web/health` remains the local container liveness check; Launchplane runtime
   identity evidence is exposed by the base image at `/launchplane/health`.
+- Public single-database runtimes pin both `db_name` and `dbfilter` to the
+  configured `ODOO_DB_NAME`, and keep database listing disabled. This keeps
+  normal website requests on the public hostname bound to the tenant database
+  instead of falling through to Odoo's database selector.
 - Public runtimes require `ODOO_ADMIN_PASSWORD`, but startup skips admin
   hardening when the configured `ODOO_ADMIN_LOGIN` is absent in a restored
   tenant database. This preserves boot for tenant databases that renamed or

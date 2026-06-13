@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import configparser
 import importlib.util
 import os
 import sys
@@ -148,6 +149,72 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
         )
 
         odoo_startup._enforce_public_credential_preflight(settings)
+
+    def test_public_runtime_config_pins_http_database_filter_to_configured_database(self) -> None:
+        settings = self._settings(platform_instance="testing", admin_password="safe-admin-password")
+        parser = configparser.ConfigParser(interpolation=None)
+
+        with patch("builtins.open", unittest.mock.mock_open()) as open_mock:
+            odoo_startup._write_runtime_config(settings)
+
+        written_config = "".join(call.args[0] for call in open_mock().write.call_args_list)
+        parser.read_string(written_config)
+
+        self.assertEqual(parser["options"]["db_name"], "opw")
+        self.assertEqual(parser["options"]["dbfilter"], "^opw$")
+
+    def test_local_runtime_config_does_not_pin_http_database_filter(self) -> None:
+        settings = self._settings(platform_instance="local")
+        parser = configparser.ConfigParser(interpolation=None)
+
+        with patch("builtins.open", unittest.mock.mock_open()) as open_mock:
+            odoo_startup._write_runtime_config(settings)
+
+        written_config = "".join(call.args[0] for call in open_mock().write.call_args_list)
+        parser.read_string(written_config)
+
+        self.assertEqual(parser["options"]["db_name"], "opw")
+        self.assertNotIn("dbfilter", parser["options"])
+
+    def test_database_filter_escapes_database_name(self) -> None:
+        pattern = odoo_startup._database_filter_pattern("tenant.prod")
+
+        self.assertEqual(pattern, r"^tenant\.prod$")
+
+    def test_public_odoo_server_command_pins_database_filter_to_configured_database(self) -> None:
+        settings = self._settings(platform_instance="testing", admin_password="safe-admin-password")
+
+        command = odoo_startup._build_odoo_command(settings, stop_after_init=False)
+
+        self.assertIn("-d", command)
+        self.assertIn("opw", command)
+        self.assertIn("--db-filter=^opw$", command)
+
+    def test_public_odoo_init_command_pins_database_filter_to_configured_database(self) -> None:
+        settings = self._settings(platform_instance="testing", admin_password="safe-admin-password")
+
+        command = odoo_startup._build_odoo_command(
+            settings,
+            initialize_modules=("opw_custom",),
+            stop_after_init=True,
+        )
+
+        self.assertIn("--db-filter=^opw$", command)
+        self.assertIn("--stop-after-init", command)
+
+    def test_local_odoo_server_command_does_not_pin_database_filter(self) -> None:
+        settings = self._settings(platform_instance="local")
+
+        command = odoo_startup._build_odoo_command(settings, stop_after_init=False)
+
+        self.assertNotIn("--db-filter=^opw$", command)
+
+    def test_odoo_shell_command_does_not_pin_database_filter(self) -> None:
+        settings = self._settings(platform_instance="testing", admin_password="safe-admin-password")
+
+        command = odoo_startup._build_odoo_shell_command(settings)
+
+        self.assertFalse(any(argument.startswith("--db-filter=") for argument in command))
 
     def test_local_runtime_allows_missing_admin_password(self) -> None:
         settings = self._settings(platform_instance="local", admin_password="")
