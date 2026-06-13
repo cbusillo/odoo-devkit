@@ -192,13 +192,40 @@ def _print_bootstrap_readback(
     print(f"website_bootstrap_logo_present={_marker_bool(not logo_expected or logo_present)}")
 
 
-def _select_website(website_model: Any, *, canonical_url: str) -> Any:
+def _select_website(
+    website_model: Any,
+    *,
+    canonical_url: str,
+    primary_page: Any | None = None,
+    default_website: Any | None = None,
+) -> Any:
+    if primary_page and "website_id" in primary_page._fields:
+        page_website = _field_value(primary_page, "website_id")
+        if page_website:
+            return page_website.sudo()
     canonical_host = _canonical_host(canonical_url)
     if canonical_host and "domain" in website_model._fields:
         website = website_model.search([("domain", "in", (canonical_host, canonical_url))], order="id", limit=1)
         if website:
             return website
+    if default_website:
+        return default_website.sudo()
     return website_model.search([], order="id", limit=1)
+
+
+def _clear_duplicate_canonical_domains(website_model: Any, *, website: Any, canonical_url: str) -> None:
+    canonical_host = _canonical_host(canonical_url)
+    if not canonical_host or "domain" not in website_model._fields:
+        return
+    duplicates = website_model.search(
+        [
+            ("id", "!=", website.id),
+            ("domain", "in", (canonical_host, canonical_url)),
+        ],
+        order="id",
+    )
+    if duplicates:
+        duplicates.sudo().write({"domain": ""})
 
 
 def _homepage_values(website: Any, *, homepage_url: str, homepage_page: Any | None) -> dict[str, object]:
@@ -307,8 +334,21 @@ def apply_website_bootstrap(env: Any, parsed_payload: dict[str, object] | None) 
 
     canonical_url = str(website_payload.get("canonical_url") or _payload_web_base_url(parsed_payload) or "").strip()
 
+    homepage_url = str(website_payload.get("homepage_url") or "").strip()
+    primary_page_xmlid = str(website_payload.get("primary_page_xmlid") or "").strip()
+    primary_page = _find_website_page_by_xmlid(env, xmlid=primary_page_xmlid)
+    primary_page_xmlid_found = bool(primary_page)
+    if primary_page_xmlid and not primary_page:
+        raise RuntimeError(f"Website bootstrap primary page XML ID not found: {primary_page_xmlid}")
+    default_website = env.ref("website.default_website", raise_if_not_found=False)
+
     website_model = env["website"].sudo()
-    website = _select_website(website_model, canonical_url=canonical_url)
+    website = _select_website(
+        website_model,
+        canonical_url=canonical_url,
+        primary_page=primary_page,
+        default_website=default_website,
+    )
     if not website:
         default_name = str(website_payload.get("name") or "Website").strip() or "Website"
         create_values = _field_values(website_model, {"name": default_name})
@@ -323,6 +363,7 @@ def apply_website_bootstrap(env: Any, parsed_payload: dict[str, object] | None) 
         _require_existing_fields(website, ("domain",), label="canonical domain")
         _set_config_parameter(env, "web.base.url", canonical_url)
         _set_config_parameter(env, "web.base.url.freeze", "True")
+        _clear_duplicate_canonical_domains(website_model, website=website, canonical_url=canonical_url)
         website_values["domain"] = _canonical_host(canonical_url)
     default_lang = str(website_payload.get("default_lang") or "").strip()
     if default_lang and "default_lang_id" in website._fields:
@@ -344,16 +385,12 @@ def apply_website_bootstrap(env: Any, parsed_payload: dict[str, object] | None) 
     if logo_expected:
         _assert_binary_field_value(website, "logo", logo_value, label="website logo")
 
-    homepage_url = str(website_payload.get("homepage_url") or "").strip()
-    primary_page_xmlid = str(website_payload.get("primary_page_xmlid") or "").strip()
-    homepage_page, primary_page_xmlid_found = _find_website_page(env, website, xmlid=primary_page_xmlid, url=homepage_url)
+    homepage_page = primary_page or _find_website_page_by_url(env, website, url=homepage_url)
     if homepage_page:
         page_values: dict[str, object] = {"is_published": True, "website_published": True}
         if "website_id" in homepage_page._fields:
             page_values["website_id"] = website.id
         _write_existing_fields(homepage_page, page_values)
-    elif primary_page_xmlid:
-        raise RuntimeError(f"Website bootstrap primary page XML ID not found: {primary_page_xmlid}")
     _write_existing_fields(website, _homepage_values(website, homepage_url=homepage_url, homepage_page=homepage_page))
     final_homepage_url = homepage_url
     final_homepage_page = homepage_page
