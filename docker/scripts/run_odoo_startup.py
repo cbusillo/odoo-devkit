@@ -14,6 +14,7 @@ import argparse
 import configparser
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -139,6 +140,10 @@ def _is_public_runtime(settings: StartupSettings) -> bool:
     return settings.platform_instance.strip().lower() not in LOCAL_INSTANCE_NAMES
 
 
+def _database_filter_pattern(database_name: str) -> str:
+    return f"^{re.escape(database_name)}$"
+
+
 def _enforce_public_credential_preflight(settings: StartupSettings) -> None:
     if not _is_public_runtime(settings):
         return
@@ -158,6 +163,8 @@ def _write_runtime_config(settings: StartupSettings) -> None:
     options = config_parser["options"]
     options["admin_passwd"] = settings.master_password
     options["db_name"] = settings.database_name
+    if _is_public_runtime(settings):
+        options["dbfilter"] = _database_filter_pattern(settings.database_name)
     options["db_user"] = settings.database_user
     options["db_password"] = settings.database_password
     options["db_host"] = settings.database_host
@@ -267,6 +274,8 @@ def _build_odoo_command(
         f"--db_user={settings.database_user}",
         f"--db_password={settings.database_password}",
     ]
+    if _is_public_runtime(settings):
+        command.append(f"--db-filter={_database_filter_pattern(settings.database_name)}")
 
     if initialize_modules is not None:
         normalized_modules = ["base", *initialize_modules]
