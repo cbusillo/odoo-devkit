@@ -16,8 +16,10 @@ from contextlib import suppress
 from dataclasses import dataclass
 from enum import Enum, IntEnum
 from pathlib import Path
+from unittest.mock import patch
 
 import psycopg2
+from odoo_website_bootstrap import load_instance_override_payload, require_launchplane_payloads_if_configured
 from passlib.context import CryptContext
 from psycopg2 import sql
 from psycopg2.extensions import connection
@@ -138,6 +140,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         workflow_runner.acquire_data_workflow_lock()
         lock_acquired = True
         if update_only:
+            workflow_runner.require_environment_override_payloads_if_configured()
             workflow_runner.update_addons(reason="post-deploy upgrade")
             _logger.info("Addon update completed successfully.")
             return ExitCode.SUCCESS
@@ -416,6 +419,13 @@ class OdooDataWorkflowRunner:
         self._pre_openupgrade_module_states: dict[str, str] = {}
         self._odoo_shell_preflight_checked = False
         self._data_workflow_lock_path: Path | None = None
+
+    def require_environment_override_payloads_if_configured(self) -> None:
+        try:
+            with patch.dict(os.environ, self.os_env, clear=True):
+                require_launchplane_payloads_if_configured(load_instance_override_payload())
+        except RuntimeError as error:
+            raise OdooDatabaseUpdateError("Failed Launchplane payload requirement check.") from error
 
     def acquire_data_workflow_lock(self) -> None:
         lock_path = self.local.data_workflow_lock_file
@@ -1148,6 +1158,7 @@ from odoo_website_bootstrap import (
     apply_website_bootstrap,
     load_instance_override_payload,
     payload_has_launchplane_settings,
+    require_launchplane_payloads_if_configured,
 )
 
 payload = json.loads('__PAYLOAD__')
@@ -1157,6 +1168,7 @@ with registry.cursor() as cr:
     env = api.Environment(cr, SUPERUSER_ID, {})
     instance_override_payload = load_instance_override_payload()
     typed_override_payload_present = instance_override_payload is not None
+    require_launchplane_payloads_if_configured(instance_override_payload)
     if 'launchplane.settings' in env.registry:
         env['launchplane.settings'].sudo().apply_from_env()
         cr.commit()

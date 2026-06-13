@@ -7,6 +7,17 @@ from typing import Any, cast
 from urllib.parse import urlparse
 
 ODOO_INSTANCE_OVERRIDES_PAYLOAD_ENV_KEY = "ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64"
+LAUNCHPLANE_INSTANCE_OVERRIDES_REQUIRED_ENV_KEY = "LAUNCHPLANE_INSTANCE_OVERRIDES_REQUIRED"
+LAUNCHPLANE_WEBSITE_BOOTSTRAP_REQUIRED_ENV_KEY = "LAUNCHPLANE_WEBSITE_BOOTSTRAP_REQUIRED"
+
+
+def _env_flag_enabled(name: str) -> bool:
+    raw_value = os.environ.get(name, "").strip().lower()
+    if raw_value in {"", "0", "false", "no", "off"}:
+        return False
+    if raw_value in {"1", "true", "yes", "on"}:
+        return True
+    raise RuntimeError(f"Environment flag {name} must be one of true/false, 1/0, yes/no, or on/off.")
 
 
 def load_instance_override_payload() -> dict[str, object] | None:
@@ -27,6 +38,28 @@ def payload_has_launchplane_settings(parsed_payload: dict[str, object] | None) -
     if not parsed_payload:
         return False
     return bool(parsed_payload.get("config_parameters") or parsed_payload.get("addon_settings"))
+
+
+def payload_has_website_bootstrap(parsed_payload: dict[str, object] | None) -> bool:
+    if not parsed_payload:
+        return False
+    website_payload = parsed_payload.get("website_bootstrap")
+    if website_payload is None:
+        return False
+    if not isinstance(website_payload, dict):
+        raise RuntimeError("Odoo instance override payload field 'website_bootstrap' must be an object.")
+    return bool(website_payload)
+
+
+def require_launchplane_payloads_if_configured(parsed_payload: dict[str, object] | None) -> None:
+    website_bootstrap_present = payload_has_website_bootstrap(parsed_payload)
+    if _env_flag_enabled(LAUNCHPLANE_INSTANCE_OVERRIDES_REQUIRED_ENV_KEY):
+        if not parsed_payload:
+            raise RuntimeError("Launchplane instance overrides are required, but ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64 is missing.")
+        if not payload_has_launchplane_settings(parsed_payload):
+            raise RuntimeError("Launchplane instance overrides are required, but the override payload has no managed settings.")
+    if _env_flag_enabled(LAUNCHPLANE_WEBSITE_BOOTSTRAP_REQUIRED_ENV_KEY) and not website_bootstrap_present:
+        raise RuntimeError("Launchplane website bootstrap is required, but the override payload has no website_bootstrap object.")
 
 
 def _normalize_scalar_override_value(raw_value: object) -> str:
@@ -378,7 +411,11 @@ def apply_website_bootstrap(env: Any, parsed_payload: dict[str, object] | None) 
     if not parsed_payload:
         return
     website_payload = parsed_payload.get("website_bootstrap")
-    if not isinstance(website_payload, dict) or not website_payload:
+    if website_payload is None:
+        return
+    if not isinstance(website_payload, dict):
+        raise RuntimeError("Odoo instance override payload field 'website_bootstrap' must be an object.")
+    if not website_payload:
         return
     if "website" not in env.registry:
         raise RuntimeError("Website bootstrap supplied, but the website module is not installed.")

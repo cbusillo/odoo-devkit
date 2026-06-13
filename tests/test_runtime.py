@@ -281,6 +281,8 @@ attached_paths = ["sources/devkit"]
     def test_data_workflow_script_environment_keeps_typed_payload(self) -> None:
         environment = {
             local_runtime.ODOO_INSTANCE_OVERRIDES_PAYLOAD_ENV_KEY: "encoded-payload",
+            local_runtime.LAUNCHPLANE_INSTANCE_OVERRIDES_REQUIRED_ENV_KEY: "true",
+            local_runtime.LAUNCHPLANE_WEBSITE_BOOTSTRAP_REQUIRED_ENV_KEY: "true",
             "ODOO_DB_NAME": "opw",
             "UNRELATED": "value",
         }
@@ -288,6 +290,8 @@ attached_paths = ["sources/devkit"]
         filtered_environment = local_runtime.data_workflow_script_environment(environment)
 
         self.assertEqual(filtered_environment[local_runtime.ODOO_INSTANCE_OVERRIDES_PAYLOAD_ENV_KEY], "encoded-payload")
+        self.assertEqual(filtered_environment[local_runtime.LAUNCHPLANE_INSTANCE_OVERRIDES_REQUIRED_ENV_KEY], "true")
+        self.assertEqual(filtered_environment[local_runtime.LAUNCHPLANE_WEBSITE_BOOTSTRAP_REQUIRED_ENV_KEY], "true")
         self.assertEqual(filtered_environment["ODOO_DB_NAME"], "opw")
         self.assertNotIn("UNRELATED", filtered_environment)
 

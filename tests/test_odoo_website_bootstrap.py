@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import os
 import sys
 import types
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 
 def _load_bootstrap_module() -> types.ModuleType:
@@ -139,6 +141,79 @@ class FakeEnv:
 
 
 class WebsiteBootstrapHelperTests(unittest.TestCase):
+    def test_required_instance_overrides_fail_without_payload(self) -> None:
+        with patch.dict(
+            os.environ,
+            {website_bootstrap.LAUNCHPLANE_INSTANCE_OVERRIDES_REQUIRED_ENV_KEY: "true"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "instance overrides are required"):
+                website_bootstrap.require_launchplane_payloads_if_configured(None)
+
+    def test_required_instance_overrides_fail_without_managed_settings(self) -> None:
+        with patch.dict(
+            os.environ,
+            {website_bootstrap.LAUNCHPLANE_INSTANCE_OVERRIDES_REQUIRED_ENV_KEY: "true"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "has no managed settings"):
+                website_bootstrap.require_launchplane_payloads_if_configured({"website_bootstrap": {"name": "Cell Mechanic"}})
+
+    def test_required_instance_overrides_pass_with_config_parameters(self) -> None:
+        with patch.dict(
+            os.environ,
+            {website_bootstrap.LAUNCHPLANE_INSTANCE_OVERRIDES_REQUIRED_ENV_KEY: "1"},
+            clear=True,
+        ):
+            website_bootstrap.require_launchplane_payloads_if_configured({"config_parameters": [{"key": "web.base.url"}]})
+
+    def test_required_website_bootstrap_fails_without_website_payload(self) -> None:
+        with patch.dict(
+            os.environ,
+            {website_bootstrap.LAUNCHPLANE_WEBSITE_BOOTSTRAP_REQUIRED_ENV_KEY: "true"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "website bootstrap is required"):
+                website_bootstrap.require_launchplane_payloads_if_configured({"config_parameters": [{"key": "web.base.url"}]})
+
+    def test_required_website_bootstrap_fails_with_empty_website_payload(self) -> None:
+        with patch.dict(
+            os.environ,
+            {website_bootstrap.LAUNCHPLANE_WEBSITE_BOOTSTRAP_REQUIRED_ENV_KEY: "yes"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "website bootstrap is required"):
+                website_bootstrap.require_launchplane_payloads_if_configured({"website_bootstrap": {}})
+
+    def test_required_website_bootstrap_passes_with_website_payload(self) -> None:
+        with patch.dict(
+            os.environ,
+            {website_bootstrap.LAUNCHPLANE_WEBSITE_BOOTSTRAP_REQUIRED_ENV_KEY: "on"},
+            clear=True,
+        ):
+            website_bootstrap.require_launchplane_payloads_if_configured({"website_bootstrap": {"name": "Cell Mechanic"}})
+
+    def test_optional_launchplane_payloads_allow_missing_payload(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            website_bootstrap.require_launchplane_payloads_if_configured(None)
+
+    def test_invalid_required_flag_value_fails(self) -> None:
+        with patch.dict(
+            os.environ,
+            {website_bootstrap.LAUNCHPLANE_INSTANCE_OVERRIDES_REQUIRED_ENV_KEY: "maybe"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Environment flag"):
+                website_bootstrap.require_launchplane_payloads_if_configured({"config_parameters": []})
+
+    def test_malformed_website_bootstrap_payload_fails(self) -> None:
+        payload = {"website_bootstrap": []}
+
+        with self.assertRaisesRegex(RuntimeError, "website_bootstrap.*object"):
+            website_bootstrap.require_launchplane_payloads_if_configured(payload)
+        with self.assertRaisesRegex(RuntimeError, "website_bootstrap.*object"):
+            website_bootstrap.apply_website_bootstrap(FakeEnv(), payload)
+
     def test_controller_homepage_route_persists_homepage_url_and_clears_stale_page_homepage(self) -> None:
         env = FakeEnv()
         payload = {

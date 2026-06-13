@@ -439,10 +439,12 @@ from odoo_website_bootstrap import (
     apply_website_bootstrap,
     load_instance_override_payload,
     payload_has_launchplane_settings,
+    require_launchplane_payloads_if_configured,
 )
 
 instance_override_payload = load_instance_override_payload()
 typed_override_payload_present = instance_override_payload is not None
+require_launchplane_payloads_if_configured(instance_override_payload)
 if 'launchplane.settings' in env.registry:
     env['launchplane.settings'].sudo().apply_from_env()
 elif payload_has_launchplane_settings(instance_override_payload):

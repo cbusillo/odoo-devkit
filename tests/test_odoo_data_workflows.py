@@ -16,6 +16,7 @@ def _load_data_workflows_module() -> types.ModuleType:
         raise RuntimeError(f"Unable to load module from {module_path}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
+    original_sys_path = list(sys.path)
 
     psycopg2_module = types.ModuleType("psycopg2")
     psycopg2_module.sql = types.SimpleNamespace(SQL=lambda value: value, Identifier=lambda value: value)
@@ -29,7 +30,11 @@ def _load_data_workflows_module() -> types.ModuleType:
             "psycopg2.extensions": psycopg2_extensions_module,
         },
     ):
-        spec.loader.exec_module(module)
+        try:
+            sys.path.insert(0, str(module_path.parent))
+            spec.loader.exec_module(module)
+        finally:
+            sys.path[:] = original_sys_path
     return module
 
 
@@ -116,6 +121,38 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
             result = odoo_data_workflows.main(["--update-only", "--post-deploy-maintenance"])
 
         self.assertEqual(result, odoo_data_workflows.ExitCode.INVALID_ARGS)
+
+    def test_update_only_requires_configured_launchplane_payload_before_addon_update(self) -> None:
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "ODOO_DB_HOST": "database",
+                    "ODOO_DB_USER": "odoo",
+                    "ODOO_DB_PASSWORD": "database-password",
+                    "ODOO_DB_NAME": "cm",
+                    "ODOO_FILESTORE_PATH": "/volumes/data/filestore/cm",
+                    "LAUNCHPLANE_INSTANCE_OVERRIDES_REQUIRED": "true",
+                },
+                clear=True,
+            ),
+            patch.object(
+                odoo_data_workflows.OdooDataWorkflowRunner,
+                "acquire_data_workflow_lock",
+            ),
+            patch.object(
+                odoo_data_workflows.OdooDataWorkflowRunner,
+                "release_data_workflow_lock",
+            ),
+            patch.object(
+                odoo_data_workflows.OdooDataWorkflowRunner,
+                "update_addons",
+            ) as update_addons,
+        ):
+            result = odoo_data_workflows.main(["--update-only"])
+
+        self.assertEqual(result, odoo_data_workflows.ExitCode.BOOTSTRAP_FAILED)
+        update_addons.assert_not_called()
 
 
 if __name__ == "__main__":

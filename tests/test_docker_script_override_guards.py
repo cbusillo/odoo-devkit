@@ -10,6 +10,7 @@ class DockerScriptOverrideGuardTests(unittest.TestCase):
 
         self.assertIn("typed_override_payload_present", script)
         self.assertIn("payload_has_launchplane_settings", script)
+        self.assertIn("require_launchplane_payloads_if_configured", script)
         self.assertIn("ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64", script)
         self.assertIn("launchplane.settings", script)
         self.assertIn("but launchplane.settings is not installed", script)
@@ -23,6 +24,7 @@ class DockerScriptOverrideGuardTests(unittest.TestCase):
 
         self.assertIn("typed_override_payload_present", script)
         self.assertIn("payload_has_launchplane_settings", script)
+        self.assertIn("require_launchplane_payloads_if_configured", script)
         self.assertIn("ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64", script)
         self.assertIn("launchplane.settings", script)
         self.assertIn("but launchplane.settings is not installed", script)
@@ -37,6 +39,9 @@ class DockerScriptOverrideGuardTests(unittest.TestCase):
 
         self.assertIn("COPY /docker/scripts /payload/volumes/scripts", dockerfile)
         self.assertIn("def apply_website_bootstrap", helper)
+        self.assertIn("LAUNCHPLANE_INSTANCE_OVERRIDES_REQUIRED", helper)
+        self.assertIn("LAUNCHPLANE_WEBSITE_BOOTSTRAP_REQUIRED", helper)
+        self.assertIn("def require_launchplane_payloads_if_configured", helper)
         self.assertIn("website_bootstrap_applied=true", helper)
 
 
