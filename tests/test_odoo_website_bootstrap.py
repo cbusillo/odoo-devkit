@@ -116,6 +116,7 @@ class WebsiteBootstrapHelperTests(unittest.TestCase):
 
         self.assertIn({"homepage_url": "/shop", "homepage_id": False}, env.website.writes)
         self.assertEqual(env.config_parameter.values["web.base.url"], "https://opw-testing.example.com")
+        self.assertIn({"name": "OPW", "domain": "opw-testing.example.com"}, env.website.writes)
 
 
 if __name__ == "__main__":

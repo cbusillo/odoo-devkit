@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 ODOO_INSTANCE_OVERRIDES_PAYLOAD_ENV_KEY = "ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64"
 
@@ -148,7 +149,7 @@ def apply_website_bootstrap(env: Any, parsed_payload: dict[str, object] | None) 
     if canonical_url:
         env["ir.config_parameter"].sudo().set_param("web.base.url", canonical_url)
         env["ir.config_parameter"].sudo().set_param("web.base.url.freeze", "True")
-        website_values["domain"] = canonical_url
+        website_values["domain"] = urlparse(canonical_url).netloc or canonical_url
     default_lang = str(website_payload.get("default_lang") or "").strip()
     if default_lang and "default_lang_id" in website._fields:
         lang = env["res.lang"].sudo().search([("code", "=", default_lang)], limit=1)
