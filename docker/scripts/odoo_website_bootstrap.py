@@ -29,6 +29,51 @@ def payload_has_launchplane_settings(parsed_payload: dict[str, object] | None) -
     return bool(parsed_payload.get("config_parameters") or parsed_payload.get("addon_settings"))
 
 
+def _normalize_scalar_override_value(raw_value: object) -> str:
+    if isinstance(raw_value, bool):
+        return "True" if raw_value else "False"
+    return str(raw_value).strip()
+
+
+def _payload_web_base_url(parsed_payload: dict[str, object] | None) -> str:
+    if not parsed_payload:
+        return ""
+    raw_parameters = parsed_payload.get("config_parameters")
+    if raw_parameters is None:
+        return ""
+    if not isinstance(raw_parameters, list):
+        raise RuntimeError("Odoo instance override payload field 'config_parameters' must be a list.")
+    for raw_parameter in raw_parameters:
+        if not isinstance(raw_parameter, dict):
+            raise RuntimeError("Odoo config parameter override payload entries must be objects.")
+        key = str(raw_parameter.get("key") or "").strip().lower()
+        if not key:
+            raise RuntimeError("Odoo config parameter override payload entries require key.")
+        if key != "web.base.url":
+            continue
+        raw_value_payload = raw_parameter.get("value")
+        if not isinstance(raw_value_payload, dict):
+            raise RuntimeError(f"Odoo config parameter override '{key}' has an invalid value payload.")
+        source = str(raw_value_payload.get("source") or "").strip()
+        if source == "literal":
+            if "value" not in raw_value_payload:
+                raise RuntimeError(f"Odoo config parameter override '{key}' is missing a literal value.")
+            return _normalize_scalar_override_value(raw_value_payload.get("value"))
+        if source == "secret_binding":
+            environment_variable = str(raw_value_payload.get("environment_variable") or "").strip()
+            if not environment_variable:
+                raise RuntimeError(
+                    f"Secret-backed Odoo config parameter override '{key}' is missing its runtime environment variable."
+                )
+            if environment_variable not in os.environ:
+                raise RuntimeError(
+                    f"Secret-backed Odoo config parameter override '{key}' is missing environment variable {environment_variable}."
+                )
+            return os.environ.get(environment_variable, "")
+        raise RuntimeError(f"Odoo config parameter override '{key}' has unsupported source '{source}'.")
+    return ""
+
+
 def _field_values(record: Any, values: dict[str, object]) -> dict[str, object]:
     return {key: value for key, value in values.items() if key in record._fields}
 
@@ -37,6 +82,58 @@ def _write_existing_fields(record: Any, values: dict[str, object]) -> None:
     filtered_values = _field_values(record, values)
     if filtered_values:
         record.sudo().write(filtered_values)
+
+
+def _require_existing_fields(record: Any, field_names: tuple[str, ...], *, label: str) -> None:
+    missing_fields = [field_name for field_name in field_names if field_name not in record._fields]
+    if missing_fields:
+        formatted_fields = ", ".join(sorted(missing_fields))
+        raise RuntimeError(f"Website bootstrap cannot apply {label}; missing fields: {formatted_fields}.")
+
+
+def _field_value(record: Any, field_name: str) -> object:
+    return getattr(record, field_name, None)
+
+
+def _assert_field_value(record: Any, field_name: str, expected_value: object, *, label: str) -> None:
+    if field_name not in record._fields:
+        raise RuntimeError(f"Website bootstrap cannot verify {label}; missing field: {field_name}.")
+    actual_value = _field_value(record, field_name)
+    if actual_value != expected_value:
+        raise RuntimeError(f"Website bootstrap failed to persist {label}: expected {expected_value!r}, got {actual_value!r}.")
+
+
+def _config_parameter_value(env: Any, key: str) -> str:
+    parameter_model = env["ir.config_parameter"].sudo()
+    get_param = getattr(parameter_model, "get_param", None)
+    if not callable(get_param):
+        raise RuntimeError(f"Website bootstrap cannot verify config parameter {key!r}; get_param is unavailable.")
+    value = get_param(key)
+    return "" if value is None else str(value)
+
+
+def _set_config_parameter(env: Any, key: str, value: str) -> None:
+    env["ir.config_parameter"].sudo().set_param(key, value)
+    actual_value = _config_parameter_value(env, key)
+    if actual_value != value:
+        raise RuntimeError(
+            f"Website bootstrap failed to persist config parameter {key!r}: expected {value!r}, got {actual_value!r}."
+        )
+
+
+def _canonical_host(canonical_url: str) -> str:
+    if not canonical_url:
+        return ""
+    return urlparse(canonical_url).netloc or canonical_url
+
+
+def _select_website(website_model: Any, *, canonical_url: str) -> Any:
+    canonical_host = _canonical_host(canonical_url)
+    if canonical_host and "domain" in website_model._fields:
+        website = website_model.search([("domain", "in", (canonical_host, canonical_url))], order="id", limit=1)
+        if website:
+            return website
+    return website_model.search([], order="id", limit=1)
 
 
 def _homepage_values(website: Any, *, homepage_url: str, homepage_page: Any | None) -> dict[str, object]:
@@ -134,8 +231,10 @@ def apply_website_bootstrap(env: Any, parsed_payload: dict[str, object] | None) 
     if "website" not in env.registry:
         raise RuntimeError("Website bootstrap supplied, but the website module is not installed.")
 
+    canonical_url = str(website_payload.get("canonical_url") or _payload_web_base_url(parsed_payload) or "").strip()
+
     website_model = env["website"].sudo()
-    website = website_model.search([], order="id", limit=1)
+    website = _select_website(website_model, canonical_url=canonical_url)
     if not website:
         default_name = str(website_payload.get("name") or "Website").strip() or "Website"
         create_values = _field_values(website_model, {"name": default_name})
@@ -144,21 +243,27 @@ def apply_website_bootstrap(env: Any, parsed_payload: dict[str, object] | None) 
     website_values: dict[str, object] = {}
     website_name = str(website_payload.get("name") or "").strip()
     if website_name:
+        _require_existing_fields(website, ("name",), label="website name")
         website_values["name"] = website_name
-    canonical_url = str(website_payload.get("canonical_url") or "").strip()
     if canonical_url:
-        env["ir.config_parameter"].sudo().set_param("web.base.url", canonical_url)
-        env["ir.config_parameter"].sudo().set_param("web.base.url.freeze", "True")
-        website_values["domain"] = urlparse(canonical_url).netloc or canonical_url
+        _require_existing_fields(website, ("domain",), label="canonical domain")
+        _set_config_parameter(env, "web.base.url", canonical_url)
+        _set_config_parameter(env, "web.base.url.freeze", "True")
+        website_values["domain"] = _canonical_host(canonical_url)
     default_lang = str(website_payload.get("default_lang") or "").strip()
     if default_lang and "default_lang_id" in website._fields:
         lang = env["res.lang"].sudo().search([("code", "=", default_lang)], limit=1)
         if lang:
             website_values["default_lang_id"] = lang.id
     logo_path = _resolve_bootstrap_logo_path(website_payload.get("logo_path"))
-    if logo_path is not None and "logo" in website._fields:
+    if logo_path is not None:
+        _require_existing_fields(website, ("logo",), label="website logo")
         website_values["logo"] = base64.b64encode(logo_path.read_bytes()).decode("ascii")
     _write_existing_fields(website, website_values)
+    if website_name:
+        _assert_field_value(website, "name", website_name, label="website name")
+    if canonical_url:
+        _assert_field_value(website, "domain", _canonical_host(canonical_url), label="canonical domain")
 
     homepage_url = str(website_payload.get("homepage_url") or "").strip()
     primary_page_xmlid = str(website_payload.get("primary_page_xmlid") or "").strip()
