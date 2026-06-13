@@ -95,12 +95,42 @@ def _field_value(record: Any, field_name: str) -> object:
     return getattr(record, field_name, None)
 
 
+def _record_id(record: Any) -> object:
+    return getattr(record, "id", record) if record else None
+
+
+def _binary_field_value(record: Any, field_name: str) -> str:
+    value = _field_value(record, field_name)
+    if isinstance(value, bytes):
+        return value.decode("ascii")
+    return "" if value is None else str(value)
+
+
 def _assert_field_value(record: Any, field_name: str, expected_value: object, *, label: str) -> None:
     if field_name not in record._fields:
         raise RuntimeError(f"Website bootstrap cannot verify {label}; missing field: {field_name}.")
     actual_value = _field_value(record, field_name)
     if actual_value != expected_value:
         raise RuntimeError(f"Website bootstrap failed to persist {label}: expected {expected_value!r}, got {actual_value!r}.")
+
+
+def _assert_binary_field_value(record: Any, field_name: str, expected_value: str, *, label: str) -> None:
+    if field_name not in record._fields:
+        raise RuntimeError(f"Website bootstrap cannot verify {label}; missing field: {field_name}.")
+    actual_value = _binary_field_value(record, field_name)
+    if actual_value != expected_value:
+        raise RuntimeError(
+            f"Website bootstrap failed to persist {label}: expected {len(expected_value)} encoded bytes, got {len(actual_value)}."
+        )
+
+
+def _assert_field_record_id(record: Any, field_name: str, expected_record: Any, *, label: str) -> None:
+    if field_name not in record._fields:
+        raise RuntimeError(f"Website bootstrap cannot verify {label}; missing field: {field_name}.")
+    expected_id = _record_id(expected_record)
+    actual_id = _record_id(_field_value(record, field_name))
+    if actual_id != expected_id:
+        raise RuntimeError(f"Website bootstrap failed to persist {label}: expected record {expected_id!r}, got {actual_id!r}.")
 
 
 def _config_parameter_value(env: Any, key: str) -> str:
@@ -125,6 +155,41 @@ def _canonical_host(canonical_url: str) -> str:
     if not canonical_url:
         return ""
     return urlparse(canonical_url).netloc or canonical_url
+
+
+def _marker_bool(value: bool) -> str:
+    return "true" if value else "false"
+
+
+def _print_bootstrap_readback(
+    *,
+    website: Any,
+    canonical_url: str,
+    homepage_url: str,
+    homepage_page: Any | None,
+    primary_page_xmlid: str,
+    primary_page_xmlid_found: bool,
+    logo_expected: bool,
+) -> None:
+    canonical_host = _canonical_host(canonical_url)
+    website_domain = str(_field_value(website, "domain") or "") if "domain" in website._fields else ""
+    actual_homepage_url = str(_field_value(website, "homepage_url") or "") if "homepage_url" in website._fields else ""
+    actual_homepage = _field_value(website, "homepage_id") if "homepage_id" in website._fields else None
+    actual_homepage_id = _record_id(actual_homepage)
+    homepage_page_id = _record_id(homepage_page)
+    logo_present = bool(_field_value(website, "logo")) if "logo" in website._fields else False
+
+    print(f"website_bootstrap_website_id={getattr(website, 'id', '')}")
+    print(f"website_bootstrap_domain_set={_marker_bool(bool(website_domain))}")
+    print(f"website_bootstrap_domain_matches_canonical={_marker_bool(bool(canonical_host) and website_domain == canonical_host)}")
+    print(f"website_bootstrap_homepage_url_set={_marker_bool(bool(actual_homepage_url))}")
+    print(f"website_bootstrap_homepage_url_matches={_marker_bool(bool(homepage_url) and actual_homepage_url == homepage_url)}")
+    print(f"website_bootstrap_homepage_page_found={_marker_bool(bool(homepage_page_id))}")
+    print(f"website_bootstrap_primary_page_xmlid_found={_marker_bool(bool(primary_page_xmlid) and primary_page_xmlid_found)}")
+    print(
+        f"website_bootstrap_homepage_matches_page={_marker_bool(bool(homepage_page_id) and actual_homepage_id == homepage_page_id)}"
+    )
+    print(f"website_bootstrap_logo_present={_marker_bool(not logo_expected or logo_present)}")
 
 
 def _select_website(website_model: Any, *, canonical_url: str) -> Any:
@@ -180,14 +245,15 @@ def _resolve_bootstrap_logo_path(raw_logo_path: object) -> Path | None:
     raise RuntimeError(f"Website bootstrap logo file not found: {formatted_candidates}")
 
 
-def _find_website_page(env: Any, website: Any, *, xmlid: str, url: str) -> Any | None:
-    page = None
+def _find_website_page_by_xmlid(env: Any, *, xmlid: str) -> Any | None:
     if xmlid:
         candidate = env.ref(xmlid, raise_if_not_found=False)
         if candidate and candidate._name == "website.page":
-            page = candidate.sudo()
-    if page:
-        return page
+            return candidate.sudo()
+    return None
+
+
+def _find_website_page_by_url(env: Any, website: Any, *, url: str) -> Any | None:
     if not url:
         return None
     page_domain: list[Any] = [("url", "=", url)]
@@ -196,12 +262,21 @@ def _find_website_page(env: Any, website: Any, *, xmlid: str, url: str) -> Any |
     return env["website.page"].sudo().search(page_domain, order="website_id desc,id", limit=1)
 
 
+def _find_website_page(env: Any, website: Any, *, xmlid: str, url: str) -> tuple[Any | None, bool]:
+    page = _find_website_page_by_xmlid(env, xmlid=xmlid)
+    if page:
+        return page, True
+    if xmlid:
+        return None, False
+    return _find_website_page_by_url(env, website, url=url), False
+
+
 def _verify_route(env: Any, website: Any, route_payload: dict[str, object], *, fallback_module: str) -> Any | None:
     route_url = str(route_payload.get("url") or "").strip()
     if not route_url:
         return None
     module_name = str(route_payload.get("module") or fallback_module or "").strip()
-    page = _find_website_page(env, website, xmlid="", url=route_url)
+    page = _find_website_page_by_url(env, website, url=route_url)
     if page:
         if bool(route_payload.get("published", True)):
             _write_existing_fields(page, {"is_published": True, "website_published": True})
@@ -218,8 +293,7 @@ def _verify_route(env: Any, website: Any, route_payload: dict[str, object], *, f
             return None
         except Exception as error:
             raise RuntimeError(f"Website bootstrap route {route_url!r} is not routable.") from error
-    print(f"Website bootstrap route verification skipped for {route_url}: ir.http._match unavailable.")
-    return None
+    raise RuntimeError(f"Website bootstrap route {route_url!r} is not verifiable; ir.http._match is unavailable.")
 
 
 def apply_website_bootstrap(env: Any, parsed_payload: dict[str, object] | None) -> None:
@@ -256,18 +330,23 @@ def apply_website_bootstrap(env: Any, parsed_payload: dict[str, object] | None) 
         if lang:
             website_values["default_lang_id"] = lang.id
     logo_path = _resolve_bootstrap_logo_path(website_payload.get("logo_path"))
+    logo_expected = logo_path is not None
+    logo_value = ""
     if logo_path is not None:
         _require_existing_fields(website, ("logo",), label="website logo")
-        website_values["logo"] = base64.b64encode(logo_path.read_bytes()).decode("ascii")
+        logo_value = base64.b64encode(logo_path.read_bytes()).decode("ascii")
+        website_values["logo"] = logo_value
     _write_existing_fields(website, website_values)
     if website_name:
         _assert_field_value(website, "name", website_name, label="website name")
     if canonical_url:
         _assert_field_value(website, "domain", _canonical_host(canonical_url), label="canonical domain")
+    if logo_expected:
+        _assert_binary_field_value(website, "logo", logo_value, label="website logo")
 
     homepage_url = str(website_payload.get("homepage_url") or "").strip()
     primary_page_xmlid = str(website_payload.get("primary_page_xmlid") or "").strip()
-    homepage_page = _find_website_page(env, website, xmlid=primary_page_xmlid, url=homepage_url)
+    homepage_page, primary_page_xmlid_found = _find_website_page(env, website, xmlid=primary_page_xmlid, url=homepage_url)
     if homepage_page:
         page_values: dict[str, object] = {"is_published": True, "website_published": True}
         if "website_id" in homepage_page._fields:
@@ -276,6 +355,8 @@ def apply_website_bootstrap(env: Any, parsed_payload: dict[str, object] | None) 
     elif primary_page_xmlid:
         raise RuntimeError(f"Website bootstrap primary page XML ID not found: {primary_page_xmlid}")
     _write_existing_fields(website, _homepage_values(website, homepage_url=homepage_url, homepage_page=homepage_page))
+    final_homepage_url = homepage_url
+    final_homepage_page = homepage_page
 
     raw_routes_source = website_payload.get("routes_source")
     routes_source = raw_routes_source if isinstance(raw_routes_source, dict) else {}
@@ -285,11 +366,28 @@ def apply_website_bootstrap(env: Any, parsed_payload: dict[str, object] | None) 
             env, website, {"url": homepage_url, "module": fallback_module, "published": True}, fallback_module=fallback_module
         )
         _write_existing_fields(website, _homepage_values(website, homepage_url=homepage_url, homepage_page=route_page))
+        final_homepage_page = route_page
     for route_payload in website_payload.get("routes") or []:
         if isinstance(route_payload, dict):
             route_page = _verify_route(env, website, route_payload, fallback_module=fallback_module)
             if bool(route_payload.get("homepage")):
                 route_url = str(route_payload.get("url") or "").strip()
                 _write_existing_fields(website, _homepage_values(website, homepage_url=route_url, homepage_page=route_page))
+                final_homepage_url = route_url
+                final_homepage_page = route_page
 
+    if final_homepage_url and "homepage_url" in website._fields:
+        _assert_field_value(website, "homepage_url", final_homepage_url, label="homepage URL")
+    if final_homepage_page and "homepage_id" in website._fields:
+        _assert_field_record_id(website, "homepage_id", final_homepage_page, label="homepage page")
+
+    _print_bootstrap_readback(
+        website=website,
+        canonical_url=canonical_url,
+        homepage_url=final_homepage_url,
+        homepage_page=final_homepage_page,
+        primary_page_xmlid=primary_page_xmlid,
+        primary_page_xmlid_found=primary_page_xmlid_found,
+        logo_expected=logo_expected,
+    )
     print("website_bootstrap_applied=true")
