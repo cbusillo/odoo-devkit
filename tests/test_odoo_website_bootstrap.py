@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import sys
 import types
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +38,7 @@ class FakeRecord:
         self.writes: list[dict[str, object]] = []
         self.truthy = truthy
         self.persist_writes = True
+        self.ignored_write_fields: set[str] = set()
         for field_name in self._fields:
             setattr(self, field_name, None)
         for field_name, value in (values or {}).items():
@@ -47,23 +50,34 @@ class FakeRecord:
     def sudo(self) -> FakeRecord:
         return self
 
+    @property
+    def _name(self) -> str:
+        return str(getattr(self, "model_name", ""))
+
     def write(self, values: dict[str, object]) -> None:
         self.writes.append(values)
         if not self.persist_writes:
             return
         for field_name, value in values.items():
+            if field_name in self.ignored_write_fields:
+                continue
             setattr(self, field_name, value)
 
 
 class FakeModel:
-    def __init__(self, *, record: FakeRecord | None = None, fields: tuple[str, ...] = ()) -> None:
+    def __init__(
+        self, *, record: FakeRecord | None = None, fields: tuple[str, ...] = (), records: list[FakeRecord] | None = None
+    ) -> None:
         self.record = record if record is not None else FakeRecord(truthy=False)
         self._fields = set(fields)
+        self.records = records
 
     def sudo(self) -> FakeModel:
         return self
 
     def search(self, *unused_args: object, **unused_kwargs: object) -> FakeRecord:
+        if self.records is not None:
+            return self.records[0] if self.records else FakeRecord(truthy=False)
         return self.record
 
     def create(self, values: dict[str, object]) -> FakeRecord:
@@ -96,6 +110,7 @@ class FakeEnv:
         self.modules = FakeModel(record=FakeRecord(fields=(), truthy=True))
         self.pages = FakeModel(record=FakeRecord(fields=(), truthy=False))
         self.langs = FakeModel(record=FakeRecord(fields=(), truthy=False))
+        self.refs: dict[str, FakeRecord] = {}
         self.registry = {"website": object()}
 
     def __getitem__(self, model_name: str) -> Any:
@@ -108,9 +123,8 @@ class FakeEnv:
             "ir.http": FakeModel(record=FakeRecord()),
         }[model_name]
 
-    @staticmethod
-    def ref(*unused_args: object, **unused_kwargs: object) -> None:
-        return None
+    def ref(self, xmlid: str, *unused_args: object, **unused_kwargs: object) -> FakeRecord | None:
+        return self.refs.get(xmlid)
 
 
 class WebsiteBootstrapHelperTests(unittest.TestCase):
@@ -162,6 +176,138 @@ class WebsiteBootstrapHelperTests(unittest.TestCase):
         self.assertEqual(env.config_parameter.values["web.base.url"], "https://cm-website-testing.example.com")
         self.assertEqual(env.website.domain, "cm-website-testing.example.com")
         self.assertEqual(env.website.name, "Cell Mechanic")
+
+    def test_page_backed_homepage_requires_primary_page_and_persists_it(self) -> None:
+        env = FakeEnv()
+        page = FakeRecord(
+            record_id=42,
+            fields=("is_published", "website_published", "website_id"),
+            values={"model_name": "website.page"},
+        )
+        env.refs["cm_website.website_page_cell_mechanic"] = page
+        payload = {
+            "config_parameters": [
+                {
+                    "key": "web.base.url",
+                    "value": {"source": "literal", "value": "https://cm-website-testing.example.com"},
+                }
+            ],
+            "website_bootstrap": {
+                "name": "Cell Mechanic",
+                "homepage_url": "/cell-mechanic",
+                "primary_page_xmlid": "cm_website.website_page_cell_mechanic",
+                "routes_source": {"module": "cm_website"},
+            },
+        }
+
+        website_bootstrap.apply_website_bootstrap(env, payload)
+
+        self.assertEqual(env.website.homepage_id, page.id)
+        self.assertEqual(env.website.homepage_url, "/cell-mechanic")
+        self.assertIn({"is_published": True, "website_published": True, "website_id": 1}, page.writes)
+
+    def test_missing_primary_page_fails_before_delegating_to_installed_module(self) -> None:
+        env = FakeEnv()
+        payload = {
+            "config_parameters": [
+                {
+                    "key": "web.base.url",
+                    "value": {"source": "literal", "value": "https://cm-website-testing.example.com"},
+                }
+            ],
+            "website_bootstrap": {
+                "name": "Cell Mechanic",
+                "homepage_url": "/cell-mechanic",
+                "primary_page_xmlid": "cm_website.website_page_cell_mechanic",
+                "routes_source": {"module": "cm_website"},
+            },
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "primary page XML ID not found"):
+            website_bootstrap.apply_website_bootstrap(env, payload)
+
+    def test_bad_primary_page_xmlid_fails_even_when_url_fallback_page_exists(self) -> None:
+        env = FakeEnv()
+        env.pages = FakeModel(
+            record=FakeRecord(
+                record_id=43,
+                fields=("is_published", "website_published", "website_id"),
+                values={"model_name": "website.page"},
+            ),
+            fields=("website_id",),
+        )
+        payload = {
+            "website_bootstrap": {
+                "name": "Cell Mechanic",
+                "canonical_url": "https://cm-website-testing.example.com",
+                "homepage_url": "/cell-mechanic",
+                "primary_page_xmlid": "cm_website.bad_page_xmlid",
+            },
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "primary page XML ID not found"):
+            website_bootstrap.apply_website_bootstrap(env, payload)
+
+    def test_route_homepage_readback_reports_final_route_homepage(self) -> None:
+        env = FakeEnv()
+        route_page = FakeRecord(
+            record_id=44,
+            fields=("is_published", "website_published", "website_id"),
+            values={"model_name": "website.page"},
+        )
+        env.pages = FakeModel(record=route_page, fields=("website_id",))
+        payload = {
+            "website_bootstrap": {
+                "name": "OPW",
+                "canonical_url": "https://opw-testing.example.com",
+                "routes": [
+                    {
+                        "name": "Shop",
+                        "url": "/shop",
+                        "published": True,
+                        "homepage": True,
+                    }
+                ],
+            }
+        }
+
+        output = io.StringIO()
+        with redirect_stdout(output):
+            website_bootstrap.apply_website_bootstrap(env, payload)
+
+        self.assertEqual(env.website.homepage_id, route_page.id)
+        self.assertEqual(env.website.homepage_url, "/shop")
+        self.assertIn("website_bootstrap_homepage_url_matches=true", output.getvalue())
+        self.assertIn("website_bootstrap_homepage_matches_page=true", output.getvalue())
+
+    def test_logo_readback_mismatch_fails_before_success_marker(self) -> None:
+        env = FakeEnv()
+        env.website.logo = "existing-logo"
+        env.website.ignored_write_fields.add("logo")
+        logo_path = Path(__file__)
+        payload = {
+            "website_bootstrap": {
+                "name": "Cell Mechanic",
+                "canonical_url": "https://cm-website-testing.example.com",
+                "logo_path": str(logo_path),
+            }
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "failed to persist website logo"):
+            website_bootstrap.apply_website_bootstrap(env, payload)
+
+    def test_homepage_url_without_page_or_module_fails_when_route_is_not_verifiable(self) -> None:
+        env = FakeEnv()
+        payload = {
+            "website_bootstrap": {
+                "name": "Cell Mechanic",
+                "canonical_url": "https://cm-website-testing.example.com",
+                "homepage_url": "/cell-mechanic",
+            }
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "route '/cell-mechanic' is not verifiable"):
+            website_bootstrap.apply_website_bootstrap(env, payload)
 
     def test_missing_visible_website_fields_fail_before_success_marker(self) -> None:
         env = FakeEnv()
