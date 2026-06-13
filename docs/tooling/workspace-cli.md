@@ -186,7 +186,8 @@ Notes
   local canonical URL, identify a homepage page or controller route, and point
   at a repo-local logo asset. Shared/testing/prod canonical URLs are
   Launchplane-owned runtime records. Data workflows and startup apply bootstrap
-  state idempotently after modules are installed, without hard-coded tenant
+  state idempotently after modules are installed, verify required public website
+  identity fields before reporting success, and avoid hard-coded tenant
   defaults.
 - Legacy setting-shaped inputs such as `ENV_OVERRIDE_CONFIG_PARAM__*`,
   `ENV_OVERRIDE_AUTHENTIK__*`, and `ENV_OVERRIDE_SHOPIFY__*` are still accepted
