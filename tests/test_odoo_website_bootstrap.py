@@ -71,11 +71,13 @@ class FakeModel:
         self.record = record if record is not None else FakeRecord(truthy=False)
         self._fields = set(fields)
         self.records = records
+        self.searches: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
     def sudo(self) -> FakeModel:
         return self
 
     def search(self, *unused_args: object, **unused_kwargs: object) -> FakeRecord:
+        self.searches.append((unused_args, unused_kwargs))
         if self.records is not None:
             return self.records[0] if self.records else FakeRecord(truthy=False)
         return self.record
@@ -106,16 +108,19 @@ class FakeConfigParameter:
 class FakeEnv:
     def __init__(self) -> None:
         self.website = FakeRecord(fields=("name", "domain", "homepage_id", "homepage_url", "logo"))
+        self.default_website = self.website
         self.config_parameter = FakeConfigParameter()
         self.modules = FakeModel(record=FakeRecord(fields=(), truthy=True))
         self.pages = FakeModel(record=FakeRecord(fields=(), truthy=False))
         self.langs = FakeModel(record=FakeRecord(fields=(), truthy=False))
         self.refs: dict[str, FakeRecord] = {}
         self.registry = {"website": object()}
+        self.website_model: FakeModel | None = None
 
     def __getitem__(self, model_name: str) -> Any:
         return {
-            "website": FakeModel(record=self.website, fields=("name", "domain", "homepage_id", "homepage_url", "logo")),
+            "website": self.website_model
+            or FakeModel(record=self.website, fields=("name", "domain", "homepage_id", "homepage_url", "logo")),
             "ir.config_parameter": self.config_parameter,
             "ir.module.module": self.modules,
             "website.page": self.pages,
@@ -124,6 +129,8 @@ class FakeEnv:
         }[model_name]
 
     def ref(self, xmlid: str, *unused_args: object, **unused_kwargs: object) -> FakeRecord | None:
+        if xmlid == "website.default_website":
+            return self.default_website
         return self.refs.get(xmlid)
 
 
@@ -206,6 +213,61 @@ class WebsiteBootstrapHelperTests(unittest.TestCase):
         self.assertEqual(env.website.homepage_url, "/cell-mechanic")
         self.assertIn({"is_published": True, "website_published": True, "website_id": 1}, page.writes)
 
+    def test_primary_page_website_wins_over_existing_canonical_domain_match(self) -> None:
+        env = FakeEnv()
+        page_bound_website = FakeRecord(
+            record_id=1,
+            fields=("name", "domain", "homepage_id", "homepage_url", "logo"),
+            values={"name": "My Website", "domain": ""},
+        )
+        canonical_website = FakeRecord(
+            record_id=2,
+            fields=("name", "domain", "homepage_id", "homepage_url", "logo"),
+            values={"name": "Old Target", "domain": "cm-website-testing.example.com"},
+        )
+        env.website = page_bound_website
+        env.default_website = page_bound_website
+        env.website_model = FakeModel(
+            record=page_bound_website,
+            fields=("name", "domain", "homepage_id", "homepage_url", "logo"),
+            records=[canonical_website],
+        )
+        page = FakeRecord(
+            record_id=42,
+            fields=("is_published", "website_published", "website_id"),
+            values={"model_name": "website.page", "website_id": page_bound_website},
+        )
+        env.refs["cm_website.website_page_cell_mechanic"] = page
+        payload = {
+            "website_bootstrap": {
+                "name": "Cell Mechanic",
+                "canonical_url": "https://cm-website-testing.example.com",
+                "homepage_url": "/cell-mechanic",
+                "primary_page_xmlid": "cm_website.website_page_cell_mechanic",
+            }
+        }
+
+        website_bootstrap.apply_website_bootstrap(env, payload)
+
+        self.assertEqual(page_bound_website.name, "Cell Mechanic")
+        self.assertEqual(page_bound_website.domain, "cm-website-testing.example.com")
+        self.assertEqual(page_bound_website.homepage_id, page.id)
+        self.assertEqual(canonical_website.name, "Old Target")
+        self.assertEqual(canonical_website.domain, "")
+        self.assertIn({"is_published": True, "website_published": True, "website_id": 1}, page.writes)
+        self.assertIn(
+            (
+                (
+                    [
+                        ("id", "!=", page_bound_website.id),
+                        ("domain", "in", ("cm-website-testing.example.com", "https://cm-website-testing.example.com")),
+                    ],
+                ),
+                {"order": "id"},
+            ),
+            env.website_model.searches,
+        )
+
     def test_missing_primary_page_fails_before_delegating_to_installed_module(self) -> None:
         env = FakeEnv()
         payload = {
@@ -225,6 +287,8 @@ class WebsiteBootstrapHelperTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "primary page XML ID not found"):
             website_bootstrap.apply_website_bootstrap(env, payload)
+        self.assertEqual(env.config_parameter.values, {})
+        self.assertEqual(env.website.writes, [])
 
     def test_bad_primary_page_xmlid_fails_even_when_url_fallback_page_exists(self) -> None:
         env = FakeEnv()
@@ -247,6 +311,8 @@ class WebsiteBootstrapHelperTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "primary page XML ID not found"):
             website_bootstrap.apply_website_bootstrap(env, payload)
+        self.assertEqual(env.config_parameter.values, {})
+        self.assertEqual(env.website.writes, [])
 
     def test_route_homepage_readback_reports_final_route_homepage(self) -> None:
         env = FakeEnv()
