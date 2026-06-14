@@ -255,7 +255,10 @@ Notes
 - When Launchplane supplies `ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON`, publish can
   synthesize the selected manifest context from that explicit payload instead of
   requiring every Launchplane-owned product context to be listed in the shared
-  devkit stack. Unknown contexts still fail closed without the explicit payload.
+  devkit stack. Synthesized contexts do not inherit stack-level install-module
+  lists; their artifact install intent comes from the managed-instance required
+  modules plus any repo-owned `website-bootstrap.toml` modules. Unknown contexts
+  still fail closed without the explicit payload.
 - Publish-time GHCR credentials can be split by purpose. Private base image
   reads prefer `GHCR_READ_TOKEN`, artifact image pushes prefer `GHCR_TOKEN`,
   and private source checkout secrets still belong in the transient runtime
@@ -274,7 +277,9 @@ Notes
   Repo-owned source selection belongs in the dedicated artifact-input manifest.
 - Artifact manifests preserve selector intent in `addon_selectors` while
   keeping `addon_sources` as the resolved exact-SHA runtime truth consumed by
-  control-plane release and deploy flows.
+  control-plane release and deploy flows. They also include the resolved
+  `odoo_install_modules` list so promotion/deploy orchestration can preserve
+  tenant module activation intent when it rewrites a live target environment.
 - `platform runtime odoo-shell` follows the same local-only rule. It can run
   interactively, consume a `--script` file, and optionally tee output into a
   `--log-file`, but it is still a manifest-backed local helper rather than a

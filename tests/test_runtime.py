@@ -1072,6 +1072,10 @@ homepage = true
             self.assertEqual(payload["enterprise_base_digest"], "sha256:" + "2" * 64)
             self.assertEqual(payload["build_flags"]["values"]["build_target"], "production")
             self.assertEqual(payload["image"]["tags"], ["opw-20260416-abcdef"])
+            self.assertEqual(
+                payload["odoo_install_modules"],
+                ["launchplane_settings", "disable_odoo_online", "opw_custom"],
+            )
             self.assertEqual(payload["output_file"], str(output_file.resolve()))
             written_payload = json.loads(output_file.read_text(encoding="utf-8"))
             self.assertEqual(written_payload["artifact_id"], payload["artifact_id"])
@@ -1183,6 +1187,10 @@ sources = [
                         "resolved_ref": resolved_ref,
                     }
                 ],
+            )
+            self.assertEqual(
+                payload["odoo_install_modules"],
+                ["launchplane_settings", "disable_odoo_online", "opw_custom"],
             )
             self.assertNotIn("odoo_addon_repository_selectors", payload["build_flags"]["values"])
 
@@ -1383,6 +1391,10 @@ sources = [
                         "resolved_ref": resolved_ref,
                     }
                 ],
+            )
+            self.assertEqual(
+                payload["odoo_install_modules"],
+                ["launchplane_settings", "disable_odoo_online", "opw_custom"],
             )
 
     def test_native_runtime_publish_rejects_invalid_artifact_inputs_manifest(self) -> None:
@@ -1685,6 +1697,10 @@ sources = [
                 {"repository": "cbusillo/disable_odoo_online", "ref": exact_ref.rsplit("@", 1)[1]},
                 payload["addon_sources"],
             )
+            self.assertEqual(
+                payload["odoo_install_modules"],
+                ["launchplane_settings", "disable_odoo_online", "opw_custom"],
+            )
 
     def test_native_runtime_publish_rejects_unknown_context_without_explicit_runtime_payload(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1836,6 +1852,10 @@ sources = [
             self.assertTrue(payload["artifact_id"].startswith("artifact-cm_website-"))
             self.assertEqual(payload["image"]["repository"], "ghcr.io/example/cm-website-runtime")
             self.assertEqual(payload["image"]["tags"], ["cm_website-20260606-abcdef"])
+            self.assertEqual(
+                payload["odoo_install_modules"],
+                ["launchplane_settings", "disable_odoo_online", "cm_website"],
+            )
             self.assertIn(
                 "ODOO_ADDON_REPOSITORIES=cbusillo/disable_odoo_online@411f6b8e85cac72dc7aa2e2dc5540001043c327d",
                 captured_build_args,

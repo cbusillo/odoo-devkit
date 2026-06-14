@@ -552,6 +552,7 @@ def publish_runtime_artifact(
         runtime_repo_commit=runtime_commit,
         artifact_source_entries=artifact_source_entries,
         source_selector_entries=artifact_source_selectors,
+        odoo_install_modules=runtime_context.selection.effective_install_modules,
         openupgrade_addon_repository=runtime_values.get("OPENUPGRADE_ADDON_REPOSITORY", ""),
         openupgradelib_install_spec=runtime_values.get("OPENUPGRADELIB_INSTALL_SPEC", ""),
         addon_skip_flags=parse_csv_values(runtime_values.get("ODOO_PYTHON_SYNC_SKIP_ADDONS", "")),
@@ -2378,6 +2379,7 @@ def build_runtime_artifact_manifest_payload(
     runtime_repo_commit: str,
     artifact_source_entries: tuple[dict[str, str], ...],
     source_selector_entries: tuple[dict[str, str], ...],
+    odoo_install_modules: tuple[str, ...],
     openupgrade_addon_repository: str,
     openupgradelib_install_spec: str,
     addon_skip_flags: tuple[str, ...],
@@ -2402,6 +2404,7 @@ def build_runtime_artifact_manifest_payload(
         "enterprise_base_digest": enterprise_base_digest,
         "addon_sources": list(artifact_source_entries),
         "addon_selectors": list(source_selector_entries),
+        "odoo_install_modules": list(odoo_install_modules),
         "openupgrade_inputs": {
             "addon_repository": openupgrade_addon_repository,
             "install_spec": openupgradelib_install_spec,
