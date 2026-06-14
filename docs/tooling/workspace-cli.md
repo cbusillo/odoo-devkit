@@ -180,6 +180,11 @@ Notes
   `launchplane_settings`. `config_parameters` tables write Odoo
   `ir.config_parameter` keys, while `addon_settings.<addon>` tables write
   supported addon settings such as `authentik_sso` values.
+- Non-local Launchplane-managed instances (`dev`, `testing`, and `prod`) always
+  prepend `launchplane_settings` and `disable_odoo_online` to the resolved Odoo
+  install module list. Artifact inputs or base images make addon files
+  available, but this install list is what activates those modules in each
+  database.
 - When a tenant repo contains `website-bootstrap.toml` beside `workspace.toml`,
   runtime selection also folds that non-secret website intent into the same
   typed payload. The bootstrap contract can add install modules, provide the
@@ -198,7 +203,7 @@ Notes
   continue. `LAUNCHPLANE_WEBSITE_BOOTSTRAP_REQUIRED=true` additionally requires
   a non-empty `website_bootstrap` object in that payload. These flags are
   runtime assertions supplied by Launchplane-managed records or operator input;
-  local/dev runtimes remain optional unless a caller explicitly sets them.
+  local runtimes remain optional unless a caller explicitly sets them.
 - Legacy setting-shaped inputs such as `ENV_OVERRIDE_CONFIG_PARAM__*`,
   `ENV_OVERRIDE_AUTHENTIK__*`, and `ENV_OVERRIDE_SHOPIFY__*` are still accepted
   as a compatibility input and converted into the same typed payload, but they

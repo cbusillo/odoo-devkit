@@ -1534,6 +1534,86 @@ sources = [
                     "example/testing_selector@release-19",
                 ),
             )
+            self.assertEqual(
+                selection.effective_install_modules,
+                ("launchplane_settings", "disable_odoo_online", "opw_custom"),
+            )
+
+    def test_resolve_runtime_selection_keeps_local_modules_explicit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            stack_definition = local_runtime.parse_stack_definition(
+                {
+                    "schema_version": 1,
+                    "odoo_version": "19.0",
+                    "addons_path": ["/odoo/addons", "/opt/project/addons"],
+                    "contexts": {
+                        "opw": {
+                            "database": "opw",
+                            "install_modules": ["opw_custom"],
+                            "instances": {
+                                "local": {},
+                            },
+                        }
+                    },
+                },
+                stack_file_path=temp_root / "platform" / "stack.toml",
+            )
+
+            selection = local_runtime.resolve_runtime_selection(
+                stack_definition=stack_definition,
+                artifact_inputs_definition=None,
+                context_name="opw",
+                instance_name="local",
+                repo_root=temp_root,
+            )
+
+            self.assertEqual(selection.effective_install_modules, ("opw_custom",))
+
+    def test_resolve_runtime_selection_orders_managed_and_bootstrap_modules(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            stack_definition = local_runtime.parse_stack_definition(
+                {
+                    "schema_version": 1,
+                    "odoo_version": "19.0",
+                    "addons_path": ["/odoo/addons", "/opt/project/addons"],
+                    "contexts": {
+                        "opw": {
+                            "database": "opw",
+                            "install_modules": ["opw_custom"],
+                            "instances": {
+                                "testing": {},
+                            },
+                        }
+                    },
+                },
+                stack_file_path=temp_root / "platform" / "stack.toml",
+            )
+            website_bootstrap = local_runtime.parse_website_bootstrap_definition(
+                {
+                    "schema_version": 1,
+                    "tenant": "opw",
+                    "odoo": {"install_modules": ["opw_custom", "website_sale"]},
+                    "website": {"name": "OPW"},
+                },
+                bootstrap_path=temp_root / "website-bootstrap.toml",
+                context_name="opw",
+            )
+
+            selection = local_runtime.resolve_runtime_selection(
+                stack_definition=stack_definition,
+                artifact_inputs_definition=None,
+                context_name="opw",
+                instance_name="testing",
+                repo_root=temp_root,
+                website_bootstrap=website_bootstrap,
+            )
+
+            self.assertEqual(
+                selection.effective_install_modules,
+                ("launchplane_settings", "disable_odoo_online", "opw_custom", "website_sale"),
+            )
 
     def test_native_runtime_publish_prefers_exact_control_plane_refs_over_stack_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
