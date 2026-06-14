@@ -41,6 +41,7 @@ class FakeRecord:
         self.truthy = truthy
         self.persist_writes = True
         self.ignored_write_fields: set[str] = set()
+        self.normalized_write_values: dict[str, object] = {}
         for field_name in self._fields:
             setattr(self, field_name, None)
         for field_name, value in (values or {}).items():
@@ -63,6 +64,7 @@ class FakeRecord:
         for field_name, value in values.items():
             if field_name in self.ignored_write_fields:
                 continue
+            value = self.normalized_write_values.get(field_name, value)
             setattr(self, field_name, value)
 
 
@@ -240,6 +242,62 @@ class WebsiteBootstrapHelperTests(unittest.TestCase):
         self.assertEqual(env.config_parameter.values["web.base.url"], "https://opw-testing.example.com")
         self.assertEqual(env.config_parameter.values["web.base.url.freeze"], "True")
         self.assertIn({"name": "OPW", "domain": "opw-testing.example.com"}, env.website.writes)
+
+    def test_accepts_odoo_normalized_full_url_canonical_domain(self) -> None:
+        env = FakeEnv()
+        env.website.normalized_write_values["domain"] = "https://opw-testing.example.com"
+        payload = {
+            "website_bootstrap": {
+                "name": "OPW",
+                "canonical_url": "https://opw-testing.example.com",
+            }
+        }
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            website_bootstrap.apply_website_bootstrap(env, payload)
+
+        self.assertIn({"name": "OPW", "domain": "opw-testing.example.com"}, env.website.writes)
+        self.assertEqual(env.website.domain, "https://opw-testing.example.com")
+        self.assertIn("website_bootstrap_domain_matches_canonical=true", output.getvalue())
+        self.assertIn("website_bootstrap_applied=true", output.getvalue())
+
+    def test_selects_odoo_normalized_full_url_domain_when_canonical_has_trailing_slash(self) -> None:
+        env = FakeEnv()
+        existing_website = FakeRecord(
+            record_id=2,
+            fields=("name", "domain", "homepage_id", "homepage_url", "logo"),
+            values={"domain": "https://opw-testing.example.com/"},
+        )
+        env.website_model = FakeModel(record=existing_website, fields=("name", "domain", "homepage_id", "homepage_url", "logo"))
+        payload = {
+            "website_bootstrap": {
+                "name": "OPW",
+                "canonical_url": "https://opw-testing.example.com/",
+            }
+        }
+
+        website_bootstrap.apply_website_bootstrap(env, payload)
+
+        self.assertEqual(existing_website.name, "OPW")
+        self.assertIn({"name": "OPW", "domain": "opw-testing.example.com"}, existing_website.writes)
+        self.assertEqual(
+            env.website_model.searches[0][0],
+            (
+                [
+                    (
+                        "domain",
+                        "in",
+                        (
+                            "opw-testing.example.com",
+                            "https://opw-testing.example.com",
+                            "https://opw-testing.example.com/",
+                        ),
+                    )
+                ],
+            ),
+        )
+        self.assertEqual(env.website_model.searches[0][1], {"order": "id", "limit": 1})
 
     def test_config_parameter_web_base_url_supplies_canonical_when_bootstrap_payload_omits_it(self) -> None:
         env = FakeEnv()

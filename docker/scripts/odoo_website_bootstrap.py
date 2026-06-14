@@ -196,6 +196,29 @@ def _canonical_host(canonical_url: str) -> str:
     return urlparse(canonical_url).netloc or canonical_url
 
 
+def _canonical_domain_matches(actual_value: object, canonical_url: str) -> bool:
+    actual_domain = str(actual_value or "").strip().rstrip("/")
+    return bool(actual_domain) and actual_domain in _canonical_domain_candidates(canonical_url)
+
+
+def _canonical_domain_candidates(canonical_url: str) -> tuple[str, ...]:
+    canonical_domain = _canonical_host(canonical_url).strip().rstrip("/")
+    canonical_value = canonical_url.strip()
+    canonical_value_without_slash = canonical_value.rstrip("/")
+    return tuple(value for value in dict.fromkeys((canonical_domain, canonical_value_without_slash, canonical_value)) if value)
+
+
+def _assert_canonical_domain(record: Any, field_name: str, canonical_url: str) -> None:
+    if field_name not in record._fields:
+        raise RuntimeError(f"Website bootstrap cannot verify canonical domain; missing field: {field_name}.")
+    actual_value = _field_value(record, field_name)
+    if not _canonical_domain_matches(actual_value, canonical_url):
+        raise RuntimeError(
+            "Website bootstrap failed to persist canonical domain: "
+            f"expected {_canonical_host(canonical_url)!r} or {canonical_url!r}, got {actual_value!r}."
+        )
+
+
 def _marker_bool(value: bool) -> str:
     return "true" if value else "false"
 
@@ -227,7 +250,7 @@ def _print_bootstrap_readback(
 
     print(f"website_bootstrap_website_id={getattr(website, 'id', '')}")
     print(f"website_bootstrap_domain_set={_marker_bool(bool(website_domain))}")
-    print(f"website_bootstrap_domain_matches_canonical={_marker_bool(bool(canonical_host) and website_domain == canonical_host)}")
+    print(f"website_bootstrap_domain_matches_canonical={_marker_bool(_canonical_domain_matches(website_domain, canonical_url))}")
     print(f"website_bootstrap_web_base_url_matches={_marker_bool(not canonical_url or web_base_url_matches)}")
     print(f"website_bootstrap_homepage_url_set={_marker_bool(bool(actual_homepage_url))}")
     print(f"website_bootstrap_homepage_url_matches={_marker_bool(bool(homepage_url) and actual_homepage_url == homepage_url)}")
@@ -260,7 +283,7 @@ def _select_website(
             return page_website.sudo()
     canonical_host = _canonical_host(canonical_url)
     if canonical_host and "domain" in website_model._fields:
-        website = website_model.search([("domain", "in", (canonical_host, canonical_url))], order="id", limit=1)
+        website = website_model.search([("domain", "in", _canonical_domain_candidates(canonical_url))], order="id", limit=1)
         if website:
             return website
     if default_website:
@@ -275,7 +298,7 @@ def _clear_duplicate_canonical_domains(website_model: Any, *, website: Any, cano
     duplicates = website_model.search(
         [
             ("id", "!=", website.id),
-            ("domain", "in", (canonical_host, canonical_url)),
+            ("domain", "in", _canonical_domain_candidates(canonical_url)),
         ],
         order="id",
     )
@@ -471,7 +494,7 @@ def apply_website_bootstrap(env: Any, parsed_payload: dict[str, object] | None) 
     if website_name:
         _assert_field_value(website, "name", website_name, label="website name")
     if canonical_url:
-        _assert_field_value(website, "domain", _canonical_host(canonical_url), label="canonical domain")
+        _assert_canonical_domain(website, "domain", canonical_url)
     if logo_expected:
         _assert_binary_field_value(website, "logo", logo_value, label="website logo")
 
