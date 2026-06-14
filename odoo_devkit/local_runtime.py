@@ -191,6 +191,8 @@ PLACEHOLDER_REGISTRY_HOST = "registry.invalid"
 DEFAULT_ODOO_BASE_RUNTIME_IMAGE = "registry.invalid/private-enterprise-runtime:19.0-runtime"
 DEFAULT_ODOO_BASE_DEVTOOLS_IMAGE = "registry.invalid/private-enterprise-devtools:19.0-devtools"
 CONTROL_PLANE_ROOT_ENV_VAR = "ODOO_CONTROL_PLANE_ROOT"
+LAUNCHPLANE_MANAGED_INSTANCE_NAMES = {"dev", "testing", "prod"}
+LAUNCHPLANE_REQUIRED_ODOO_MODULES = ("launchplane_settings", "disable_odoo_online")
 
 _REGISTRY_LOGINS_DONE: set[tuple[str, str, str]] = set()
 _VERIFIED_IMAGE_ACCESS: set[str] = set()
@@ -1530,6 +1532,8 @@ def resolve_runtime_selection(
     effective_install_modules = merge_effective_modules(
         context_definition=context_definition, instance_definition=instance_definition
     )
+    if launchplane_managed_instance(instance_name):
+        effective_install_modules = dedupe_module_names((*LAUNCHPLANE_REQUIRED_ODOO_MODULES, *effective_install_modules))
     if website_bootstrap is not None:
         effective_install_modules = dedupe_module_names((*effective_install_modules, *website_bootstrap.install_modules))
     effective_source_repositories = resolve_runtime_source_repositories(
@@ -1586,6 +1590,10 @@ def merge_effective_modules(*, context_definition: ContextDefinition, instance_d
         if module_name not in effective_install_modules:
             effective_install_modules.append(module_name)
     return tuple(effective_install_modules)
+
+
+def launchplane_managed_instance(instance_name: str) -> bool:
+    return instance_name.strip().lower() in LAUNCHPLANE_MANAGED_INSTANCE_NAMES
 
 
 def dedupe_module_names(module_names: Iterable[str]) -> tuple[str, ...]:
