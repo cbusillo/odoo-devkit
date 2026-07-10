@@ -35,11 +35,6 @@ uv run platform workspace clean --manifest /path/to/workspace.toml
 uv run platform workspace run --manifest /path/to/workspace.toml -- pwd
 uv run platform runtime select --manifest /path/to/workspace.toml
 uv run platform runtime build --manifest /path/to/workspace.toml --no-cache
-uv run platform runtime publish --manifest /path/to/workspace.toml \
-  --instance testing \
-  --image-repository ghcr.io/example/odoo-opw \
-  --image-tag opw-20260416-deadbeef \
-  --output-file /tmp/opw-artifact.json
 uv run platform runtime up --manifest /path/to/workspace.toml --build
 uv run platform runtime down --manifest /path/to/workspace.toml --volumes
 uv run platform runtime workflow --manifest /path/to/workspace.toml --workflow update
@@ -53,6 +48,9 @@ uv run platform runtime odoo-shell --manifest /path/to/workspace.toml \
 
 If `--manifest` is omitted, the command looks for `workspace.toml` in the
 current directory.
+
+Non-local `platform runtime publish` is invoked by Launchplane's reusable
+artifact workflow, which supplies the required runtime-environment payload.
 
 ## `workspace sync`
 
@@ -180,6 +178,9 @@ Notes
   `launchplane_settings`. `config_parameters` tables write Odoo
   `ir.config_parameter` keys, while `addon_settings.<addon>` tables write
   supported addon settings such as `authentik_sso` values.
+- Checked-in stack `runtime_env` and `odoo_overrides` values are local-only.
+  Active dev, testing, and production values or domains belong to Launchplane
+  runtime-environment records.
 - Non-local Launchplane-managed instances (`dev`, `testing`, and `prod`) always
   prepend `launchplane_settings` and `disable_odoo_online` to the resolved Odoo
   install module list. Artifact inputs or base images make addon files
@@ -252,13 +253,14 @@ Notes
   pushes the requested image tag, reads the pushed image digest from Buildx's
   build metadata output, and writes a control-plane-compatible artifact manifest
   JSON file.
-- When Launchplane supplies `ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON`, publish can
-  synthesize the selected manifest context from that explicit payload instead of
-  requiring every Launchplane-owned product context to be listed in the shared
-  devkit stack. Synthesized contexts do not inherit stack-level install-module
-  lists; their artifact install intent comes from the managed-instance required
-  modules plus any repo-owned `website-bootstrap.toml` modules. Unknown contexts
-  still fail closed without the explicit payload.
+- Non-local publish requires Launchplane to supply
+  `ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON`. The payload is authoritative for
+  artifact build runtime keys and can synthesize a missing context or instance
+  instead of requiring hosted lanes in the shared devkit stack. Synthesized
+  contexts do not inherit stack-level install-module lists; their artifact
+  install intent comes from managed-instance required modules plus any
+  repo-owned `website-bootstrap.toml` modules. Unknown contexts and non-local
+  instances fail closed without the explicit payload.
 - Publish-time GHCR credentials can be split by purpose. Private base image
   reads prefer `GHCR_READ_TOKEN`, artifact image pushes prefer `GHCR_TOKEN`,
   and private source checkout secrets still belong in the transient runtime

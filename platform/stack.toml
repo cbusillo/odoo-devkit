@@ -43,14 +43,6 @@ install_modules = [
     "cm_custom",
 ]
 
-[contexts.cm.runtime_env]
-ODOO_DEV_MODE = ""
-
-[contexts.cm.odoo_overrides.addon_settings.authentik_sso]
-base_url = "https://authentik.cellmechanic.com"
-disable_providers = "Odoo.com"
-group_claim = "groups"
-
 [contexts.cm.instances.local]
 install_modules_add = [
     "fishbowl_import",
@@ -67,29 +59,10 @@ COMPOSE_BUILD_TARGET = "development"
 [contexts.cm.instances.local.odoo_overrides.config_parameters]
 "web.base.url" = "https://cm-local.shinycomputers.com"
 
-[contexts.cm.instances.dev.runtime_env]
-ODOO_WORKERS = 4
-COMPOSE_BUILD_TARGET = "production"
-
-[contexts.cm.instances.dev.odoo_overrides.config_parameters]
-"web.base.url" = "https://cm-dev.shinycomputers.com"
-
-[contexts.cm.instances.testing.runtime_env]
-ODOO_WORKERS = 4
-COMPOSE_BUILD_TARGET = "production"
-
-[contexts.cm.instances.testing.odoo_overrides.config_parameters]
-"web.base.url" = "https://cm-testing.shinycomputers.com"
-
-[contexts.cm.instances.prod.runtime_env]
-ODOO_WORKERS = 6
-POSTGRES_SHARED_BUFFERS = "2GB"
-POSTGRES_EFFECTIVE_CACHE_SIZE = "6GB"
-POSTGRES_WORK_MEM = "64MB"
-COMPOSE_BUILD_TARGET = "production"
-
-[contexts.cm.instances.prod.odoo_overrides.config_parameters]
-"web.base.url" = "https://odoo.cellmechanic.com"
+[contexts.cm.instances.local.odoo_overrides.addon_settings.authentik_sso]
+base_url = "https://authentik.cellmechanic.com"
+disable_providers = "Odoo.com"
+group_claim = "groups"
 
 [contexts.cm.instances.dev]
 install_modules_add = [
@@ -109,12 +82,6 @@ install_modules = [
     "opw_custom",
 ]
 
-[contexts.opw.runtime_env]
-ODOO_DEV_MODE = ""
-OPENUPGRADE_ENABLED = true
-OPENUPGRADE_ADDON_REPOSITORY = "OCA/OpenUpgrade@89e649728027a8ab656b3aa4be18f4bd364db417"
-OPENUPGRADELIB_INSTALL_SPEC = "git+https://github.com/OCA/openupgradelib.git@46d66ff5ed6a99481f84d3c79fc6e50835da7286"
-
 [contexts.opw.instances.local]
 
 [contexts.opw.instances.local.runtime_env]
@@ -123,34 +90,9 @@ ODOO_WORKERS = 2
 ODOO_LIMIT_MEMORY_SOFT = 2147483648
 ODOO_LIMIT_MEMORY_HARD = 3221225472
 COMPOSE_BUILD_TARGET = "development"
+OPENUPGRADE_ENABLED = true
+OPENUPGRADE_ADDON_REPOSITORY = "OCA/OpenUpgrade@89e649728027a8ab656b3aa4be18f4bd364db417"
+OPENUPGRADELIB_INSTALL_SPEC = "git+https://github.com/OCA/openupgradelib.git@46d66ff5ed6a99481f84d3c79fc6e50835da7286"
 
 [contexts.opw.instances.local.odoo_overrides.config_parameters]
 "web.base.url" = "https://opw-local.shinycomputers.com"
-
-[contexts.opw.instances.dev]
-
-[contexts.opw.instances.dev.runtime_env]
-ODOO_WORKERS = 4
-COMPOSE_BUILD_TARGET = "production"
-
-[contexts.opw.instances.dev.odoo_overrides.config_parameters]
-"web.base.url" = "https://opw-dev.shinycomputers.com"
-
-[contexts.opw.instances.testing]
-
-[contexts.opw.instances.testing.runtime_env]
-ODOO_WORKERS = 4
-COMPOSE_BUILD_TARGET = "production"
-
-[contexts.opw.instances.testing.odoo_overrides.config_parameters]
-"web.base.url" = "https://opw-testing.shinycomputers.com"
-
-[contexts.opw.instances.prod.runtime_env]
-ODOO_WORKERS = 6
-POSTGRES_SHARED_BUFFERS = "2GB"
-POSTGRES_EFFECTIVE_CACHE_SIZE = "6GB"
-POSTGRES_WORK_MEM = "64MB"
-COMPOSE_BUILD_TARGET = "production"
-
-[contexts.opw.instances.prod.odoo_overrides.config_parameters]
-"web.base.url" = "https://opw-prod.shinycomputers.com"

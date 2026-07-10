@@ -13,7 +13,9 @@ When
 
 - Keep source input intent versioned in the repo that owns the build.
 - Keep `workspace.toml` focused on workspace assembly and runtime targeting.
-- Keep runtime stack config focused on runtime selection state.
+- Keep runtime stack config focused on local runtime selection state.
+- Keep hosted runtime values in Launchplane records. `artifact-inputs.toml`
+  may override source repository selection, not hosted runtime authority.
 - Keep artifact, release, and deploy truth pinned to resolved SHAs and image
   digests after publish.
 

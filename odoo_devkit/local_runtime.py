@@ -32,6 +32,15 @@ GIT_SHA_PATTERN = re.compile(r"[0-9a-fA-F]{7,40}")
 ARTIFACT_SOURCE_ENV_KEYS = ("ODOO_ADDON_REPOSITORIES", "OPENUPGRADE_ADDON_REPOSITORY")
 SOURCE_GITHUB_TOKEN_ENV_KEYS = ("ODOO_DEVKIT_SOURCE_GITHUB_TOKEN", "ODOO_SOURCE_GITHUB_TOKEN")
 RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR = "ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON"
+ARTIFACT_PUBLISH_RUNTIME_ENV_KEYS = (
+    "ODOO_VERSION",
+    "ODOO_BASE_RUNTIME_IMAGE",
+    "ODOO_BASE_DEVTOOLS_IMAGE",
+    "ODOO_ADDON_REPOSITORIES",
+    "OPENUPGRADE_ADDON_REPOSITORY",
+    "OPENUPGRADELIB_INSTALL_SPEC",
+    "ODOO_PYTHON_SYNC_SKIP_ADDONS",
+)
 ODOO_INSTANCE_OVERRIDES_PAYLOAD_ENV_KEY = "ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64"
 LAUNCHPLANE_INSTANCE_OVERRIDES_REQUIRED_ENV_KEY = "LAUNCHPLANE_INSTANCE_OVERRIDES_REQUIRED"
 LAUNCHPLANE_WEBSITE_BOOTSTRAP_REQUIRED_ENV_KEY = "LAUNCHPLANE_WEBSITE_BOOTSTRAP_REQUIRED"
@@ -452,6 +461,10 @@ def publish_runtime_artifact(
     normalized_platforms = tuple(platform.strip() for platform in platforms if platform.strip())
     if not normalized_platforms:
         raise RuntimeCommandError("Artifact publish requires at least one target platform.")
+    if manifest.runtime.instance.strip().lower() != "local" and not explicit_runtime_environment_payload_is_configured():
+        raise RuntimeCommandError(
+            f"Non-local artifact publish requires Launchplane runtime environment payload via {RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR}."
+        )
 
     runtime_context = load_runtime_context(
         manifest=manifest,
@@ -469,6 +482,7 @@ def publish_runtime_artifact(
         runtime_context=runtime_context,
         runtime_values=runtime_values,
     )
+    validate_artifact_publish_runtime_values(runtime_values)
     runtime_values, artifact_source_selectors = resolve_artifact_runtime_source_repository_refs(
         runtime_values=runtime_values,
     )
@@ -512,15 +526,7 @@ def publish_runtime_artifact(
             build_command.extend(["--secret", "id=github_token,env=GITHUB_TOKEN"])
         if no_cache:
             build_command.append("--no-cache")
-        for build_argument_name in (
-            "ODOO_VERSION",
-            "ODOO_BASE_RUNTIME_IMAGE",
-            "ODOO_BASE_DEVTOOLS_IMAGE",
-            "ODOO_ADDON_REPOSITORIES",
-            "OPENUPGRADE_ADDON_REPOSITORY",
-            "OPENUPGRADELIB_INSTALL_SPEC",
-            "ODOO_PYTHON_SYNC_SKIP_ADDONS",
-        ):
+        for build_argument_name in ARTIFACT_PUBLISH_RUNTIME_ENV_KEYS:
             build_command.extend(["--build-arg", f"{build_argument_name}={runtime_values.get(build_argument_name, '')}"])
         build_command.append(str(staged_context_root))
         run_command(
@@ -574,6 +580,13 @@ def publish_runtime_artifact(
         manifest_payload=manifest_payload,
         output_file=normalized_output_file,
     )
+
+
+def validate_artifact_publish_runtime_values(runtime_values: dict[str, str]) -> None:
+    if not runtime_values.get("ODOO_VERSION", "").strip():
+        raise RuntimeCommandError(
+            f"{RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR} environment must include ODOO_VERSION for artifact publish."
+        )
 
 
 def down_runtime(*, manifest: WorkspaceManifest, runtime_repo_path: Path, volumes: bool) -> None:
@@ -872,23 +885,33 @@ def explicit_runtime_environment_payload_is_configured() -> bool:
 
 
 def synthesize_runtime_payload_context(*, manifest: WorkspaceManifest, stack_definition: StackDefinition) -> StackDefinition:
-    if manifest.runtime.context in stack_definition.contexts:
-        return stack_definition
     contexts = dict(stack_definition.contexts)
-    contexts[manifest.runtime.context] = ContextDefinition(
+    context_definition = contexts.get(manifest.runtime.context)
+    if context_definition is None:
+        context_definition = ContextDefinition(
+            database=manifest.runtime.database,
+            install_modules=(),
+            runtime_env={},
+            odoo_overrides=empty_odoo_override_definition(),
+            update_modules="AUTO",
+            instances={},
+        )
+    if manifest.runtime.instance in context_definition.instances:
+        return stack_definition
+    instances = dict(context_definition.instances)
+    instances[manifest.runtime.instance] = InstanceDefinition(
         database=manifest.runtime.database,
-        install_modules=(),
+        install_modules_add=(),
         runtime_env={},
         odoo_overrides=empty_odoo_override_definition(),
-        update_modules="AUTO",
-        instances={
-            manifest.runtime.instance: InstanceDefinition(
-                database=manifest.runtime.database,
-                install_modules_add=(),
-                runtime_env={},
-                odoo_overrides=empty_odoo_override_definition(),
-            )
-        },
+    )
+    contexts[manifest.runtime.context] = ContextDefinition(
+        database=context_definition.database or manifest.runtime.database,
+        install_modules=context_definition.install_modules,
+        runtime_env=context_definition.runtime_env,
+        odoo_overrides=context_definition.odoo_overrides,
+        update_modules=context_definition.update_modules,
+        instances=instances,
     )
     return StackDefinition(
         schema_version=stack_definition.schema_version,
@@ -1306,8 +1329,12 @@ def load_environment_from_explicit_payload(
         raise RuntimeCommandError(f"{RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR} must contain a JSON object.") from error
     if not isinstance(payload, dict):
         raise RuntimeCommandError(f"{RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR} must contain a JSON object.")
-    payload_context = clean_optional_value(str(payload.get("context", "")))
-    payload_instance = clean_optional_value(str(payload.get("instance", "")))
+    raw_payload_context = payload.get("context")
+    raw_payload_instance = payload.get("instance")
+    if not isinstance(raw_payload_context, str) or not isinstance(raw_payload_instance, str):
+        raise RuntimeCommandError(f"{RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR} context and instance must be strings.")
+    payload_context = clean_optional_value(raw_payload_context)
+    payload_instance = clean_optional_value(raw_payload_instance)
     if payload_context != context_name or payload_instance != instance_name:
         raise RuntimeCommandError(
             f"{RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR} context/instance does not match the selected runtime. "
@@ -1316,11 +1343,12 @@ def load_environment_from_explicit_payload(
     raw_environment = payload.get("environment")
     if not isinstance(raw_environment, dict):
         raise RuntimeCommandError(f"{RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR} must include an environment object.")
-    resolved_environment = {
-        environment_key: str(environment_value)
+    if any(
+        not isinstance(environment_key, str) or not isinstance(environment_value, str)
         for environment_key, environment_value in raw_environment.items()
-        if isinstance(environment_key, str)
-    }
+    ):
+        raise RuntimeCommandError(f"{RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR} environment keys and values must be strings.")
+    resolved_environment = dict(raw_environment)
     if not resolved_environment:
         raise RuntimeCommandError(f"{RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR} environment object must not be empty.")
     synthetic_env_file = Path(".generated") / "runtime-env" / f"{context_name}.{instance_name}.env"
@@ -1802,6 +1830,9 @@ def build_runtime_env_values(
             runtime_values[environment_key] = source_environment[environment_key]
     for runtime_key, runtime_value in runtime_selection.effective_runtime_env.items():
         runtime_values[runtime_key] = runtime_value
+    if explicit_runtime_environment_payload_is_configured():
+        for runtime_key in ARTIFACT_PUBLISH_RUNTIME_ENV_KEYS:
+            runtime_values[runtime_key] = source_environment.get(runtime_key, "")
     apply_typed_odoo_instance_override_payload(
         runtime_values=runtime_values,
         context_name=runtime_selection.context_name,

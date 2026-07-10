@@ -17,7 +17,7 @@ When
 
 - PyCharm opens the tenant repo directly.
 - Every Code starts from the materialized workspace root.
-- `odoo-devkit` owns the shared DX/runtime/bootstrap contract.
+- `odoo-devkit` owns the shared local DX/runtime/bootstrap contract.
 - The control plane owns canonical deploy/build tuples and release-sensitive
   behavior.
 - Remote release flow remains artifact-backed and control-plane-owned rather
@@ -44,6 +44,9 @@ When
 - Generated PyCharm metadata and run configurations for the tenant repo.
 - Devkit-owned local runtime bundle (`docker-compose.yml`, `platform/stack.toml`,
   Dockerfile, and local runtime scripts).
+- Checked-in stack runtime values and Odoo overrides are local-development
+  defaults only; Launchplane runtime-environment records own non-local artifact
+  publish values and hosted lane authority.
 - Shared tenant runtime contracts that must stay safe across stable-lane
   redeploys, including conservative database image/version changes for
   long-lived tenant volumes.
