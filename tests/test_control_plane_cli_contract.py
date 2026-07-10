@@ -43,6 +43,23 @@ class ControlPlaneCliContractTests(unittest.TestCase):
                 instance_name="testing",
             )
 
+    def test_environment_resolution_rejects_non_string_values(self) -> None:
+        with self.assertRaisesRegex(
+            local_runtime.RuntimeCommandError,
+            "environment keys and values must be strings",
+        ):
+            local_runtime.load_environment_from_explicit_payload(
+                raw_payload=json.dumps(
+                    {
+                        "context": "cm",
+                        "instance": "testing",
+                        "environment": {"ODOO_VERSION": None},
+                    }
+                ),
+                context_name="cm",
+                instance_name="testing",
+            )
+
     def test_environment_resolution_uses_launchplane_cli(self) -> None:
         completed_process = mock.Mock(
             returncode=0,

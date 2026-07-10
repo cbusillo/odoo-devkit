@@ -70,6 +70,40 @@ class RuntimeCommandTests(unittest.TestCase):
         metadata_file = Path(command[command.index("--metadata-file") + 1])
         metadata_file.write_text(json.dumps({"containerimage.digest": self.artifact_image_digest}) + "\n", encoding="utf-8")
 
+    def _configure_publish_runtime_payload(
+        self,
+        *,
+        context: str = "opw",
+        instance: str = "testing",
+        odoo_version: str | None = "19.0",
+        environment: dict[str, str] | None = None,
+    ) -> None:
+        payload_environment = {
+            "ODOO_MASTER_PASSWORD": "control-plane-master",
+            "ODOO_DB_USER": "odoo",
+            "ODOO_DB_PASSWORD": "control-plane-secret",
+            "GITHUB_TOKEN": "gh-token",
+            "ODOO_BASE_RUNTIME_IMAGE": "ghcr.io/example/runtime:19.0-runtime",
+            "ODOO_BASE_DEVTOOLS_IMAGE": "ghcr.io/example/devtools:19.0-devtools",
+        }
+        if odoo_version is not None:
+            payload_environment["ODOO_VERSION"] = odoo_version
+        payload_environment.update(environment or {})
+        environment_patch = mock.patch.dict(
+            os.environ,
+            {
+                local_runtime.RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR: json.dumps(
+                    {
+                        "context": context,
+                        "instance": instance,
+                        "environment": payload_environment,
+                    }
+                )
+            },
+        )
+        environment_patch.start()
+        self.addCleanup(environment_patch.stop)
+
     def test_resolve_runtime_repo_path_prefers_explicit_repo(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
@@ -732,12 +766,6 @@ database = "opw"
 install_modules = ["opw_custom"]
 
 [contexts.opw.instances.local]
-
-[contexts.opw.instances.dev]
-
-[contexts.opw.instances.testing]
-
-[contexts.opw.instances.prod]
 """.strip()
                 + "\n",
                 encoding="utf-8",
@@ -1027,6 +1055,7 @@ homepage = true
             subprocess.run(["git", "add", "workspace.toml"], cwd=tenant_repo_path, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "workspace manifest"], cwd=tenant_repo_path, check=True, capture_output=True)
             manifest = load_workspace_manifest(manifest_path)
+            self._configure_publish_runtime_payload()
 
             captured_build_contexts: list[Path] = []
 
@@ -1116,6 +1145,7 @@ sources = [
             )
             subprocess.run(["git", "commit", "-m", "workspace manifest"], cwd=tenant_repo_path, check=True, capture_output=True)
             manifest = load_workspace_manifest(manifest_path)
+            self._configure_publish_runtime_payload()
 
             captured_build_args: list[str] = []
 
@@ -1225,6 +1255,13 @@ sources = [
 
         self.assertEqual(login_inputs, ["read-token", "push-token"])
 
+    def test_artifact_publish_runtime_values_require_odoo_version(self) -> None:
+        with self.assertRaisesRegex(
+            local_runtime.RuntimeCommandError,
+            "environment must include ODOO_VERSION",
+        ):
+            local_runtime.validate_artifact_publish_runtime_values({})
+
     def test_native_runtime_publish_rejects_legacy_runtime_stack_selectors(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
@@ -1268,6 +1305,7 @@ install_modules = ["opw_custom"]
             subprocess.run(["git", "add", "workspace.toml"], cwd=tenant_repo_path, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "workspace manifest"], cwd=tenant_repo_path, check=True, capture_output=True)
             manifest = load_workspace_manifest(manifest_path)
+            self._configure_publish_runtime_payload()
 
             captured_build_args: list[str] = []
 
@@ -1324,6 +1362,9 @@ sources = [
             )
             subprocess.run(["git", "commit", "-m", "workspace manifest"], cwd=tenant_repo_path, check=True, capture_output=True)
             manifest = load_workspace_manifest(manifest_path)
+            self._configure_publish_runtime_payload(
+                environment={"ODOO_ADDON_REPOSITORIES": ("cbusillo/disable_odoo_online@ffffffffffffffffffffffffffffffffffffffff")}
+            )
 
             captured_build_args: list[str] = []
 
@@ -1431,6 +1472,7 @@ sources = [
             )
             subprocess.run(["git", "commit", "-m", "workspace manifest"], cwd=tenant_repo_path, check=True, capture_output=True)
             manifest = load_workspace_manifest(manifest_path)
+            self._configure_publish_runtime_payload()
 
             with self.assertRaisesRegex(ValueError, "exactly one of exact_ref or selector"):
                 run_native_runtime_publish(
@@ -1627,6 +1669,75 @@ sources = [
                 ("launchplane_settings", "disable_odoo_online", "opw_custom", "website_sale"),
             )
 
+    def test_checked_in_stack_keeps_hosted_runtime_authority_out_of_devkit(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        stack = local_runtime.load_stack(repo_root / "platform" / "stack.toml").stack_definition
+
+        cm_context = stack.contexts["cm"]
+        self.assertEqual(set(cm_context.instances), {"local", "dev", "testing"})
+        self.assertEqual(cm_context.runtime_env, {})
+        self.assertEqual(cm_context.odoo_overrides, local_runtime.empty_odoo_override_definition())
+        for instance_name in ("dev", "testing"):
+            instance = cm_context.instances[instance_name]
+            self.assertEqual(instance.runtime_env, {})
+            self.assertEqual(
+                instance.odoo_overrides,
+                local_runtime.empty_odoo_override_definition(),
+            )
+        self.assertNotIn("prod", cm_context.instances)
+        self.assertEqual(
+            cm_context.instances["local"].odoo_overrides.addon_settings["authentik_sso"]["base_url"],
+            "https://authentik.cellmechanic.com",
+        )
+
+        opw_context = stack.contexts["opw"]
+        self.assertEqual(set(opw_context.instances), {"local"})
+        self.assertEqual(opw_context.runtime_env, {})
+        self.assertEqual(opw_context.odoo_overrides, local_runtime.empty_odoo_override_definition())
+        self.assertEqual(
+            opw_context.instances["local"].runtime_env["OPENUPGRADE_ENABLED"],
+            True,
+        )
+
+    def test_runtime_payload_synthesizes_missing_instance_in_existing_context(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = temp_root / "tenant-repo"
+            runtime_repo_path = temp_root / "runtime-repo"
+            tenant_repo_path.mkdir()
+            runtime_repo_path.mkdir()
+            manifest = load_workspace_manifest(
+                self._write_manifest(
+                    tenant_repo_path=tenant_repo_path,
+                    runtime_repo_path=runtime_repo_path,
+                    instance_name="testing",
+                )
+            )
+            stack = local_runtime.parse_stack_definition(
+                {
+                    "schema_version": 1,
+                    "odoo_version": "19.0",
+                    "addons_path": ["/odoo/addons", "/opt/project/addons"],
+                    "contexts": {
+                        "opw": {
+                            "database": "opw",
+                            "install_modules": ["opw_custom"],
+                            "instances": {"local": {}},
+                        }
+                    },
+                },
+                stack_file_path=runtime_repo_path / "platform" / "stack.toml",
+            )
+
+            synthesized = local_runtime.synthesize_runtime_payload_context(
+                manifest=manifest,
+                stack_definition=stack,
+            )
+
+            self.assertEqual(set(synthesized.contexts["opw"].instances), {"local", "testing"})
+            self.assertEqual(synthesized.contexts["opw"].install_modules, ("opw_custom",))
+            self.assertEqual(synthesized.contexts["opw"].instances["testing"].database, "opw")
+
     def test_native_runtime_publish_prefers_exact_control_plane_refs_over_stack_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
@@ -1637,6 +1748,15 @@ sources = [
             subprocess.run(["git", "add", "."], cwd=tenant_repo_path, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "tenant addons"], cwd=tenant_repo_path, check=True, capture_output=True)
             self._write_runtime_repo(runtime_repo_path)
+            stack_file = runtime_repo_path / "platform" / "stack.toml"
+            stack_file.write_text(
+                stack_file.read_text(encoding="utf-8").replace(
+                    'install_modules = ["opw_custom"]',
+                    """install_modules = ["opw_custom"]
+runtime_env = { ODOO_VERSION = "18.0", ODOO_BASE_RUNTIME_IMAGE = "ghcr.io/example/runtime:18.0-runtime", ODOO_BASE_DEVTOOLS_IMAGE = "ghcr.io/example/devtools:18.0-devtools", ODOO_ADDON_REPOSITORIES = "example/stale-addon@main", OPENUPGRADE_ADDON_REPOSITORY = "example/stale-openupgrade@main", OPENUPGRADELIB_INSTALL_SPEC = "example-stale-spec", ODOO_PYTHON_SYNC_SKIP_ADDONS = "stale_skip" }""",
+                ),
+                encoding="utf-8",
+            )
             subprocess.run(["git", "add", "."], cwd=runtime_repo_path, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "runtime files"], cwd=runtime_repo_path, check=True, capture_output=True)
             manifest_path = self._write_manifest(
@@ -1647,6 +1767,19 @@ sources = [
             subprocess.run(["git", "add", "workspace.toml"], cwd=tenant_repo_path, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "workspace manifest"], cwd=tenant_repo_path, check=True, capture_output=True)
             manifest = load_workspace_manifest(manifest_path)
+            self._configure_publish_runtime_payload(
+                environment={
+                    "ODOO_VERSION": "20.0",
+                    "ODOO_BASE_RUNTIME_IMAGE": "ghcr.io/example/runtime:20.0-runtime",
+                    "ODOO_BASE_DEVTOOLS_IMAGE": "ghcr.io/example/devtools:20.0-devtools",
+                    "ODOO_ADDON_REPOSITORIES": ("cbusillo/disable_odoo_online@411f6b8e85cac72dc7aa2e2dc5540001043c327d"),
+                    "OPENUPGRADE_ADDON_REPOSITORY": ("OCA/OpenUpgrade@411f6b8e85cac72dc7aa2e2dc5540001043c327d"),
+                    "OPENUPGRADELIB_INSTALL_SPEC": (
+                        "git+https://github.com/OCA/openupgradelib.git@89e649728027a8ab656b3aa4be18f4bd364db417"
+                    ),
+                    "ODOO_PYTHON_SYNC_SKIP_ADDONS": "skip_one,skip_two",
+                }
+            )
 
             captured_build_args: list[str] = []
 
@@ -1693,6 +1826,15 @@ sources = [
 
             addon_build_arg = next(argument for argument in captured_build_args if argument.startswith("ODOO_ADDON_REPOSITORIES="))
             self.assertEqual(addon_build_arg, f"ODOO_ADDON_REPOSITORIES={exact_ref}")
+            expected_build_args = {
+                "ODOO_VERSION=20.0",
+                "ODOO_BASE_RUNTIME_IMAGE=ghcr.io/example/runtime:20.0-runtime",
+                "ODOO_BASE_DEVTOOLS_IMAGE=ghcr.io/example/devtools:20.0-devtools",
+                "OPENUPGRADE_ADDON_REPOSITORY=OCA/OpenUpgrade@411f6b8e85cac72dc7aa2e2dc5540001043c327d",
+                "OPENUPGRADELIB_INSTALL_SPEC=git+https://github.com/OCA/openupgradelib.git@89e649728027a8ab656b3aa4be18f4bd364db417",
+                "ODOO_PYTHON_SYNC_SKIP_ADDONS=skip_one,skip_two",
+            }
+            self.assertTrue(expected_build_args.issubset(set(captured_build_args)))
             self.assertIn(
                 {"repository": "cbusillo/disable_odoo_online", "ref": exact_ref.rsplit("@", 1)[1]},
                 payload["addon_sources"],
@@ -1701,8 +1843,10 @@ sources = [
                 payload["odoo_install_modules"],
                 ["launchplane_settings", "disable_odoo_online", "opw_custom"],
             )
+            self.assertEqual(payload["build_flags"]["values"]["odoo_version"], "20.0")
+            self.assertEqual(payload["build_flags"]["addon_skip_flags"], ["skip_one", "skip_two"])
 
-    def test_native_runtime_publish_rejects_unknown_context_without_explicit_runtime_payload(self) -> None:
+    def test_native_runtime_publish_requires_explicit_payload_for_non_local_instance(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
             tenant_repo_path = self._create_git_repo(temp_root / "tenant-repo")
@@ -1727,27 +1871,48 @@ sources = [
             manifest = load_workspace_manifest(manifest_path)
 
             with mock.patch.dict(os.environ, {local_runtime.RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR: ""}):
-                with mock.patch(
-                    "odoo_devkit.local_runtime.load_environment",
-                    return_value=local_runtime.LoadedEnvironment(
-                        env_file_path=self.control_plane_root / ".generated" / "runtime-env" / "cm_website.testing.env",
-                        merged_values={
-                            "ODOO_MASTER_PASSWORD": "control-plane-master",
-                            "ODOO_DB_USER": "odoo",
-                            "ODOO_DB_PASSWORD": "control-plane-secret",
-                        },
-                        collisions=(),
-                    ),
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "Non-local artifact publish requires Launchplane runtime environment payload",
                 ):
-                    with self.assertRaisesRegex(ValueError, "Unknown context 'cm_website'"):
-                        run_native_runtime_publish(
-                            manifest=manifest,
-                            image_repository="ghcr.io/example/cm-website-runtime",
-                            image_tag="cm_website-20260606-abcdef",
-                            output_file=None,
-                            no_cache=False,
-                            platforms=("linux/amd64",),
-                        )
+                    run_native_runtime_publish(
+                        manifest=manifest,
+                        image_repository="ghcr.io/example/cm-website-runtime",
+                        image_tag="cm_website-20260606-abcdef",
+                        output_file=None,
+                        no_cache=False,
+                        platforms=("linux/amd64",),
+                    )
+
+    def test_native_runtime_publish_rejects_payload_without_odoo_version_before_build(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = self._create_git_repo(temp_root / "tenant-repo")
+            runtime_repo_path = self._create_git_repo(temp_root / "runtime-repo")
+            self._write_runtime_repo(runtime_repo_path)
+            subprocess.run(["git", "add", "."], cwd=runtime_repo_path, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "runtime files"], cwd=runtime_repo_path, check=True, capture_output=True)
+            manifest_path = self._write_manifest(
+                tenant_repo_path=tenant_repo_path,
+                runtime_repo_path=runtime_repo_path,
+                instance_name="testing",
+            )
+            subprocess.run(["git", "add", "."], cwd=tenant_repo_path, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "workspace manifest"], cwd=tenant_repo_path, check=True, capture_output=True)
+            manifest = load_workspace_manifest(manifest_path)
+            self._configure_publish_runtime_payload(odoo_version=None)
+
+            with mock.patch("odoo_devkit.local_runtime.run_command") as run_command_mock:
+                with self.assertRaisesRegex(ValueError, "environment must include ODOO_VERSION"):
+                    run_native_runtime_publish(
+                        manifest=manifest,
+                        image_repository="ghcr.io/example/opw-runtime",
+                        image_tag="opw-20260416-abcdef",
+                        output_file=None,
+                        no_cache=False,
+                    )
+
+            run_command_mock.assert_not_called()
 
     def test_native_runtime_publish_synthesizes_context_from_explicit_runtime_payload(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1820,6 +1985,7 @@ sources = [
                 "context": "cm_website",
                 "instance": "testing",
                 "environment": {
+                    "ODOO_VERSION": "19.0",
                     "ODOO_MASTER_PASSWORD": "control-plane-master",
                     "ODOO_DB_USER": "odoo",
                     "ODOO_DB_PASSWORD": "control-plane-secret",

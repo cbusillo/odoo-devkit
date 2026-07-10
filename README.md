@@ -40,11 +40,6 @@ uv run platform workspace clean --manifest /path/to/workspace.toml
 uv run platform workspace run --manifest /path/to/workspace.toml -- pwd
 uv run platform runtime select --manifest /path/to/workspace.toml
 uv run platform runtime build --manifest /path/to/workspace.toml --no-cache
-uv run platform runtime publish --manifest /path/to/workspace.toml \
-  --instance testing \
-  --image-repository ghcr.io/example/odoo-opw \
-  --image-tag opw-20260416-deadbeef \
-  --output-file /tmp/opw-artifact.json
 uv run platform runtime up --manifest /path/to/workspace.toml --build
 uv run platform runtime down --manifest /path/to/workspace.toml --volumes
 uv run platform runtime workflow --manifest /path/to/workspace.toml --workflow update
@@ -139,22 +134,17 @@ uv run python -m unittest discover -s tests
 For tenant repos that keep `instance = "local"` in the tracked manifest,
 `--instance testing` or `--instance prod` is not a shortcut for remote
 mutation. Release and non-local data actions should run through `launchplane`.
-Local and artifact-handoff examples:
+Local workflow example:
 
 ```bash
 uv --directory ../odoo-devkit run platform runtime workflow \
   --manifest ./workspace.toml \
   --workflow bootstrap
-uv --directory ../odoo-devkit run platform runtime publish \
-  --manifest ./workspace.toml \
-  --instance testing \
-  --image-repository ghcr.io/example/odoo-opw \
-  --image-tag opw-20260416-deadbeef \
-  --output-file /tmp/opw-artifact.json
-uv --directory ../launchplane run launchplane artifacts write \
-  --state-dir ./state \
-  --input-file /tmp/opw-artifact.json
 ```
+
+Non-local artifact publishing runs through Launchplane's reusable workflow,
+which supplies the authoritative runtime-environment payload and records the
+resulting artifact.
 
 `platform runtime publish` stages the tenant addons plus shared addons into a
 real build context, requires clean git worktrees for the repos it captures,
