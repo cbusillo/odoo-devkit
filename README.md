@@ -54,6 +54,41 @@ uv run platform runtime odoo-shell --manifest /path/to/workspace.toml \
 If `--manifest` is omitted, the CLI looks for `workspace.toml` in the current
 directory.
 
+## Local Runtime Input
+
+All `platform runtime` commands consume runtime values through one typed input:
+`ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON`. The JSON object must contain the exact
+selected `context`, the exact selected `instance`, and a non-empty
+`environment` object whose keys and values are strings:
+
+```json
+{
+  "context": "replace-me",
+  "instance": "local",
+  "environment": {
+    "ODOO_MASTER_PASSWORD": "<operator-local-value>",
+    "ODOO_DB_USER": "odoo",
+    "ODOO_DB_PASSWORD": "<operator-local-value>"
+  }
+}
+```
+
+Inject the payload from an operator-owned shell, password manager, or a
+mode-`0600` file outside the repository before running `runtime select`,
+`inspect`, `up`, or local workflows. For example:
+
+```bash
+export ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON="$(cat ~/.config/odoo-devkit/runtime-environment.json)"
+uv run platform runtime inspect --manifest /path/to/workspace.toml --instance local
+```
+
+Do not put the payload or its values in `workspace.toml`, generated workspace
+docs, checked-in config, `.env`, `platform/.env`, or
+`platform/secrets.toml`. Missing input, context/instance mismatches, non-string
+values, and legacy devkit-local env/secrets files fail closed. Non-local
+Launchplane artifact workflows may inject the same typed payload boundary;
+non-local mutation remains Launchplane-owned.
+
 ## Scope
 
 This repo is intentionally small. It owns the manifest/runtime contract for

@@ -152,6 +152,21 @@ Purpose
   workflows natively against `odoo-devkit`, while leaving non-local mutation to
   Launchplane service routes and reusable workflows.
 
+Local runtime input
+
+- Before `select`, `inspect`, `build`, `up`, `down`, or a local workflow, set
+  `ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON` from an operator-owned shell, password
+  manager, or mode-`0600` file outside the repository.
+- The payload must be a JSON object with the exact selected `context`, the exact
+  selected `instance`, and a non-empty `environment` object containing only
+  string keys and values. The checked-in stack declares which environment keys
+  are required for the selected command.
+- This is the only supported runtime-environment input path. Do not put runtime
+  values in `workspace.toml`, generated workspace docs, checked-in config,
+  `.env`, `platform/.env`, or `platform/secrets.toml`.
+- `runtime inspect` reports selected runtime metadata and generated config paths;
+  it does not print the payload or environment values.
+
 Notes
 
 - The tenant repo remains path-based and user-owned. `workspace sync` does not
@@ -212,13 +227,10 @@ Notes
   typed `odoo_overrides` instead. Unrelated devkit control keys such as
   `ENV_OVERRIDE_DISABLE_CRON` remain available until they get their own typed
   local contract.
-- When `ODOO_CONTROL_PLANE_ROOT` points at a valid `launchplane`
-  checkout, local runtime env resolution comes from the control-plane-owned
-  environment contract. Devkit-local `.env` / `platform/secrets.toml` runtime
-  authority is unsupported. Leftover devkit-local env/secrets files are
-  treated as a hard conflict so environment authority stays single-source, and
-  build/restore requirements are expected to live in `launchplane`'s
-  `config/runtime-environments.toml` surface.
+- Local runtime environment input comes only from
+  `ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON`. Leftover devkit-local `.env`,
+  `platform/.env`, or `platform/secrets.toml` files are a hard conflict so the
+  runtime boundary stays single-source and fail-closed.
 - Non-local `restore`, `workflow bootstrap`, and `workflow update` now fail
   closed with Launchplane handoff guidance. Devkit should not grow arbitrary
   checkout remote mutation flows; add or use a Launchplane service route first.

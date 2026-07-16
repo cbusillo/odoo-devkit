@@ -14,6 +14,10 @@ When
 These examples are workspace, local runtime, and artifact-handoff patterns.
 Remote release and non-local data actions such as ship, promote, restore,
 bootstrap, update, and Launchplane preview lifecycle belong in `launchplane`.
+Before a local `platform runtime` command, inject the context/instance-scoped
+`ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON` payload from operator-local secret
+storage. Never add that payload to the tenant manifest or generated workspace
+files.
 
 - Sync the current tenant workspace:
 
@@ -25,6 +29,13 @@ uv run platform workspace sync --manifest /path/to/workspace.toml
 
 ```bash
 uv run platform workspace status --manifest /path/to/workspace.toml
+```
+
+- Safely inspect the selected local runtime after operator setup:
+
+```bash
+export ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON="$(cat ~/.config/odoo-devkit/runtime-environment.json)"
+uv run platform runtime inspect --manifest /path/to/workspace.toml --instance local
 ```
 
 - Run a command from the workspace root:
@@ -71,6 +82,7 @@ uv run platform workspace scaffold-tenant-overlay \
 - Do not hand-edit generated workspace-root cockpit files.
 - If the workspace surface is wrong, fix `odoo-devkit` and re-sync.
 - Keep implementation-specific, non-secret local facts in an untracked
-  `AGENTS.override.md`; keep credentials in `.env`.
+  `AGENTS.override.md`; keep credentials in operator-local secret storage
+  outside the repo.
 - Keep tenant repo docs thin; use the generated workspace docs index for shared
   guidance.

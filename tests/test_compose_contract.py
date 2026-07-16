@@ -11,7 +11,16 @@ class ComposeContractTests(unittest.TestCase):
 
         self.assertNotIn("x-odoo-build", base_compose_text)
         self.assertNotIn("<<: [*odoo-base, *odoo-build]", base_compose_text)
+        self.assertNotIn("path: .env", base_compose_text)
         self.assertIn("  web:\n    <<: *odoo-base\n", base_compose_text)
+
+    def test_shared_compose_requires_generated_runtime_env(self) -> None:
+        repo_root = Path(__file__).resolve().parent.parent
+        shared_compose_text = (repo_root / "platform" / "compose" / "base.yaml").read_text(encoding="utf-8")
+
+        self.assertNotIn("path: .env", shared_compose_text)
+        self.assertNotIn("PLATFORM_RUNTIME_ENV_FILE:-.env", shared_compose_text)
+        self.assertEqual(shared_compose_text.count("${PLATFORM_RUNTIME_ENV_FILE:?missing}"), 3)
 
     def test_override_compose_file_owns_local_web_build(self) -> None:
         repo_root = Path(__file__).resolve().parent.parent
