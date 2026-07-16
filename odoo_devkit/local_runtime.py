@@ -24,14 +24,15 @@ from .artifact_inputs import (
 )
 from .ide_support import write_pycharm_odoo_conf
 from .manifest import WorkspaceManifest
+from .runtime_environment import RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR, sanitized_subprocess_environment
 
 ScalarValue = str | int | float | bool
 ScalarMap = dict[str, ScalarValue]
 DEFAULT_ARTIFACT_IMAGE_PLATFORMS = ("linux/amd64", "linux/arm64")
 GIT_SHA_PATTERN = re.compile(r"[0-9a-fA-F]{7,40}")
+ENVIRONMENT_VARIABLE_NAME_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 ARTIFACT_SOURCE_ENV_KEYS = ("ODOO_ADDON_REPOSITORIES", "OPENUPGRADE_ADDON_REPOSITORY")
 SOURCE_GITHUB_TOKEN_ENV_KEYS = ("ODOO_DEVKIT_SOURCE_GITHUB_TOKEN", "ODOO_SOURCE_GITHUB_TOKEN")
-RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR = "ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON"
 ARTIFACT_PUBLISH_RUNTIME_ENV_KEYS = (
     "ODOO_VERSION",
     "ODOO_BASE_RUNTIME_IMAGE",
@@ -199,7 +200,6 @@ GHCR_HOST = "ghcr.io"
 PLACEHOLDER_REGISTRY_HOST = "registry.invalid"
 DEFAULT_ODOO_BASE_RUNTIME_IMAGE = "registry.invalid/private-enterprise-runtime:19.0-runtime"
 DEFAULT_ODOO_BASE_DEVTOOLS_IMAGE = "registry.invalid/private-enterprise-devtools:19.0-devtools"
-CONTROL_PLANE_ROOT_ENV_VAR = "ODOO_CONTROL_PLANE_ROOT"
 LAUNCHPLANE_MANAGED_INSTANCE_NAMES = {"dev", "testing", "prod"}
 LAUNCHPLANE_REQUIRED_ODOO_MODULES = ("launchplane_settings", "disable_odoo_online")
 
@@ -485,6 +485,11 @@ def publish_runtime_artifact(
     validate_artifact_publish_runtime_values(runtime_values)
     runtime_values, artifact_source_selectors = resolve_artifact_runtime_source_repository_refs(
         runtime_values=runtime_values,
+    )
+    ensure_required_environment_mapping(
+        required_keys=runtime_context.stack.stack_definition.required_env_keys,
+        environment_values=runtime_values,
+        source_description="Resolved publish runtime environment",
     )
     ensure_registry_auth_for_base_images(runtime_values)
     ensure_registry_auth_for_image_push(
@@ -798,6 +803,10 @@ def load_runtime_context(
         context_name=manifest.runtime.context,
         instance_name=manifest.runtime.instance,
     )
+    ensure_required_environment_values(
+        stack_definition=loaded_stack.stack_definition,
+        loaded_environment=loaded_environment,
+    )
     try:
         artifact_inputs_definition = load_artifact_inputs_definition(manifest=manifest)
     except ArtifactInputsError as error:
@@ -805,7 +814,11 @@ def load_runtime_context(
     effective_stack_definition = resolve_manifest_runtime_stack_definition(
         manifest=manifest,
         stack_definition=loaded_stack.stack_definition,
-        allow_runtime_payload_context=explicit_runtime_environment_payload_is_configured(),
+        allow_runtime_payload_context=(
+            not require_local_instance
+            and manifest.runtime.instance.strip().lower() != "local"
+            and explicit_runtime_environment_payload_is_configured()
+        ),
     )
     website_bootstrap = load_website_bootstrap_definition(manifest=manifest)
     runtime_selection = resolve_runtime_selection(
@@ -815,6 +828,11 @@ def load_runtime_context(
         instance_name=manifest.runtime.instance,
         repo_root=runtime_repo_path,
         website_bootstrap=website_bootstrap,
+    )
+    ensure_required_runtime_selection_values(
+        stack_definition=effective_stack_definition,
+        loaded_environment=loaded_environment,
+        runtime_selection=runtime_selection,
     )
     runtime_env_file = runtime_env_file_for_scope(
         repo_root=runtime_repo_path,
@@ -1287,31 +1305,16 @@ def discover_project_addon_group_paths(repo_root: Path) -> tuple[str, ...]:
 
 def load_environment(*, repo_root: Path, context_name: str, instance_name: str, collision_mode: str = "warn") -> LoadedEnvironment:
     _ = collision_mode
-    explicit_environment = os.environ.get(RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR, "").strip()
-    if explicit_environment:
-        ensure_legacy_local_environment_files_are_absent(repo_root)
-        return load_environment_from_explicit_payload(
-            raw_payload=explicit_environment,
-            context_name=context_name,
-            instance_name=instance_name,
-        )
-    control_plane_root = resolve_control_plane_root()
-    if control_plane_root is None:
-        legacy_file_display = legacy_local_environment_file_display(repo_root)
-        if legacy_file_display is not None:
-            raise RuntimeCommandError(
-                "Legacy devkit-local env/secrets files are no longer supported for runtime environment authority: "
-                f"{legacy_file_display}. Remove them, set {CONTROL_PLANE_ROOT_ENV_VAR}, and migrate runtime values into "
-                "harbor `config/runtime-environments.toml`."
-            )
-        raise RuntimeCommandError(
-            "Runtime environment resolution now requires the control-plane contract. "
-            f"Set {CONTROL_PLANE_ROOT_ENV_VAR} to a valid harbor checkout and configure runtime values in "
-            "`config/runtime-environments.toml`."
-        )
     ensure_legacy_local_environment_files_are_absent(repo_root)
-    return load_environment_from_control_plane(
-        control_plane_root=control_plane_root,
+    explicit_environment = os.environ.get(RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR, "").strip()
+    if not explicit_environment:
+        raise RuntimeCommandError(
+            f"Runtime environment input is not configured. Set {RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR} to a typed JSON "
+            "object whose context and instance match the selected runtime and whose environment object contains the "
+            "required string values."
+        )
+    return load_environment_from_explicit_payload(
+        raw_payload=explicit_environment,
         context_name=context_name,
         instance_name=instance_name,
     )
@@ -1332,9 +1335,11 @@ def load_environment_from_explicit_payload(
     raw_payload_context = payload.get("context")
     raw_payload_instance = payload.get("instance")
     if not isinstance(raw_payload_context, str) or not isinstance(raw_payload_instance, str):
-        raise RuntimeCommandError(f"{RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR} context and instance must be strings.")
+        raise RuntimeCommandError(f"{RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR} context and instance must be non-empty strings.")
     payload_context = clean_optional_value(raw_payload_context)
     payload_instance = clean_optional_value(raw_payload_instance)
+    if payload_context is None or payload_instance is None:
+        raise RuntimeCommandError(f"{RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR} context and instance must be non-empty strings.")
     if payload_context != context_name or payload_instance != instance_name:
         raise RuntimeCommandError(
             f"{RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR} context/instance does not match the selected runtime. "
@@ -1348,6 +1353,17 @@ def load_environment_from_explicit_payload(
         for environment_key, environment_value in raw_environment.items()
     ):
         raise RuntimeCommandError(f"{RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR} environment keys and values must be strings.")
+    if any(ENVIRONMENT_VARIABLE_NAME_PATTERN.fullmatch(environment_key) is None for environment_key in raw_environment):
+        raise RuntimeCommandError(
+            f"{RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR} environment keys must be valid environment variable names."
+        )
+    if any(
+        "\x00" in environment_value or (bool(environment_value) and environment_value.splitlines() != [environment_value])
+        for environment_value in raw_environment.values()
+    ):
+        raise RuntimeCommandError(
+            f"{RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR} environment values must not contain line separators or NUL bytes."
+        )
     resolved_environment = dict(raw_environment)
     if not resolved_environment:
         raise RuntimeCommandError(f"{RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR} environment object must not be empty.")
@@ -1359,23 +1375,49 @@ def load_environment_from_explicit_payload(
     )
 
 
-def resolve_control_plane_root() -> Path | None:
-    configured_root = os.environ.get(CONTROL_PLANE_ROOT_ENV_VAR, "").strip()
-    if not configured_root:
-        return None
-    return Path(configured_root).expanduser().resolve()
-
-
 def runtime_environment_configuration_guidance(*, noun: str = "these") -> str:
-    if resolve_control_plane_root() is None:
-        return (
-            f"Set {CONTROL_PLANE_ROOT_ENV_VAR} to a valid harbor checkout and configure {noun} in "
-            "`config/runtime-environments.toml`."
-        )
-    return (
-        f"Configure {noun} in the control-plane runtime environments file resolved through "
-        f"{CONTROL_PLANE_ROOT_ENV_VAR} (`config/runtime-environments.toml` by default)."
+    return f"Provide {noun} in the {RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR} environment object for the selected context and instance."
+
+
+def ensure_required_environment_values(
+    *,
+    stack_definition: StackDefinition,
+    loaded_environment: LoadedEnvironment,
+) -> None:
+    ensure_required_environment_mapping(
+        required_keys=stack_definition.required_env_keys,
+        environment_values=loaded_environment.merged_values,
+        source_description=f"{RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR} environment",
     )
+
+
+def ensure_required_runtime_selection_values(
+    *,
+    stack_definition: StackDefinition,
+    loaded_environment: LoadedEnvironment,
+    runtime_selection: RuntimeSelection,
+) -> None:
+    effective_environment = dict(loaded_environment.merged_values)
+    effective_environment.update(
+        {runtime_key: str(runtime_value) for runtime_key, runtime_value in runtime_selection.effective_runtime_env.items()}
+    )
+    ensure_required_environment_mapping(
+        required_keys=stack_definition.required_env_keys,
+        environment_values=effective_environment,
+        source_description="Resolved runtime environment",
+    )
+
+
+def ensure_required_environment_mapping(
+    *,
+    required_keys: tuple[str, ...],
+    environment_values: dict[str, str],
+    source_description: str,
+) -> None:
+    missing_keys = [required_key for required_key in required_keys if not environment_values.get(required_key, "").strip()]
+    if not missing_keys:
+        return
+    raise RuntimeCommandError(f"{source_description} is missing required non-empty values: {', '.join(missing_keys)}.")
 
 
 def legacy_local_environment_files(repo_root: Path) -> list[Path]:
@@ -1399,59 +1441,9 @@ def ensure_legacy_local_environment_files_are_absent(repo_root: Path) -> None:
     if legacy_file_display is None:
         return
     raise RuntimeCommandError(
-        "Local runtime environment authority is configured to come from the control plane via "
-        f"{CONTROL_PLANE_ROOT_ENV_VAR}, but legacy devkit-local env/secrets files still exist: {legacy_file_display}. "
-        "Remove or migrate those files before continuing so environment authority stays single-source and fail-closed."
-    )
-
-
-def load_environment_from_control_plane(
-    *,
-    control_plane_root: Path,
-    context_name: str,
-    instance_name: str,
-) -> LoadedEnvironment:
-    control_plane_command = [
-        "uv",
-        "--directory",
-        str(control_plane_root),
-        "run",
-        "launchplane",
-        "environments",
-        "resolve",
-        "--context",
-        context_name,
-        "--instance",
-        instance_name,
-        "--json-output",
-    ]
-    result = subprocess.run(control_plane_command, capture_output=True, text=True, env=command_execution_env())
-    if result.returncode != 0:
-        details = clean_optional_value(result.stderr) or clean_optional_value(result.stdout)
-        raise RuntimeCommandError(
-            "Unable to resolve runtime environment from control plane. "
-            f"Ensure {CONTROL_PLANE_ROOT_ENV_VAR} points at a valid harbor checkout."
-            + (f"\nControl plane reported: {details}" if details else "")
-        )
-    try:
-        payload = json.loads(result.stdout)
-    except json.JSONDecodeError as error:
-        raise RuntimeCommandError(
-            "Control plane returned invalid runtime environment payload while resolving local runtime config."
-        ) from error
-    raw_environment = payload.get("environment")
-    if not isinstance(raw_environment, dict):
-        raise RuntimeCommandError("Control plane runtime environment payload did not include an environment object.")
-    resolved_environment = {
-        environment_key: str(environment_value)
-        for environment_key, environment_value in raw_environment.items()
-        if isinstance(environment_key, str)
-    }
-    synthetic_env_file = control_plane_root / ".generated" / "runtime-env" / f"{context_name}.{instance_name}.env"
-    return LoadedEnvironment(
-        env_file_path=synthetic_env_file,
-        merged_values=resolved_environment,
-        collisions=(),
+        "Legacy devkit-local env/secrets files are no longer supported for runtime environment input: "
+        f"{legacy_file_display}. Remove them and provide the selected context/instance through "
+        f"{RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR} so runtime input stays explicit and fail-closed."
     )
 
 
@@ -1830,7 +1822,7 @@ def build_runtime_env_values(
             runtime_values[environment_key] = source_environment[environment_key]
     for runtime_key, runtime_value in runtime_selection.effective_runtime_env.items():
         runtime_values[runtime_key] = runtime_value
-    if explicit_runtime_environment_payload_is_configured():
+    if explicit_runtime_environment_payload_is_configured() and runtime_selection.instance_name != "local":
         for runtime_key in ARTIFACT_PUBLISH_RUNTIME_ENV_KEYS:
             runtime_values[runtime_key] = source_environment.get(runtime_key, "")
     apply_typed_odoo_instance_override_payload(
@@ -1839,6 +1831,11 @@ def build_runtime_env_values(
         instance_name=runtime_selection.instance_name,
         odoo_overrides=runtime_selection.effective_odoo_overrides,
         website_bootstrap=runtime_selection.website_bootstrap,
+    )
+    ensure_required_environment_mapping(
+        required_keys=stack_definition.required_env_keys,
+        environment_values=runtime_values,
+        source_description="Resolved runtime environment",
     )
     return runtime_values
 
@@ -3043,7 +3040,7 @@ def assert_active_admin_password_is_not_default(
 
 
 def command_execution_env() -> dict[str, str]:
-    execution_env = dict(os.environ)
+    execution_env = sanitized_subprocess_environment()
     for runtime_key in PLATFORM_RUNTIME_ENV_KEYS:
         execution_env.pop(runtime_key, None)
     for passthrough_key in PLATFORM_RUNTIME_PASSTHROUGH_KEYS:

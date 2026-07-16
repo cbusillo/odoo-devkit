@@ -47,23 +47,18 @@ class RuntimeCommandTests(unittest.TestCase):
 
     def setUp(self) -> None:
         super().setUp()
-        self.control_plane_root_temporary_directory = tempfile.TemporaryDirectory()
-        self.control_plane_root = Path(self.control_plane_root_temporary_directory.name) / "harbor"
-        self.control_plane_root.mkdir(parents=True, exist_ok=True)
-        self.environment_patch = mock.patch.dict(
-            os.environ, {local_runtime.CONTROL_PLANE_ROOT_ENV_VAR: str(self.control_plane_root)}
-        )
+        self.explicit_payload_loader = local_runtime.load_environment_from_explicit_payload
+        self.environment_patch = mock.patch.dict(os.environ, {local_runtime.RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR: "{}"})
         self.environment_patch.start()
         self.load_environment_patch = mock.patch(
-            "odoo_devkit.local_runtime.load_environment_from_control_plane",
-            side_effect=self._load_environment_from_control_plane,
+            "odoo_devkit.local_runtime.load_environment_from_explicit_payload",
+            side_effect=self._load_environment_from_explicit_payload,
         )
         self.load_environment_patch.start()
 
     def tearDown(self) -> None:
         self.load_environment_patch.stop()
         self.environment_patch.stop()
-        self.control_plane_root_temporary_directory.cleanup()
         super().tearDown()
 
     def _write_buildx_metadata_for_command(self, command: list[str]) -> None:
@@ -79,9 +74,9 @@ class RuntimeCommandTests(unittest.TestCase):
         environment: dict[str, str] | None = None,
     ) -> None:
         payload_environment = {
-            "ODOO_MASTER_PASSWORD": "control-plane-master",
+            "ODOO_MASTER_PASSWORD": "runtime-payload-master",
             "ODOO_DB_USER": "odoo",
-            "ODOO_DB_PASSWORD": "control-plane-secret",
+            "ODOO_DB_PASSWORD": "runtime-payload-database",
             "GITHUB_TOKEN": "gh-token",
             "ODOO_BASE_RUNTIME_IMAGE": "ghcr.io/example/runtime:19.0-runtime",
             "ODOO_BASE_DEVTOOLS_IMAGE": "ghcr.io/example/devtools:19.0-devtools",
@@ -408,11 +403,12 @@ attached_paths = ["sources/devkit"]
             with self.assertRaisesRegex(ValueError, "must be materialized by `platform workspace sync`"):
                 resolve_runtime_repo_path(manifest)
 
-    def test_resolve_runtime_repo_path_uses_materialized_repo_addressable_runtime(self) -> None:
+    def test_synced_repo_addressable_runtime_supports_local_inspect(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
             tenant_repo_path = temp_root / "tenant-repo"
             tenant_repo_path.mkdir(parents=True, exist_ok=True)
+            (tenant_repo_path / "addons" / "opw_custom").mkdir(parents=True, exist_ok=True)
             devkit_repo_path = self._create_git_repo(temp_root / "devkit-repo")
             runtime_repo_path = temp_root / "runtime-repo"
             self._write_runtime_repo(runtime_repo_path)
@@ -478,6 +474,36 @@ attached_paths = ["sources/devkit"]
                     "local",
                 ),
             )
+
+            payload = json.dumps(
+                {
+                    "context": "opw",
+                    "instance": "local",
+                    "environment": {
+                        "ODOO_MASTER_PASSWORD": "test-master-value",
+                        "ODOO_DB_USER": "odoo",
+                        "ODOO_DB_PASSWORD": "test-database-value",
+                    },
+                }
+            )
+            inspect_output = io.StringIO()
+            with mock.patch(
+                "odoo_devkit.local_runtime.load_environment_from_explicit_payload",
+                side_effect=self.explicit_payload_loader,
+            ):
+                with mock.patch.dict(
+                    os.environ,
+                    {local_runtime.RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR: payload},
+                    clear=True,
+                ):
+                    with contextlib.redirect_stdout(inspect_output):
+                        exit_code = run_native_runtime_inspect(manifest=manifest)
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("context=opw", inspect_output.getvalue())
+            self.assertIn("instance=local", inspect_output.getvalue())
+            self.assertNotIn("test-master-value", inspect_output.getvalue())
+            self.assertNotIn("test-database-value", inspect_output.getvalue())
 
     def test_resolve_runtime_repo_path_defaults_to_devkit_repo_for_local_instance(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -799,79 +825,198 @@ install_modules = ["opw_custom"]
             self.assertIn("project_addons_host_path=", inspect_output)
             self.assertIn('"opw_custom"', inspect_output)
 
-    def test_load_environment_prefers_control_plane_contract_when_configured(self) -> None:
+    def test_native_runtime_inspect_rejects_missing_required_payload_values(self) -> None:
+        for environment in (
+            {"ODOO_MASTER_PASSWORD": "test-master-value"},
+            {
+                "ODOO_MASTER_PASSWORD": "test-master-value",
+                "ODOO_DB_USER": "odoo",
+                "ODOO_DB_PASSWORD": "   ",
+            },
+        ):
+            with self.subTest(environment=environment):
+                with tempfile.TemporaryDirectory() as temporary_directory:
+                    temp_root = Path(temporary_directory)
+                    tenant_repo_path = temp_root / "tenant-repo"
+                    runtime_repo_path = temp_root / "runtime-repo"
+                    tenant_repo_path.mkdir(parents=True, exist_ok=True)
+                    self._write_runtime_repo(runtime_repo_path)
+                    manifest_path = self._write_manifest(
+                        tenant_repo_path=tenant_repo_path,
+                        runtime_repo_path=runtime_repo_path,
+                    )
+                    manifest = load_workspace_manifest(manifest_path)
+                    payload = json.dumps(
+                        {
+                            "context": "opw",
+                            "instance": "local",
+                            "environment": environment,
+                        }
+                    )
+
+                    with mock.patch(
+                        "odoo_devkit.local_runtime.load_environment_from_explicit_payload",
+                        side_effect=self.explicit_payload_loader,
+                    ):
+                        with mock.patch.dict(
+                            os.environ,
+                            {local_runtime.RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR: payload},
+                            clear=True,
+                        ):
+                            with self.assertRaisesRegex(ValueError, "missing required non-empty values"):
+                                run_native_runtime_inspect(manifest=manifest)
+
+                    self.assertFalse((runtime_repo_path / ".platform").exists())
+
+    def test_native_runtime_inspect_rejects_stack_override_of_required_payload_value(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = temp_root / "tenant-repo"
+            runtime_repo_path = temp_root / "runtime-repo"
+            tenant_repo_path.mkdir(parents=True, exist_ok=True)
+            self._write_runtime_repo(runtime_repo_path)
+            stack_path = runtime_repo_path / "platform" / "stack.toml"
+            stack_path.write_text(
+                stack_path.read_text(encoding="utf-8").replace(
+                    "[contexts.opw.instances.local]\n\n[contexts.opw.instances.dev]",
+                    """[contexts.opw.instances.local]
+
+[contexts.opw.instances.local.runtime_env]
+ODOO_DB_PASSWORD = ""
+
+[contexts.opw.instances.dev]""",
+                ),
+                encoding="utf-8",
+            )
+            manifest_path = self._write_manifest(
+                tenant_repo_path=tenant_repo_path,
+                runtime_repo_path=runtime_repo_path,
+            )
+            manifest = load_workspace_manifest(manifest_path)
+            payload = json.dumps(
+                {
+                    "context": "opw",
+                    "instance": "local",
+                    "environment": {
+                        "ODOO_MASTER_PASSWORD": "test-master-value",
+                        "ODOO_DB_USER": "odoo",
+                        "ODOO_DB_PASSWORD": "test-database-value",
+                    },
+                }
+            )
+
+            with mock.patch(
+                "odoo_devkit.local_runtime.load_environment_from_explicit_payload",
+                side_effect=self.explicit_payload_loader,
+            ):
+                with mock.patch.dict(
+                    os.environ,
+                    {local_runtime.RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR: payload},
+                    clear=True,
+                ):
+                    with self.assertRaisesRegex(ValueError, "Resolved runtime environment is missing required"):
+                        run_native_runtime_inspect(manifest=manifest)
+
+            self.assertFalse((runtime_repo_path / ".platform").exists())
+
+    def test_load_environment_uses_explicit_runtime_payload(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
             runtime_repo_path = temp_root / "runtime-repo"
             self._write_runtime_repo(runtime_repo_path)
-
-            loaded_environment = local_runtime.load_environment(
-                repo_root=runtime_repo_path,
-                context_name="opw",
-                instance_name="local",
+            payload = json.dumps(
+                {
+                    "context": "opw",
+                    "instance": "local",
+                    "environment": {
+                        "ODOO_MASTER_PASSWORD": "test-master-value",
+                        "ODOO_DB_USER": "odoo",
+                        "ODOO_DB_PASSWORD": "test-database-value",
+                    },
+                }
             )
 
-        self.assertEqual(loaded_environment.merged_values["ODOO_MASTER_PASSWORD"], "control-plane-master")
-        self.assertEqual(loaded_environment.merged_values["ODOO_DB_PASSWORD"], "control-plane-secret")
+            with mock.patch(
+                "odoo_devkit.local_runtime.load_environment_from_explicit_payload",
+                side_effect=self.explicit_payload_loader,
+            ):
+                with mock.patch.dict(
+                    os.environ,
+                    {local_runtime.RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR: payload},
+                    clear=True,
+                ):
+                    loaded_environment = local_runtime.load_environment(
+                        repo_root=runtime_repo_path,
+                        context_name="opw",
+                        instance_name="local",
+                    )
 
-    def test_load_environment_fails_closed_when_control_plane_and_legacy_files_coexist(self) -> None:
+        self.assertEqual(loaded_environment.merged_values["ODOO_MASTER_PASSWORD"], "test-master-value")
+        self.assertEqual(loaded_environment.merged_values["ODOO_DB_PASSWORD"], "test-database-value")
+
+    def test_load_environment_fails_closed_when_payload_and_legacy_files_coexist(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
             runtime_repo_path = temp_root / "runtime-repo"
             self._write_runtime_repo(runtime_repo_path)
             (runtime_repo_path / ".env").write_text("ODOO_MASTER_PASSWORD=legacy\n", encoding="utf-8")
 
-            with self.assertRaisesRegex(ValueError, "legacy devkit-local env/secrets files still exist"):
+            with self.assertRaisesRegex(ValueError, "Legacy devkit-local env/secrets files are no longer supported"):
                 local_runtime.load_environment(
                     repo_root=runtime_repo_path,
                     context_name="opw",
                     instance_name="local",
                 )
 
-    def test_load_environment_requires_control_plane_root(self) -> None:
+    def test_load_environment_requires_explicit_runtime_payload(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
             runtime_repo_path = temp_root / "runtime-repo"
             self._write_runtime_repo(runtime_repo_path)
 
             with mock.patch.dict(os.environ, {}, clear=True):
-                with self.assertRaisesRegex(ValueError, local_runtime.CONTROL_PLANE_ROOT_ENV_VAR):
+                with self.assertRaisesRegex(ValueError, local_runtime.RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR):
                     local_runtime.load_environment(
                         repo_root=runtime_repo_path,
                         context_name="opw",
                         instance_name="local",
                     )
 
-    def test_load_environment_rejects_legacy_local_env_files_without_control_plane_root(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            temp_root = Path(temporary_directory)
-            runtime_repo_path = temp_root / "runtime-repo"
-            self._write_runtime_repo(runtime_repo_path)
-            (runtime_repo_path / ".env").write_text("ODOO_MASTER_PASSWORD=legacy\n", encoding="utf-8")
+    def test_load_environment_rejects_legacy_local_env_files_without_payload(self) -> None:
+        for relative_path in (Path(".env"), Path("platform/.env"), Path("platform/secrets.toml")):
+            with self.subTest(relative_path=relative_path):
+                with tempfile.TemporaryDirectory() as temporary_directory:
+                    temp_root = Path(temporary_directory)
+                    runtime_repo_path = temp_root / "runtime-repo"
+                    self._write_runtime_repo(runtime_repo_path)
+                    legacy_path = runtime_repo_path / relative_path
+                    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+                    legacy_path.write_text("ODOO_MASTER_PASSWORD=legacy\n", encoding="utf-8")
 
-            with mock.patch.dict(os.environ, {}, clear=True):
-                with self.assertRaisesRegex(ValueError, "no longer supported"):
-                    local_runtime.load_environment(
-                        repo_root=runtime_repo_path,
-                        context_name="opw",
-                        instance_name="local",
-                    )
+                    with mock.patch.dict(os.environ, {}, clear=True):
+                        with self.assertRaisesRegex(ValueError, "no longer supported"):
+                            local_runtime.load_environment(
+                                repo_root=runtime_repo_path,
+                                context_name="opw",
+                                instance_name="local",
+                            )
 
-    def test_runtime_environment_configuration_guidance_requires_control_plane_when_unset(self) -> None:
-        with mock.patch.dict(os.environ, {}, clear=True):
-            guidance = local_runtime.runtime_environment_configuration_guidance()
+    def test_runtime_environment_configuration_guidance_uses_explicit_payload(self) -> None:
+        guidance = local_runtime.runtime_environment_configuration_guidance(noun="it")
 
-        self.assertIn(local_runtime.CONTROL_PLANE_ROOT_ENV_VAR, guidance)
-        self.assertIn("config/runtime-environments.toml", guidance)
+        self.assertIn(local_runtime.RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR, guidance)
+        self.assertIn("selected context and instance", guidance)
+        self.assertNotIn("runtime-environments.toml", guidance)
+        self.assertNotIn("harbor", guidance)
 
-    def test_runtime_environment_configuration_guidance_mentions_control_plane_when_configured(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            temp_root = Path(temporary_directory)
-            with mock.patch.dict(os.environ, {local_runtime.CONTROL_PLANE_ROOT_ENV_VAR: str(temp_root / "harbor")}):
-                guidance = local_runtime.runtime_environment_configuration_guidance(noun="it")
+    def test_command_execution_environment_excludes_runtime_payload(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {local_runtime.RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR: '{"environment":{"SECRET":"test-only"}}'},
+        ):
+            execution_environment = local_runtime.command_execution_env()
 
-        self.assertIn(local_runtime.CONTROL_PLANE_ROOT_ENV_VAR, guidance)
-        self.assertIn("config/runtime-environments.toml", guidance)
+        self.assertNotIn(local_runtime.RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR, execution_environment)
 
     def test_native_runtime_select_prefers_manifest_mounts_over_runtime_repo_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1164,19 +1309,8 @@ sources = [
             resolved_ref = "411f6b8e85cac72dc7aa2e2dc5540001043c327d"
 
             with mock.patch(
-                "odoo_devkit.local_runtime.load_environment_from_control_plane",
-                return_value=local_runtime.LoadedEnvironment(
-                    env_file_path=self.control_plane_root / ".generated" / "runtime-env" / "opw.testing.env",
-                    merged_values={
-                        "ODOO_MASTER_PASSWORD": "control-plane-master",
-                        "ODOO_DB_USER": "odoo",
-                        "ODOO_DB_PASSWORD": "control-plane-secret",
-                        "GITHUB_TOKEN": "gh-token",
-                        "ODOO_BASE_RUNTIME_IMAGE": "ghcr.io/example/runtime:19.0-runtime",
-                        "ODOO_BASE_DEVTOOLS_IMAGE": "ghcr.io/example/devtools:19.0-devtools",
-                    },
-                    collisions=(),
-                ),
+                "odoo_devkit.local_runtime.load_environment_from_explicit_payload",
+                side_effect=self.explicit_payload_loader,
             ):
                 with mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_base_images"):
                     with mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_image_push"):
@@ -1382,20 +1516,8 @@ sources = [
 
             resolved_ref = "411f6b8e85cac72dc7aa2e2dc5540001043c327d"
             with mock.patch(
-                "odoo_devkit.local_runtime.load_environment_from_control_plane",
-                return_value=local_runtime.LoadedEnvironment(
-                    env_file_path=self.control_plane_root / ".generated" / "runtime-env" / "opw.testing.env",
-                    merged_values={
-                        "ODOO_MASTER_PASSWORD": "control-plane-master",
-                        "ODOO_DB_USER": "odoo",
-                        "ODOO_DB_PASSWORD": "control-plane-secret",
-                        "GITHUB_TOKEN": "gh-token",
-                        "ODOO_BASE_RUNTIME_IMAGE": "ghcr.io/example/runtime:19.0-runtime",
-                        "ODOO_BASE_DEVTOOLS_IMAGE": "ghcr.io/example/devtools:19.0-devtools",
-                        "ODOO_ADDON_REPOSITORIES": "cbusillo/disable_odoo_online@ffffffffffffffffffffffffffffffffffffffff",
-                    },
-                    collisions=(),
-                ),
+                "odoo_devkit.local_runtime.load_environment_from_explicit_payload",
+                side_effect=self.explicit_payload_loader,
             ):
                 with mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_base_images"):
                     with mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_image_push"):
@@ -1437,6 +1559,48 @@ sources = [
                 payload["odoo_install_modules"],
                 ["launchplane_settings", "disable_odoo_online", "opw_custom"],
             )
+
+    def test_native_runtime_publish_revalidates_required_values_after_artifact_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = temp_root / "tenant-repo"
+            runtime_repo_path = temp_root / "runtime-repo"
+            tenant_repo_path.mkdir(parents=True, exist_ok=True)
+            self._write_runtime_repo(runtime_repo_path)
+            stack_path = runtime_repo_path / "platform" / "stack.toml"
+            stack_path.write_text(
+                stack_path.read_text(encoding="utf-8").replace(
+                    'required_env_keys = ["ODOO_MASTER_PASSWORD", "ODOO_DB_USER", "ODOO_DB_PASSWORD"]',
+                    'required_env_keys = ["ODOO_MASTER_PASSWORD", "ODOO_DB_USER", "ODOO_DB_PASSWORD", "ODOO_ADDON_REPOSITORIES"]',
+                ),
+                encoding="utf-8",
+            )
+            (tenant_repo_path / "artifact-inputs.toml").write_text(
+                "schema_version = 1\nsources = []\n",
+                encoding="utf-8",
+            )
+            manifest_path = self._write_manifest(
+                tenant_repo_path=tenant_repo_path,
+                runtime_repo_path=runtime_repo_path,
+                instance_name="testing",
+                artifact_inputs_file="artifact-inputs.toml",
+            )
+            manifest = load_workspace_manifest(manifest_path)
+            self._configure_publish_runtime_payload(
+                environment={"ODOO_ADDON_REPOSITORIES": "example/addon@411f6b8e85cac72dc7aa2e2dc5540001043c327d"}
+            )
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "Resolved publish runtime environment is missing required non-empty values: ODOO_ADDON_REPOSITORIES",
+            ):
+                run_native_runtime_publish(
+                    manifest=manifest,
+                    image_repository="ghcr.io/example/opw-runtime",
+                    image_tag="opw-20260416-abcdef",
+                    output_file=None,
+                    no_cache=False,
+                )
 
     def test_native_runtime_publish_rejects_invalid_artifact_inputs_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1738,7 +1902,7 @@ sources = [
             self.assertEqual(synthesized.contexts["opw"].install_modules, ("opw_custom",))
             self.assertEqual(synthesized.contexts["opw"].instances["testing"].database, "opw")
 
-    def test_native_runtime_publish_prefers_exact_control_plane_refs_over_stack_defaults(self) -> None:
+    def test_native_runtime_publish_prefers_exact_payload_refs_over_stack_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
             tenant_repo_path = self._create_git_repo(temp_root / "tenant-repo")
@@ -1797,20 +1961,8 @@ runtime_env = { ODOO_VERSION = "18.0", ODOO_BASE_RUNTIME_IMAGE = "ghcr.io/exampl
 
             exact_ref = "cbusillo/disable_odoo_online@411f6b8e85cac72dc7aa2e2dc5540001043c327d"
             with mock.patch(
-                "odoo_devkit.local_runtime.load_environment_from_control_plane",
-                return_value=local_runtime.LoadedEnvironment(
-                    env_file_path=self.control_plane_root / ".generated" / "runtime-env" / "cm.testing.env",
-                    merged_values={
-                        "ODOO_MASTER_PASSWORD": "control-plane-master",
-                        "ODOO_DB_USER": "odoo",
-                        "ODOO_DB_PASSWORD": "control-plane-secret",
-                        "GITHUB_TOKEN": "gh-token",
-                        "ODOO_BASE_RUNTIME_IMAGE": "ghcr.io/example/runtime:19.0-runtime",
-                        "ODOO_BASE_DEVTOOLS_IMAGE": "ghcr.io/example/devtools:19.0-devtools",
-                        "ODOO_ADDON_REPOSITORIES": exact_ref,
-                    },
-                    collisions=(),
-                ),
+                "odoo_devkit.local_runtime.load_environment_from_explicit_payload",
+                side_effect=self.explicit_payload_loader,
             ):
                 with mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_base_images"):
                     with mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_image_push"):
@@ -1986,9 +2138,9 @@ sources = [
                 "instance": "testing",
                 "environment": {
                     "ODOO_VERSION": "19.0",
-                    "ODOO_MASTER_PASSWORD": "control-plane-master",
+                    "ODOO_MASTER_PASSWORD": "runtime-payload-master",
                     "ODOO_DB_USER": "odoo",
-                    "ODOO_DB_PASSWORD": "control-plane-secret",
+                    "ODOO_DB_PASSWORD": "runtime-payload-database",
                     "GITHUB_TOKEN": "gh-token",
                     "ODOO_BASE_RUNTIME_IMAGE": "ghcr.io/example/runtime:19.0-runtime",
                     "ODOO_BASE_DEVTOOLS_IMAGE": "ghcr.io/example/devtools:19.0-devtools",
@@ -2894,20 +3046,25 @@ sources = [
 
         return run_side_effect
 
-    def _load_environment_from_control_plane(
+    def _load_environment_from_explicit_payload(
         self,
         *,
-        control_plane_root: Path,
+        raw_payload: str,
         context_name: str,
         instance_name: str,
     ) -> local_runtime.LoadedEnvironment:
-        _ = control_plane_root, context_name, instance_name
+        if raw_payload != "{}":
+            return self.explicit_payload_loader(
+                raw_payload=raw_payload,
+                context_name=context_name,
+                instance_name=instance_name,
+            )
         return local_runtime.LoadedEnvironment(
-            env_file_path=self.control_plane_root / ".generated" / "runtime-env" / f"{context_name}.{instance_name}.env",
+            env_file_path=Path(".generated") / "runtime-env" / f"{context_name}.{instance_name}.env",
             merged_values={
-                "ODOO_MASTER_PASSWORD": "control-plane-master",
+                "ODOO_MASTER_PASSWORD": "runtime-payload-master",
                 "ODOO_DB_USER": "odoo",
-                "ODOO_DB_PASSWORD": "control-plane-secret",
+                "ODOO_DB_PASSWORD": "runtime-payload-database",
                 "ODOO_UPSTREAM_HOST": "example.internal",
                 "ODOO_UPSTREAM_USER": "odoo",
                 "ODOO_UPSTREAM_DB_NAME": "opw-source",

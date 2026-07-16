@@ -1,39 +1,37 @@
 # Platform Config Layering
 
 This directory holds fallback defaults for devkit-owned local runtime compose
-commands. Canonical tenant environment values come from `harbor`,
-not from devkit-local secrets files.
+commands. Required tenant runtime values come from the typed
+`ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON` operator input, not from checked-in or
+devkit-local secrets files.
 
 ## Platform Runtime Generation
 
 `platform runtime ...` resolves configuration in this order:
 
 ```text
-harbor config/runtime-environments.toml
--> selected generated runtime env file
--> platform/config/base.env fallback defaults
+platform/config/base.env safe compose fallbacks
++ ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON
++ selected stack local configuration
+= selected generated runtime env file
 ```
 
-`ODOO_CONTROL_PLANE_ROOT` must point at the control-plane checkout when runtime
-commands need tenant environment truth.
+The payload context and instance must exactly match the manifest-selected
+runtime. Missing or mismatched input fails closed.
 
-## Raw Compose Loading
+## Raw Compose
 
-Raw `docker compose` commands that bypass `platform runtime ...` still use the
-compose `env_file` entries directly:
-
-```text
-.env (optional)
--> platform/config/base.env
-```
-
-Prefer `platform runtime ...` for tenant work so environment authority remains
-single-source.
+Raw `docker compose` bypasses the typed runtime resolver and is not a supported
+tenant runtime input path. Use `platform runtime ...`; the compose fragments now
+require its generated `PLATFORM_RUNTIME_ENV_FILE` instead of falling back to a
+repo-local `.env` file.
 
 ## Rules
 
-- Keep tenant secrets and canonical stack values in control-plane environment
-  contracts.
+- Keep local tenant secrets in operator-local secret storage and inject them
+  through the typed runtime payload.
+- Keep shared/testing/prod values in Launchplane-managed runtime records and
+  secrets.
 - Keep `platform/config/base.env` limited to shared fallback defaults.
 - If a canonical value conflicts with `base.env`, tooling fails closed and asks
   for the duplicate to be aligned or removed.

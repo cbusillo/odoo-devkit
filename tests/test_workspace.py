@@ -1,17 +1,30 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from odoo_devkit import workspace
 from odoo_devkit.cli import build_parser
 from odoo_devkit.manifest import load_workspace_manifest
+from odoo_devkit.runtime_environment import RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR
 from odoo_devkit.workspace import clean_workspace, resolve_workspace_path, sync_workspace, workspace_status
 
 
 class WorkspaceSyncTestCase(unittest.TestCase):
+    def test_internal_git_commands_exclude_runtime_payload(self) -> None:
+        completed_process = mock.Mock(returncode=0, stdout="main\n", stderr="")
+        with mock.patch.dict(os.environ, {RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR: "test-payload"}):
+            with mock.patch("odoo_devkit.workspace.subprocess.run", return_value=completed_process) as run_mock:
+                result = workspace._git_output(Path("."), "rev-parse", "--abbrev-ref", "HEAD")
+
+        self.assertEqual(result, "main")
+        self.assertNotIn(RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR, run_mock.call_args.kwargs["env"])
+
     def test_sync_creates_workspace_lock_and_pycharm_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
@@ -578,12 +591,15 @@ attached_paths = ["sources/devkit"]
             self.assertIn("sources/tenant/scripts/workspace-status", workspace_agents_contents)
             self.assertIn("AGENTS.override.md", workspace_agents_contents)
             self.assertIn("Legacy or disposable local runtime output", workspace_agents_contents)
+            self.assertIn("ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON", workspace_agents_contents)
             self.assertIn("sources/tenant/scripts/workspace-sync", workspace_docs_contents)
             self.assertIn("sources/tenant/scripts/workspace-status", workspace_docs_contents)
+            self.assertIn("ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON", workspace_docs_contents)
             self.assertIn(
                 "launchplane for remote release and non-local data actions",
                 workspace_session_prompt_contents,
             )
+            self.assertIn("ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON", workspace_session_prompt_contents)
 
     def test_cli_parser_accepts_workspace_run_remainder(self) -> None:
         parser = build_parser()

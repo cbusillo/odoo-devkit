@@ -12,6 +12,7 @@ from pathlib import Path
 from .manifest import RepoDefinition, WorkspaceManifest
 from .pycharm import write_pycharm_support_files
 from .runtime import resolve_runtime_repo_path
+from .runtime_environment import sanitized_subprocess_environment
 from .workspace_surface import write_workspace_surface_files
 
 
@@ -313,7 +314,13 @@ def _assert_managed_repo_origin(repo_path: Path, *, repo_definition: RepoDefinit
 
 
 def _run_git_command(repo_path: Path | None, *arguments: str) -> None:
-    completed_process = subprocess.run(["git", *arguments], cwd=repo_path, capture_output=True, text=True)
+    completed_process = subprocess.run(
+        ["git", *arguments],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        env=sanitized_subprocess_environment(),
+    )
     if completed_process.returncode != 0:
         stderr = completed_process.stderr.strip()
         stdout = completed_process.stdout.strip()
@@ -464,7 +471,13 @@ def _describe_repo_state(role: str, repo_definition: RepoDefinition, repo_path: 
 
 
 def _git_output(repo_path: Path, *arguments: str) -> str | None:
-    completed_process = subprocess.run(["git", *arguments], cwd=repo_path, capture_output=True, text=True)
+    completed_process = subprocess.run(
+        ["git", *arguments],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        env=sanitized_subprocess_environment(),
+    )
     if completed_process.returncode != 0:
         return None
     output = completed_process.stdout.strip()
@@ -472,14 +485,26 @@ def _git_output(repo_path: Path, *arguments: str) -> str | None:
 
 
 def _git_is_work_tree(repo_path: Path) -> bool:
-    completed_process = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], cwd=repo_path, capture_output=True, text=True)
+    completed_process = subprocess.run(
+        ["git", "rev-parse", "--is-inside-work-tree"],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        env=sanitized_subprocess_environment(),
+    )
     if completed_process.returncode != 0:
         return False
     return completed_process.stdout.strip() == "true"
 
 
 def _git_dirty(repo_path: Path) -> bool:
-    completed_process = subprocess.run(["git", "status", "--short"], cwd=repo_path, capture_output=True, text=True)
+    completed_process = subprocess.run(
+        ["git", "status", "--short"],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        env=sanitized_subprocess_environment(),
+    )
     if completed_process.returncode != 0:
         return False
     return bool(completed_process.stdout.strip())

@@ -60,7 +60,8 @@ When
 - Legacy or disposable local runtime output under `state/`, when an older
   workspace still has it.
 - Optional local `AGENTS.override.md` for non-secret implementation facts that
-  should stay out of generated docs. Secrets still belong in `.env`.
+  should stay out of generated docs. Local runtime secrets are injected through
+  `ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON`, not stored in workspace files.
 
 ### Control plane
 
