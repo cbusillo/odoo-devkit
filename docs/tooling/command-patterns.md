@@ -31,6 +31,12 @@ uv run platform workspace sync --manifest /path/to/workspace.toml
 uv run platform workspace status --manifest /path/to/workspace.toml
 ```
 
+- Fail closed before relying on generated guidance:
+
+```bash
+uv run platform workspace status --manifest /path/to/workspace.toml --check
+```
+
 - Safely inspect the selected local runtime after operator setup:
 
 ```bash
@@ -65,7 +71,7 @@ uv run platform workspace scaffold-tenant-overlay \
 1. Edit code in the tenant repo or `odoo-devkit`.
 2. Re-run `workspace sync` when the workspace contract or generated surface
    changes.
-3. Start Every Code from the workspace root.
+3. Start Every Code or Codex Lab from the workspace root.
 4. Keep PyCharm opened on the tenant repo.
 
 ## What To Check After `workspace sync`
@@ -81,8 +87,9 @@ uv run platform workspace scaffold-tenant-overlay \
 
 - Do not hand-edit generated workspace-root cockpit files.
 - If the workspace surface is wrong, fix `odoo-devkit` and re-sync.
-- Keep implementation-specific, non-secret local facts in an untracked
-  `AGENTS.override.md`; keep credentials in operator-local secret storage
-  outside the repo.
+- Keep supplemental, non-secret local facts in an untracked
+  `workspace.local.md`; keep credentials in operator-local secret storage
+  outside the repo. Treat `AGENTS.override.md` as an intentional full
+  replacement, never additive notes.
 - Keep tenant repo docs thin; use the generated workspace docs index for shared
   guidance.

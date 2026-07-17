@@ -11,7 +11,7 @@ into the generated workspace root.
   surface.
 - Keep the human-facing split clear:
   - PyCharm opens the tenant repo.
-  - Every Code starts from the materialized workspace root.
+  - Every Code and Codex Lab start from the materialized workspace root.
   - `odoo-devkit` owns the shared instructions and generators that make that
     split coherent.
 

@@ -4,8 +4,9 @@ title: Shared Roles
 
 Purpose
 
-- Define role expectations and outputs for Every Code work that applies across
-  tenant repos and the generated workspace root.
+- Define role expectations and outputs for coding-agent work in Every Code,
+  Codex Lab, and other compatible harnesses across tenant repos and the
+  generated workspace root.
 
 When
 
