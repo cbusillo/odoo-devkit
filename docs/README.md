@@ -13,7 +13,7 @@ lanes live in `launchplane`.
 - [../README.md](../README.md) for the current bootstrap scope and command
   surface.
 - [ARCHITECTURE.md](ARCHITECTURE.md) for the workspace-first ownership model.
-- [roles.md](roles.md) for shared Every Code role expectations.
+- [roles.md](roles.md) for shared coding-agent role expectations.
 - [tooling/workspace-cli.md](tooling/workspace-cli.md) for the workspace
   command surface and generated-output contract.
 - [tooling/artifact-inputs.md](tooling/artifact-inputs.md) for the repo-owned
@@ -26,7 +26,8 @@ lanes live in `launchplane`.
 ## Shared Responsibilities
 
 - Define how `workspace.toml` is interpreted.
-- Generate the workspace-root Every Code surface.
+- Generate the workspace-root coding-agent surface consumed by Every Code and
+  Codex Lab.
 - Generate PyCharm metadata and run configurations while keeping the IDE
   tenant-focused.
 - Own the pure PyCharm Odoo-conf rendering helper shared by tenant repos.
@@ -49,6 +50,6 @@ lanes live in `launchplane`.
 
 - Tenant repos should link back here for shared operating guidance instead of
   copying the full shared docs tree.
-- The generated workspace root is the shared Every Code cockpit, but the source
-  of truth for these docs remains in `odoo-devkit`.
+- The generated workspace root is the shared coding-agent workspace, but the
+  source of truth for these docs remains in `odoo-devkit`.
 - Tenant overlay starter files live under `templates/tenant-overlay/`.

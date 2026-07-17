@@ -4,8 +4,8 @@ Treat this file as the thin tenant-specific overlay for a tenant repo.
 
 ## Start Here
 
-- Use the shared workspace-root `AGENTS.md` as the main Every Code operating
-  guide.
+- Use the shared workspace-root `AGENTS.md` as the canonical coding-agent guide
+  for Every Code and Codex Lab.
 - Use `odoo-devkit` docs for shared DX/runtime/bootstrap behavior.
 - Keep this file focused on tenant-specific domain notes, repo-local guardrails,
   and links to tenant-owned docs.

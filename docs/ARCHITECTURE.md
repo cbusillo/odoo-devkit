@@ -16,7 +16,7 @@ When
 ## Core Shape
 
 - PyCharm opens the tenant repo directly.
-- Every Code starts from the materialized workspace root.
+- Every Code and Codex Lab start from the materialized workspace root.
 - `odoo-devkit` owns the shared local DX/runtime/bootstrap contract.
 - The control plane owns canonical deploy/build tuples and release-sensitive
   behavior.
@@ -39,7 +39,7 @@ When
 ### `odoo-devkit`
 
 - Manifest parsing and workspace assembly.
-- Generated workspace-root surface for Every Code.
+- Generated workspace-root surface for coding agents.
 - Shared AGENTS/docs/runtime guidance.
 - Generated PyCharm metadata and run configurations for the tenant repo.
 - Devkit-owned local runtime bundle (`docker-compose.yml`, `platform/stack.toml`,
@@ -53,15 +53,17 @@ When
 
 ### Materialized workspace root
 
-- Generated cockpit for Every Code.
+- Generated coding-agent workspace.
 - Materialized `sources/tenant`, `sources/devkit`, and optional
-  `sources/shared-addons`.
+  `sources/shared-addons` and distinct `sources/runtime` roles.
 - Generated runtime output under `.generated/`.
 - Legacy or disposable local runtime output under `state/`, when an older
   workspace still has it.
-- Optional local `AGENTS.override.md` for non-secret implementation facts that
-  should stay out of generated docs. Local runtime secrets are injected through
-  `ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON`, not stored in workspace files.
+- Optional local `workspace.local.md` for supplemental non-secret facts that
+  should stay out of generated docs. `AGENTS.override.md` is reserved as a full
+  replacement by Codex Lab, not an additive notes file. Local runtime secrets
+  are injected through `ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON`, not stored in
+  workspace files.
 
 ### Control plane
 
@@ -88,17 +90,18 @@ When
     README.md
   workspace.lock.toml
   .generated/
-  AGENTS.override.md  # optional local, untracked, non-secret operator notes
+  workspace.local.md  # optional supplemental, untracked, non-secret notes
   sources/
     tenant/
     devkit/
     shared-addons/
+    runtime/  # when a distinct runtime repo is declared
   state/  # legacy or disposable local runtime output when present
 ```
 
 ## Design Goal
 
 - Keep the IDE focused.
-- Keep the Every Code cockpit shared.
+- Keep the coding-agent workspace shared across supported harnesses.
 - Keep source-of-truth ownership explicit.
 - Keep the workspace rebuildable.

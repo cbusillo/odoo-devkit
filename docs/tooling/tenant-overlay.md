@@ -13,7 +13,8 @@ When
 
 - Keep the tenant repo focused on tenant-owned code and tenant-owned docs.
 - Keep shared DX/runtime/bootstrap guidance in `odoo-devkit`.
-- Keep the workspace root as the generated Every Code cockpit.
+- Keep the workspace root as the generated coding-agent workspace for Every
+  Code and Codex Lab.
 - Let the tenant repo keep thin run configurations and shell helpers that call
   the sibling `odoo-devkit` repo, while shared addon source stays explicit in
   the manifest.

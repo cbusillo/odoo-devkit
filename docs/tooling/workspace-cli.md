@@ -1,7 +1,8 @@
 # Workspace CLI
 
 `odoo-devkit` owns the manifest-driven workspace command surface used to build
-the Every Code cockpit and the local runtime assembly.
+the coding-agent workspace consumed by Every Code and Codex Lab, plus the local
+runtime assembly.
 
 Runtime ownership is split by target type:
 
@@ -23,6 +24,7 @@ Runtime ownership is split by target type:
 ```bash
 uv run platform workspace sync --manifest /path/to/workspace.toml
 uv run platform workspace status --manifest /path/to/workspace.toml
+uv run platform workspace status --manifest /path/to/workspace.toml --check
 uv run platform workspace scaffold-tenant-overlay \
   --output-dir /path/to/repo --tenant opw
 uv run platform workspace scaffold-cockpit-root \
@@ -64,7 +66,7 @@ Purpose
   refresh a managed checkout at `sources/runtime` for non-local runtime
   targets.
 - Generate runtime config under `.generated/`.
-- Generate the workspace-root Every Code surface:
+- Generate the canonical workspace-root coding-agent surface:
   - `AGENTS.md`
   - `docs/README.md`
   - `docs/session-prompt.md`
@@ -75,10 +77,27 @@ Purpose
 
 Purpose
 
-- Report whether the workspace exists.
-- Report whether the lock file and workspace-root cockpit files exist:
-  `AGENTS.md`, `docs/README.md`, and `docs/session-prompt.md`.
-- Report the tenant/devkit/shared-addons source paths and attached IDE roots.
+- Compare `AGENTS.md`, `docs/README.md`, and `docs/session-prompt.md` against the
+  current deterministic render, reporting each surface as current, stale,
+  missing, or disabled.
+- Compare the manifest hash and typed source map against `workspace.lock.toml`.
+- Report tenant, devkit, shared-addons, and distinct runtime source roles with
+  workspace-relative entrypoints, resolved paths, materialization type, and
+  editability.
+- Report each source repository kind as `git` or `directory`; non-Git path edit
+  roots omit unavailable Git baseline fields instead of producing false drift.
+- Keep managed repository URLs out of generated files and status output;
+  `workspace.lock.toml` records only their SHA-256 for contract comparison.
+- Report source commit/branch/dirty changes as baseline drift. Drift on editable
+  path-linked sources remains informational and does not make generated
+  guidance stale; drift on managed read-only checkouts fails `--check`.
+- Detect missing or repointed source links, invalid managed checkouts, and a
+  reserved root `AGENTS.override.md` that would shadow the canonical guide.
+- Reject a supplemental `workspace.local.md` that is a symlink or non-file so
+  the normal agent flow cannot be redirected outside the workspace notes file.
+- With `--check`, exit nonzero when the workspace, lock contract, manifest,
+  generated guidance, source materialization, or override state is not current.
+  Baseline drift on editable path-linked sources alone does not fail the check.
 
 ## `workspace scaffold-cockpit-root`
 
@@ -91,8 +110,10 @@ Purpose
   of hand-maintaining root markdown files.
 - Generate `AGENTS.md`, `docs/README.md`, and `docs/session-prompt.md` from
   that config.
-- Point operators to an optional local `AGENTS.override.md` for non-secret
-  implementation facts that must not be baked into generated shared docs.
+- Point operators to optional `workspace.local.md` for supplemental non-secret
+  facts that must not be baked into generated shared docs.
+- Document `AGENTS.override.md` as a deliberate full replacement in Codex Lab,
+  never the normal additive-notes path.
 - Keep non-repo workspace roots thin, link-heavy, and synced from
   `odoo-devkit` instead of hand-maintaining the same entrypoint docs.
 
@@ -105,7 +126,7 @@ Purpose
   tenant `workspace sync` surface.
 - Re-render both repo listings and section-level guidance bullets from the
   tracked cockpit config.
-- Preserve local-only notes by linking to `AGENTS.override.md` instead of
+- Preserve local-only notes by linking to `workspace.local.md` instead of
   copying implementation details into generated markdown.
 
 ## `workspace status-cockpit-root`
@@ -115,6 +136,8 @@ Purpose
 - Report whether the generated cockpit entrypoint files exist.
 - Report whether those files still match the current `workspace-cockpit.toml`
   render output.
+- Report the reserved root `AGENTS.override.md` and mark the cockpit non-current
+  when it would replace the canonical generated guide.
 - Give manual cockpit roots a native drift check before or after sync.
 
 ## `workspace clean`
@@ -302,7 +325,7 @@ Notes
 ## Ownership Rules
 
 - PyCharm should still open the tenant repo directly.
-- Every Code should start from the assembled workspace root.
+- Every Code and Codex Lab should start from the assembled workspace root.
 - Generated workspace-root files are a cockpit layer; they are not the
   source-of-truth repo.
 - If a generated file is wrong, change the generator in `odoo-devkit`.

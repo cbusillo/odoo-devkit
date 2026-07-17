@@ -12,9 +12,9 @@ The current workspace flow:
 - emits a `workspace.lock.toml` file with the exact assembled refs,
 - generates a minimal runtime config scaffold under `.generated/`, and
 - generates workspace-root `AGENTS.md`, `docs/README.md`, and
-  `docs/session-prompt.md` so Every Code can use the assembled workspace as a
-  shared cockpit without turning each tenant repo into a copy of the shared
-  operating guide, and
+  `docs/session-prompt.md` so Every Code, Codex Lab, and other coding-agent
+  consumers can use the assembled workspace without turning each tenant repo
+  into a copy of the shared operating guide, and
 - owns the pure PyCharm Odoo-conf helper and the starter templates for thin
   tenant overlays, and
 - writes PyCharm-visible shared run configurations for rare-but-important
@@ -32,6 +32,7 @@ in `launchplane`, not in branch-oriented `odoo-devkit` commands.
 ```bash
 uv run platform workspace sync --manifest /path/to/workspace.toml
 uv run platform workspace status --manifest /path/to/workspace.toml
+uv run platform workspace status --manifest /path/to/workspace.toml --check
 uv run platform workspace scaffold-tenant-overlay \
   --output-dir /path/to/repo --tenant opw
 uv run platform workspace scaffold-cockpit-root \
@@ -111,6 +112,19 @@ those workspaces.
   checkout exists.
 - Odoo core is still inherited from the runtime image/tooling chain rather than
   materialized as a separate checkout.
+- `workspace status` compares deterministic generated surfaces, the manifest
+  hash, source materialization, and the local lock snapshot. `--check` exits
+  nonzero for stale guidance or materialization while reporting ordinary source
+  commit/dirty changes on editable path-linked sources separately as
+  informational baseline drift. Baseline drift on managed read-only checkouts
+  fails the check.
+- Status exposes tenant, devkit, shared-addons, and distinct runtime roles with
+  workspace-relative entrypoints, resolved paths, materialization type, and
+  editability. Path-linked sources are edit roots; managed checkouts are not.
+- Use an optional regular-file `workspace.local.md` for supplemental non-secret
+  notes; symlinks and non-files fail the workspace check.
+  `AGENTS.override.md` is reserved full-replacement input in Codex Lab and its
+  presence fails the normal workspace status check.
 
 Current runtime ownership is intentionally narrow and explicit:
 
