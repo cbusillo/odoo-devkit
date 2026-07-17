@@ -27,6 +27,52 @@ When
 - `platform runtime` reads this file for source repository selection used by
   local runtime and publish flows.
 
+## Immutable publish handoff
+
+Before `platform runtime publish`, run `platform dependencies check` and commit
+the exact tenant, devkit, and shared-addon inputs. Publish fails closed for
+dirty source repos, nonordinary index flags or Git replacement refs, untracked
+or symlinked staged files, stale/missing tenant lock pairs, mutable VCS refs,
+source-supplied `.odoo-python-source.json` markers, or staged-byte changes.
+Devkit alone writes those markers from the verified Git snapshots used for the
+build. Each recorded source commit must also be advertised by a ref in its
+normalized GitHub origin; changing only `.git/config` cannot reattribute a
+local commit to another repository.
+
+The artifact build uses two explicit uv roots:
+
+- `/opt/runtime` contains devkit's static support/runtime catalog and lock; its
+  source locator remains `docker/runtime-python/uv.lock` in the devkit commit.
+- `/opt/project` contains the tenant root workspace, tenant lock, and the exact
+  tenant/shared-addon member metadata validated by the dependency checker.
+
+Artifact publish uses `docker/artifact.Dockerfile`; the existing
+`docker/Dockerfile` remains the local Compose build contract. Shared-addon
+members receive a nested source marker so package inventory attributes their
+installed distributions to the shared repository/commit while the tenant lock
+remains tenant-owned. Payload-owned config, scripts, external addons, and prior
+dependency evidence are cleared before the staged artifact inputs are copied,
+so base-image residue cannot survive into the final image.
+
+Both configured base images are resolved to registry digests before the build,
+and their OCI source/revision labels must agree across every requested
+platform. After Buildx pushes the artifact, devkit extracts dependency evidence
+from the resulting immutable image digest—not from the mutable tag—and emits
+Launchplane artifact-manifest schema v2.
+
+The v2 handoff records both lock hashes and source commits, exact per-platform
+Python package inventories, external compatibility descriptors, base-image
+provenance, devkit build-tool provenance, and the final artifact digest. It
+never persists secret values, authenticated URLs, local absolute paths, or
+operator-local overrides. Dependencies may not be installed after evidence is
+written; they must be represented by one of the two locks or exact external
+compatibility evidence.
+
+The current layout-2 producer marker contract uses GitHub-style
+`owner/repository` identities. A non-GitHub tenant, devkit, or shared-addon
+origin fails before build rather than passing a URL that the image producer
+cannot consume.
+
 ## Current schema
 
 ```toml

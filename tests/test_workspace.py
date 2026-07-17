@@ -641,6 +641,8 @@ attached_paths = ["sources/devkit"]
             self.assertIn("workspace.local.md", workspace_agents_contents)
             self.assertIn("Disposable local runtime state", workspace_agents_contents)
             self.assertIn("ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON", workspace_agents_contents)
+            self.assertIn("platform dependencies check", workspace_agents_contents)
+            self.assertIn("schema-v2 provenance", workspace_agents_contents)
             self.assertIn("sources/tenant/scripts/workspace-sync", workspace_docs_contents)
             self.assertIn("sources/tenant/scripts/workspace-status", workspace_docs_contents)
             self.assertIn("ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON", workspace_docs_contents)

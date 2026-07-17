@@ -35,6 +35,8 @@ uv run platform workspace status-cockpit-root \
   --config /path/to/workspace-root/workspace-cockpit.toml
 uv run platform workspace clean --manifest /path/to/workspace.toml
 uv run platform workspace run --manifest /path/to/workspace.toml -- pwd
+uv run platform dependencies inspect --manifest /path/to/workspace.toml
+uv run platform dependencies check --manifest /path/to/workspace.toml
 uv run platform runtime select --manifest /path/to/workspace.toml
 uv run platform runtime build --manifest /path/to/workspace.toml --no-cache
 uv run platform runtime up --manifest /path/to/workspace.toml --build
@@ -98,6 +100,35 @@ Purpose
 - With `--check`, exit nonzero when the workspace, lock contract, manifest,
   generated guidance, source materialization, or override state is not current.
   Baseline drift on editable path-linked sources alone does not fail the check.
+
+## `dependencies inspect` and `dependencies check`
+
+Purpose
+
+- Inspect tenant and shared-addon `pyproject.toml` files as one staged owned
+  dependency workspace without moving shared-addon ownership into the tenant
+  repository.
+- Require every owned addon project to set `tool.uv.package = false`, retain an
+  explicit exactly pinned build backend, and avoid `tool.uv.managed = false`,
+  mutable VCS refs, local/archive references, or `requirements*.txt` fallback.
+- When a tenant root `pyproject.toml` and `uv.lock` exist, require them as a
+  complete pair, expand workspace members against the combined staged layout,
+  and require the expanded members to exactly match all tenant and shared-addon
+  projects.
+- Run `uv lock --check --offline --no-config` against that combined staged
+  layout with operator `UV_*`/`PIP_*` overrides removed. Devkit does not parse
+  uv's lock internals as a substitute for uv's own currentness decision.
+- Treat publishable dependency metadata as Git-attributed input: root/member
+  pyprojects and the tenant lock must be tracked regular files, symlinks and
+  operator-local paths are rejected, and custom uv indexes/find-links cannot
+  enter the staged contract.
+- Allow a pure-addon workspace with no runtime Python dependency declarations
+  to remain lockless and current for local development. Such a workspace is
+  reported as `publishable = false` because Launchplane artifact schema v2
+  requires both support/runtime and tenant lock evidence; devkit never invents
+  a tenant lock that is absent from the tenant repository.
+- `inspect` prints structured JSON. `check` prints the same report and exits
+  nonzero when `current` is false.
 
 ## `workspace scaffold-cockpit-root`
 
@@ -282,12 +313,30 @@ Notes
 - `platform runtime build` follows the same local-only rule and gives tenant
   manifests a native build-only entry point when operators want image prep
   without starting the stack.
-- `platform runtime publish` is the release-handoff path. It stages tenant and
-  shared addon sources into a clean build context, resolves configured addon
-  repository selectors to exact git SHAs before build and artifact minting,
-  pushes the requested image tag, reads the pushed image digest from Buildx's
-  build metadata output, and writes a control-plane-compatible artifact manifest
-  JSON file.
+- `platform runtime publish` is the release-handoff path. It requires clean
+  tenant/devkit/shared Git commits; stages only tracked regular files; hashes
+  the exact support/runtime and tenant lock bytes; resolves configured addon
+  selectors to exact Git SHAs; resolves both base images to immutable digests
+  and verifies their OCI source/revision labels; then builds and pushes the
+  requested artifact tag.
+- After the push succeeds, publish reads the immutable artifact index digest
+  from Buildx metadata, extracts each target platform's dependency sidecar from
+  that digest, verifies the sidecars against the staged lock hashes and source
+  commits, and writes Launchplane artifact-manifest schema v2. The manifest
+  includes base-image/build-tool provenance, both uv locks, per-platform exact
+  Python package inventories, and external compatibility descriptors.
+- The artifact path uses `docker/artifact.Dockerfile`; local Compose continues
+  to use `docker/Dockerfile`. Support lock evidence identifies
+  `docker/runtime-python/uv.lock`, and nested shared-addon source markers keep
+  installed shared distributions attributed to the shared repository commit.
+- Publish does not mutate `/venv` after dependency evidence is written. An
+  OpenUpgrade or other Python dependency must be represented by the locked
+  support/tenant catalogs or by exact external compatibility evidence; an ad
+  hoc post-sync install is not part of the artifact contract.
+- `ODOO_PYTHON_SYNC_SKIP_ADDONS` is legacy-layout behavior and is rejected for
+  schema-v2 publish because exporting the full workspace lock while skipping a
+  member would make the evidence false. Remove the project from the tenant
+  workspace instead.
 - Non-local publish requires Launchplane to supply
   `ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON`. The payload is authoritative for
   artifact build runtime keys and can synthesize a missing context or instance
