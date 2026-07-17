@@ -52,10 +52,14 @@ class WorkspaceCockpitStatusResult:
     output_directory: Path
     manifest_path: Path
     file_statuses: tuple[WorkspaceCockpitFileStatus, ...]
+    reserved_override_path: Path
+    reserved_override_exists: bool
 
     @property
     def is_current(self) -> bool:
-        return all(file_status.exists and file_status.matches_expected for file_status in self.file_statuses)
+        return not self.reserved_override_exists and all(
+            file_status.exists and file_status.matches_expected for file_status in self.file_statuses
+        )
 
 
 def load_workspace_cockpit_manifest(manifest_path: Path) -> WorkspaceCockpitManifest:
@@ -140,6 +144,8 @@ def workspace_cockpit_status(
         output_directory=output_directory,
         manifest_path=manifest.manifest_path,
         file_statuses=tuple(file_statuses),
+        reserved_override_path=output_directory / "AGENTS.override.md",
+        reserved_override_exists=(output_directory / "AGENTS.override.md").exists(),
     )
 
 
@@ -190,8 +196,8 @@ def _render_workspace_agents(manifest: WorkspaceCockpitManifest) -> str:
     notes_lines = _render_markdown_bullets(manifest.agents_notes_lines)
     return (
         "# Workspace Cockpit\n\n"
-        "This workspace is the shared Every Code cockpit for multi-repo Odoo work.\n\n"
-        "- Start Every Code from this workspace root when the task spans multiple durable\n"
+        "This workspace is the shared coding-agent cockpit for multi-repo Odoo work.\n\n"
+        "- Start Every Code or Codex Lab from this workspace root when the task spans multiple durable\n"
         "  repos.\n"
         "- Treat the repos under `sources/` as the primary system under construction.\n\n"
         "## Repo map\n\n"
@@ -254,7 +260,7 @@ def _render_workspace_docs_index(manifest: WorkspaceCockpitManifest) -> str:
         f"{operational_note_lines}\n"
         "## Session prompt helper\n\n"
         "- Use [session-prompt.md](session-prompt.md) as the starting prompt template\n"
-        "  for a new multi-repo Every Code session.\n"
+        "  for a new multi-repo Every Code or Codex Lab session.\n"
     )
 
 
@@ -264,7 +270,7 @@ def _render_workspace_session_prompt(manifest: WorkspaceCockpitManifest) -> str:
     working_rule_lines = _render_plain_bullets(manifest.session_prompt_rule_lines)
     return (
         "# Session Prompt Template\n\n"
-        "Use this as a starting prompt for a new multi-repo Every Code session from the\n"
+        "Use this as a starting prompt for a new multi-repo Every Code or Codex Lab session from the\n"
         "workspace root.\n\n"
         "```text\n"
         "You are working in the shared Odoo cockpit at the workspace root.\n\n"
@@ -323,7 +329,8 @@ def _render_plain_bullets(lines: tuple[str, ...]) -> str:
 def _default_agents_first_read_lines() -> tuple[str, ...]:
     return (
         "Open [docs/README.md](docs/README.md) in this workspace root first.",
-        "If present, open [AGENTS.override.md](AGENTS.override.md) for local, non-secret operator details before touching infra, SSH, tunnels, or remote service configuration.",
+        "After the canonical guide, open [workspace.local.md](workspace.local.md) if present for supplemental, non-secret local details.",
+        "Treat `AGENTS.override.md` as reserved full-replacement input in Codex Lab, never additive local notes.",
         "Use [sources/devkit/AGENTS.md](sources/devkit/AGENTS.md) for the canonical shared operating guide.",
         "Use [sources/devkit/docs/README.md](sources/devkit/docs/README.md) for the canonical shared docs index.",
         "Use the tenant-specific `workspace.toml` manifests when you need to run current local runtime commands through `odoo-devkit`.",

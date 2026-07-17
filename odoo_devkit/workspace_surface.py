@@ -4,6 +4,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .manifest import WorkspaceManifest
+from .workspace_contract import WorkspaceSource
+
+LOCAL_NOTES_PATH = "workspace.local.md"
+RESERVED_OVERRIDE_PATH = "AGENTS.override.md"
 
 
 @dataclass(frozen=True)
@@ -13,59 +17,93 @@ class WorkspaceSurfaceFiles:
     workspace_session_prompt_path: Path | None
 
 
+@dataclass(frozen=True)
+class WorkspaceSurfaceDefinition:
+    kind: str
+    path: Path
+    enabled: bool
+    contents: str | None
+
+
+def render_workspace_surface_files(
+    *,
+    manifest: WorkspaceManifest,
+    workspace_path: Path,
+    sources: tuple[WorkspaceSource, ...],
+) -> tuple[WorkspaceSurfaceDefinition, ...]:
+    agents_path = workspace_path / "AGENTS.md"
+    docs_index_path = workspace_path / "docs" / "README.md"
+    session_prompt_path = workspace_path / "docs" / "session-prompt.md"
+    return (
+        WorkspaceSurfaceDefinition(
+            kind="agents",
+            path=agents_path,
+            enabled=manifest.codex.workspace_agents,
+            contents=(
+                _render_workspace_agents(
+                    manifest=manifest,
+                    workspace_path=workspace_path,
+                    sources=sources,
+                )
+                if manifest.codex.workspace_agents
+                else None
+            ),
+        ),
+        WorkspaceSurfaceDefinition(
+            kind="docs_index",
+            path=docs_index_path,
+            enabled=manifest.codex.workspace_docs_index,
+            contents=(
+                _render_workspace_docs_index(
+                    manifest=manifest,
+                    workspace_path=workspace_path,
+                    sources=sources,
+                )
+                if manifest.codex.workspace_docs_index
+                else None
+            ),
+        ),
+        WorkspaceSurfaceDefinition(
+            kind="session_prompt",
+            path=session_prompt_path,
+            enabled=manifest.codex.workspace_docs_index,
+            contents=(
+                _render_workspace_session_prompt(
+                    workspace_path=workspace_path,
+                    sources=sources,
+                )
+                if manifest.codex.workspace_docs_index
+                else None
+            ),
+        ),
+    )
+
+
 def write_workspace_surface_files(
     *,
     manifest: WorkspaceManifest,
     workspace_path: Path,
-    tenant_repo_path: Path,
-    devkit_repo_path: Path,
-    shared_addons_repo_path: Path | None,
+    sources: tuple[WorkspaceSource, ...],
 ) -> WorkspaceSurfaceFiles:
-    workspace_agents_path: Path | None = None
-    workspace_docs_index_path: Path | None = None
-    workspace_session_prompt_path: Path | None = None
-
-    if manifest.codex.workspace_agents:
-        workspace_agents_path = workspace_path / "AGENTS.md"
-        workspace_agents_path.write_text(
-            _render_workspace_agents(
-                manifest=manifest,
-                workspace_path=workspace_path,
-                tenant_repo_path=tenant_repo_path,
-                devkit_repo_path=devkit_repo_path,
-                shared_addons_repo_path=shared_addons_repo_path,
-            ),
-            encoding="utf-8",
-        )
-
-    if manifest.codex.workspace_docs_index:
-        workspace_docs_index_path = workspace_path / "docs" / "README.md"
-        workspace_docs_index_path.parent.mkdir(parents=True, exist_ok=True)
-        workspace_docs_index_path.write_text(
-            _render_workspace_docs_index(
-                manifest=manifest,
-                workspace_path=workspace_path,
-                tenant_repo_path=tenant_repo_path,
-                devkit_repo_path=devkit_repo_path,
-                shared_addons_repo_path=shared_addons_repo_path,
-            ),
-            encoding="utf-8",
-        )
-        workspace_session_prompt_path = workspace_path / "docs" / "session-prompt.md"
-        workspace_session_prompt_path.write_text(
-            _render_workspace_session_prompt(
-                workspace_path=workspace_path,
-                tenant_repo_path=tenant_repo_path,
-                devkit_repo_path=devkit_repo_path,
-                shared_addons_repo_path=shared_addons_repo_path,
-            ),
-            encoding="utf-8",
-        )
+    written_paths: dict[str, Path] = {}
+    for definition in render_workspace_surface_files(
+        manifest=manifest,
+        workspace_path=workspace_path,
+        sources=sources,
+    ):
+        if not definition.enabled:
+            if definition.path.exists() or definition.path.is_symlink():
+                definition.path.unlink()
+            continue
+        assert definition.contents is not None
+        definition.path.parent.mkdir(parents=True, exist_ok=True)
+        definition.path.write_text(definition.contents, encoding="utf-8")
+        written_paths[definition.kind] = definition.path
 
     return WorkspaceSurfaceFiles(
-        workspace_agents_path=workspace_agents_path,
-        workspace_docs_index_path=workspace_docs_index_path,
-        workspace_session_prompt_path=workspace_session_prompt_path,
+        workspace_agents_path=written_paths.get("agents"),
+        workspace_docs_index_path=written_paths.get("docs_index"),
+        workspace_session_prompt_path=written_paths.get("session_prompt"),
     )
 
 
@@ -73,67 +111,60 @@ def _render_workspace_agents(
     *,
     manifest: WorkspaceManifest,
     workspace_path: Path,
-    tenant_repo_path: Path,
-    devkit_repo_path: Path,
-    shared_addons_repo_path: Path | None,
+    sources: tuple[WorkspaceSource, ...],
 ) -> str:
-    shared_addons_source_path = shared_addons_repo_path.resolve() if shared_addons_repo_path is not None else None
+    tenant_source = _required_source(sources, "tenant")
+    devkit_source = _required_source(sources, "devkit")
     tenant_workspace_sync_command = _render_tenant_workspace_command(
-        tenant_repo_path=tenant_repo_path,
+        tenant_repo_path=tenant_source.resolved_path,
         script_name="workspace-sync",
-        fallback_command=f"uv --directory {devkit_repo_path} run platform workspace sync --manifest {manifest.manifest_path}",
+        fallback_command=(
+            f"uv --directory {devkit_source.resolved_path} run platform workspace sync --manifest {manifest.manifest_path}"
+        ),
     )
     tenant_workspace_status_command = _render_tenant_workspace_command(
-        tenant_repo_path=tenant_repo_path,
+        tenant_repo_path=tenant_source.resolved_path,
         script_name="workspace-status",
-        fallback_command=f"uv --directory {devkit_repo_path} run platform workspace status --manifest {manifest.manifest_path}",
-    )
-    shared_addons_source_of_truth = (
-        f"- `sources/shared-addons/` resolves to `{shared_addons_source_path}`. Edit shared addon code in that source repo path, not by treating the workspace as the owner."
-        if shared_addons_source_path is not None
-        else "- No separate shared-addons source is materialized for this workspace yet."
-    )
-    shared_addons_pointer = (
-        f"- `sources/shared-addons/` points to `{shared_addons_repo_path}`."
-        if shared_addons_repo_path is not None
-        else "- `sources/shared-addons/` is not present in this workspace."
+        fallback_command=(
+            f"uv --directory {devkit_source.resolved_path} run platform workspace status --manifest {manifest.manifest_path}"
+        ),
     )
     return (
+        "<!-- Generated by `platform workspace sync`; do not edit this file directly. -->\n\n"
         "# AGENTS.md — Workspace Operating Guide\n\n"
-        "This file is generated by `uv run platform workspace sync`. Treat the workspace root as the shared Every Code cockpit for this tenant while keeping hand-edited source-of-truth changes in the underlying repos.\n\n"
+        "This is the canonical coding-agent guide for the generated tenant workspace. "
+        "Every Code and Codex Lab should start from this workspace root, while durable changes remain in the source repos listed below.\n\n"
         "## Start Here\n\n"
-        "- Open `docs/README.md` in this workspace root first. It routes to the shared devkit docs and the tenant-specific docs.\n"
-        "- If present, open `AGENTS.override.md` for local, non-secret operator details before touching infra, SSH, tunnels, or remote service configuration. Keep secrets in operator-local secret storage outside the workspace.\n"
+        "- Open `docs/README.md` in this workspace root first. It routes to shared devkit and tenant-specific docs.\n"
+        f"- After this guide, open `{LOCAL_NOTES_PATH}` if it exists for supplemental, non-secret local notes.\n"
+        f"- `{RESERVED_OVERRIDE_PATH}` is reserved full replacement input: when present, Codex Lab loads it instead of this file. "
+        "It is never the normal additive-notes path, and `workspace status --check` reports its presence.\n"
         "- For the deeper shared operating guide, open `sources/devkit/AGENTS.md`.\n"
         "- For workspace command details, open `sources/devkit/docs/tooling/workspace-cli.md`.\n"
-        "- Use `sources/tenant/` for the active tenant source tree. PyCharm should still open that tenant repo directly by default.\n"
-        "- Use `sources/devkit/` for shared DX/runtime/tooling ownership. That repo is the canonical owner of the shared operating guide and docs used to generate this workspace surface.\n"
-        "- Treat `platform runtime` as the home for local runtime work and artifact handoff. Stable remote lanes are `testing` and `prod`; Launchplane PR previews replace a durable `dev` lane; remote restore/bootstrap/update and release actions such as ship/promote/gate stay in `launchplane`.\n"
-        "- Before local runtime commands, inject the context/instance-scoped `ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON` payload from operator-local secret storage. Never put it in the manifest, generated workspace files, or checked-in env/secrets files.\n"
-        f"{shared_addons_pointer}\n"
-        "- Treat `.generated/` as managed output only. Treat `state/`, when present, as legacy or disposable local runtime output; it should not become a long-term home for hand-edited code or secrets.\n\n"
-        "## Source Of Truth Rules\n\n"
-        f"- Tenant handwritten code lives in `sources/tenant/` and resolves to `{tenant_repo_path}`.\n"
-        f"- Shared DX/docs/runtime guidance lives in `sources/devkit/` and resolves to `{devkit_repo_path}`.\n"
-        f"{shared_addons_source_of_truth}\n"
-        "- Generated runtime files live under `.generated/`. Legacy or disposable local runtime output may live under `state/` when an older workspace still has it.\n"
-        f"- The tracked manifest that defines this workspace is `{manifest.manifest_path}`.\n\n"
+        "- Keep secrets in operator-local secret storage outside the workspace. Never put credentials in the manifest, generated files, status output, or local notes.\n\n"
+        "## Source Roles And Edit Roots\n\n"
+        f"{_render_source_guidance_lines(sources)}\n\n"
+        "Only sources marked editable are edit roots. Managed checkouts are detached dependency materializations and must not be edited in place.\n\n"
+        "## Ownership Boundary\n\n"
+        "- `odoo-devkit` owns workspace generation, local runtime workflows, and immutable artifact handoff.\n"
+        "- Launchplane owns shared/production live mutations, preview lifecycle, deployment, promotion, release gates, restore, bootstrap, and update orchestration.\n"
+        "- Stable remote lanes are `testing` and `prod`; Launchplane PR previews replace a durable shared `dev` lane.\n"
+        "- Before local runtime commands, inject the context/instance-scoped `ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON` payload from operator-local secret storage. Never persist that payload in the workspace.\n\n"
         "## Workspace Commands\n\n"
         f"- Resync this workspace with `{tenant_workspace_sync_command}`.\n"
         f"- Inspect workspace status with `{tenant_workspace_status_command}`.\n"
+        f"- Fail closed before relying on generated guidance with `{tenant_workspace_status_command} --check`.\n"
         "- Use the generated PyCharm run configurations from the tenant repo for infrequent but important workflows.\n\n"
         "## Editing Guardrails\n\n"
-        "- Do not move source-of-truth docs or code into the workspace root just because Every Code starts here. The workspace root is a generated cockpit, not the canonical repo.\n"
+        "- Do not move source-of-truth docs or code into the workspace root just because an agent starts here. The workspace root is generated, not canonical.\n"
         "- Keep tenant repo root docs thin and tenant-specific. Keep shared operating guidance in `odoo-devkit`, then surface it here during sync.\n"
-        "- For non-trivial work, prefer small validated checkpoint commits in the source repos, use them as the base for review follow-ups, and clean up temporary branches/worktrees as you go. See `sources/devkit/AGENTS.md` for the shared workflow rule.\n"
         "- If a path is generated, prefer fixing the generator in `sources/devkit/` instead of editing the generated output directly.\n\n"
         "## Current Layout\n\n"
         f"- Workspace root: `{workspace_path}`\n"
-        "- Tenant checkout: `sources/tenant/`\n"
-        "- Shared devkit checkout: `sources/devkit/`\n"
-        "- Shared addons checkout: `sources/shared-addons/` when declared\n"
+        f"{_render_source_map_lines(sources)}"
         "- Generated runtime output: `.generated/`\n"
-        "- Legacy or disposable local runtime output: `state/` when present\n"
+        "- Disposable local runtime state: `state/`\n"
+        f"- Tracked workspace manifest: `{manifest.manifest_path}`\n"
     )
 
 
@@ -141,78 +172,76 @@ def _render_workspace_docs_index(
     *,
     manifest: WorkspaceManifest,
     workspace_path: Path,
-    tenant_repo_path: Path,
-    devkit_repo_path: Path,
-    shared_addons_repo_path: Path | None,
+    sources: tuple[WorkspaceSource, ...],
 ) -> str:
-    shared_addons_source_path = shared_addons_repo_path.resolve() if shared_addons_repo_path is not None else None
+    tenant_source = _required_source(sources, "tenant")
+    devkit_source = _required_source(sources, "devkit")
     tenant_workspace_sync_command = _render_tenant_workspace_command(
-        tenant_repo_path=tenant_repo_path,
+        tenant_repo_path=tenant_source.resolved_path,
         script_name="workspace-sync",
-        fallback_command=f"uv --directory {devkit_repo_path} run platform workspace sync --manifest {manifest.manifest_path}",
+        fallback_command=(
+            f"uv --directory {devkit_source.resolved_path} run platform workspace sync --manifest {manifest.manifest_path}"
+        ),
     )
     tenant_workspace_status_command = _render_tenant_workspace_command(
-        tenant_repo_path=tenant_repo_path,
+        tenant_repo_path=tenant_source.resolved_path,
         script_name="workspace-status",
-        fallback_command=f"uv --directory {devkit_repo_path} run platform workspace status --manifest {manifest.manifest_path}",
+        fallback_command=(
+            f"uv --directory {devkit_source.resolved_path} run platform workspace status --manifest {manifest.manifest_path}"
+        ),
     )
     tenant_docs_line = _render_optional_link_line(
         label="Tenant docs",
         relative_target=Path("../sources/tenant/docs/README.md"),
-        absolute_target=tenant_repo_path / "docs" / "README.md",
+        absolute_target=tenant_source.resolved_path / "docs" / "README.md",
         fallback_text="Tenant docs index is not present yet; keep tenant-specific notes in the tenant repo.",
     )
     shared_devkit_docs_line = _render_optional_link_line(
         label="Shared devkit docs",
         relative_target=Path("../sources/devkit/docs/README.md"),
-        absolute_target=devkit_repo_path / "docs" / "README.md",
+        absolute_target=devkit_source.resolved_path / "docs" / "README.md",
         fallback_text="Shared devkit docs index is not present yet.",
     )
     shared_workspace_cli_line = _render_optional_link_line(
         label="Shared workspace CLI guide",
         relative_target=Path("../sources/devkit/docs/tooling/workspace-cli.md"),
-        absolute_target=devkit_repo_path / "docs" / "tooling" / "workspace-cli.md",
+        absolute_target=devkit_source.resolved_path / "docs" / "tooling" / "workspace-cli.md",
         fallback_text="Shared workspace CLI guide is not present yet.",
     )
     shared_command_patterns_line = _render_optional_link_line(
         label="Shared workspace command patterns",
         relative_target=Path("../sources/devkit/docs/tooling/command-patterns.md"),
-        absolute_target=devkit_repo_path / "docs" / "tooling" / "command-patterns.md",
+        absolute_target=devkit_source.resolved_path / "docs" / "tooling" / "command-patterns.md",
         fallback_text="Shared workspace command-patterns guide is not present yet.",
     )
     shared_architecture_line = _render_optional_link_line(
         label="Shared workspace architecture",
         relative_target=Path("../sources/devkit/docs/ARCHITECTURE.md"),
-        absolute_target=devkit_repo_path / "docs" / "ARCHITECTURE.md",
+        absolute_target=devkit_source.resolved_path / "docs" / "ARCHITECTURE.md",
         fallback_text="Shared workspace architecture guide is not present yet.",
     )
     shared_roles_line = _render_optional_link_line(
         label="Shared roles guide",
         relative_target=Path("../sources/devkit/docs/roles.md"),
-        absolute_target=devkit_repo_path / "docs" / "roles.md",
+        absolute_target=devkit_source.resolved_path / "docs" / "roles.md",
         fallback_text="Shared roles guide is not present yet.",
     )
     tenant_overlay_line = _render_optional_link_line(
         label="Tenant overlay guide",
         relative_target=Path("../sources/devkit/docs/tooling/tenant-overlay.md"),
-        absolute_target=devkit_repo_path / "docs" / "tooling" / "tenant-overlay.md",
+        absolute_target=devkit_source.resolved_path / "docs" / "tooling" / "tenant-overlay.md",
         fallback_text="Tenant overlay guide is not present yet.",
     )
     devkit_agents_line = _render_optional_link_line(
         label="Shared devkit guide",
         relative_target=Path("../sources/devkit/AGENTS.md"),
-        absolute_target=devkit_repo_path / "AGENTS.md",
+        absolute_target=devkit_source.resolved_path / "AGENTS.md",
         fallback_text="Shared devkit AGENTS file is not present yet.",
     )
-    shared_addons_line = (
-        f"- Shared addons source repo: `../sources/shared-addons/` -> `{shared_addons_source_path}`\n"
-        if shared_addons_source_path is not None
-        else ""
-    )
-    session_prompt_line = "- [Session prompt template](session-prompt.md)\n"
     return (
+        "<!-- Generated by `platform workspace sync`; do not edit this file directly. -->\n\n"
         "# Workspace Docs\n\n"
-        "This index is generated by `workspace sync`. Use it as the top-level Every Code map for the materialized workspace.\n\n"
+        "This is the generated top-level documentation map for Every Code, Codex Lab, and other coding-agent consumers.\n\n"
         "## Primary Guides\n\n"
         "- [Workspace operating guide](../AGENTS.md)\n"
         f"{shared_devkit_docs_line}"
@@ -223,12 +252,10 @@ def _render_workspace_docs_index(
         f"{tenant_overlay_line}"
         f"{devkit_agents_line}"
         f"{tenant_docs_line}"
-        f"{session_prompt_line}"
+        "- [Session prompt template](session-prompt.md)\n"
         "\n"
-        "## Source Trees\n\n"
-        f"- Tenant repo: `../sources/tenant/` -> `{tenant_repo_path}`\n"
-        f"- Shared devkit repo: `../sources/devkit/` -> `{devkit_repo_path}`\n"
-        f"{shared_addons_line}"
+        "## Source Roles\n\n"
+        f"{_render_source_map_lines(sources, prefix='../')}"
         "\n"
         "## Generated Runtime Files\n\n"
         "- [Generated Odoo config](../.generated/odoo.conf)\n"
@@ -237,48 +264,49 @@ def _render_workspace_docs_index(
         "- [Workspace lock file](../workspace.lock.toml)\n"
         "\n"
         "## Working Agreement\n\n"
-        f"- Every Code should start from this workspace root for `{manifest.tenant}` so shared docs and runtime context stay visible.\n"
+        f"- Every Code and Codex Lab should start from this workspace root for `{manifest.tenant}` so shared docs and runtime context stay visible.\n"
         "- PyCharm should keep opening the tenant repo directly so search/indexing stays focused on the client code.\n"
         f"- Preferred tenant-root sync command: `{tenant_workspace_sync_command}`.\n"
         f"- Preferred tenant-root status command: `{tenant_workspace_status_command}`.\n"
-        "- Treat `platform runtime` as the local-runtime and artifact-handoff surface. Stable remote lanes are `testing` and `prod`; Launchplane PR previews replace a durable `dev` lane; remote restore/bootstrap/update and release actions belong in `launchplane`.\n"
+        f"- Required pre-task guidance check: `{tenant_workspace_status_command} --check`.\n"
+        "- `odoo-devkit` owns local runtime and immutable artifact handoff; Launchplane owns remote mutation, preview lifecycle, deployment, promotion, release gates, restore, bootstrap, and update orchestration.\n"
         "- Local runtime commands require `ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON` from operator-local secret storage; generated workspace files never store that payload.\n"
         "- When in doubt about ownership, fix the source repo under `sources/` instead of editing generated files in the workspace root.\n"
+        "\n"
+        "## Local Notes And Overrides\n\n"
+        f"- Use `../{LOCAL_NOTES_PATH}` for supplemental, non-secret local notes.\n"
+        f"- `{RESERVED_OVERRIDE_PATH}` is a full replacement for the root guide in Codex Lab, not an additive notes file. Its presence fails the normal status check.\n"
     )
 
 
 def _render_workspace_session_prompt(
     *,
     workspace_path: Path,
-    tenant_repo_path: Path,
-    devkit_repo_path: Path,
-    shared_addons_repo_path: Path | None,
+    sources: tuple[WorkspaceSource, ...],
 ) -> str:
-    shared_addons_source_path = shared_addons_repo_path.resolve() if shared_addons_repo_path is not None else None
-    shared_addons_line = f"- sources/shared-addons -> {shared_addons_source_path}\n" if shared_addons_source_path is not None else ""
     return (
+        "<!-- Generated by `platform workspace sync`; do not edit this file directly. -->\n\n"
         "# Session Prompt Template\n\n"
-        "Use this as a starting prompt for a new Every Code session from the generated workspace root.\n\n"
+        "Use this as a starting prompt for a new Every Code or Codex Lab session from the generated workspace root.\n\n"
         "```text\n"
         "You are working from a generated Odoo workspace root.\n\n"
         "Start by reading:\n"
         "- AGENTS.md in the workspace root\n"
-        "- docs/README.md in the workspace root\n\n"
+        "- docs/README.md in the workspace root\n"
+        f"- {LOCAL_NOTES_PATH}, if present, only after the canonical guide\n\n"
         f"Working root:\n- {workspace_path}\n\n"
         "Source tree map:\n"
-        f"- sources/tenant -> {tenant_repo_path}\n"
-        f"- sources/devkit -> {devkit_repo_path}\n"
-        f"{shared_addons_line}"
+        f"{_render_source_map_lines(sources)}"
         "\n"
         "Working rules:\n"
         "- Treat the workspace root as a generated cockpit, not the source of truth.\n"
-        "- Keep tenant code in sources/tenant.\n"
-        "- Keep shared DX/runtime/workspace behavior in odoo-devkit.\n"
-        "- Use platform runtime for local runtime and artifact handoff.\n"
+        "- Edit only source roles marked editable; never edit a managed checkout in place.\n"
+        "- Keep shared DX/runtime/workspace behavior in odoo-devkit and tenant behavior in the tenant repo.\n"
+        "- Use platform runtime for local runtime and immutable artifact handoff.\n"
         "- Inject ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON from operator-local secret storage before local runtime commands; never write it into generated workspace files.\n"
-        "- Use launchplane for remote release and non-local data actions.\n"
-        "- Stable remote lanes are testing and prod.\n"
-        "- Launchplane PR previews replace any durable shared dev lane.\n"
+        "- Use Launchplane for remote mutation, previews, deployment, promotion, maintenance orchestration, and release gates.\n"
+        "- Stable remote lanes are testing and prod; Launchplane PR previews replace any durable shared dev lane.\n"
+        f"- Treat {RESERVED_OVERRIDE_PATH} as a deliberate full replacement, never supplemental notes.\n"
         "- When generated files disagree with source repos, fix the source repo or generator rather than hand-editing generated output.\n"
         "```\n"
     )
@@ -289,6 +317,53 @@ def _render_tenant_workspace_command(*, tenant_repo_path: Path, script_name: str
     if script_path.exists():
         return f"sources/tenant/scripts/{script_name}"
     return fallback_command
+
+
+def _required_source(sources: tuple[WorkspaceSource, ...], role: str) -> WorkspaceSource:
+    source = next((candidate for candidate in sources if candidate.role == role), None)
+    if source is None:
+        raise ValueError(f"Workspace source role is missing: {role}")
+    return source
+
+
+def _source_label(role: str) -> str:
+    return {
+        "tenant": "Tenant source",
+        "devkit": "Shared devkit source",
+        "shared_addons": "Shared addons source",
+        "runtime": "Runtime source",
+    }.get(role, f"{role.replace('_', ' ').title()} source")
+
+
+def _workspace_source_path(source: WorkspaceSource) -> str:
+    return source.workspace_relative_path.as_posix().rstrip("/") + "/"
+
+
+def _render_source_guidance_lines(sources: tuple[WorkspaceSource, ...]) -> str:
+    lines: list[str] = []
+    for source in sources:
+        label = _source_label(source.role)
+        workspace_source_path = _workspace_source_path(source)
+        if source.editable:
+            lines.append(
+                f"- {label} is editable at `{workspace_source_path}` and resolves to `{source.resolved_path}`. "
+                "Keep source-of-truth changes in that repo."
+            )
+        else:
+            source_ref = f" at `{source.declared_ref}`" if source.declared_ref is not None else ""
+            lines.append(
+                f"- {label} is a managed checkout at `{workspace_source_path}`{source_ref}. "
+                "Treat it as read-only; change the source repository or manifest ref instead of editing the checkout."
+            )
+    return "\n".join(lines)
+
+
+def _render_source_map_lines(sources: tuple[WorkspaceSource, ...], *, prefix: str = "") -> str:
+    return "".join(
+        f"- {_source_label(source.role)}: `{prefix}{_workspace_source_path(source)}` -> `{source.resolved_path}` "
+        f"(`{source.materialization}`, {'editable' if source.editable else 'read-only'})\n"
+        for source in sources
+    )
 
 
 def _render_optional_link_line(

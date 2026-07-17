@@ -133,9 +133,12 @@ command = ["uv", "--directory", "$PROJECT_DIR$/../odoo-devkit", "run", "platform
             self.assertIn(str(tenant_repo_path), workspace_agents_contents)
             self.assertIn(str(devkit_repo_path), workspace_agents_contents)
             self.assertIn(str((tenant_repo_path / "addons" / "shared").resolve()), workspace_agents_contents)
+            self.assertIn("Every Code and Codex Lab", workspace_agents_contents)
+            self.assertIn("workspace.local.md", workspace_agents_contents)
+            self.assertIn("full replacement", workspace_agents_contents)
             self.assertIn("Stable remote lanes are `testing` and `prod`", workspace_agents_contents)
-            self.assertIn("Launchplane PR previews replace a durable `dev` lane", workspace_agents_contents)
-            self.assertIn("release actions such as ship/promote/gate stay in `launchplane`", workspace_agents_contents)
+            self.assertIn("Launchplane PR previews replace a durable shared `dev` lane", workspace_agents_contents)
+            self.assertIn("Launchplane owns shared/production live mutations", workspace_agents_contents)
 
             workspace_docs_index_contents = result.workspace_docs_index_path.read_text(encoding="utf-8")
             self.assertIn("Workspace Docs", workspace_docs_index_contents)
@@ -146,12 +149,9 @@ command = ["uv", "--directory", "$PROJECT_DIR$/../odoo-devkit", "run", "platform
             self.assertIn("Shared workspace command patterns", workspace_docs_index_contents)
             self.assertIn("Tenant overlay guide", workspace_docs_index_contents)
             self.assertIn(str((tenant_repo_path / "addons" / "shared").resolve()), workspace_docs_index_contents)
-            self.assertIn("Stable remote lanes are `testing` and `prod`", workspace_docs_index_contents)
-            self.assertIn("Launchplane PR previews replace a durable `dev` lane", workspace_docs_index_contents)
-            self.assertIn(
-                "remote restore/bootstrap/update and release actions belong in `launchplane`",
-                workspace_docs_index_contents,
-            )
+            self.assertIn("Every Code and Codex Lab", workspace_docs_index_contents)
+            self.assertIn("Required pre-task guidance check", workspace_docs_index_contents)
+            self.assertIn("Launchplane owns remote mutation", workspace_docs_index_contents)
 
             workspace_session_prompt_contents = result.workspace_session_prompt_path.read_text(encoding="utf-8")
             self.assertIn("Session Prompt Template", workspace_session_prompt_contents)
@@ -159,6 +159,7 @@ command = ["uv", "--directory", "$PROJECT_DIR$/../odoo-devkit", "run", "platform
             self.assertIn(str(tenant_repo_path), workspace_session_prompt_contents)
             self.assertIn(str(devkit_repo_path), workspace_session_prompt_contents)
             self.assertIn("generated cockpit, not the source of truth", workspace_session_prompt_contents)
+            self.assertIn("Every Code or Codex Lab", workspace_session_prompt_contents)
             self.assertIn("Stable remote lanes are testing and prod", workspace_session_prompt_contents)
             self.assertIn("Launchplane PR previews replace any durable shared dev lane", workspace_session_prompt_contents)
 
@@ -172,6 +173,8 @@ command = ["uv", "--directory", "$PROJECT_DIR$/../odoo-devkit", "run", "platform
             self.assertIn("[repos.tenant]", lock_contents)
             self.assertIn("[repos.devkit]", lock_contents)
             self.assertIn("[repos.runtime]", lock_contents)
+            self.assertIn("[agent_workspace]", lock_contents)
+            self.assertIn('reserved_override_semantics = "full_replacement"', lock_contents)
 
     def test_sync_materializes_shared_addons_from_repo_url_and_ref(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -253,8 +256,41 @@ attached_paths = ["sources/shared-addons", "sources/devkit"]
 
             lock_contents = result.lock_file_path.read_text(encoding="utf-8")
             self.assertIn("[repos.shared_addons]", lock_contents)
-            self.assertIn(f'declared_url = "{shared_addons_repo_path}"', lock_contents)
+            self.assertIn("declared_url_sha256", lock_contents)
+            self.assertNotIn(str(shared_addons_repo_path), lock_contents)
             self.assertIn('declared_ref = "main"', lock_contents)
+            status_payload = workspace_status(manifest=manifest, devkit_repo_path=devkit_repo_path)
+            shared_source_status = next(
+                source_status for source_status in status_payload["sources"] if source_status["role"] == "shared_addons"
+            )
+            self.assertEqual(shared_source_status["materialization"], "managed_checkout")
+            self.assertFalse(shared_source_status["editable"])
+            self.assertTrue(shared_source_status["materialization_current"])
+            self.assertIn("Treat it as read-only", result.workspace_agents_path.read_text(encoding="utf-8"))
+
+            (materialized_shared_addons_path / "local-edit.txt").write_text("do not edit managed checkouts\n", encoding="utf-8")
+            managed_drift_status = workspace_status(manifest=manifest, devkit_repo_path=devkit_repo_path)
+            self.assertFalse(managed_drift_status["current"])
+            self.assertTrue(managed_drift_status["surface_current"])
+            self.assertFalse(managed_drift_status["managed_source_baseline_current"])
+            self.assertIn("managed_source_baseline_drift:shared_addons", managed_drift_status["stale_reasons"])
+            parser = build_parser()
+            arguments = parser.parse_args(["workspace", "status", "--manifest", str(manifest_path), "--check"])
+            with mock.patch("odoo_devkit.cli._discover_repo_root", return_value=devkit_repo_path):
+                with mock.patch("builtins.print"):
+                    with self.assertRaisesRegex(SystemExit, "1"):
+                        arguments.handler(arguments)
+            (materialized_shared_addons_path / "local-edit.txt").unlink()
+
+            unsafe_lock_contents = result.lock_file_path.read_text(encoding="utf-8").replace(
+                "[repos.shared_addons]\n",
+                '[repos.shared_addons]\ndeclared_url = "https://operator:secret@example.invalid/repo.git"\n',
+            )
+            result.lock_file_path.write_text(unsafe_lock_contents, encoding="utf-8")
+            unsafe_lock_status = workspace_status(manifest=manifest, devkit_repo_path=devkit_repo_path)
+            self.assertFalse(unsafe_lock_status["current"])
+            self.assertIn("lock_source_contract_mismatch:shared_addons", unsafe_lock_status["stale_reasons"])
+            self.assertNotIn("operator:secret", json.dumps(unsafe_lock_status))
 
     def test_sync_materializes_runtime_repo_from_url_and_ref(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -327,8 +363,15 @@ attached_paths = ["sources/devkit"]
             lock_contents = result.lock_file_path.read_text(encoding="utf-8")
             self.assertIn("[repos.runtime]", lock_contents)
             self.assertIn(f'resolved_path = "{materialized_runtime_repo_path.resolve()}"', lock_contents)
-            self.assertIn(f'declared_url = "{runtime_repo_path}"', lock_contents)
+            self.assertIn("declared_url_sha256", lock_contents)
             self.assertIn('declared_ref = "main"', lock_contents)
+            status_payload = workspace_status(manifest=manifest, devkit_repo_path=devkit_repo_path)
+            runtime_source_status = next(
+                source_status for source_status in status_payload["sources"] if source_status["role"] == "runtime"
+            )
+            self.assertEqual(runtime_source_status["materialization"], "managed_checkout")
+            self.assertFalse(runtime_source_status["editable"])
+            self.assertTrue(runtime_source_status["materialization_current"])
 
     def test_status_reports_existing_workspace_after_sync(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -376,6 +419,11 @@ attached_paths = ["sources/devkit"]
             self.assertTrue(status_payload["workspace_agents_exists"])
             self.assertTrue(status_payload["workspace_docs_index_exists"])
             self.assertTrue(status_payload["workspace_session_prompt_exists"])
+            self.assertTrue(status_payload["current"])
+            self.assertTrue(status_payload["surface_current"])
+            self.assertTrue(status_payload["materialization_current"])
+            self.assertEqual([source["role"] for source in status_payload["sources"]], ["tenant", "devkit"])
+            self.assertEqual([source["role"] for source in status_payload["edit_roots"]], ["tenant", "devkit"])
             self.assertEqual(
                 status_payload["attached_paths"], [str((resolve_workspace_path(manifest) / "sources" / "devkit").resolve())]
             )
@@ -590,21 +638,276 @@ attached_paths = ["sources/devkit"]
             self.assertIn("sources/tenant/scripts/workspace-sync", workspace_agents_contents)
             self.assertIn("sources/tenant/scripts/workspace-status", workspace_agents_contents)
             self.assertIn("AGENTS.override.md", workspace_agents_contents)
-            self.assertIn("Legacy or disposable local runtime output", workspace_agents_contents)
+            self.assertIn("workspace.local.md", workspace_agents_contents)
+            self.assertIn("Disposable local runtime state", workspace_agents_contents)
             self.assertIn("ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON", workspace_agents_contents)
             self.assertIn("sources/tenant/scripts/workspace-sync", workspace_docs_contents)
             self.assertIn("sources/tenant/scripts/workspace-status", workspace_docs_contents)
             self.assertIn("ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON", workspace_docs_contents)
             self.assertIn(
-                "launchplane for remote release and non-local data actions",
+                "Launchplane for remote mutation",
                 workspace_session_prompt_contents,
             )
             self.assertIn("ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON", workspace_session_prompt_contents)
+
+    def test_status_detects_manifest_and_generated_surface_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = self._create_git_repo(temp_root / "tenant-repo")
+            devkit_repo_path = self._create_git_repo(temp_root / "devkit-repo")
+            manifest_path = self._write_minimal_manifest(tenant_repo_path)
+            manifest = load_workspace_manifest(manifest_path)
+            result = sync_workspace(manifest=manifest, devkit_repo_path=devkit_repo_path)
+
+            result.workspace_agents_path.write_text("tampered\n", encoding="utf-8")
+            stale_surface_status = workspace_status(manifest=manifest, devkit_repo_path=devkit_repo_path)
+            self.assertFalse(stale_surface_status["current"])
+            self.assertIn("surface_stale:agents", stale_surface_status["stale_reasons"])
+            agents_status = next(
+                surface_status for surface_status in stale_surface_status["surfaces"] if surface_status["kind"] == "agents"
+            )
+            self.assertEqual(agents_status["state"], "stale")
+
+            sync_workspace(manifest=manifest, devkit_repo_path=devkit_repo_path)
+            manifest_path.write_text(manifest_path.read_text(encoding="utf-8") + "# manifest drift\n", encoding="utf-8")
+            stale_manifest_status = workspace_status(manifest=manifest, devkit_repo_path=devkit_repo_path)
+            self.assertFalse(stale_manifest_status["current"])
+            self.assertFalse(stale_manifest_status["manifest"]["current"])
+            self.assertIn("manifest_changed_since_sync", stale_manifest_status["stale_reasons"])
+            self.assertTrue(stale_manifest_status["surface_current"])
+
+    def test_status_reports_disabled_surfaces_without_missing_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = self._create_git_repo(temp_root / "tenant-repo")
+            devkit_repo_path = self._create_git_repo(temp_root / "devkit-repo")
+            manifest_path = self._write_minimal_manifest(tenant_repo_path)
+            enabled_manifest = load_workspace_manifest(manifest_path)
+            enabled_result = sync_workspace(manifest=enabled_manifest, devkit_repo_path=devkit_repo_path)
+            self.assertTrue(enabled_result.workspace_agents_path.exists())
+
+            self._write_minimal_manifest(
+                tenant_repo_path,
+                codex="""
+[codex]
+workspace_agents = false
+workspace_docs_index = false
+""",
+            )
+            disabled_manifest = load_workspace_manifest(manifest_path)
+            disabled_result = sync_workspace(manifest=disabled_manifest, devkit_repo_path=devkit_repo_path)
+            status_payload = workspace_status(manifest=disabled_manifest, devkit_repo_path=devkit_repo_path)
+
+            self.assertIsNone(disabled_result.workspace_agents_path)
+            self.assertIsNone(disabled_result.workspace_docs_index_path)
+            self.assertIsNone(disabled_result.workspace_session_prompt_path)
+            self.assertTrue(status_payload["current"])
+            self.assertTrue(status_payload["surface_current"])
+            self.assertEqual({surface["state"] for surface in status_payload["surfaces"]}, {"disabled"})
+            self.assertTrue(all(not surface["exists"] for surface in status_payload["surfaces"]))
+
+    def test_status_reports_symlink_drift_and_clean_sync_restores_current_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = self._create_git_repo(temp_root / "tenant-repo")
+            alternate_tenant_repo_path = self._create_git_repo(temp_root / "alternate-tenant-repo")
+            devkit_repo_path = self._create_git_repo(temp_root / "devkit-repo")
+            manifest = load_workspace_manifest(self._write_minimal_manifest(tenant_repo_path))
+            result = sync_workspace(manifest=manifest, devkit_repo_path=devkit_repo_path)
+            tenant_entry_path = result.workspace_path / "sources" / "tenant"
+
+            tenant_entry_path.unlink()
+            tenant_entry_path.symlink_to(alternate_tenant_repo_path)
+            drifted_status = workspace_status(manifest=manifest, devkit_repo_path=devkit_repo_path)
+            self.assertFalse(drifted_status["current"])
+            self.assertFalse(drifted_status["materialization_current"])
+            self.assertIn("source_materialization_mismatch:tenant", drifted_status["stale_reasons"])
+
+            clean_workspace(manifest=manifest)
+            sync_workspace(manifest=manifest, devkit_repo_path=devkit_repo_path)
+            restored_status = workspace_status(manifest=manifest, devkit_repo_path=devkit_repo_path)
+            self.assertTrue(restored_status["current"])
+            self.assertTrue(restored_status["materialization_current"])
+
+    def test_status_reports_path_sources_and_informational_baseline_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = self._create_git_repo(temp_root / "tenant-repo")
+            devkit_repo_path = self._create_git_repo(temp_root / "devkit-repo")
+            shared_addons_repo_path = self._create_git_repo(temp_root / "shared-addons-repo")
+            runtime_repo_path = self._create_git_repo(temp_root / "runtime-repo")
+            manifest_path = self._write_minimal_manifest(
+                tenant_repo_path,
+                extra_repos=f"""
+[repos.shared_addons]
+name = "shared-addons-repo"
+path = "{shared_addons_repo_path}"
+
+[repos.runtime]
+name = "runtime-repo"
+path = "{runtime_repo_path}"
+""",
+            )
+            subprocess.run(["git", "add", "workspace.toml"], cwd=tenant_repo_path, check=True, capture_output=True)
+            subprocess.run(
+                ["git", "commit", "-m", "add workspace manifest"],
+                cwd=tenant_repo_path,
+                check=True,
+                capture_output=True,
+            )
+            manifest = load_workspace_manifest(manifest_path)
+            result = sync_workspace(manifest=manifest, devkit_repo_path=devkit_repo_path)
+            current_status = workspace_status(manifest=manifest, devkit_repo_path=devkit_repo_path)
+
+            self.assertTrue(current_status["current"])
+            self.assertEqual(
+                [source["role"] for source in current_status["sources"]],
+                ["tenant", "devkit", "shared_addons", "runtime"],
+            )
+            self.assertTrue(all(source["editable"] for source in current_status["sources"]))
+            self.assertTrue(all(source["materialization"] == "linked_path" for source in current_status["sources"]))
+            self.assertEqual((result.workspace_path / "sources" / "runtime").resolve(), runtime_repo_path.resolve())
+            self.assertIn("Runtime source", result.workspace_agents_path.read_text(encoding="utf-8"))
+
+            (tenant_repo_path / "README.md").write_text("changed\n", encoding="utf-8")
+            drifted_status = workspace_status(manifest=manifest, devkit_repo_path=devkit_repo_path)
+            tenant_status = next(source for source in drifted_status["sources"] if source["role"] == "tenant")
+            self.assertTrue(drifted_status["current"])
+            self.assertTrue(drifted_status["surface_current"])
+            self.assertFalse(drifted_status["source_baseline_current"])
+            self.assertIn("dirty", tenant_status["baseline_drift"])
+
+    def test_status_reports_non_git_path_edit_root_without_false_baseline_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = self._create_git_repo(temp_root / "tenant-repo")
+            devkit_repo_path = self._create_git_repo(temp_root / "devkit-repo")
+            shared_addons_path = temp_root / "shared-addons-directory"
+            (shared_addons_path / "addons").mkdir(parents=True)
+            (shared_addons_path / "README.md").write_text("# non-git shared addons\n", encoding="utf-8")
+            manifest = load_workspace_manifest(
+                self._write_minimal_manifest(
+                    tenant_repo_path,
+                    extra_repos=f"""
+[repos.shared_addons]
+name = "shared-addons-directory"
+path = "{shared_addons_path}"
+""",
+                )
+            )
+
+            sync_workspace(manifest=manifest, devkit_repo_path=devkit_repo_path)
+            status_payload = workspace_status(manifest=manifest, devkit_repo_path=devkit_repo_path)
+            shared_source_status = next(
+                source_status for source_status in status_payload["sources"] if source_status["role"] == "shared_addons"
+            )
+
+            self.assertTrue(status_payload["current"])
+            self.assertTrue(status_payload["source_baseline_current"])
+            self.assertEqual(shared_source_status["current_repo_state"]["repo_kind"], "directory")
+            self.assertEqual(shared_source_status["baseline"]["repo_kind"], "directory")
+            self.assertIsNone(shared_source_status["current_repo_state"]["dirty"])
+            self.assertEqual(shared_source_status["baseline_drift"], [])
+
+    def test_reserved_override_fails_check_while_local_notes_remain_supplemental(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = self._create_git_repo(temp_root / "tenant-repo")
+            devkit_repo_path = self._create_git_repo(temp_root / "devkit-repo")
+            manifest = load_workspace_manifest(self._write_minimal_manifest(tenant_repo_path))
+            result = sync_workspace(manifest=manifest, devkit_repo_path=devkit_repo_path)
+            workspace_agents_contents = result.workspace_agents_path.read_text(encoding="utf-8")
+            self.assertIn("workspace.local.md", workspace_agents_contents)
+            self.assertIn("loads it instead of this file", workspace_agents_contents)
+
+            (result.workspace_path / "workspace.local.md").write_text("local non-secret note\n", encoding="utf-8")
+            local_notes_status = workspace_status(manifest=manifest, devkit_repo_path=devkit_repo_path)
+            self.assertTrue(local_notes_status["current"])
+            self.assertTrue(local_notes_status["local_notes"]["exists"])
+            self.assertTrue(local_notes_status["local_notes"]["valid"])
+
+            (result.workspace_path / "workspace.local.md").unlink()
+            (result.workspace_path / "workspace.local.md").symlink_to(tenant_repo_path / "README.md")
+            invalid_local_notes_status = workspace_status(manifest=manifest, devkit_repo_path=devkit_repo_path)
+            self.assertFalse(invalid_local_notes_status["current"])
+            self.assertFalse(invalid_local_notes_status["local_notes"]["valid"])
+            self.assertIn("local_notes_invalid", invalid_local_notes_status["stale_reasons"])
+            (result.workspace_path / "workspace.local.md").unlink()
+
+            (result.workspace_path / "AGENTS.override.md").write_text("replacement\n", encoding="utf-8")
+            override_status = workspace_status(manifest=manifest, devkit_repo_path=devkit_repo_path)
+            self.assertFalse(override_status["current"])
+            self.assertTrue(override_status["reserved_override"]["exists"])
+            self.assertEqual(override_status["reserved_override"]["semantics"], "full_replacement")
+            self.assertIn("reserved_agents_override_present", override_status["stale_reasons"])
+
+    def test_cli_workspace_status_check_exits_nonzero_for_stale_guidance(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = self._create_git_repo(temp_root / "tenant-repo")
+            devkit_repo_path = self._create_git_repo(temp_root / "devkit-repo")
+            manifest_path = self._write_minimal_manifest(tenant_repo_path)
+            manifest = load_workspace_manifest(manifest_path)
+            result = sync_workspace(manifest=manifest, devkit_repo_path=devkit_repo_path)
+            parser = build_parser()
+            arguments = parser.parse_args(["workspace", "status", "--manifest", str(manifest_path), "--check"])
+
+            with mock.patch("odoo_devkit.cli._discover_repo_root", return_value=devkit_repo_path):
+                with mock.patch("builtins.print"):
+                    arguments.handler(arguments)
+
+            result.workspace_agents_path.write_text("stale\n", encoding="utf-8")
+            with mock.patch("odoo_devkit.cli._discover_repo_root", return_value=devkit_repo_path):
+                with mock.patch("builtins.print"):
+                    with self.assertRaisesRegex(SystemExit, "1"):
+                        arguments.handler(arguments)
 
     def test_cli_parser_accepts_workspace_run_remainder(self) -> None:
         parser = build_parser()
         parsed_arguments = parser.parse_args(["workspace", "run", "--manifest", "workspace.toml", "--", "pwd"])
         self.assertEqual(parsed_arguments.command, ["--", "pwd"])
+
+    @staticmethod
+    def _write_minimal_manifest(
+        tenant_repo_path: Path,
+        *,
+        extra_repos: str = "",
+        codex: str = "",
+    ) -> Path:
+        manifest_path = tenant_repo_path / "workspace.toml"
+        manifest_path.write_text(
+            f"""
+schema_version = 1
+tenant = "opw"
+
+[workspace]
+name = "opw"
+python = "3.13"
+workspace_root = "../workspaces"
+
+[repos.tenant]
+name = "tenant-repo"
+path = "."
+
+{extra_repos.strip()}
+
+[runtime]
+context = "opw"
+instance = "local"
+database = "opw"
+addons_paths = ["sources/tenant/addons"]
+
+[ide]
+mode = "tenant_repo"
+focus_paths = ["addons"]
+attached_paths = ["sources/devkit"]
+
+{codex.strip()}
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        return manifest_path
 
     @staticmethod
     def _create_git_repo(repo_path: Path) -> Path:

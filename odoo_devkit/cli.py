@@ -46,6 +46,11 @@ def build_parser() -> argparse.ArgumentParser:
     sync_parser.set_defaults(handler=_handle_workspace_sync)
 
     status_parser = _add_manifest_argument(workspace_subparsers.add_parser("status", help="Report workspace status"))
+    status_parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Exit nonzero when generated guidance, its lock, or source materialization is not current",
+    )
     status_parser.set_defaults(handler=_handle_workspace_status)
 
     clean_parser = _add_manifest_argument(workspace_subparsers.add_parser("clean", help="Delete the assembled workspace"))
@@ -228,6 +233,8 @@ def _handle_workspace_status(arguments: argparse.Namespace) -> None:
     manifest = _load_manifest(arguments.manifest)
     summary = workspace_status(manifest=manifest, devkit_repo_path=_discover_repo_root())
     print(json.dumps(summary, indent=2, sort_keys=True))
+    if arguments.check and not summary["current"]:
+        raise SystemExit(1)
 
 
 def _handle_workspace_clean(arguments: argparse.Namespace) -> None:
@@ -306,6 +313,8 @@ def _handle_workspace_status_cockpit_root(arguments: argparse.Namespace) -> None
                 "manifest_path": str(result.manifest_path),
                 "output_directory": str(result.output_directory),
                 "is_current": result.is_current,
+                "reserved_override_path": str(result.reserved_override_path),
+                "reserved_override_exists": result.reserved_override_exists,
                 "file_statuses": [
                     {
                         "path": str(file_status.path),
