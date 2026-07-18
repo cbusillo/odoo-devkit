@@ -339,12 +339,16 @@ Notes
   workspace instead.
 - Non-local publish requires Launchplane to supply
   `ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON`. The payload is authoritative for
-  artifact build runtime keys and can synthesize a missing context or instance
-  instead of requiring hosted lanes in the shared devkit stack. Synthesized
-  contexts do not inherit stack-level install-module lists; their artifact
-  install intent comes from managed-instance required modules plus any
-  repo-owned `website-bootstrap.toml` modules. Unknown contexts and non-local
-  instances fail closed without the explicit payload.
+  artifact build runtime keys and deliberately excludes deployment-only
+  database/master secrets. Publish enforces stack-required values only when
+  those keys are part of the artifact-build input contract; local and remote
+  runtime mutation commands retain the full stack required-key gate. The
+  payload can synthesize a missing context or instance instead of requiring
+  hosted lanes in the shared devkit stack. Synthesized contexts do not inherit
+  stack-level install-module lists; their artifact install intent comes from
+  managed-instance required modules plus any repo-owned
+  `website-bootstrap.toml` modules. Unknown contexts and non-local instances
+  fail closed without the explicit payload.
 - Publish-time GHCR credentials can be split by purpose. Private base image
   reads prefer `GHCR_READ_TOKEN`, artifact image pushes prefer `GHCR_TOKEN`,
   and private source checkout secrets still belong in the transient runtime

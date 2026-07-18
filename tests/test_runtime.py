@@ -166,15 +166,21 @@ class RuntimeCommandTests(unittest.TestCase):
         instance: str = "testing",
         odoo_version: str | None = "19.0",
         environment: dict[str, str] | None = None,
+        include_deployment_secrets: bool = True,
     ) -> None:
         payload_environment = {
-            "ODOO_MASTER_PASSWORD": "runtime-payload-master",
-            "ODOO_DB_USER": "odoo",
-            "ODOO_DB_PASSWORD": "runtime-payload-database",
             "GITHUB_TOKEN": "gh-token",
             "ODOO_BASE_RUNTIME_IMAGE": "ghcr.io/example/runtime:19.0-runtime",
             "ODOO_BASE_DEVTOOLS_IMAGE": "ghcr.io/example/devtools:19.0-devtools",
         }
+        if include_deployment_secrets:
+            payload_environment.update(
+                {
+                    "ODOO_MASTER_PASSWORD": "runtime-payload-master",
+                    "ODOO_DB_USER": "odoo",
+                    "ODOO_DB_PASSWORD": "runtime-payload-database",
+                }
+            )
         if odoo_version is not None:
             payload_environment["ODOO_VERSION"] = odoo_version
         payload_environment.update(environment or {})
@@ -2281,7 +2287,7 @@ sources = [
             self.assertEqual(synthesized.contexts["opw"].install_modules, ("opw_custom",))
             self.assertEqual(synthesized.contexts["opw"].instances["testing"].database, "opw")
 
-    def test_native_runtime_publish_prefers_exact_payload_refs_over_stack_defaults(self) -> None:
+    def test_native_runtime_publish_accepts_build_only_payload_and_prefers_exact_refs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
             tenant_repo_path = self._create_git_repo(temp_root / "tenant-repo")
@@ -2312,6 +2318,7 @@ runtime_env = { ODOO_VERSION = "18.0", ODOO_BASE_RUNTIME_IMAGE = "ghcr.io/exampl
             subprocess.run(["git", "commit", "-m", "workspace manifest"], cwd=tenant_repo_path, check=True, capture_output=True)
             manifest = load_workspace_manifest(manifest_path)
             self._configure_publish_runtime_payload(
+                include_deployment_secrets=False,
                 environment={
                     "ODOO_VERSION": "20.0",
                     "ODOO_BASE_RUNTIME_IMAGE": "ghcr.io/example/runtime:20.0-runtime",
@@ -2322,7 +2329,7 @@ runtime_env = { ODOO_VERSION = "18.0", ODOO_BASE_RUNTIME_IMAGE = "ghcr.io/exampl
                         "git+https://github.com/OCA/openupgradelib.git@89e649728027a8ab656b3aa4be18f4bd364db417"
                     ),
                     "ODOO_PYTHON_SYNC_SKIP_ADDONS": "",
-                }
+                },
             )
 
             captured_build_args: list[str] = []
