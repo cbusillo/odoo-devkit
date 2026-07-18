@@ -90,8 +90,11 @@ Do not put the payload or its values in `workspace.toml`, generated workspace
 docs, checked-in config, `.env`, `platform/.env`, or
 `platform/secrets.toml`. Missing input, context/instance mismatches, non-string
 values, and legacy devkit-local env/secrets files fail closed. Non-local
-Launchplane artifact workflows may inject the same typed payload boundary;
-non-local mutation remains Launchplane-owned.
+Launchplane artifact workflows use the same typed payload envelope but include
+only artifact build inputs; they do not require or transmit database, master
+password, or other deployment-only secrets. A stack-required key is enforced
+during publish only when it is itself an artifact build input. Non-local
+mutation remains Launchplane-owned.
 
 ## Scope
 

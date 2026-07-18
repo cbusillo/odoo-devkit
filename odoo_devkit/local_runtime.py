@@ -524,6 +524,7 @@ def publish_runtime_artifact(
         manifest=manifest,
         runtime_repo_path=runtime_repo_path,
         require_local_instance=False,
+        enforce_required_environment=False,
     )
     runtime_values = build_runtime_env_values(
         runtime_context=runtime_context,
@@ -531,6 +532,7 @@ def publish_runtime_artifact(
         image_repository_override=normalized_image_repository,
         image_tag_override=normalized_image_tag,
         include_selection_sources=False,
+        required_environment_keys=(),
     )
     runtime_values = apply_publish_artifact_input_manifest(
         runtime_context=runtime_context,
@@ -541,7 +543,11 @@ def publish_runtime_artifact(
         runtime_values=runtime_values,
     )
     ensure_required_environment_mapping(
-        required_keys=runtime_context.stack.stack_definition.required_env_keys,
+        required_keys=tuple(
+            required_key
+            for required_key in runtime_context.stack.stack_definition.required_env_keys
+            if required_key in ARTIFACT_PUBLISH_RUNTIME_ENV_KEYS
+        ),
         environment_values=runtime_values,
         source_description="Resolved publish runtime environment",
     )
@@ -918,6 +924,7 @@ def load_runtime_context(
     manifest: WorkspaceManifest,
     runtime_repo_path: Path,
     require_local_instance: bool = True,
+    enforce_required_environment: bool = True,
 ) -> RuntimeContext:
     if require_local_instance:
         assert_local_instance(instance_name=manifest.runtime.instance, operation_name="platform runtime")
@@ -928,10 +935,11 @@ def load_runtime_context(
         context_name=manifest.runtime.context,
         instance_name=manifest.runtime.instance,
     )
-    ensure_required_environment_values(
-        stack_definition=loaded_stack.stack_definition,
-        loaded_environment=loaded_environment,
-    )
+    if enforce_required_environment:
+        ensure_required_environment_values(
+            stack_definition=loaded_stack.stack_definition,
+            loaded_environment=loaded_environment,
+        )
     try:
         artifact_inputs_definition = load_artifact_inputs_definition(manifest=manifest)
     except ArtifactInputsError as error:
@@ -954,11 +962,12 @@ def load_runtime_context(
         repo_root=runtime_repo_path,
         website_bootstrap=website_bootstrap,
     )
-    ensure_required_runtime_selection_values(
-        stack_definition=effective_stack_definition,
-        loaded_environment=loaded_environment,
-        runtime_selection=runtime_selection,
-    )
+    if enforce_required_environment:
+        ensure_required_runtime_selection_values(
+            stack_definition=effective_stack_definition,
+            loaded_environment=loaded_environment,
+            runtime_selection=runtime_selection,
+        )
     runtime_env_file = runtime_env_file_for_scope(
         repo_root=runtime_repo_path,
         context_name=manifest.runtime.context,
@@ -1863,6 +1872,7 @@ def build_runtime_env_values(
     image_repository_override: str | None = None,
     image_tag_override: str | None = None,
     include_selection_sources: bool = True,
+    required_environment_keys: tuple[str, ...] | None = None,
 ) -> dict[str, str]:
     stack_definition = runtime_context.stack.stack_definition
     runtime_selection = runtime_context.selection
@@ -1960,7 +1970,7 @@ def build_runtime_env_values(
         website_bootstrap=runtime_selection.website_bootstrap,
     )
     ensure_required_environment_mapping(
-        required_keys=stack_definition.required_env_keys,
+        required_keys=stack_definition.required_env_keys if required_environment_keys is None else required_environment_keys,
         environment_values=runtime_values,
         source_description="Resolved runtime environment",
     )
