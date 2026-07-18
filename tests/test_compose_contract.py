@@ -22,6 +22,19 @@ class ComposeContractTests(unittest.TestCase):
         self.assertNotIn("PLATFORM_RUNTIME_ENV_FILE:-.env", shared_compose_text)
         self.assertEqual(shared_compose_text.count("${PLATFORM_RUNTIME_ENV_FILE:?missing}"), 3)
 
+    def test_artifact_publish_uses_a_dedicated_two_lock_dockerfile(self) -> None:
+        repo_root = Path(__file__).resolve().parent.parent
+        local_dockerfile = (repo_root / "docker" / "Dockerfile").read_text(encoding="utf-8")
+        artifact_dockerfile = (repo_root / "docker" / "artifact.Dockerfile").read_text(encoding="utf-8")
+
+        self.assertNotIn("COPY /runtime /payload/opt/runtime", local_dockerfile)
+        self.assertNotIn("COPY /project /payload/opt/project", local_dockerfile)
+        self.assertIn("COPY /runtime /payload/opt/runtime", artifact_dockerfile)
+        self.assertIn("COPY /project /payload/opt/project", artifact_dockerfile)
+        self.assertNotIn("install_openupgradelib_if_needed.sh", artifact_dockerfile)
+        self.assertIn("rm -rf /opt/extra_addons", artifact_dockerfile)
+        self.assertIn("/opt/launchplane/evidence /volumes/config /volumes/scripts", artifact_dockerfile)
+
     def test_override_compose_file_owns_local_web_build(self) -> None:
         repo_root = Path(__file__).resolve().parent.parent
         override_compose_path = repo_root / "docker-compose.override.yml"

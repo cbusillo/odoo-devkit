@@ -10,6 +10,7 @@ The current workspace flow:
 - treats the active tenant checkout as the source of truth for handwritten
   code,
 - emits a `workspace.lock.toml` file with the exact assembled refs,
+- inspects combined tenant/shared-addon uv workspaces before artifact publish,
 - generates a minimal runtime config scaffold under `.generated/`, and
 - generates workspace-root `AGENTS.md`, `docs/README.md`, and
   `docs/session-prompt.md` so Every Code, Codex Lab, and other coding-agent
@@ -39,6 +40,8 @@ uv run platform workspace scaffold-cockpit-root \
   --output-dir /path/to/workspace-root --force
 uv run platform workspace clean --manifest /path/to/workspace.toml
 uv run platform workspace run --manifest /path/to/workspace.toml -- pwd
+uv run platform dependencies inspect --manifest /path/to/workspace.toml
+uv run platform dependencies check --manifest /path/to/workspace.toml
 uv run platform runtime select --manifest /path/to/workspace.toml
 uv run platform runtime build --manifest /path/to/workspace.toml --no-cache
 uv run platform runtime up --manifest /path/to/workspace.toml --build

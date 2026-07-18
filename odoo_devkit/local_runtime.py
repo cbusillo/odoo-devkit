@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -13,7 +14,7 @@ import time
 import tomllib
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TextIO
 
 from .artifact_inputs import (
@@ -21,6 +22,18 @@ from .artifact_inputs import (
     ArtifactInputsError,
     effective_artifact_input_sources,
     load_artifact_inputs_definition,
+)
+from .artifact_provenance import (
+    ArtifactProvenanceError,
+    aggregate_dependency_evidence,
+    normalize_git_commit,
+    normalize_repository_identity,
+)
+from .dependency_workspace import (
+    DependencyWorkspaceError,
+    require_staged_build_requirements_supplied,
+    require_staged_dependency_workspace_current,
+    stage_publishable_dependency_workspace,
 )
 from .ide_support import write_pycharm_odoo_conf
 from .manifest import WorkspaceManifest
@@ -30,6 +43,7 @@ ScalarValue = str | int | float | bool
 ScalarMap = dict[str, ScalarValue]
 DEFAULT_ARTIFACT_IMAGE_PLATFORMS = ("linux/amd64", "linux/arm64")
 GIT_SHA_PATTERN = re.compile(r"[0-9a-fA-F]{7,40}")
+DEPENDENCY_SOURCE_REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 ENVIRONMENT_VARIABLE_NAME_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 ARTIFACT_SOURCE_ENV_KEYS = ("ODOO_ADDON_REPOSITORIES", "OPENUPGRADE_ADDON_REPOSITORY")
 SOURCE_GITHUB_TOKEN_ENV_KEYS = ("ODOO_DEVKIT_SOURCE_GITHUB_TOKEN", "ODOO_SOURCE_GITHUB_TOKEN")
@@ -39,9 +53,11 @@ ARTIFACT_PUBLISH_RUNTIME_ENV_KEYS = (
     "ODOO_BASE_DEVTOOLS_IMAGE",
     "ODOO_ADDON_REPOSITORIES",
     "OPENUPGRADE_ADDON_REPOSITORY",
-    "OPENUPGRADELIB_INSTALL_SPEC",
     "ODOO_PYTHON_SYNC_SKIP_ADDONS",
 )
+ARTIFACT_PUBLISH_BUILD_ARG_KEYS = tuple(key for key in ARTIFACT_PUBLISH_RUNTIME_ENV_KEYS if key != "ODOO_PYTHON_SYNC_SKIP_ADDONS")
+DEPENDENCY_SOURCE_MARKER_FILE = ".odoo-python-source.json"
+DEPENDENCY_LAYOUT_MARKER_FILE = ".odoo-python-sync-layout"
 ODOO_INSTANCE_OVERRIDES_PAYLOAD_ENV_KEY = "ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64"
 LAUNCHPLANE_INSTANCE_OVERRIDES_REQUIRED_ENV_KEY = "LAUNCHPLANE_INSTANCE_OVERRIDES_REQUIRED"
 LAUNCHPLANE_WEBSITE_BOOTSTRAP_REQUIRED_ENV_KEY = "LAUNCHPLANE_WEBSITE_BOOTSTRAP_REQUIRED"
@@ -334,6 +350,44 @@ class RuntimeArtifactPublishResult:
     output_file: Path | None
 
 
+@dataclass(frozen=True)
+class GitSourceSnapshot:
+    label: str
+    repo_path: Path
+    repository: str
+    commit: str
+
+
+@dataclass(frozen=True)
+class BaseImageProvenance:
+    role: str
+    repository: str
+    digest: str
+    digest_reference: str
+    tags: tuple[str, ...]
+    source_repository: str
+    source_ref: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "role": self.role,
+            "image": {
+                "repository": self.repository,
+                "digest": self.digest,
+                "tags": list(self.tags),
+            },
+            "source_repository": self.source_repository,
+            "source_ref": self.source_ref,
+        }
+
+
+@dataclass(frozen=True)
+class StagedArtifactContext:
+    file_hashes: dict[str, str]
+    support_lock_sha256: str
+    tenant_lock_sha256: str
+
+
 class RuntimeCommandError(ValueError):
     pass
 
@@ -491,32 +545,79 @@ def publish_runtime_artifact(
         environment_values=runtime_values,
         source_description="Resolved publish runtime environment",
     )
+    source_github_token = resolve_source_github_token(runtime_values)
+    tenant_source, runtime_source, shared_addons_source = preflight_artifact_git_sources(
+        manifest=manifest,
+        runtime_repo_path=runtime_repo_path,
+        github_token=source_github_token,
+    )
     ensure_registry_auth_for_base_images(runtime_values)
     ensure_registry_auth_for_image_push(
         environment_values=runtime_values,
         image_repository=normalized_image_repository,
     )
 
+    base_runtime_image, base_devtools_image = resolve_base_images_for_build(runtime_values)
+    runtime_base_provenance = resolve_base_image_provenance(
+        image_reference=base_runtime_image,
+        role="runtime",
+        required_platforms=normalized_platforms,
+    )
+    devtools_base_provenance = resolve_base_image_provenance(
+        image_reference=base_devtools_image,
+        role="devtools",
+        required_platforms=normalized_platforms,
+    )
+    runtime_values = {
+        **runtime_values,
+        "ODOO_BASE_RUNTIME_IMAGE": runtime_base_provenance.digest_reference,
+        "ODOO_BASE_DEVTOOLS_IMAGE": devtools_base_provenance.digest_reference,
+    }
+
     build_environment = command_execution_env()
     github_token = resolve_github_token_for_build(runtime_values)
     if github_token is not None:
         build_environment["GITHUB_TOKEN"] = github_token
 
-    artifact_image_digest: str | None = None
+    artifact_source_entries = collect_artifact_source_entries(
+        runtime_values=runtime_values,
+        shared_addons_source=shared_addons_source,
+    )
+    dependency_provenance: dict[str, object]
     with tempfile.TemporaryDirectory(prefix="odoo-artifact-") as temporary_directory_name:
         staged_context_root = Path(temporary_directory_name)
         build_metadata_file = staged_context_root / "build-metadata.json"
-        stage_artifact_build_context(
+        staged_context = stage_artifact_build_context(
             manifest=manifest,
             runtime_repo_path=runtime_repo_path,
             staged_context_root=staged_context_root,
+            tenant_source=tenant_source,
+            runtime_source=runtime_source,
+            shared_addons_source=shared_addons_source,
         )
+        require_artifact_git_sources_unchanged((tenant_source, runtime_source, shared_addons_source))
+        require_staged_artifact_context_unchanged(staged_context_root=staged_context_root, staged_context=staged_context)
+        try:
+            require_staged_build_requirements_supplied(
+                support_root=staged_context_root / "runtime",
+                tenant_root=staged_context_root / "project",
+            )
+            require_staged_dependency_workspace_current(
+                staged_root=staged_context_root / "runtime",
+                label="support/runtime",
+            )
+            require_staged_dependency_workspace_current(
+                staged_root=staged_context_root / "project",
+                label="tenant",
+            )
+        except DependencyWorkspaceError as error:
+            raise RuntimeCommandError(str(error)) from error
         build_command = [
             "docker",
             "buildx",
             "build",
             "--file",
-            str(staged_context_root / "docker" / "Dockerfile"),
+            str(staged_context_root / "docker" / "artifact.Dockerfile"),
             "--target",
             "production",
             "--platform",
@@ -531,7 +632,7 @@ def publish_runtime_artifact(
             build_command.extend(["--secret", "id=github_token,env=GITHUB_TOKEN"])
         if no_cache:
             build_command.append("--no-cache")
-        for build_argument_name in ARTIFACT_PUBLISH_RUNTIME_ENV_KEYS:
+        for build_argument_name in ARTIFACT_PUBLISH_BUILD_ARG_KEYS:
             build_command.extend(["--build-arg", f"{build_argument_name}={runtime_values.get(build_argument_name, '')}"])
         build_command.append(str(staged_context_root))
         run_command(
@@ -540,37 +641,57 @@ def publish_runtime_artifact(
             environment_overrides=build_environment,
         )
         artifact_image_digest = resolve_buildx_metadata_image_digest(build_metadata_file)
-    tenant_repo_path = manifest.tenant_repo.resolve_path(manifest_directory=manifest.manifest_directory)
-    if tenant_repo_path is None or not tenant_repo_path.exists():
-        raise RuntimeCommandError("Tenant repo path must exist before publishing an artifact.")
-    tenant_commit = require_clean_git_commit(
-        repo_path=tenant_repo_path.resolve(),
-        label=manifest.tenant_repo.name,
-    )
-    runtime_commit = require_clean_git_commit(
-        repo_path=runtime_repo_path.resolve(),
-        label=(manifest.runtime_repo.name if manifest.runtime_repo is not None else runtime_repo_path.name),
-    )
-    artifact_source_entries = collect_artifact_source_entries(
-        manifest=manifest,
-        runtime_values=runtime_values,
-    )
-    base_runtime_image, _ = resolve_base_images_for_build(runtime_values)
+        require_staged_artifact_context_unchanged(staged_context_root=staged_context_root, staged_context=staged_context)
+        evidence_root = staged_context_root / "evidence"
+        extract_published_dependency_evidence(
+            staged_context_root=staged_context_root,
+            image_reference=f"{normalized_image_repository}@{artifact_image_digest}",
+            platforms=normalized_platforms,
+            evidence_root=evidence_root,
+            build_environment=build_environment,
+        )
+        expected_uv_locks = (
+            {
+                "scope": "support_runtime",
+                "source_repository": runtime_source.repository,
+                "source_ref": runtime_source.commit,
+                "path": "docker/runtime-python/uv.lock",
+                "sha256": staged_context.support_lock_sha256,
+            },
+            {
+                "scope": "tenant",
+                "source_repository": tenant_source.repository,
+                "source_ref": tenant_source.commit,
+                "path": "uv.lock",
+                "sha256": staged_context.tenant_lock_sha256,
+            },
+        )
+        try:
+            dependency_provenance = aggregate_dependency_evidence(
+                evidence_root=evidence_root,
+                expected_platforms=normalized_platforms,
+                expected_uv_locks=expected_uv_locks,
+            )
+        except ArtifactProvenanceError as error:
+            raise RuntimeCommandError(str(error)) from error
+        require_staged_artifact_context_unchanged(staged_context_root=staged_context_root, staged_context=staged_context)
+
     manifest_payload = build_runtime_artifact_manifest_payload(
         context_name=runtime_context.selection.context_name,
-        source_commit=tenant_commit,
+        source_commit=tenant_source.commit,
         runtime_repo_name=(manifest.runtime_repo.name if manifest.runtime_repo is not None else runtime_repo_path.name),
-        runtime_repo_commit=runtime_commit,
+        runtime_repo_commit=runtime_source.commit,
+        runtime_repo_repository=runtime_source.repository,
         artifact_source_entries=artifact_source_entries,
         source_selector_entries=artifact_source_selectors,
         odoo_install_modules=runtime_context.selection.effective_install_modules,
-        openupgrade_addon_repository=runtime_values.get("OPENUPGRADE_ADDON_REPOSITORY", ""),
-        openupgradelib_install_spec=runtime_values.get("OPENUPGRADELIB_INSTALL_SPEC", ""),
         addon_skip_flags=parse_csv_values(runtime_values.get("ODOO_PYTHON_SYNC_SKIP_ADDONS", "")),
         image_repository=normalized_image_repository,
         image_tag=normalized_image_tag,
         image_digest=artifact_image_digest,
-        enterprise_base_digest=resolve_image_digest(base_runtime_image),
+        runtime_base_provenance=runtime_base_provenance,
+        devtools_base_provenance=devtools_base_provenance,
+        dependency_provenance=dependency_provenance,
         odoo_version=runtime_values.get("ODOO_VERSION", ""),
     )
 
@@ -591,6 +712,10 @@ def validate_artifact_publish_runtime_values(runtime_values: dict[str, str]) -> 
     if not runtime_values.get("ODOO_VERSION", "").strip():
         raise RuntimeCommandError(
             f"{RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR} environment must include ODOO_VERSION for artifact publish."
+        )
+    if parse_csv_values(runtime_values.get("ODOO_PYTHON_SYNC_SKIP_ADDONS", "")):
+        raise RuntimeCommandError(
+            "Schema-v2 artifact publish does not support ODOO_PYTHON_SYNC_SKIP_ADDONS; remove skipped projects from the tenant workspace."
         )
 
 
@@ -1822,7 +1947,9 @@ def build_runtime_env_values(
             runtime_values[environment_key] = source_environment[environment_key]
     for runtime_key, runtime_value in runtime_selection.effective_runtime_env.items():
         runtime_values[runtime_key] = runtime_value
-    if explicit_runtime_environment_payload_is_configured() and runtime_selection.instance_name != "local":
+    if explicit_runtime_environment_payload_is_configured() and (
+        runtime_selection.instance_name != "local" or not include_selection_sources
+    ):
         for runtime_key in ARTIFACT_PUBLISH_RUNTIME_ENV_KEYS:
             runtime_values[runtime_key] = source_environment.get(runtime_key, "")
     apply_typed_odoo_instance_override_payload(
@@ -2040,12 +2167,94 @@ def resolve_manifest_local_addons_mount_paths(*, manifest: WorkspaceManifest) ->
     )
 
 
+def write_dependency_source_marker(
+    destination_root: Path,
+    *,
+    source: GitSourceSnapshot,
+    lock_path: str | None = None,
+) -> None:
+    if DEPENDENCY_SOURCE_REPOSITORY_PATTERN.fullmatch(source.repository) is None:
+        raise RuntimeCommandError("Artifact dependency source markers currently require owner/repository GitHub identities.")
+    payload = {"repository": source.repository, "ref": source.commit}
+    if lock_path is not None:
+        normalized_lock_path = PurePosixPath(lock_path)
+        if (
+            normalized_lock_path.is_absolute()
+            or normalized_lock_path.name != "uv.lock"
+            or any(part in {"", ".", ".."} for part in normalized_lock_path.parts)
+        ):
+            raise RuntimeCommandError("Artifact dependency source marker lock_path must be a safe repository-relative uv.lock path.")
+        payload["lock_path"] = normalized_lock_path.as_posix()
+    destination_root.mkdir(parents=True, exist_ok=True)
+    (destination_root / DEPENDENCY_SOURCE_MARKER_FILE).write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def require_no_embedded_dependency_source_markers(*, roots: tuple[tuple[Path, str], ...]) -> None:
+    embedded_markers: list[str] = []
+    for root, label in roots:
+        if not root.exists():
+            continue
+        for marker_path in sorted(root.rglob(DEPENDENCY_SOURCE_MARKER_FILE)):
+            embedded_markers.append(f"{label}:{marker_path.relative_to(root).as_posix()}")
+    if embedded_markers:
+        raise RuntimeCommandError(
+            "Artifact source repos cannot provide reserved dependency source markers; "
+            f"devkit generates them from verified Git snapshots: {embedded_markers}"
+        )
+
+
+def snapshot_staged_artifact_files(staged_context_root: Path) -> dict[str, str]:
+    file_hashes: dict[str, str] = {}
+    for relative_root in ("docker", "platform", "runtime", "project", "addons"):
+        source_root = staged_context_root / relative_root
+        if not source_root.exists():
+            continue
+        for file_path in sorted(path for path in source_root.rglob("*") if path.is_file()):
+            relative_path = file_path.relative_to(staged_context_root).as_posix()
+            file_hashes[relative_path] = sha256_file(file_path)
+    return file_hashes
+
+
+def require_staged_artifact_context_unchanged(
+    *,
+    staged_context_root: Path,
+    staged_context: StagedArtifactContext,
+) -> None:
+    current_hashes = snapshot_staged_artifact_files(staged_context_root)
+    if current_hashes == staged_context.file_hashes:
+        return
+    changed_paths = sorted(
+        path
+        for path in set(current_hashes) | set(staged_context.file_hashes)
+        if current_hashes.get(path) != staged_context.file_hashes.get(path)
+    )
+    raise RuntimeCommandError(f"Artifact staged inputs changed before provenance was finalized: {changed_paths}")
+
+
+def sha256_file(path: Path) -> str:
+    try:
+        source_file = path.open("rb")
+    except OSError as error:
+        raise RuntimeCommandError(f"Unable to hash staged artifact input: {path.name}") from error
+    digest = hashlib.sha256()
+    with source_file:
+        for chunk in iter(lambda: source_file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def stage_artifact_build_context(
     *,
     manifest: WorkspaceManifest,
     runtime_repo_path: Path,
     staged_context_root: Path,
-) -> None:
+    tenant_source: GitSourceSnapshot,
+    runtime_source: GitSourceSnapshot,
+    shared_addons_source: GitSourceSnapshot | None,
+) -> StagedArtifactContext:
     tenant_repo_path = manifest.tenant_repo.resolve_path(manifest_directory=manifest.manifest_directory)
     if tenant_repo_path is None or not tenant_repo_path.exists():
         raise RuntimeCommandError("Tenant repo path must exist before staging an artifact build context.")
@@ -2053,59 +2262,202 @@ def stage_artifact_build_context(
 
     staged_context_root.mkdir(parents=True, exist_ok=True)
     copy_required_path(
+        repo_path=runtime_source.repo_path,
+        source_commit=runtime_source.commit,
         source_path=runtime_repo_path / "docker",
         destination_path=staged_context_root / "docker",
         label="runtime docker directory",
     )
     copy_required_path(
+        repo_path=runtime_source.repo_path,
+        source_commit=runtime_source.commit,
         source_path=runtime_repo_path / "platform" / "config",
         destination_path=staged_context_root / "platform" / "config",
         label="runtime platform config directory",
     )
     copy_required_path(
-        source_path=runtime_repo_path / "pyproject.toml",
-        destination_path=staged_context_root / "pyproject.toml",
-        label="runtime pyproject.toml",
+        repo_path=runtime_source.repo_path,
+        source_commit=runtime_source.commit,
+        source_path=runtime_repo_path / "docker" / "runtime-python",
+        destination_path=staged_context_root / "runtime",
+        label="runtime Python dependency catalog",
     )
-    copy_required_path(
-        source_path=runtime_repo_path / "uv.lock",
-        destination_path=staged_context_root / "uv.lock",
-        label="runtime uv.lock",
-    )
+    try:
+        stage_publishable_dependency_workspace(
+            manifest=manifest,
+            destination_root=staged_context_root / "project",
+            tenant_commit=tenant_source.commit,
+            shared_addons_commit=shared_addons_source.commit if shared_addons_source is not None else None,
+        )
+    except DependencyWorkspaceError as error:
+        raise RuntimeCommandError(str(error)) from error
+    (staged_context_root / "runtime" / DEPENDENCY_LAYOUT_MARKER_FILE).write_text("2\n", encoding="utf-8")
 
     staged_addons_root = staged_context_root / "addons"
     tenant_addons_root = tenant_repo_path / "addons"
-    if not tenant_addons_root.exists():
-        raise RuntimeCommandError(f"Tenant addons path does not exist: {tenant_addons_root}")
-    staged_addons_root.mkdir(parents=True, exist_ok=True)
-    for child_path in sorted(tenant_addons_root.iterdir()):
-        if shared_addons_repo_path is not None and child_path.name == "shared":
-            continue
-        copy_required_path(
-            source_path=child_path,
-            destination_path=staged_addons_root / child_path.name,
-            label=f"tenant addon path {child_path}",
-        )
+    copy_required_path(
+        repo_path=tenant_source.repo_path,
+        source_commit=tenant_source.commit,
+        source_path=tenant_addons_root,
+        destination_path=staged_addons_root,
+        label="tenant addons directory",
+    )
+    staged_tenant_shared_path = staged_addons_root / "shared"
+    if staged_tenant_shared_path.is_dir():
+        shutil.rmtree(staged_tenant_shared_path)
+    elif staged_tenant_shared_path.exists():
+        staged_tenant_shared_path.unlink()
 
+    staged_shared_addons_root: Path | None = None
     if shared_addons_repo_path is not None:
+        if shared_addons_source is None or shared_addons_source.repo_path != shared_addons_repo_path.resolve():
+            raise RuntimeCommandError("Shared addon source snapshot does not match the staged shared addon repository.")
         staged_shared_addons_root = staged_addons_root / "shared"
-        staged_shared_addons_root.mkdir(parents=True, exist_ok=True)
-        for child_path in sorted(shared_addons_repo_path.iterdir()):
-            copy_required_path(
-                source_path=child_path,
-                destination_path=staged_shared_addons_root / child_path.name,
-                label=f"shared addon path {child_path}",
-            )
+        copy_required_path(
+            repo_path=shared_addons_source.repo_path,
+            source_commit=shared_addons_source.commit,
+            source_path=shared_addons_repo_path,
+            destination_path=staged_shared_addons_root,
+            label="shared addons repository",
+        )
+    require_no_embedded_dependency_source_markers(
+        roots=(
+            (staged_context_root / "runtime", "support/runtime"),
+            (staged_context_root / "project", "tenant dependency workspace"),
+            (staged_addons_root, "owned addons"),
+        )
+    )
+    write_dependency_source_marker(
+        staged_context_root / "runtime",
+        source=runtime_source,
+        lock_path="docker/runtime-python/uv.lock",
+    )
+    write_dependency_source_marker(
+        staged_context_root / "project",
+        source=tenant_source,
+        lock_path="uv.lock",
+    )
+    if staged_shared_addons_root is not None and shared_addons_source is not None:
+        write_dependency_source_marker(staged_shared_addons_root, source=shared_addons_source)
+    support_lock_path = staged_context_root / "runtime" / "uv.lock"
+    tenant_lock_path = staged_context_root / "project" / "uv.lock"
+    return StagedArtifactContext(
+        file_hashes=snapshot_staged_artifact_files(staged_context_root),
+        support_lock_sha256=sha256_file(support_lock_path),
+        tenant_lock_sha256=sha256_file(tenant_lock_path),
+    )
 
 
-def copy_required_path(*, source_path: Path, destination_path: Path, label: str) -> None:
-    if not source_path.exists():
-        raise RuntimeCommandError(f"Missing required {label}: {source_path}")
-    if source_path.is_dir():
-        shutil.copytree(source_path, destination_path, dirs_exist_ok=True)
-        return
-    destination_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source_path, destination_path)
+def copy_required_path(
+    *,
+    repo_path: Path,
+    source_commit: str,
+    source_path: Path,
+    destination_path: Path,
+    label: str,
+) -> None:
+    normalized_repo_path = require_git_repository_root(repo_path=repo_path, label=label)
+    lexical_repo_path = repo_path.absolute()
+    lexical_source_path = source_path.absolute()
+    try:
+        lexical_relative_path = lexical_source_path.relative_to(lexical_repo_path)
+    except ValueError:
+        lexical_relative_path = None
+    if lexical_relative_path is not None:
+        current_path = lexical_repo_path
+        for part in lexical_relative_path.parts:
+            current_path = current_path / part
+            if current_path.is_symlink():
+                raise RuntimeCommandError(f"Required {label} cannot traverse source-repository symlinks.")
+    elif source_path.is_symlink():
+        raise RuntimeCommandError(f"Required {label} cannot use a source-repository symlink.")
+    normalized_source_path = source_path.resolve()
+    try:
+        relative_source_path = normalized_source_path.relative_to(normalized_repo_path)
+    except ValueError as error:
+        raise RuntimeCommandError(f"Required {label} escapes its source repository.") from error
+    if relative_source_path == Path("."):
+        object_type = "tree"
+    else:
+        object_spec = f"{source_commit}:{relative_source_path.as_posix()}"
+        object_type_result = subprocess.run(
+            ["git", "cat-file", "-t", object_spec],
+            cwd=normalized_repo_path,
+            capture_output=True,
+            text=True,
+            env=artifact_git_command_env(),
+        )
+        object_type = object_type_result.stdout.strip()
+        if object_type_result.returncode != 0 or object_type not in {"blob", "tree"}:
+            raise RuntimeCommandError(f"Missing required {label} in source commit {source_commit}.")
+
+    tree_command = ["git", "ls-tree", "-r", "-z", "--full-tree", source_commit]
+    if relative_source_path != Path("."):
+        tree_command.extend(["--", relative_source_path.as_posix()])
+    tree_result = subprocess.run(
+        tree_command,
+        cwd=normalized_repo_path,
+        capture_output=True,
+        env=artifact_git_command_env(),
+    )
+    if tree_result.returncode != 0:
+        raise RuntimeCommandError(f"Unable to inspect committed files for required {label}.")
+    entries = tuple(entry for entry in tree_result.stdout.split(b"\0") if entry)
+    if not entries:
+        raise RuntimeCommandError(f"Required {label} contains no committed files.")
+
+    for entry in entries:
+        try:
+            raw_metadata, raw_entry_path = entry.split(b"\t", 1)
+            mode, entry_type, object_id = os.fsdecode(raw_metadata).split(" ", 2)
+            entry_path = Path(os.fsdecode(raw_entry_path))
+        except ValueError as error:
+            raise RuntimeCommandError(f"Unable to parse committed files for required {label}.") from error
+        if entry_type != "blob" or mode not in {"100644", "100755"}:
+            raise RuntimeCommandError(f"Artifact staging accepts only committed regular files for {label}: {entry_path.as_posix()}")
+        if object_type == "blob":
+            if entry_path != relative_source_path:
+                raise RuntimeCommandError(f"Committed file lookup changed for required {label}.")
+            target_path = destination_path
+        else:
+            try:
+                relative_entry_path = (
+                    entry_path if relative_source_path == Path(".") else entry_path.relative_to(relative_source_path)
+                )
+            except ValueError as error:
+                raise RuntimeCommandError(f"Committed file escapes required {label}: {entry_path.as_posix()}") from error
+            target_path = destination_path / relative_entry_path
+        blob_result = subprocess.run(
+            ["git", "cat-file", "blob", object_id],
+            cwd=normalized_repo_path,
+            capture_output=True,
+            env=artifact_git_command_env(),
+        )
+        if blob_result.returncode != 0:
+            raise RuntimeCommandError(f"Unable to materialize committed file for required {label}: {entry_path.as_posix()}")
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_bytes(blob_result.stdout)
+        target_path.chmod(0o755 if mode == "100755" else 0o644)
+
+
+def require_git_repository_root(*, repo_path: Path, label: str) -> Path:
+    normalized_repo_path = repo_path.resolve()
+    top_level_result = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        cwd=normalized_repo_path,
+        capture_output=True,
+        text=True,
+        env=artifact_git_command_env(),
+    )
+    if top_level_result.returncode != 0 or not top_level_result.stdout.strip():
+        raise RuntimeCommandError(f"Artifact source for {label} must be a Git worktree root: {repo_path}")
+    try:
+        top_level_path = Path(top_level_result.stdout.strip()).resolve()
+    except OSError as error:
+        raise RuntimeCommandError(f"Unable to resolve Git worktree root for {label}: {repo_path}") from error
+    if top_level_path != normalized_repo_path:
+        raise RuntimeCommandError(f"Artifact source for {label} must use the Git worktree root, not a nested path: {repo_path}")
+    return normalized_repo_path
 
 
 def resolve_manifest_shared_addons_repo_path(*, manifest: WorkspaceManifest) -> Path | None:
@@ -2121,19 +2473,15 @@ def resolve_manifest_shared_addons_repo_path(*, manifest: WorkspaceManifest) -> 
 
 def collect_artifact_source_entries(
     *,
-    manifest: WorkspaceManifest,
     runtime_values: dict[str, str],
+    shared_addons_source: GitSourceSnapshot | None,
 ) -> tuple[dict[str, str], ...]:
     source_entries: list[dict[str, str]] = []
-    shared_addons_repo_path = resolve_manifest_shared_addons_repo_path(manifest=manifest)
-    if manifest.shared_addons_repo is not None and shared_addons_repo_path is not None:
+    if shared_addons_source is not None:
         source_entries.append(
             {
-                "repository": manifest.shared_addons_repo.url or manifest.shared_addons_repo.name,
-                "ref": require_clean_git_commit(
-                    repo_path=shared_addons_repo_path.resolve(),
-                    label=manifest.shared_addons_repo.name,
-                ),
+                "repository": shared_addons_source.repository,
+                "ref": shared_addons_source.commit,
             }
         )
 
@@ -2141,11 +2489,16 @@ def collect_artifact_source_entries(
     for env_key in ARTIFACT_SOURCE_ENV_KEYS:
         raw_value = runtime_values.get(env_key, "")
         for repository, ref in parse_artifact_source_repository_entries(raw_value, require_exact_shas=True):
-            repository_key = (repository, ref)
+            try:
+                normalized_repository = normalize_repository_identity(repository)
+                normalized_ref = normalize_git_commit(ref)
+            except ArtifactProvenanceError as error:
+                raise RuntimeCommandError(str(error)) from error
+            repository_key = (normalized_repository, normalized_ref)
             if repository_key in seen_repository_refs:
                 continue
             seen_repository_refs.add(repository_key)
-            source_entries.append({"repository": repository, "ref": ref})
+            source_entries.append({"repository": normalized_repository, "ref": normalized_ref})
     return tuple(source_entries)
 
 
@@ -2224,7 +2577,7 @@ def resolve_source_repository_ref_to_git_sha(*, repository: str, ref: str, githu
     if GIT_SHA_PATTERN.fullmatch(normalized_ref):
         return normalized_ref
     remote_url = resolve_source_repository_remote_url(normalized_repository)
-    execution_env = command_execution_env()
+    execution_env = artifact_git_command_env()
     normalized_token = clean_optional_value(github_token)
     if normalized_token and remote_url.startswith("https://github.com/"):
         execution_env.update(
@@ -2278,31 +2631,172 @@ def resolve_source_repository_remote_url(repository: str) -> str:
     return normalized_repository
 
 
-def require_clean_git_commit(*, repo_path: Path, label: str) -> str:
-    head_result = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
+def preflight_artifact_git_sources(
+    *,
+    manifest: WorkspaceManifest,
+    runtime_repo_path: Path,
+    github_token: str | None = None,
+) -> tuple[GitSourceSnapshot, GitSourceSnapshot, GitSourceSnapshot | None]:
+    tenant_repo_path = manifest.tenant_repo.resolve_path(manifest_directory=manifest.manifest_directory)
+    if tenant_repo_path is None or not tenant_repo_path.is_dir():
+        raise RuntimeCommandError("Tenant repo path must exist before publishing an artifact.")
+    tenant_source = require_clean_git_source(
+        repo_path=tenant_repo_path.resolve(),
+        label=manifest.tenant_repo.name,
+        github_token=github_token,
+    )
+    runtime_source = require_clean_git_source(
+        repo_path=runtime_repo_path.resolve(),
+        label=(manifest.runtime_repo.name if manifest.runtime_repo is not None else runtime_repo_path.name),
+        github_token=github_token,
+    )
+    shared_addons_source = None
+    shared_addons_repo_path = resolve_manifest_shared_addons_repo_path(manifest=manifest)
+    if manifest.shared_addons_repo is not None:
+        if shared_addons_repo_path is None or not shared_addons_repo_path.is_dir():
+            raise RuntimeCommandError("Shared addons repo must exist before publishing an artifact.")
+        shared_addons_source = require_clean_git_source(
+            repo_path=shared_addons_repo_path.resolve(),
+            label=manifest.shared_addons_repo.name,
+            github_token=github_token,
+        )
+    return tenant_source, runtime_source, shared_addons_source
+
+
+def require_clean_git_source(*, repo_path: Path, label: str, github_token: str | None = None) -> GitSourceSnapshot:
+    commit = require_clean_git_commit(repo_path=repo_path, label=label)
+    remote_result = subprocess.run(
+        ["git", "config", "--local", "--get", "remote.origin.url"],
         cwd=repo_path,
         capture_output=True,
         text=True,
-        env=command_execution_env(),
+        env=artifact_git_command_env(),
+    )
+    if remote_result.returncode != 0 or not remote_result.stdout.strip():
+        raise RuntimeCommandError(f"Artifact publish requires an origin repository identity for {label}: {repo_path}")
+    try:
+        repository = normalize_repository_identity(remote_result.stdout.strip())
+    except ArtifactProvenanceError as error:
+        raise RuntimeCommandError(f"Artifact publish requires a safe origin repository identity for {label}.") from error
+    if DEPENDENCY_SOURCE_REPOSITORY_PATTERN.fullmatch(repository) is None:
+        raise RuntimeCommandError(f"Artifact publish currently requires an owner/repository GitHub origin for {label}: {repository}")
+    require_remote_source_commit(
+        repository=repository,
+        commit=commit,
+        label=label,
+        github_token=github_token,
+    )
+    return GitSourceSnapshot(label=label, repo_path=repo_path, repository=repository, commit=commit)
+
+
+def require_remote_source_commit(
+    *,
+    repository: str,
+    commit: str,
+    label: str,
+    github_token: str | None = None,
+) -> None:
+    remote_url = f"https://github.com/{repository}.git"
+    execution_env = artifact_git_command_env()
+    normalized_token = clean_optional_value(github_token)
+    if normalized_token:
+        execution_env.update(
+            {
+                "ODOO_DEVKIT_GITHUB_TOKEN": normalized_token,
+                "GIT_CONFIG_COUNT": "2",
+                "GIT_CONFIG_KEY_0": "credential.https://github.com.helper",
+                "GIT_CONFIG_VALUE_0": "!f() { echo username=x-access-token; echo password=$ODOO_DEVKIT_GITHUB_TOKEN; }; f",
+                "GIT_CONFIG_KEY_1": "credential.useHttpPath",
+                "GIT_CONFIG_VALUE_1": "true",
+            }
+        )
+    remote_result = subprocess.run(
+        ["git", "ls-remote", remote_url],
+        cwd=Path(os.sep),
+        capture_output=True,
+        text=True,
+        env=execution_env,
+    )
+    if remote_result.returncode != 0:
+        details = clean_optional_value(remote_result.stderr) or clean_optional_value(remote_result.stdout)
+        raise RuntimeCommandError(
+            f"Artifact publish could not verify the origin repository for {label}: {repository}."
+            + (f"\nGit reported: {details}" if details else "")
+        )
+    advertised_commits = {
+        line.split("\t", 1)[0].strip()
+        for line in remote_result.stdout.splitlines()
+        if "\t" in line and GIT_SHA_PATTERN.fullmatch(line.split("\t", 1)[0].strip())
+    }
+    if commit not in advertised_commits:
+        raise RuntimeCommandError(f"Artifact publish requires {label} commit {commit} to be advertised by a ref in {repository}.")
+
+
+def require_artifact_git_sources_unchanged(sources: tuple[GitSourceSnapshot | None, ...]) -> None:
+    for source in sources:
+        if source is None:
+            continue
+        current_commit = require_clean_git_commit(repo_path=source.repo_path, label=source.label)
+        if current_commit != source.commit:
+            raise RuntimeCommandError(
+                f"Artifact publish source changed during staging for {source.label}: expected {source.commit}, got {current_commit}"
+            )
+
+
+def require_clean_git_commit(*, repo_path: Path, label: str) -> str:
+    normalized_repo_path = require_git_repository_root(repo_path=repo_path, label=label)
+    head_result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=normalized_repo_path,
+        capture_output=True,
+        text=True,
+        env=artifact_git_command_env(),
     )
     if head_result.returncode != 0:
         raise RuntimeCommandError(f"Unable to resolve git commit for {label}: {repo_path}")
     head_commit = head_result.stdout.strip()
-    if not re.fullmatch(r"[0-9a-fA-F]{40}", head_commit):
+    if not re.fullmatch(r"[0-9a-f]{40}", head_commit):
         raise RuntimeCommandError(f"Unable to resolve a full git commit for {label}: {repo_path}")
 
     dirty_result = subprocess.run(
-        ["git", "status", "--porcelain"],
-        cwd=repo_path,
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=normalized_repo_path,
         capture_output=True,
         text=True,
-        env=command_execution_env(),
+        env=artifact_git_command_env(),
     )
     if dirty_result.returncode != 0:
         raise RuntimeCommandError(f"Unable to determine git status for {label}: {repo_path}")
     if dirty_result.stdout.strip():
         raise RuntimeCommandError(f"Artifact publish requires a clean git worktree for {label}: {repo_path}")
+    flags_result = subprocess.run(
+        ["git", "ls-files", "-v", "-z"],
+        cwd=normalized_repo_path,
+        capture_output=True,
+        env=artifact_git_command_env(),
+    )
+    if flags_result.returncode != 0:
+        raise RuntimeCommandError(f"Unable to inspect git index flags for {label}: {repo_path}")
+    nonordinary_paths = sorted(
+        os.fsdecode(entry[2:]) for entry in flags_result.stdout.split(b"\0") if entry and not entry.startswith(b"H ")
+    )
+    if nonordinary_paths:
+        raise RuntimeCommandError(
+            f"Artifact publish rejects assume-unchanged, skip-worktree, and nonordinary index entries for {label}: "
+            f"{nonordinary_paths}"
+        )
+    replace_result = subprocess.run(
+        ["git", "replace", "--list"],
+        cwd=normalized_repo_path,
+        capture_output=True,
+        text=True,
+        env=artifact_git_command_env(),
+    )
+    if replace_result.returncode != 0:
+        raise RuntimeCommandError(f"Unable to inspect git replace refs for {label}: {repo_path}")
+    replace_refs = sorted(line.strip() for line in replace_result.stdout.splitlines() if line.strip())
+    if replace_refs:
+        raise RuntimeCommandError(f"Artifact publish rejects git replace refs for {label}: {replace_refs}")
     return head_commit
 
 
@@ -2359,7 +2853,7 @@ def resolve_image_digest(image_reference: str) -> str:
         raise RuntimeCommandError("Image digest resolution requires a non-empty image reference.")
     digest_match = re.search(r"@(sha256:[0-9a-fA-F]{64})$", candidate)
     if digest_match is not None:
-        return digest_match.group(1)
+        return digest_match.group(1).lower()
     inspect_result = subprocess.run(
         ["docker", "buildx", "imagetools", "inspect", candidate],
         capture_output=True,
@@ -2374,7 +2868,125 @@ def resolve_image_digest(image_reference: str) -> str:
     digest_match = re.search(r"^Digest:\s*(sha256:[0-9a-fA-F]{64})\s*$", inspect_result.stdout, flags=re.MULTILINE)
     if digest_match is None:
         raise RuntimeCommandError(f"Unable to parse image digest from docker output for {candidate}.")
-    return digest_match.group(1)
+    return digest_match.group(1).lower()
+
+
+def resolve_base_image_provenance(
+    *,
+    image_reference: str,
+    role: str,
+    required_platforms: tuple[str, ...],
+) -> BaseImageProvenance:
+    repository, tags = split_image_reference(image_reference)
+    digest = resolve_image_digest(image_reference)
+    digest_reference = f"{repository}@{digest}"
+    inspect_result = subprocess.run(
+        ["docker", "buildx", "imagetools", "inspect", digest_reference, "--format", "{{json .Image}}"],
+        capture_output=True,
+        text=True,
+        env=command_execution_env(),
+    )
+    if inspect_result.returncode != 0:
+        details = clean_optional_value(inspect_result.stderr) or clean_optional_value(inspect_result.stdout)
+        raise RuntimeCommandError(
+            f"Unable to inspect immutable {role} base image metadata." + (f"\nDocker reported: {details}" if details else "")
+        )
+    try:
+        images = json.loads(inspect_result.stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeCommandError(f"Unable to parse immutable {role} base image metadata.") from error
+    if not isinstance(images, dict):
+        raise RuntimeCommandError(f"Immutable {role} base image metadata must be platform-keyed.")
+    if isinstance(images.get("config"), dict) and isinstance(images.get("os"), str) and isinstance(images.get("architecture"), str):
+        single_platform = f"{images['os'].strip().lower()}/{images['architecture'].strip().lower()}"
+        variant = images.get("variant")
+        if isinstance(variant, str) and variant.strip():
+            single_platform += f"/{variant.strip().lower()}"
+        images = {single_platform: images}
+
+    source_pairs: set[tuple[str, str]] = set()
+    missing_platforms: list[str] = []
+    for platform in required_platforms:
+        image = images.get(platform)
+        if not isinstance(image, dict):
+            missing_platforms.append(platform)
+            continue
+        config = image.get("config")
+        labels = config.get("Labels") if isinstance(config, dict) else None
+        if not isinstance(labels, dict):
+            raise RuntimeCommandError(f"Immutable {role} base image lacks OCI labels for {platform}.")
+        source_repository = labels.get("org.opencontainers.image.source")
+        source_ref = labels.get("org.opencontainers.image.revision")
+        if not isinstance(source_repository, str) or not isinstance(source_ref, str):
+            raise RuntimeCommandError(f"Immutable {role} base image lacks source/revision labels for {platform}.")
+        try:
+            source_pairs.add((normalize_repository_identity(source_repository), normalize_git_commit(source_ref)))
+        except ArtifactProvenanceError as error:
+            raise RuntimeCommandError(f"Immutable {role} base image has invalid source provenance for {platform}.") from error
+    if missing_platforms:
+        raise RuntimeCommandError(f"Immutable {role} base image is missing target platforms: {sorted(missing_platforms)}")
+    if len(source_pairs) != 1:
+        raise RuntimeCommandError(f"Immutable {role} base image source provenance differs across target platforms.")
+    source_repository, source_ref = next(iter(source_pairs))
+    return BaseImageProvenance(
+        role=role,
+        repository=repository,
+        digest=digest,
+        digest_reference=digest_reference,
+        tags=tags,
+        source_repository=source_repository,
+        source_ref=source_ref,
+    )
+
+
+def split_image_reference(image_reference: str) -> tuple[str, tuple[str, ...]]:
+    candidate = image_reference.strip()
+    if not candidate or "://" in candidate or candidate.startswith(("/", ".", "~")):
+        raise RuntimeCommandError("Artifact base image reference must use a registry repository.")
+    repository_with_tag = candidate.split("@", 1)[0]
+    last_slash = repository_with_tag.rfind("/")
+    last_colon = repository_with_tag.rfind(":")
+    tags: tuple[str, ...] = ()
+    repository = repository_with_tag
+    if last_colon > last_slash:
+        repository = repository_with_tag[:last_colon]
+        tag = repository_with_tag[last_colon + 1 :]
+        if not repository or not tag:
+            raise RuntimeCommandError("Artifact base image reference contains an invalid tag.")
+        tags = (tag,)
+    if not repository or any(character.isspace() for character in repository) or "?" in repository or "#" in repository:
+        raise RuntimeCommandError("Artifact base image repository is invalid.")
+    return repository, tags
+
+
+def extract_published_dependency_evidence(
+    *,
+    staged_context_root: Path,
+    image_reference: str,
+    platforms: tuple[str, ...],
+    evidence_root: Path,
+    build_environment: dict[str, str],
+) -> None:
+    evidence_root.mkdir(parents=True, exist_ok=True)
+    command = [
+        "docker",
+        "buildx",
+        "build",
+        "--file",
+        str(staged_context_root / "docker" / "dependency-evidence.Dockerfile"),
+        "--platform",
+        ",".join(platforms),
+        "--build-arg",
+        f"ARTIFACT_IMAGE={image_reference}",
+        "--output",
+        f"type=local,dest={evidence_root},platform-split=true",
+        str(staged_context_root),
+    ]
+    run_command(
+        runtime_repo_path=staged_context_root,
+        command=command,
+        environment_overrides=build_environment,
+    )
 
 
 def resolve_buildx_metadata_image_digest(metadata_file: Path) -> str:
@@ -2395,7 +3007,7 @@ def resolve_buildx_metadata_image_digest(metadata_file: Path) -> str:
         candidates.append(descriptor.get("digest"))
     for candidate in candidates:
         if isinstance(candidate, str) and re.fullmatch(r"sha256:[0-9a-fA-F]{64}", candidate.strip()):
-            return candidate.strip()
+            return candidate.strip().lower()
     raise RuntimeCommandError(f"Buildx metadata file did not include a valid container image digest: {metadata_file}")
 
 
@@ -2405,16 +3017,17 @@ def build_runtime_artifact_manifest_payload(
     source_commit: str,
     runtime_repo_name: str,
     runtime_repo_commit: str,
+    runtime_repo_repository: str,
     artifact_source_entries: tuple[dict[str, str], ...],
     source_selector_entries: tuple[dict[str, str], ...],
     odoo_install_modules: tuple[str, ...],
-    openupgrade_addon_repository: str,
-    openupgradelib_install_spec: str,
     addon_skip_flags: tuple[str, ...],
     image_repository: str,
     image_tag: str,
     image_digest: str,
-    enterprise_base_digest: str,
+    runtime_base_provenance: BaseImageProvenance,
+    devtools_base_provenance: BaseImageProvenance,
+    dependency_provenance: dict[str, object],
     odoo_version: str,
 ) -> dict[str, object]:
     artifact_id = f"artifact-{context_name}-{image_digest.removeprefix('sha256:')[:16]}"
@@ -2425,22 +3038,46 @@ def build_runtime_artifact_manifest_payload(
         "runtime_repo": runtime_repo_name,
         "runtime_repo_commit": runtime_repo_commit,
     }
+    normalized_selectors: list[dict[str, str]] = []
+    for selector_entry in source_selector_entries:
+        try:
+            normalized_selectors.append(
+                {
+                    "repository": normalize_repository_identity(selector_entry["repository"]),
+                    "selector": selector_entry["selector"].strip(),
+                    "resolved_ref": normalize_git_commit(selector_entry["resolved_ref"]),
+                }
+            )
+        except (ArtifactProvenanceError, KeyError) as error:
+            raise RuntimeCommandError("Artifact source selector evidence is invalid.") from error
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "artifact_id": artifact_id,
         "source_commit": source_commit,
-        "enterprise_base_digest": enterprise_base_digest,
+        "enterprise_base_digest": runtime_base_provenance.digest,
         "addon_sources": list(artifact_source_entries),
-        "addon_selectors": list(source_selector_entries),
+        "addon_selectors": normalized_selectors,
         "odoo_install_modules": list(odoo_install_modules),
         "openupgrade_inputs": {
-            "addon_repository": openupgrade_addon_repository,
-            "install_spec": openupgradelib_install_spec,
+            "addon_repository": "",
+            "install_spec": "",
         },
         "build_flags": {
             "addon_skip_flags": list(addon_skip_flags),
             "values": build_flag_values,
         },
+        "build_provenance": {
+            "base_images": [runtime_base_provenance.to_dict(), devtools_base_provenance.to_dict()],
+            "build_tools": [
+                {
+                    "name": "odoo-devkit",
+                    "version": "",
+                    "source_repository": runtime_repo_repository,
+                    "source_ref": runtime_repo_commit,
+                }
+            ],
+        },
+        "dependency_provenance": dependency_provenance,
         "image": {
             "repository": image_repository,
             "digest": image_digest,
@@ -3048,6 +3685,38 @@ def command_execution_env() -> dict[str, str]:
     for environment_key in tuple(execution_env):
         if any(environment_key.startswith(prefix) for prefix in PLATFORM_RUNTIME_PASSTHROUGH_PREFIXES):
             execution_env.pop(environment_key, None)
+    return execution_env
+
+
+def artifact_git_command_env() -> dict[str, str]:
+    execution_env = command_execution_env()
+    repository_context_keys = {
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_CONFIG",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_NOSYSTEM",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_SYSTEM",
+        "GIT_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_NAMESPACE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_PREFIX",
+        "GIT_REPLACE_REF_BASE",
+        "GIT_SHALLOW_FILE",
+        "GIT_WORK_TREE",
+    }
+    for environment_key in tuple(execution_env):
+        if environment_key in repository_context_keys or environment_key.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")):
+            execution_env.pop(environment_key, None)
+    execution_env["GIT_CONFIG_GLOBAL"] = os.devnull
+    execution_env["GIT_CONFIG_NOSYSTEM"] = "1"
+    execution_env["GIT_CONFIG_SYSTEM"] = os.devnull
+    execution_env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    execution_env["GIT_OPTIONAL_LOCKS"] = "0"
     return execution_env
 
 

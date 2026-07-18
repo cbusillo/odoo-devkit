@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
+from .dependency_workspace import inspect_dependency_workspace
 from .manifest import WorkspaceManifest, load_workspace_manifest
 from .runtime import (
     run_native_runtime_build,
@@ -90,6 +91,19 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser = _add_manifest_argument(workspace_subparsers.add_parser("run", help="Run a command inside the workspace"))
     run_parser.add_argument("command", nargs=argparse.REMAINDER)
     run_parser.set_defaults(handler=_handle_workspace_run)
+
+    dependencies_parser = subparsers.add_parser("dependencies", help="Inspect owned-addon dependency workspaces")
+    dependencies_subparsers = dependencies_parser.add_subparsers(dest="dependencies_command")
+
+    dependencies_inspect_parser = _add_manifest_argument(
+        dependencies_subparsers.add_parser("inspect", help="Report the tenant dependency workspace contract")
+    )
+    dependencies_inspect_parser.set_defaults(handler=_handle_dependencies_inspect)
+
+    dependencies_check_parser = _add_manifest_argument(
+        dependencies_subparsers.add_parser("check", help="Fail when the tenant dependency workspace is not current")
+    )
+    dependencies_check_parser.set_defaults(handler=_handle_dependencies_check)
 
     runtime_parser = subparsers.add_parser("runtime", help="Run local runtime workflows via the workspace manifest")
     runtime_subparsers = runtime_parser.add_subparsers(dest="runtime_command")
@@ -337,6 +351,20 @@ def _handle_workspace_run(arguments: argparse.Namespace) -> None:
         command = command[1:]
     exit_code = run_in_workspace(manifest=manifest, command=command)
     raise SystemExit(exit_code)
+
+
+def _handle_dependencies_inspect(arguments: argparse.Namespace) -> None:
+    manifest = _load_manifest(arguments.manifest)
+    inspection = inspect_dependency_workspace(manifest=manifest)
+    print(json.dumps(inspection.to_dict(), indent=2, sort_keys=True))
+
+
+def _handle_dependencies_check(arguments: argparse.Namespace) -> None:
+    manifest = _load_manifest(arguments.manifest)
+    inspection = inspect_dependency_workspace(manifest=manifest)
+    print(json.dumps(inspection.to_dict(), indent=2, sort_keys=True))
+    if not inspection.current:
+        raise SystemExit(1)
 
 
 def _handle_runtime_select(arguments: argparse.Namespace) -> None:
