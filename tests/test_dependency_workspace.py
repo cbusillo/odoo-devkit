@@ -428,6 +428,55 @@ class DependencyWorkspaceTests(unittest.TestCase):
                 tenant_root=tenant_root,
             )
 
+    def test_dependency_inspection_checks_devkit_build_requirement_catalog(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory_name:
+            temp_root = Path(temporary_directory_name)
+            tenant_repo_path = temp_root / "tenant"
+            devkit_repo_path = temp_root / "devkit"
+            self._write_member_pyproject(
+                tenant_repo_path / "addons" / "tenant_addon",
+                build_requirement="hatchling==1.31.0",
+            )
+            self._write_root_workspace(
+                tenant_repo_path=tenant_repo_path,
+                members=("addons/*",),
+            )
+            support_root = devkit_repo_path / "docker" / "runtime-python"
+            support_root.mkdir(parents=True)
+            support_pyproject = support_root / "pyproject.toml"
+            support_pyproject.write_text(
+                '[project]\nname = "runtime-support"\nversion = "0.0.0"\n'
+                'dependencies = ["hatchling==1.27.0"]\n\n[tool.uv]\npackage = false\n',
+                encoding="utf-8",
+            )
+            manifest = self._write_manifest(
+                temp_root=temp_root,
+                tenant_repo_path=tenant_repo_path,
+                devkit_repo_path=devkit_repo_path,
+            )
+            self._commit_repo(tenant_repo_path)
+
+            with mock.patch("odoo_devkit.dependency_workspace._uv_lock_is_current", return_value=True):
+                inspection = inspect_dependency_workspace(manifest=manifest)
+
+            self.assertFalse(inspection.current)
+            self.assertIn(
+                "Addon build requirements must be supplied by the support/runtime or tenant lock catalog: hatchling==1.31.0",
+                inspection.findings,
+            )
+
+            support_pyproject.write_text(
+                support_pyproject.read_text(encoding="utf-8").replace(
+                    "hatchling==1.27.0",
+                    "hatchling==1.31.0",
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch("odoo_devkit.dependency_workspace._uv_lock_is_current", return_value=True):
+                inspection = inspect_dependency_workspace(manifest=manifest)
+
+            self.assertTrue(inspection.current, inspection.findings)
+
     def test_owned_requirements_file_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory_name:
             temp_root = Path(temporary_directory_name)
@@ -470,6 +519,7 @@ class DependencyWorkspaceTests(unittest.TestCase):
         *,
         project_name: str = "tenant_addon",
         dependencies: tuple[str, ...] = (),
+        build_requirement: str = "hatchling==1.27.0",
     ) -> None:
         project_root.mkdir(parents=True, exist_ok=True)
         dependency_lines = ",\n".join(f"    {json.dumps(dependency)}" for dependency in dependencies)
@@ -477,7 +527,7 @@ class DependencyWorkspaceTests(unittest.TestCase):
             dependency_lines += ",\n"
         (project_root / "pyproject.toml").write_text(
             "[build-system]\n"
-            'requires = ["hatchling==1.27.0"]\n'
+            f"requires = [{json.dumps(build_requirement)}]\n"
             'build-backend = "hatchling.build"\n\n'
             "[project]\n"
             f'name = "{project_name}"\n'
@@ -526,12 +576,17 @@ class DependencyWorkspaceTests(unittest.TestCase):
         temp_root: Path,
         tenant_repo_path: Path,
         shared_repo_path: Path | None = None,
+        devkit_repo_path: Path | None = None,
     ) -> WorkspaceManifest:
         tenant_repo_path.mkdir(parents=True, exist_ok=True)
         shared_repo_table = ""
         if shared_repo_path is not None:
             shared_repo_path.mkdir(parents=True, exist_ok=True)
             shared_repo_table = f'\n[repos.shared_addons]\nname = "shared-addons"\npath = "{shared_repo_path}"\nref = "main"\n'
+        devkit_repo_table = ""
+        if devkit_repo_path is not None:
+            devkit_repo_path.mkdir(parents=True, exist_ok=True)
+            devkit_repo_table = f'\n[repos.devkit]\nname = "odoo-devkit"\npath = "{devkit_repo_path}"\nref = "main"\n'
         manifest_path = tenant_repo_path / "workspace.toml"
         manifest_path.write_text(
             "schema_version = 1\n"
@@ -544,7 +599,7 @@ class DependencyWorkspaceTests(unittest.TestCase):
             'name = "tenant"\n'
             'path = "."\n'
             'ref = "main"\n'
-            f"{shared_repo_table}\n"
+            f"{shared_repo_table}{devkit_repo_table}\n"
             "[runtime]\n"
             'context = "test"\n'
             'instance = "local"\n'
