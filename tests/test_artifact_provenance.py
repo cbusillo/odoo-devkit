@@ -113,6 +113,25 @@ class ArtifactProvenanceTests(unittest.TestCase):
                 with self.assertRaises(ArtifactProvenanceError):
                     normalize_repository_identity(value)
 
+    def test_aggregate_dependency_evidence_rejects_precanonical_package_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            evidence_root = Path(temporary_directory)
+            locks = self._locks()
+            self._write_sidecar(
+                evidence_root=evidence_root,
+                platform="linux/amd64",
+                locks=locks,
+                external_inputs=self._external_inputs(),
+                vcs_repository="https://github.com/OCA/openupgradelib.git",
+            )
+
+            with self.assertRaisesRegex(ArtifactProvenanceError, "canonical package evidence"):
+                aggregate_dependency_evidence(
+                    evidence_root=evidence_root,
+                    expected_platforms=("linux/amd64",),
+                    expected_uv_locks=tuple(locks),
+                )
+
     def test_aggregate_dependency_evidence_rejects_unsafe_relative_path_characters(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             evidence_root = Path(temporary_directory)
@@ -172,6 +191,7 @@ class ArtifactProvenanceTests(unittest.TestCase):
         platform: str,
         locks: list[dict[str, str]],
         external_inputs: list[dict[str, str]],
+        vcs_repository: str = "example/openupgradelib",
     ) -> None:
         packages = [
             {
@@ -184,7 +204,7 @@ class ArtifactProvenanceTests(unittest.TestCase):
                 "version": "3.12.0",
                 "source": {
                     "kind": "vcs",
-                    "repository": "example/openupgradelib",
+                    "repository": vcs_repository,
                     "commit": "d" * 40,
                 },
             },
