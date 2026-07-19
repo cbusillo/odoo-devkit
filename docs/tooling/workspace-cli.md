@@ -117,6 +117,10 @@ Purpose
   projects. An explicit empty `members = []` is the exact valid set when the
   tenant and shared-addon trees contain no Python project metadata; pure-addon
   tenants do not need to invent a fake workspace member.
+- Evaluate member patterns against the real tenant/shared addon directory
+  shape, not only copied dependency metadata. A pattern may not match an addon
+  directory without `pyproject.toml`; use explicit member paths instead of a
+  broad glob over mixed Python-project and ordinary Odoo addon directories.
 - Run `uv lock --check --offline --no-config` against that combined staged
   layout with operator `UV_*`/`PIP_*` overrides removed. Devkit does not parse
   uv's lock internals as a substitute for uv's own currentness decision.

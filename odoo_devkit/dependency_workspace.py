@@ -194,13 +194,13 @@ def inspect_dependency_workspace(*, manifest: WorkspaceManifest) -> DependencyWo
         )
         with tempfile.TemporaryDirectory(prefix="odoo-dependency-workspace-") as temporary_directory_name:
             staged_root = Path(temporary_directory_name)
-            _stage_dependency_metadata(
-                root_pyproject_path=root_pyproject_path,
-                tenant_lock_path=tenant_lock_path,
-                project_inputs=project_inputs,
-                staged_root=staged_root,
-            )
             try:
+                _stage_dependency_metadata(
+                    root_pyproject_path=root_pyproject_path,
+                    tenant_lock_path=tenant_lock_path,
+                    project_inputs=project_inputs,
+                    staged_root=staged_root,
+                )
                 root_payload = _load_pyproject(staged_root / "pyproject.toml")
                 root_runtime_dependencies = _validate_root_pyproject(payload=root_payload)
                 requires_tenant_lock = requires_tenant_lock or bool(root_runtime_dependencies)
@@ -209,6 +209,11 @@ def inspect_dependency_workspace(*, manifest: WorkspaceManifest) -> DependencyWo
                         support_root=devkit_repo_path / "docker" / "runtime-python",
                         tenant_root=staged_root,
                     )
+                _stage_dependency_directory_layout(
+                    tenant_repo_path=tenant_repo_path,
+                    shared_addons_repo_path=shared_addons_repo_path,
+                    staged_root=staged_root,
+                )
                 workspace_member_set = _workspace_members(root=staged_root, payload=root_payload)
                 workspace_members = tuple(sorted(path.as_posix() for path in workspace_member_set))
                 expected_members = {
@@ -276,6 +281,22 @@ def stage_publishable_dependency_workspace(
     if destination_root.exists() and any(destination_root.iterdir()):
         raise DependencyWorkspaceError("Dependency workspace staging destination must be empty")
     destination_root.mkdir(parents=True, exist_ok=True)
+    source_commits = {
+        tenant_repo_path: tenant_commit or _git_head_commit(tenant_repo_path),
+        **(
+            {
+                shared_addons_repo_path: shared_addons_commit or _git_head_commit(shared_addons_repo_path),
+            }
+            if shared_addons_repo_path is not None
+            else {}
+        ),
+    }
+    _stage_dependency_directory_layout(
+        tenant_repo_path=tenant_repo_path,
+        shared_addons_repo_path=shared_addons_repo_path,
+        staged_root=destination_root,
+        source_commits=source_commits,
+    )
     _stage_dependency_metadata(
         root_pyproject_path=tenant_repo_path / "pyproject.toml",
         tenant_lock_path=tenant_repo_path / "uv.lock",
@@ -284,16 +305,7 @@ def stage_publishable_dependency_workspace(
             shared_addons_repo_path=shared_addons_repo_path,
         ),
         staged_root=destination_root,
-        source_commits={
-            tenant_repo_path: tenant_commit or _git_head_commit(tenant_repo_path),
-            **(
-                {
-                    shared_addons_repo_path: shared_addons_commit or _git_head_commit(shared_addons_repo_path),
-                }
-                if shared_addons_repo_path is not None
-                else {}
-            ),
-        },
+        source_commits=source_commits,
     )
     return inspection
 
@@ -662,8 +674,15 @@ def _workspace_members(*, root: Path, payload: dict[str, Any]) -> set[Path]:
     for pattern in raw_members:
         for path in root.glob(pattern):
             relative_path = path.relative_to(root)
-            if path.is_dir() and (path / "pyproject.toml").is_file() and relative_path not in excluded:
-                members.add(relative_path)
+            if any(relative_path == excluded_path or relative_path.is_relative_to(excluded_path) for excluded_path in excluded):
+                continue
+            if not path.is_dir():
+                continue
+            if not (path / "pyproject.toml").is_file():
+                raise DependencyWorkspaceError(
+                    f"pyproject.toml workspace member pattern matches a directory without pyproject.toml: {relative_path.as_posix()}"
+                )
+            members.add(relative_path)
     return members
 
 
@@ -764,6 +783,87 @@ def _stage_dependency_metadata(
             destination_path=destination,
             display_path=project_input.staged_pyproject_path.as_posix(),
         )
+
+
+def _stage_dependency_directory_layout(
+    *,
+    tenant_repo_path: Path,
+    shared_addons_repo_path: Path | None,
+    staged_root: Path,
+    source_commits: dict[Path, str] | None = None,
+) -> None:
+    _mirror_tracked_directory_layout(
+        repo_path=tenant_repo_path,
+        source_commit=(source_commits or {}).get(tenant_repo_path.resolve()),
+        source_path=tenant_repo_path / "addons",
+        destination_root=staged_root / "addons",
+        excluded_top_level=frozenset({"shared"}),
+    )
+    if shared_addons_repo_path is not None:
+        _mirror_tracked_directory_layout(
+            repo_path=shared_addons_repo_path,
+            source_commit=(source_commits or {}).get(shared_addons_repo_path.resolve()),
+            source_path=shared_addons_repo_path,
+            destination_root=staged_root / "addons" / "shared",
+        )
+
+
+def _mirror_tracked_directory_layout(
+    *,
+    repo_path: Path,
+    source_commit: str | None,
+    source_path: Path,
+    destination_root: Path,
+    excluded_top_level: frozenset[str] = frozenset(),
+) -> None:
+    normalized_repo_path = repo_path.resolve()
+    normalized_source_path = source_path.resolve()
+    try:
+        relative_source_path = normalized_source_path.relative_to(normalized_repo_path)
+    except ValueError as error:
+        raise DependencyWorkspaceError("Dependency directory layout escapes its source repository") from error
+    if source_commit is None:
+        command = ["git", "ls-files", "--stage", "-z"]
+    else:
+        command = ["git", "ls-tree", "-r", "-z", "--full-tree", source_commit]
+    if relative_source_path != Path("."):
+        command.extend(["--", relative_source_path.as_posix()])
+    result = subprocess.run(
+        command,
+        cwd=normalized_repo_path,
+        capture_output=True,
+        env=_git_command_env(),
+    )
+    if result.returncode != 0:
+        raise DependencyWorkspaceError("Dependency directory layout requires a readable Git tree")
+    directory_paths: set[Path] = set()
+    for raw_entry in (entry for entry in result.stdout.split(b"\0") if entry):
+        try:
+            raw_metadata, raw_path = raw_entry.split(b"\t", 1)
+            metadata_parts = os.fsdecode(raw_metadata).split()
+            mode = metadata_parts[0]
+            if source_commit is None and (len(metadata_parts) != 3 or metadata_parts[2] != "0"):
+                raise ValueError
+            if source_commit is not None and (len(metadata_parts) != 3 or metadata_parts[1] != "blob"):
+                raise ValueError
+            tracked_path = Path(os.fsdecode(raw_path))
+            relative_path = tracked_path if relative_source_path == Path(".") else tracked_path.relative_to(relative_source_path)
+        except ValueError as error:
+            raise DependencyWorkspaceError("Unable to parse tracked dependency directory layout") from error
+        if mode not in {"100644", "100755"}:
+            raise DependencyWorkspaceError(
+                f"Dependency directory layout accepts only tracked regular files: {tracked_path.as_posix()}"
+            )
+        if not relative_path.parts or relative_path.parts[0] in excluded_top_level:
+            continue
+        for parent_path in relative_path.parents:
+            if parent_path == Path("."):
+                continue
+            if any(part.startswith(".") for part in parent_path.parts):
+                continue
+            directory_paths.add(parent_path)
+    for directory_path in sorted(directory_paths, key=lambda path: (len(path.parts), path.as_posix())):
+        (destination_root / directory_path).mkdir(parents=True, exist_ok=True)
 
 
 def _copy_regular_dependency_file(

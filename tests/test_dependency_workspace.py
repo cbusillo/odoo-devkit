@@ -99,6 +99,9 @@ class DependencyWorkspaceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory_name:
             temp_root = Path(temporary_directory_name)
             tenant_repo_path = temp_root / "tenant"
+            pure_addon_root = tenant_repo_path / "addons" / "pure_addon"
+            pure_addon_root.mkdir(parents=True)
+            (pure_addon_root / "__manifest__.py").write_text("{}\n", encoding="utf-8")
             self._write_root_workspace(tenant_repo_path=tenant_repo_path, members=())
             (tenant_repo_path / "uv.lock").unlink()
             subprocess.run(
@@ -123,7 +126,97 @@ class DependencyWorkspaceTests(unittest.TestCase):
             self.assertEqual(inspection.projects, ())
             self.assertTrue((destination_root / "pyproject.toml").is_file())
             self.assertTrue((destination_root / "uv.lock").is_file())
-            self.assertFalse((destination_root / "addons").exists())
+            self.assertTrue((destination_root / "addons" / "pure_addon").is_dir())
+            self.assertFalse((destination_root / "addons" / "pure_addon" / "pyproject.toml").exists())
+
+    def test_shared_workspace_glob_rejects_non_project_addon_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory_name:
+            temp_root = Path(temporary_directory_name)
+            tenant_repo_path = temp_root / "tenant"
+            shared_repo_path = temp_root / "shared"
+            self._write_member_pyproject(tenant_repo_path / "addons" / "tenant_addon")
+            shared_addon_root = shared_repo_path / "authentik_sso"
+            shared_addon_root.mkdir(parents=True)
+            (shared_addon_root / "__manifest__.py").write_text("{}\n", encoding="utf-8")
+            self._write_root_workspace(
+                tenant_repo_path=tenant_repo_path,
+                members=("addons/tenant_addon", "addons/shared/*"),
+            )
+            self._commit_repo(tenant_repo_path)
+            self._commit_repo(shared_repo_path)
+            manifest = self._write_manifest(
+                temp_root=temp_root,
+                tenant_repo_path=tenant_repo_path,
+                shared_repo_path=shared_repo_path,
+            )
+
+            with mock.patch("odoo_devkit.dependency_workspace._uv_lock_is_current") as uv_lock_is_current:
+                inspection = inspect_dependency_workspace(manifest=manifest)
+
+            uv_lock_is_current.assert_not_called()
+            self.assertFalse(inspection.current)
+            self.assertIn(
+                "pyproject.toml workspace member pattern matches a directory without pyproject.toml: addons/shared/authentik_sso",
+                inspection.findings,
+            )
+
+    def test_explicit_members_ignore_non_project_shared_addon_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory_name:
+            temp_root = Path(temporary_directory_name)
+            tenant_repo_path = temp_root / "tenant"
+            shared_repo_path = temp_root / "shared"
+            self._write_member_pyproject(tenant_repo_path / "addons" / "tenant_addon")
+            shared_addon_root = shared_repo_path / "authentik_sso"
+            shared_addon_root.mkdir(parents=True)
+            (shared_addon_root / "__manifest__.py").write_text("{}\n", encoding="utf-8")
+            self._write_root_workspace(
+                tenant_repo_path=tenant_repo_path,
+                members=("addons/tenant_addon",),
+            )
+            self._commit_repo(tenant_repo_path)
+            self._commit_repo(shared_repo_path)
+            manifest = self._write_manifest(
+                temp_root=temp_root,
+                tenant_repo_path=tenant_repo_path,
+                shared_repo_path=shared_repo_path,
+            )
+
+            with mock.patch("odoo_devkit.dependency_workspace._uv_lock_is_current", return_value=True):
+                inspection = inspect_dependency_workspace(manifest=manifest)
+
+            self.assertTrue(inspection.current)
+            self.assertTrue(inspection.publishable)
+            self.assertEqual(inspection.workspace_members, ("addons/tenant_addon",))
+
+    def test_untracked_shared_addon_directory_does_not_affect_preflight(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory_name:
+            temp_root = Path(temporary_directory_name)
+            tenant_repo_path = temp_root / "tenant"
+            shared_repo_path = temp_root / "shared"
+            self._write_member_pyproject(tenant_repo_path / "addons" / "tenant_addon")
+            self._write_root_workspace(
+                tenant_repo_path=tenant_repo_path,
+                members=("addons/tenant_addon", "addons/shared/*"),
+            )
+            shared_repo_path.mkdir(parents=True)
+            (shared_repo_path / "README.md").write_text("shared\n", encoding="utf-8")
+            self._commit_repo(tenant_repo_path)
+            self._commit_repo(shared_repo_path)
+            untracked_addon_root = shared_repo_path / "authentik_sso"
+            untracked_addon_root.mkdir()
+            (untracked_addon_root / "__manifest__.py").write_text("{}\n", encoding="utf-8")
+            manifest = self._write_manifest(
+                temp_root=temp_root,
+                tenant_repo_path=tenant_repo_path,
+                shared_repo_path=shared_repo_path,
+            )
+
+            with mock.patch("odoo_devkit.dependency_workspace._uv_lock_is_current", return_value=True):
+                inspection = inspect_dependency_workspace(manifest=manifest)
+
+            self.assertTrue(inspection.current)
+            self.assertTrue(inspection.publishable)
+            self.assertEqual(inspection.workspace_members, ("addons/tenant_addon",))
 
     def test_workspace_members_must_be_explicit(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory_name:
@@ -214,7 +307,7 @@ class DependencyWorkspaceTests(unittest.TestCase):
             lock_bytes = b"version = 1\n"
             self._write_root_workspace(
                 tenant_repo_path=tenant_repo_path,
-                members=("addons/*", "addons/shared/*"),
+                members=("addons/tenant_addon", "addons/shared/shared_addon"),
                 lock_bytes=lock_bytes,
             )
             self._commit_repo(tenant_repo_path)
@@ -351,7 +444,7 @@ class DependencyWorkspaceTests(unittest.TestCase):
             self._write_member_pyproject(shared_repo_path / "shared_addon", project_name="shared_addon")
             self._write_root_workspace(
                 tenant_repo_path=tenant_repo_path,
-                members=("addons/*", "addons/shared/*"),
+                members=("addons/tenant_addon", "addons/shared/shared_addon"),
             )
             self._commit_repo(tenant_repo_path)
             self._commit_repo(shared_repo_path)
