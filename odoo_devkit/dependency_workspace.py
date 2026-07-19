@@ -120,9 +120,15 @@ def inspect_dependency_workspace(*, manifest: WorkspaceManifest) -> DependencyWo
         raise DependencyWorkspaceError(
             "Shared addons repo must be materialized before dependency inspection. Run `platform workspace sync` first."
         )
+    devkit_repo_path = _resolve_devkit_repo_path(manifest)
+    if manifest.devkit_repo is not None and (devkit_repo_path is None or not devkit_repo_path.is_dir()):
+        raise DependencyWorkspaceError(
+            "Devkit repo must be materialized before dependency inspection. Run `platform workspace sync` first."
+        )
 
     tenant_repo_path = tenant_repo_path.resolve()
     shared_addons_repo_path = shared_addons_repo_path.resolve() if shared_addons_repo_path is not None else None
+    devkit_repo_path = devkit_repo_path.resolve() if devkit_repo_path is not None else None
     project_inputs = _discover_project_inputs(
         tenant_repo_path=tenant_repo_path,
         shared_addons_repo_path=shared_addons_repo_path,
@@ -198,6 +204,11 @@ def inspect_dependency_workspace(*, manifest: WorkspaceManifest) -> DependencyWo
                 root_payload = _load_pyproject(staged_root / "pyproject.toml")
                 root_runtime_dependencies = _validate_root_pyproject(payload=root_payload)
                 requires_tenant_lock = requires_tenant_lock or bool(root_runtime_dependencies)
+                if devkit_repo_path is not None:
+                    require_staged_build_requirements_supplied(
+                        support_root=devkit_repo_path / "docker" / "runtime-python",
+                        tenant_root=staged_root,
+                    )
                 workspace_member_set = _workspace_members(root=staged_root, payload=root_payload)
                 workspace_members = tuple(sorted(path.as_posix() for path in workspace_member_set))
                 expected_members = {
@@ -339,6 +350,17 @@ def _resolve_shared_addons_repo_path(manifest: WorkspaceManifest) -> Path | None
         manifest.shared_addons_repo,
         manifest=manifest,
         managed_checkout_path=workspace_path / "sources" / "shared-addons",
+    )
+
+
+def _resolve_devkit_repo_path(manifest: WorkspaceManifest) -> Path | None:
+    from .workspace import resolve_optional_repo_path_with_managed_checkout, resolve_workspace_path
+
+    workspace_path = resolve_workspace_path(manifest)
+    return resolve_optional_repo_path_with_managed_checkout(
+        manifest.devkit_repo,
+        manifest=manifest,
+        managed_checkout_path=workspace_path / "sources" / "devkit",
     )
 
 

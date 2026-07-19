@@ -33,7 +33,11 @@ Before `platform runtime publish`, run `platform dependencies check` and commit
 the exact tenant, devkit, and shared-addon inputs. Publish fails closed for
 dirty source repos, nonordinary index flags or Git replacement refs, untracked
 or symlinked staged files, stale/missing tenant lock pairs, mutable VCS refs,
-source-supplied `.odoo-python-source.json` markers, or staged-byte changes.
+source-supplied `.odoo-python-source.json` markers, staged-byte changes, or an
+addon build backend that is absent at the exact version from both the devkit
+support lock and tenant lock catalog. When the manifest includes the devkit
+repo, `platform dependencies check` reports that build-tool mismatch before the
+publish workflow reaches Buildx.
 Devkit alone writes those markers from the verified Git snapshots used for the
 build. Each recorded source commit must also be advertised by a ref in its
 normalized GitHub origin; changing only `.git/config` cannot reattribute a
