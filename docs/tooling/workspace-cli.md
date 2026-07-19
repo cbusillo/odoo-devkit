@@ -114,7 +114,9 @@ Purpose
 - When a tenant root `pyproject.toml` and `uv.lock` exist, require them as a
   complete pair, expand workspace members against the combined staged layout,
   and require the expanded members to exactly match all tenant and shared-addon
-  projects.
+  projects. An explicit empty `members = []` is the exact valid set when the
+  tenant and shared-addon trees contain no Python project metadata; pure-addon
+  tenants do not need to invent a fake workspace member.
 - Run `uv lock --check --offline --no-config` against that combined staged
   layout with operator `UV_*`/`PIP_*` overrides removed. Devkit does not parse
   uv's lock internals as a substitute for uv's own currentness decision.
@@ -127,6 +129,10 @@ Purpose
   reported as `publishable = false` because Launchplane artifact schema v2
   requires both support/runtime and tenant lock evidence; devkit never invents
   a tenant lock that is absent from the tenant repository.
+- A pure-addon tenant that publishes schema-v2 artifacts instead tracks a
+  minimal root `pyproject.toml` with `tool.uv.package = false`, explicit empty
+  workspace members, and its generated `uv.lock`. Those files provide exact
+  tenant evidence without claiming runtime dependencies that do not exist.
 - `inspect` prints structured JSON. `check` prints the same report and exits
   nonzero when `current` is false.
 
