@@ -2333,6 +2333,7 @@ runtime_env = { ODOO_VERSION = "18.0", ODOO_BASE_RUNTIME_IMAGE = "ghcr.io/exampl
             )
 
             captured_build_args: list[str] = []
+            captured_commands: list[list[str]] = []
 
             def fake_run_command(
                 *,
@@ -2342,6 +2343,7 @@ runtime_env = { ODOO_VERSION = "18.0", ODOO_BASE_RUNTIME_IMAGE = "ghcr.io/exampl
                 allowed_return_codes: object | None = None,
             ) -> None:
                 _ = runtime_repo_path, environment_overrides, allowed_return_codes
+                captured_commands.append(command)
                 if command[:3] == ["docker", "buildx", "build"]:
                     self._write_artifact_build_outputs_for_command(command)
                 if "--metadata-file" in command:
@@ -2388,6 +2390,37 @@ runtime_env = { ODOO_VERSION = "18.0", ODOO_BASE_RUNTIME_IMAGE = "ghcr.io/exampl
             )
             self.assertEqual(payload["build_flags"]["values"]["odoo_version"], "20.0")
             self.assertEqual(payload["build_flags"]["addon_skip_flags"], [])
+            preflight_command = next(command for command in captured_commands if command[:2] == ["docker", "run"])
+            build_command = next(command for command in captured_commands if command[:3] == ["docker", "buildx", "build"])
+            self.assertLess(captured_commands.index(preflight_command), captured_commands.index(build_command))
+            self.assertIn("ghcr.io/example/runtime@sha256:" + "2" * 64, preflight_command)
+            self.assertIn("linux/amd64", preflight_command)
+            self.assertTrue(any(value.endswith(":/opt/runtime:ro") for value in preflight_command))
+            self.assertTrue(any(value.endswith(":/opt/project:ro") for value in preflight_command))
+
+    def test_base_runtime_dependency_preflight_wraps_platform_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            support_root = temporary_root / "runtime"
+            tenant_root = temporary_root / "project"
+            support_root.mkdir()
+            tenant_root.mkdir()
+
+            with mock.patch(
+                "odoo_devkit.local_runtime.run_command",
+                side_effect=local_runtime.RuntimeCommandError("Command failed (1): docker run"),
+            ):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "Base runtime dependency preflight failed for linux/amd64; see resolver diagnostics above",
+                ):
+                    local_runtime.require_base_runtime_dependency_compatibility(
+                        base_runtime_image="ghcr.io/example/runtime@sha256:" + "2" * 64,
+                        staged_support_root=support_root,
+                        staged_tenant_root=tenant_root,
+                        platforms=("linux/amd64",),
+                        build_environment={},
+                    )
 
     def test_native_runtime_publish_requires_explicit_payload_for_non_local_instance(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

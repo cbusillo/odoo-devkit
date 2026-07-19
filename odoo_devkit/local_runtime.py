@@ -58,6 +58,43 @@ ARTIFACT_PUBLISH_RUNTIME_ENV_KEYS = (
 ARTIFACT_PUBLISH_BUILD_ARG_KEYS = tuple(key for key in ARTIFACT_PUBLISH_RUNTIME_ENV_KEYS if key != "ODOO_PYTHON_SYNC_SKIP_ADDONS")
 DEPENDENCY_SOURCE_MARKER_FILE = ".odoo-python-source.json"
 DEPENDENCY_LAYOUT_MARKER_FILE = ".odoo-python-sync-layout"
+BASE_RUNTIME_DEPENDENCY_PREFLIGHT_SCRIPT = textwrap.dedent(
+    """\
+    set -euo pipefail
+    temporary_root="$(mktemp -d)"
+    trap 'rm -rf "${temporary_root}"' EXIT
+    support_requirements="${temporary_root}/support-runtime.txt"
+    tenant_requirements="${temporary_root}/tenant.txt"
+    base_constraints="${temporary_root}/base-constraints.txt"
+    uv lock --quiet --project /opt/runtime --check
+    uv export --quiet --project /opt/runtime --frozen --format requirements.txt \
+      --no-emit-workspace --no-default-groups \
+      --output-file "${support_requirements}"
+    uv lock --quiet --project /opt/project --check
+    uv export --quiet --project /opt/project --frozen --format requirements.txt \
+      --no-emit-workspace --no-default-groups --all-packages \
+      --output-file "${tenant_requirements}"
+    /venv/bin/python - <<'PY' >"${base_constraints}"
+    from importlib import metadata
+    import re
+
+    versions = {}
+    for distribution in metadata.distributions():
+        name = re.sub(r"[-_.]+", "-", distribution.metadata["Name"].strip()).lower()
+        version = distribution.version.strip()
+        previous = versions.get(name)
+        if previous is not None and previous != version:
+            raise SystemExit(f"Conflicting base distributions for {name}: {previous}, {version}")
+        versions[name] = version
+    for name, version in sorted(versions.items()):
+        print(f"{name}=={version}")
+    PY
+    uv pip install --dry-run --python /venv/bin/python --no-deps \
+      --constraint "${base_constraints}" \
+      -r "${support_requirements}" \
+      -r "${tenant_requirements}"
+    """
+).strip()
 ODOO_INSTANCE_OVERRIDES_PAYLOAD_ENV_KEY = "ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64"
 LAUNCHPLANE_INSTANCE_OVERRIDES_REQUIRED_ENV_KEY = "LAUNCHPLANE_INSTANCE_OVERRIDES_REQUIRED"
 LAUNCHPLANE_WEBSITE_BOOTSTRAP_REQUIRED_ENV_KEY = "LAUNCHPLANE_WEBSITE_BOOTSTRAP_REQUIRED"
@@ -618,6 +655,14 @@ def publish_runtime_artifact(
             )
         except DependencyWorkspaceError as error:
             raise RuntimeCommandError(str(error)) from error
+        require_base_runtime_dependency_compatibility(
+            base_runtime_image=runtime_base_provenance.digest_reference,
+            staged_support_root=staged_context_root / "runtime",
+            staged_tenant_root=staged_context_root / "project",
+            platforms=normalized_platforms,
+            build_environment=build_environment,
+        )
+        require_staged_artifact_context_unchanged(staged_context_root=staged_context_root, staged_context=staged_context)
         build_command = [
             "docker",
             "buildx",
@@ -712,6 +757,43 @@ def publish_runtime_artifact(
         manifest_payload=manifest_payload,
         output_file=normalized_output_file,
     )
+
+
+def require_base_runtime_dependency_compatibility(
+    *,
+    base_runtime_image: str,
+    staged_support_root: Path,
+    staged_tenant_root: Path,
+    platforms: tuple[str, ...],
+    build_environment: dict[str, str],
+) -> None:
+    for target_platform in platforms:
+        command = [
+            "docker",
+            "run",
+            "--rm",
+            "--platform",
+            target_platform,
+            "--volume",
+            f"{staged_support_root.resolve()}:/opt/runtime:ro",
+            "--volume",
+            f"{staged_tenant_root.resolve()}:/opt/project:ro",
+            "--entrypoint",
+            "/bin/bash",
+            base_runtime_image,
+            "-lc",
+            BASE_RUNTIME_DEPENDENCY_PREFLIGHT_SCRIPT,
+        ]
+        try:
+            run_command(
+                runtime_repo_path=staged_tenant_root,
+                command=command,
+                environment_overrides=build_environment,
+            )
+        except RuntimeCommandError as error:
+            raise RuntimeCommandError(
+                f"Base runtime dependency preflight failed for {target_platform}; see resolver diagnostics above."
+            ) from error
 
 
 def validate_artifact_publish_runtime_values(runtime_values: dict[str, str]) -> None:
