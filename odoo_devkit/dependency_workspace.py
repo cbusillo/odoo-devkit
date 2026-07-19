@@ -644,10 +644,12 @@ def _workspace_members(*, root: Path, payload: dict[str, Any]) -> set[Path]:
     workspace = _uv_config(payload).get("workspace")
     if not isinstance(workspace, dict):
         raise DependencyWorkspaceError("pyproject.toml must define tool.uv.workspace")
-    raw_members = workspace.get("members", [])
+    if "members" not in workspace:
+        raise DependencyWorkspaceError("pyproject.toml workspace must define members")
+    raw_members = workspace["members"]
     raw_exclude = workspace.get("exclude", [])
-    if not isinstance(raw_members, list) or not raw_members or not all(isinstance(value, str) for value in raw_members):
-        raise DependencyWorkspaceError("pyproject.toml workspace members must be a non-empty string array")
+    if not isinstance(raw_members, list) or not all(isinstance(value, str) and value for value in raw_members):
+        raise DependencyWorkspaceError("pyproject.toml workspace members must be a string array of non-empty patterns")
     if not isinstance(raw_exclude, list) or not all(isinstance(value, str) for value in raw_exclude):
         raise DependencyWorkspaceError("pyproject.toml workspace exclude values must be a string array")
     for pattern in [*raw_members, *raw_exclude]:

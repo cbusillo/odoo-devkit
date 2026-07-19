@@ -95,6 +95,72 @@ class DependencyWorkspaceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Artifact schema v2 requires"):
                 require_publishable_dependency_workspace(manifest=manifest)
 
+    def test_pure_addon_empty_workspace_is_publishable_with_tenant_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory_name:
+            temp_root = Path(temporary_directory_name)
+            tenant_repo_path = temp_root / "tenant"
+            self._write_root_workspace(tenant_repo_path=tenant_repo_path, members=())
+            (tenant_repo_path / "uv.lock").unlink()
+            subprocess.run(
+                ["uv", "lock", "--offline", "--no-config"],
+                cwd=tenant_repo_path,
+                check=True,
+                capture_output=True,
+            )
+            self._commit_repo(tenant_repo_path)
+            manifest = self._write_manifest(temp_root=temp_root, tenant_repo_path=tenant_repo_path)
+            destination_root = temp_root / "staged"
+
+            inspection = stage_publishable_dependency_workspace(
+                manifest=manifest,
+                destination_root=destination_root,
+            )
+
+            self.assertTrue(inspection.current)
+            self.assertTrue(inspection.publishable)
+            self.assertFalse(inspection.requires_tenant_lock)
+            self.assertEqual(inspection.workspace_members, ())
+            self.assertEqual(inspection.projects, ())
+            self.assertTrue((destination_root / "pyproject.toml").is_file())
+            self.assertTrue((destination_root / "uv.lock").is_file())
+            self.assertFalse((destination_root / "addons").exists())
+
+    def test_workspace_members_must_be_explicit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory_name:
+            temp_root = Path(temporary_directory_name)
+            tenant_repo_path = temp_root / "tenant"
+            self._write_root_workspace(tenant_repo_path=tenant_repo_path, members=())
+            pyproject_path = tenant_repo_path / "pyproject.toml"
+            pyproject_path.write_text(
+                pyproject_path.read_text(encoding="utf-8").replace("members = []\n", ""),
+                encoding="utf-8",
+            )
+            self._commit_repo(tenant_repo_path)
+            manifest = self._write_manifest(temp_root=temp_root, tenant_repo_path=tenant_repo_path)
+
+            with mock.patch("odoo_devkit.dependency_workspace._uv_lock_is_current") as uv_lock_is_current:
+                inspection = inspect_dependency_workspace(manifest=manifest)
+
+            uv_lock_is_current.assert_not_called()
+            self.assertFalse(inspection.current)
+            self.assertIn("pyproject.toml workspace must define members", inspection.findings)
+
+    def test_empty_workspace_members_cannot_hide_discovered_projects(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory_name:
+            temp_root = Path(temporary_directory_name)
+            tenant_repo_path = temp_root / "tenant"
+            self._write_member_pyproject(tenant_repo_path / "addons" / "tenant_addon")
+            self._write_root_workspace(tenant_repo_path=tenant_repo_path, members=())
+            self._commit_repo(tenant_repo_path)
+            manifest = self._write_manifest(temp_root=temp_root, tenant_repo_path=tenant_repo_path)
+
+            with mock.patch("odoo_devkit.dependency_workspace._uv_lock_is_current") as uv_lock_is_current:
+                inspection = inspect_dependency_workspace(manifest=manifest)
+
+            uv_lock_is_current.assert_not_called()
+            self.assertFalse(inspection.current)
+            self.assertIn("missing=['addons/tenant_addon']", inspection.findings[-1])
+
     def test_runtime_dependencies_require_root_workspace_and_lock(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory_name:
             temp_root = Path(temporary_directory_name)
