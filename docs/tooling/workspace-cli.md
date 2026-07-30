@@ -306,6 +306,10 @@ Notes
 - Devkit-managed startup and data workflow Odoo shell subprocesses prepend
   `/volumes/scripts` to `PYTHONPATH` so shipped runtime helpers remain
   importable from generated shell snippets.
+- Data workflows close their module-state metadata transaction before launching
+  an Odoo install/update subprocess. This prevents the parent workflow from
+  retaining a read lock on `ir_module_module` while the child process performs
+  schema-changing module upgrades.
 - Release/deploy ownership for remote environments stays in
   `launchplane`, even when the same tenant manifest is used to anchor
   local runtime context.
