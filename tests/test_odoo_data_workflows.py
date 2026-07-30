@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import subprocess
 import sys
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 def _load_data_workflows_module() -> types.ModuleType:
@@ -19,6 +20,7 @@ def _load_data_workflows_module() -> types.ModuleType:
     original_sys_path = list(sys.path)
 
     psycopg2_module = types.ModuleType("psycopg2")
+    psycopg2_module.Error = Exception
     psycopg2_module.sql = types.SimpleNamespace(SQL=lambda value: value, Identifier=lambda value: value)
     psycopg2_extensions_module = types.ModuleType("psycopg2.extensions")
     psycopg2_extensions_module.connection = object
@@ -153,6 +155,95 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
 
         self.assertEqual(result, odoo_data_workflows.ExitCode.BOOTSTRAP_FAILED)
         update_addons.assert_not_called()
+
+    def test_module_update_releases_metadata_connection_before_odoo_command(self) -> None:
+        runner = odoo_data_workflows.OdooDataWorkflowRunner(self._local_settings(), upstream=None, env_file=None)
+        connection = MagicMock()
+        cursor = connection.cursor.return_value.__enter__.return_value
+        cursor.fetchall.return_value = [("cm_website", "installed")]
+        runner.local.db_conn = connection
+
+        def assert_connection_released(_command: str) -> None:
+            self.assertIsNone(runner.local.db_conn)
+            connection.close.assert_called_once_with()
+
+        with (
+            patch.object(runner, "_resolve_addons_paths", return_value=(Path("/addons"),)),
+            patch.object(runner, "run_command", side_effect=assert_connection_released),
+        ):
+            runner._apply_module_updates(
+                ["cm_website"],
+                modules_source_label="test",
+                local_module_paths={"cm_website": Path("/addons/cm_website")},
+            )
+
+        self.assertIsNone(runner.local.db_conn)
+        connection.close.assert_called_once_with()
+
+    def test_module_update_keeps_connection_reset_when_odoo_command_fails(self) -> None:
+        runner = odoo_data_workflows.OdooDataWorkflowRunner(self._local_settings(), upstream=None, env_file=None)
+        connection = MagicMock()
+        cursor = connection.cursor.return_value.__enter__.return_value
+        cursor.fetchall.return_value = [("cm_website", "installed")]
+        runner.local.db_conn = connection
+
+        def fail_after_connection_release(command: str) -> None:
+            self.assertIsNone(runner.local.db_conn)
+            raise subprocess.CalledProcessError(returncode=1, cmd=command)
+
+        with (
+            patch.object(runner, "_resolve_addons_paths", return_value=(Path("/addons"),)),
+            patch.object(runner, "run_command", side_effect=fail_after_connection_release),
+            self.assertRaises(odoo_data_workflows.OdooRestorerError),
+        ):
+            runner._apply_module_updates(
+                ["cm_website"],
+                modules_source_label="test",
+                local_module_paths={"cm_website": Path("/addons/cm_website")},
+            )
+
+        self.assertIsNone(runner.local.db_conn)
+        connection.close.assert_called_once_with()
+
+    def test_openupgrade_snapshot_releases_metadata_connection(self) -> None:
+        runner = odoo_data_workflows.OdooDataWorkflowRunner(self._local_settings(), upstream=None, env_file=None)
+        connection = MagicMock()
+        cursor = connection.cursor.return_value.__enter__.return_value
+        cursor.fetchall.return_value = [("base", "installed"), ("cm_website", "to upgrade")]
+        runner.local.db_conn = connection
+
+        runner.snapshot_module_states_before_openupgrade()
+
+        self.assertEqual(
+            runner._pre_openupgrade_module_states,
+            {"base": "installed", "cm_website": "to upgrade"},
+        )
+        self.assertIsNone(runner.local.db_conn)
+        connection.close.assert_called_once_with()
+
+    def test_openupgrade_releases_cached_connection_before_odoo_command(self) -> None:
+        settings = self._local_settings()
+        settings.openupgrade_enabled = True
+        runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
+        connection = MagicMock()
+        runner.local.db_conn = connection
+
+        def assert_connection_released(_command: str) -> None:
+            self.assertIsNone(runner.local.db_conn)
+            connection.close.assert_called_once_with()
+
+        with (
+            patch.object(
+                runner,
+                "_resolve_openupgrade_assets",
+                return_value=([Path("/addons/openupgrade_scripts/scripts")], Path("/addons/openupgrade_framework")),
+            ),
+            patch.object(runner, "run_command", side_effect=assert_connection_released),
+        ):
+            runner.run_openupgrade()
+
+        self.assertIsNone(runner.local.db_conn)
+        connection.close.assert_called_once_with()
 
 
 if __name__ == "__main__":

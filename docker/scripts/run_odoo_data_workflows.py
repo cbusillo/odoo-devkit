@@ -1011,7 +1011,10 @@ class OdooDataWorkflowRunner:
         return sorted(module_name for module_name in queued_install_modules if module_name not in discovered_modules)
 
     def snapshot_module_states_before_openupgrade(self) -> None:
-        self._pre_openupgrade_module_states = self._module_states_by_name()
+        try:
+            self._pre_openupgrade_module_states = self._module_states_by_name()
+        finally:
+            self._reset_db_connection()
 
     def reconcile_missing_manifest_install_queue(self) -> None:
         unresolved_modules = self._missing_manifest_install_queue_modules()
@@ -1890,13 +1893,16 @@ with registry.cursor() as cr:
 
         self.connect_to_db()
         rows: dict[str, str] = {}
-        with self.local.db_conn.cursor() as cur:
-            cur.execute(
-                "SELECT name, state FROM ir_module_module WHERE name = ANY(%s)",
-                (list(found),),
-            )
-            for name, state in cur.fetchall():
-                rows[name] = state
+        try:
+            with self.local.db_conn.cursor() as cur:
+                cur.execute(
+                    "SELECT name, state FROM ir_module_module WHERE name = ANY(%s)",
+                    (list(found),),
+                )
+                for name, state in cur.fetchall():
+                    rows[name] = state
+        finally:
+            self._reset_db_connection()
 
         to_install = [name for name in found if name not in rows or rows.get(name) in ("uninstalled", "to remove")]
         to_update = list(found) if update_existing else []
@@ -2052,8 +2058,11 @@ with registry.cursor() as cr:
             "Running OpenUpgrade with upgrade paths %s",
             ",".join(str(path) for path in scripts_paths),
         )
-        self.run_command(" ".join(cmd_parts))
         self._reset_db_connection()
+        try:
+            self.run_command(" ".join(cmd_parts))
+        finally:
+            self._reset_db_connection()
 
     def _should_refresh_website_after_openupgrade(self) -> bool:
         target_version = (self.local.openupgrade_target_version or self.local.odoo_version or "").strip()
