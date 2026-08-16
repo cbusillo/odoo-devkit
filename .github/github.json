@@ -8,6 +8,7 @@
     "roles": "docs/roles.md",
     "workspaceCli": "docs/tooling/workspace-cli.md",
     "artifactInputs": "docs/tooling/artifact-inputs.md",
+    "buildToolUpgrades": "docs/tooling/build-tool-upgrades.md",
     "commandPatterns": "docs/tooling/command-patterns.md",
     "tenantOverlay": "docs/tooling/tenant-overlay.md"
   },
@@ -16,7 +17,8 @@
       "default": "uv sync --locked"
     },
     "test": {
-      "default": "uv run python -m unittest discover -s tests"
+      "default": "uv run python -m unittest discover -s tests",
+      "runtimePythonLock": "uv lock --check --offline --no-config --project docker/runtime-python"
     },
     "format": {
       "default": "uv run ruff format --check ."
@@ -59,7 +61,7 @@
     "Dependency Graph",
     "Dependabot Updates"
   ],
-  "requiredStatusChecks": ["test"],
+  "requiredStatusChecks": ["test", "runtime-python-lock"],
   "codeScanningMergeProtection": {
     "ruleset": "Require code scanning results",
     "tool": "CodeQL",
