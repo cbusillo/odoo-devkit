@@ -18,6 +18,8 @@ lanes live in `launchplane`.
   command surface and generated-output contract.
 - [tooling/artifact-inputs.md](tooling/artifact-inputs.md) for the repo-owned
   runtime and publish source-input contract.
+- [tooling/build-tool-upgrades.md](tooling/build-tool-upgrades.md) for central
+  build-tool ownership and atomic tenant pin synchronization.
 - [tooling/command-patterns.md](tooling/command-patterns.md) for concrete
   workspace command examples.
 - [tooling/tenant-overlay.md](tooling/tenant-overlay.md) for the thin tenant
