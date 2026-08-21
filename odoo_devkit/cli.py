@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
-from .dependency_workspace import inspect_dependency_workspace
+from .dependency_workspace import inspect_dependency_workspace, normalize_dependency_workspace
 from .manifest import WorkspaceManifest, load_workspace_manifest
 from .runtime import (
     run_native_runtime_build,
@@ -104,6 +104,20 @@ def build_parser() -> argparse.ArgumentParser:
         dependencies_subparsers.add_parser("check", help="Fail when the tenant dependency workspace is not current")
     )
     dependencies_check_parser.set_defaults(handler=_handle_dependencies_check)
+
+    dependencies_normalize_parser = _add_manifest_argument(
+        dependencies_subparsers.add_parser(
+            "normalize",
+            help="Regenerate the canonical tenant lock and frozen dependency export",
+        )
+    )
+    dependencies_normalize_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="Retain tenant-requirements.txt in this directory",
+    )
+    dependencies_normalize_parser.set_defaults(handler=_handle_dependencies_normalize)
 
     runtime_parser = subparsers.add_parser("runtime", help="Run local runtime workflows via the workspace manifest")
     runtime_subparsers = runtime_parser.add_subparsers(dest="runtime_command")
@@ -365,6 +379,12 @@ def _handle_dependencies_check(arguments: argparse.Namespace) -> None:
     print(json.dumps(inspection.to_dict(), indent=2, sort_keys=True))
     if not inspection.current:
         raise SystemExit(1)
+
+
+def _handle_dependencies_normalize(arguments: argparse.Namespace) -> None:
+    manifest = _load_manifest(arguments.manifest)
+    result = normalize_dependency_workspace(manifest=manifest, output_directory=arguments.output_dir)
+    print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
 
 
 def _handle_runtime_select(arguments: argparse.Namespace) -> None:

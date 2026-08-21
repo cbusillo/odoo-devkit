@@ -8,7 +8,7 @@ import tempfile
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TypedDict
 from urllib.parse import urlsplit
 
 from .manifest import WorkspaceManifest
@@ -51,10 +51,47 @@ _UV_DEPENDENCY_LIST_KEYS = (
     "dev-dependencies",
     "override-dependencies",
 )
+_STALE_TENANT_LOCK_FINDING = "Tenant uv.lock is not current for the combined owned-addon workspace."
 
 
 class DependencyWorkspaceError(ValueError):
     pass
+
+
+class DependencyNormalizationInput(TypedDict):
+    owner: str
+    path: str
+    sha256: str
+
+
+class DependencyNormalizationRepository(TypedDict):
+    role: str
+    commit: str
+    dirty: bool
+
+
+class DependencyNormalizationSource(TypedDict):
+    tenant: str
+    repositories: list[DependencyNormalizationRepository]
+    inputs: list[DependencyNormalizationInput]
+
+
+class DependencyNormalizationTool(TypedDict):
+    command: str
+    uv_version: str
+    lock_arguments: list[str]
+    export_arguments: list[str]
+
+
+class DependencyNormalizationArtifact(TypedDict):
+    path: str
+    sha256: str
+
+
+class DependencyNormalizationProvenance(TypedDict):
+    source: DependencyNormalizationSource
+    tool: DependencyNormalizationTool
+    artifacts: list[DependencyNormalizationArtifact]
 
 
 @dataclass(frozen=True)
@@ -100,6 +137,21 @@ class DependencyWorkspaceInspection:
             "workspace_members": list(self.workspace_members),
             "projects": [project.to_dict() for project in self.projects],
             "findings": list(self.findings),
+        }
+
+
+@dataclass(frozen=True)
+class DependencyWorkspaceNormalization:
+    changed: bool
+    inspection: DependencyWorkspaceInspection
+    provenance: DependencyNormalizationProvenance
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "changed": self.changed,
+            "inspection": self.inspection.to_dict(),
+            "provenance": self.provenance,
         }
 
 
@@ -231,9 +283,12 @@ def inspect_dependency_workspace(*, manifest: WorkspaceManifest) -> DependencyWo
             except DependencyWorkspaceError as error:
                 findings.append(str(error))
             if not findings:
-                tenant_lock_current = _uv_lock_is_current(staged_root)
+                tenant_lock_current = _uv_lock_is_current(
+                    staged_root,
+                    python_version=manifest.workspace.python_version,
+                )
                 if not tenant_lock_current:
-                    findings.append("Tenant uv.lock is not current for the combined owned-addon workspace.")
+                    findings.append(_STALE_TENANT_LOCK_FINDING)
             else:
                 tenant_lock_current = False
 
@@ -263,6 +318,107 @@ def require_publishable_dependency_workspace(*, manifest: WorkspaceManifest) -> 
             "Artifact schema v2 requires a tracked tenant pyproject.toml and uv.lock, even when a lockless pure-addon workspace is valid locally."
         )
     return inspection
+
+
+def _require_normalizable_dependency_workspace(*, inspection: DependencyWorkspaceInspection) -> None:
+    if inspection.publishable:
+        return
+    if (
+        inspection.tenant_root_pyproject_present
+        and inspection.tenant_lock_present
+        and inspection.findings == (_STALE_TENANT_LOCK_FINDING,)
+    ):
+        return
+    findings = "; ".join(inspection.findings) or "a tracked tenant pyproject.toml and uv.lock are required"
+    raise DependencyWorkspaceError(f"Dependency workspace cannot be normalized: {findings}")
+
+
+def normalize_dependency_workspace(
+    *,
+    manifest: WorkspaceManifest,
+    output_directory: Path | None = None,
+) -> DependencyWorkspaceNormalization:
+    tenant_repo_path = manifest.tenant_repo.resolve_path(manifest_directory=manifest.manifest_directory)
+    if tenant_repo_path is None or not tenant_repo_path.is_dir():
+        raise DependencyWorkspaceError("Tenant repo path must exist before dependency normalization.")
+    tenant_repo_path = tenant_repo_path.resolve()
+    shared_addons_repo_path = _resolve_shared_addons_repo_path(manifest)
+    shared_addons_repo_path = shared_addons_repo_path.resolve() if shared_addons_repo_path is not None else None
+    project_inputs = _discover_project_inputs(
+        tenant_repo_path=tenant_repo_path,
+        shared_addons_repo_path=shared_addons_repo_path,
+    )
+    initial_inspection = inspect_dependency_workspace(manifest=manifest)
+    _require_normalizable_dependency_workspace(inspection=initial_inspection)
+
+    tenant_lock_path = tenant_repo_path / "uv.lock"
+    original_lock_bytes = tenant_lock_path.read_bytes()
+    source_inputs = _normalization_source_inputs(
+        manifest=manifest,
+        tenant_repo_path=tenant_repo_path,
+        project_inputs=project_inputs,
+    )
+
+    with tempfile.TemporaryDirectory(prefix="odoo-dependency-normalize-") as temporary_directory_name:
+        staged_root = Path(temporary_directory_name)
+        _stage_dependency_directory_layout(
+            tenant_repo_path=tenant_repo_path,
+            shared_addons_repo_path=shared_addons_repo_path,
+            staged_root=staged_root,
+        )
+        _stage_dependency_metadata(
+            root_pyproject_path=tenant_repo_path / "pyproject.toml",
+            tenant_lock_path=tenant_lock_path,
+            project_inputs=project_inputs,
+            staged_root=staged_root,
+        )
+        _run_uv_lock(
+            staged_root=staged_root,
+            python_version=manifest.workspace.python_version,
+        )
+        require_staged_dependency_workspace_current(
+            staged_root=staged_root,
+            label="normalized dependency",
+            python_version=manifest.workspace.python_version,
+        )
+        export_path = staged_root / "tenant-requirements.txt"
+        _write_frozen_dependency_export(staged_root=staged_root, export_path=export_path)
+
+        normalized_lock_bytes = (staged_root / "uv.lock").read_bytes()
+        changed = normalized_lock_bytes != original_lock_bytes
+        provenance = _normalization_provenance(
+            manifest=manifest,
+            tenant_repo_path=tenant_repo_path,
+            shared_addons_repo_path=shared_addons_repo_path,
+            source_inputs=source_inputs,
+            normalized_lock_path=staged_root / "uv.lock",
+            export_path=export_path,
+        )
+
+        lock_replaced = False
+        try:
+            if changed:
+                _atomic_write_bytes(path=tenant_lock_path, content=normalized_lock_bytes)
+                lock_replaced = True
+            inspection = require_publishable_dependency_workspace(manifest=manifest)
+            if output_directory is not None:
+                retained_export_path = output_directory.expanduser().resolve() / "tenant-requirements.txt"
+                _atomic_write_bytes(path=retained_export_path, content=export_path.read_bytes())
+        except BaseException as error:
+            if lock_replaced:
+                try:
+                    _atomic_write_bytes(path=tenant_lock_path, content=original_lock_bytes)
+                except OSError as rollback_error:
+                    raise DependencyWorkspaceError(
+                        f"Dependency normalization failed and uv.lock rollback was incomplete: {rollback_error}"
+                    ) from error
+            raise
+
+    return DependencyWorkspaceNormalization(
+        changed=changed,
+        inspection=inspection,
+        provenance=provenance,
+    )
 
 
 def stage_publishable_dependency_workspace(
@@ -310,8 +466,13 @@ def stage_publishable_dependency_workspace(
     return inspection
 
 
-def require_staged_dependency_workspace_current(*, staged_root: Path, label: str = "dependency") -> None:
-    if not _uv_lock_is_current(staged_root):
+def require_staged_dependency_workspace_current(
+    *,
+    staged_root: Path,
+    label: str = "dependency",
+    python_version: str | None = None,
+) -> None:
+    if not _uv_lock_is_current(staged_root, python_version=python_version):
         raise DependencyWorkspaceError(f"Staged {label} uv.lock changed or is not current for the exact artifact inputs.")
 
 
@@ -929,24 +1090,182 @@ def _git_head_commit(repo_path: Path) -> str:
     return commit
 
 
-def _uv_lock_is_current(staged_root: Path) -> bool:
+def _run_uv_lock(*, staged_root: Path, python_version: str) -> None:
+    result = _run_uv(["uv", "lock", "--python", python_version, "--no-config"], cwd=staged_root)
+    if result.returncode != 0:
+        message = result.stderr.strip() or result.stdout.strip() or "uv lock failed"
+        raise DependencyWorkspaceError(f"Dependency workspace normalization failed: {message}")
+
+
+def _write_frozen_dependency_export(*, staged_root: Path, export_path: Path) -> None:
+    result = _run_uv(
+        [
+            "uv",
+            "export",
+            "--frozen",
+            "--all-packages",
+            "--no-emit-workspace",
+            "--no-default-groups",
+            "--no-config",
+            "--output-file",
+            export_path.name,
+        ],
+        cwd=staged_root,
+    )
+    if result.returncode != 0 or not export_path.is_file():
+        message = result.stderr.strip() or result.stdout.strip() or "uv export failed"
+        raise DependencyWorkspaceError(f"Frozen dependency export failed: {message}")
+
+
+def _run_uv(command: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(command, cwd=cwd, capture_output=True, text=True, env=_uv_command_env())
+    except FileNotFoundError as error:
+        raise DependencyWorkspaceError("uv is required for dependency workspace normalization") from error
+
+
+def _uv_command_env() -> dict[str, str]:
     environment = {
         key: value
         for key, value in os.environ.items()
         if not key.startswith(("PIP_", "UV_")) and key not in {"PYTHONPATH", "VIRTUAL_ENV"}
     }
     environment["UV_NO_PROGRESS"] = "1"
+    return environment
+
+
+def _uv_lock_is_current(staged_root: Path, *, python_version: str | None = None) -> bool:
+    command = ["uv", "lock", "--check", "--offline"]
+    if python_version is not None:
+        command.extend(["--python", python_version])
+    command.extend(["--no-config", "--project", str(staged_root)])
     try:
         result = subprocess.run(
-            ["uv", "lock", "--check", "--offline", "--no-config", "--project", str(staged_root)],
+            command,
             cwd=staged_root,
             capture_output=True,
             text=True,
-            env=environment,
+            env=_uv_command_env(),
         )
     except FileNotFoundError as error:
         raise DependencyWorkspaceError("uv is required for dependency workspace checks") from error
     return result.returncode == 0
+
+
+def _normalization_source_inputs(
+    *,
+    manifest: WorkspaceManifest,
+    tenant_repo_path: Path,
+    project_inputs: tuple[_ProjectInput, ...],
+) -> list[DependencyNormalizationInput]:
+    inputs: list[tuple[str, str, Path]] = [
+        ("manifest", manifest.manifest_path.name, manifest.manifest_path),
+        ("tenant", "pyproject.toml", tenant_repo_path / "pyproject.toml"),
+        ("tenant", "uv.lock", tenant_repo_path / "uv.lock"),
+    ]
+    inputs.extend(
+        (project.owner, project.staged_pyproject_path.as_posix(), project.source_pyproject_path) for project in project_inputs
+    )
+    devkit_repo_path = _resolve_devkit_repo_path(manifest)
+    if devkit_repo_path is not None:
+        support_pyproject_path = devkit_repo_path.resolve() / "docker" / "runtime-python" / "pyproject.toml"
+        if support_pyproject_path.is_file():
+            inputs.append(("devkit", "docker/runtime-python/pyproject.toml", support_pyproject_path))
+    return [
+        {"owner": owner, "path": path_label, "sha256": _sha256_file(path)}
+        for owner, path_label, path in sorted(inputs, key=lambda item: (item[0], item[1]))
+    ]
+
+
+def _normalization_provenance(
+    *,
+    manifest: WorkspaceManifest,
+    tenant_repo_path: Path,
+    shared_addons_repo_path: Path | None,
+    source_inputs: list[DependencyNormalizationInput],
+    normalized_lock_path: Path,
+    export_path: Path,
+) -> DependencyNormalizationProvenance:
+    repositories: list[DependencyNormalizationRepository] = [
+        {
+            "role": "tenant",
+            "commit": _git_head_commit(tenant_repo_path),
+            "dirty": _git_worktree_dirty(tenant_repo_path),
+        }
+    ]
+    if shared_addons_repo_path is not None and any(item["owner"] == "shared_addons" for item in source_inputs):
+        repositories.append(
+            {
+                "role": "shared_addons",
+                "commit": _git_head_commit(shared_addons_repo_path),
+                "dirty": _git_worktree_dirty(shared_addons_repo_path),
+            }
+        )
+    return {
+        "source": {
+            "tenant": manifest.tenant,
+            "repositories": repositories,
+            "inputs": source_inputs,
+        },
+        "tool": {
+            "command": "platform dependencies normalize",
+            "uv_version": _uv_version(),
+            "lock_arguments": ["uv", "lock", "--python", manifest.workspace.python_version, "--no-config"],
+            "export_arguments": [
+                "uv",
+                "export",
+                "--frozen",
+                "--all-packages",
+                "--no-emit-workspace",
+                "--no-default-groups",
+                "--no-config",
+                "--output-file",
+                "tenant-requirements.txt",
+            ],
+        },
+        "artifacts": [
+            {"path": "uv.lock", "sha256": _sha256_file(normalized_lock_path)},
+            {"path": "tenant-requirements.txt", "sha256": _sha256_file(export_path)},
+        ],
+    }
+
+
+def _uv_version() -> str:
+    result = _run_uv(["uv", "--version"], cwd=Path.cwd())
+    if result.returncode != 0:
+        message = result.stderr.strip() or result.stdout.strip() or "uv --version failed"
+        raise DependencyWorkspaceError(f"Unable to determine uv version: {message}")
+    return result.stdout.strip()
+
+
+def _git_worktree_dirty(repo_path: Path) -> bool:
+    result = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=normal"],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        env=_git_command_env(),
+    )
+    if result.returncode != 0:
+        raise DependencyWorkspaceError("Dependency normalization requires readable Git worktree status")
+    return bool(result.stdout)
+
+
+def _atomic_write_bytes(*, path: Path, content: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mode = path.stat().st_mode & 0o777 if path.exists() else 0o644
+    file_descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(file_descriptor, "wb") as temporary_file:
+            temporary_file.write(content)
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+        temporary_path.chmod(mode)
+        os.replace(temporary_path, path)
+    except BaseException:
+        temporary_path.unlink(missing_ok=True)
+        raise
 
 
 def _git_command_env() -> dict[str, str]:

@@ -14,6 +14,7 @@ from odoo_devkit import dependency_workspace
 from odoo_devkit.cli import build_parser
 from odoo_devkit.dependency_workspace import (
     inspect_dependency_workspace,
+    normalize_dependency_workspace,
     require_publishable_dependency_workspace,
     require_staged_build_requirements_supplied,
     stage_publishable_dependency_workspace,
@@ -318,7 +319,8 @@ class DependencyWorkspaceTests(unittest.TestCase):
                 shared_repo_path=shared_repo_path,
             )
 
-            def validate_staged_workspace(staged_root: Path) -> bool:
+            def validate_staged_workspace(staged_root: Path, *, python_version: str | None = None) -> bool:
+                self.assertEqual(python_version, "3.13")
                 self.assertTrue((staged_root / "addons" / "tenant_addon" / "pyproject.toml").is_file())
                 self.assertTrue((staged_root / "addons" / "shared" / "shared_addon" / "pyproject.toml").is_file())
                 return True
@@ -649,6 +651,272 @@ class DependencyWorkspaceTests(unittest.TestCase):
 
             self.assertFalse(inspection.current)
             self.assertIn("requirements must move into pyproject.toml", inspection.findings[0])
+
+    def test_normalize_uses_staged_combined_workspace_and_reports_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory_name:
+            temp_root = Path(temporary_directory_name)
+            tenant_repo_path = temp_root / "tenant"
+            shared_repo_path = temp_root / "shared"
+            self._write_member_pyproject(
+                tenant_repo_path / "addons" / "tenant_addon",
+                project_name="tenant-addon",
+                dependencies=("httpx==0.28.1",),
+            )
+            self._write_member_pyproject(
+                shared_repo_path / "shared_addon",
+                project_name="shared-addon",
+                dependencies=("requests==2.32.5",),
+            )
+            self._write_root_workspace(
+                tenant_repo_path=tenant_repo_path,
+                members=("addons/tenant_addon", "addons/shared/shared_addon"),
+            )
+            self._commit_repo(tenant_repo_path)
+            self._commit_repo(shared_repo_path)
+            manifest = self._write_manifest(
+                temp_root=temp_root,
+                tenant_repo_path=tenant_repo_path,
+                shared_repo_path=shared_repo_path,
+            )
+            normalized_lock_bytes = b"version = 1\nrevision = 2\n"
+            output_directory = temp_root / "normalized"
+
+            def lock_is_current(staged_root: Path, *, python_version: str | None = None) -> bool:
+                self.assertEqual(python_version, "3.13")
+                return (staged_root / "uv.lock").read_bytes() == normalized_lock_bytes
+
+            def normalize_staged_lock(*, staged_root: Path, python_version: str) -> None:
+                self.assertEqual(python_version, "3.13")
+                self.assertTrue((staged_root / "addons" / "shared" / "shared_addon" / "pyproject.toml").is_file())
+                (staged_root / "uv.lock").write_bytes(normalized_lock_bytes)
+
+            def write_export(*, staged_root: Path, export_path: Path) -> None:
+                self.assertEqual(export_path, staged_root / "tenant-requirements.txt")
+                export_path.write_text("# frozen tenant dependencies\n", encoding="utf-8")
+
+            with (
+                mock.patch("odoo_devkit.dependency_workspace._uv_lock_is_current", side_effect=lock_is_current),
+                mock.patch("odoo_devkit.dependency_workspace._run_uv_lock", side_effect=normalize_staged_lock),
+                mock.patch("odoo_devkit.dependency_workspace._write_frozen_dependency_export", side_effect=write_export),
+                mock.patch("odoo_devkit.dependency_workspace._uv_version", return_value="uv 0.10.7"),
+            ):
+                result = normalize_dependency_workspace(manifest=manifest, output_directory=output_directory)
+
+            self.assertTrue(result.changed)
+            self.assertTrue(result.inspection.publishable)
+            self.assertEqual((tenant_repo_path / "uv.lock").read_bytes(), normalized_lock_bytes)
+            self.assertEqual(
+                (output_directory / "tenant-requirements.txt").read_text(encoding="utf-8"),
+                "# frozen tenant dependencies\n",
+            )
+            self.assertEqual(result.provenance["tool"]["uv_version"], "uv 0.10.7")
+            self.assertEqual(
+                [repository["role"] for repository in result.provenance["source"]["repositories"]],
+                ["tenant", "shared_addons"],
+            )
+            self.assertTrue(result.provenance["source"]["repositories"][0]["dirty"])
+            source_inputs = result.provenance["source"]["inputs"]
+            self.assertIn(
+                {
+                    "owner": "shared_addons",
+                    "path": "addons/shared/shared_addon/pyproject.toml",
+                    "sha256": hashlib.sha256((shared_repo_path / "shared_addon" / "pyproject.toml").read_bytes()).hexdigest(),
+                },
+                source_inputs,
+            )
+            self.assertEqual(result.provenance["artifacts"][0]["path"], "uv.lock")
+            self.assertEqual(result.provenance["artifacts"][1]["path"], "tenant-requirements.txt")
+
+    def test_normalize_real_uv_nested_workspace_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory_name:
+            temp_root = Path(temporary_directory_name)
+            tenant_repo_path = temp_root / "tenant"
+            member_pyproject_path = tenant_repo_path / "addons" / "tenant_addon" / "pyproject.toml"
+            self._write_member_pyproject(member_pyproject_path.parent)
+            self._write_root_workspace(tenant_repo_path=tenant_repo_path, members=("addons/tenant_addon",))
+            (tenant_repo_path / "uv.lock").unlink()
+            subprocess.run(
+                ["uv", "lock", "--no-config"],
+                cwd=tenant_repo_path,
+                check=True,
+                capture_output=True,
+            )
+            self._commit_repo(tenant_repo_path)
+            member_pyproject_path.write_text(
+                member_pyproject_path.read_text(encoding="utf-8").replace('version = "0.0.0"', 'version = "0.0.1"'),
+                encoding="utf-8",
+            )
+            manifest = self._write_manifest(temp_root=temp_root, tenant_repo_path=tenant_repo_path)
+            output_directory = temp_root / "normalized"
+
+            first_result = normalize_dependency_workspace(manifest=manifest, output_directory=output_directory)
+            first_lock_bytes = (tenant_repo_path / "uv.lock").read_bytes()
+            first_export_bytes = (output_directory / "tenant-requirements.txt").read_bytes()
+            second_result = normalize_dependency_workspace(manifest=manifest, output_directory=output_directory)
+
+            self.assertTrue(first_result.changed)
+            self.assertFalse(second_result.changed)
+            self.assertTrue(second_result.inspection.publishable)
+            self.assertIn('requires-python = ">=3.13"', first_lock_bytes.decode())
+            self.assertEqual((tenant_repo_path / "uv.lock").read_bytes(), first_lock_bytes)
+            self.assertEqual((output_directory / "tenant-requirements.txt").read_bytes(), first_export_bytes)
+
+    def test_normalize_is_idempotent_for_a_current_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory_name:
+            temp_root = Path(temporary_directory_name)
+            tenant_repo_path = temp_root / "tenant"
+            self._write_member_pyproject(tenant_repo_path / "addons" / "tenant_addon")
+            self._write_root_workspace(tenant_repo_path=tenant_repo_path, members=("addons/tenant_addon",))
+            self._commit_repo(tenant_repo_path)
+            manifest = self._write_manifest(temp_root=temp_root, tenant_repo_path=tenant_repo_path)
+            original_lock_bytes = (tenant_repo_path / "uv.lock").read_bytes()
+
+            def write_export(*, staged_root: Path, export_path: Path) -> None:
+                self.assertEqual(export_path.parent, staged_root)
+                export_path.write_text("# frozen tenant dependencies\n", encoding="utf-8")
+
+            with (
+                mock.patch("odoo_devkit.dependency_workspace._uv_lock_is_current", return_value=True),
+                mock.patch("odoo_devkit.dependency_workspace._run_uv_lock") as run_uv_lock,
+                mock.patch("odoo_devkit.dependency_workspace._write_frozen_dependency_export", side_effect=write_export),
+                mock.patch("odoo_devkit.dependency_workspace._uv_version", return_value="uv 0.10.7"),
+            ):
+                result = normalize_dependency_workspace(manifest=manifest)
+
+            self.assertFalse(result.changed)
+            self.assertEqual((tenant_repo_path / "uv.lock").read_bytes(), original_lock_bytes)
+            run_uv_lock.assert_called_once()
+
+    def test_normalize_rolls_back_when_the_strict_post_check_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory_name:
+            temp_root = Path(temporary_directory_name)
+            tenant_repo_path = temp_root / "tenant"
+            self._write_member_pyproject(
+                tenant_repo_path / "addons" / "tenant_addon",
+                dependencies=("httpx==0.28.1",),
+            )
+            self._write_root_workspace(tenant_repo_path=tenant_repo_path, members=("addons/tenant_addon",))
+            self._commit_repo(tenant_repo_path)
+            manifest = self._write_manifest(temp_root=temp_root, tenant_repo_path=tenant_repo_path)
+            original_lock_bytes = (tenant_repo_path / "uv.lock").read_bytes()
+
+            def normalize_staged_lock(*, staged_root: Path, python_version: str) -> None:
+                self.assertEqual(python_version, "3.13")
+                (staged_root / "uv.lock").write_text("version = 1\nrevision = 2\n", encoding="utf-8")
+
+            def write_export(*, staged_root: Path, export_path: Path) -> None:
+                self.assertEqual(export_path.parent, staged_root)
+                export_path.write_text("# frozen tenant dependencies\n", encoding="utf-8")
+
+            with (
+                mock.patch("odoo_devkit.dependency_workspace._uv_lock_is_current", side_effect=(False, True, False)),
+                mock.patch("odoo_devkit.dependency_workspace._run_uv_lock", side_effect=normalize_staged_lock),
+                mock.patch("odoo_devkit.dependency_workspace._write_frozen_dependency_export", side_effect=write_export),
+                mock.patch("odoo_devkit.dependency_workspace._uv_version", return_value="uv 0.10.7"),
+            ):
+                with self.assertRaisesRegex(ValueError, "Dependency workspace check failed"):
+                    normalize_dependency_workspace(manifest=manifest, output_directory=temp_root / "normalized")
+
+            self.assertEqual((tenant_repo_path / "uv.lock").read_bytes(), original_lock_bytes)
+            self.assertFalse((temp_root / "normalized" / "tenant-requirements.txt").exists())
+
+    def test_normalize_rejects_non_lock_findings_before_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory_name:
+            temp_root = Path(temporary_directory_name)
+            tenant_repo_path = temp_root / "tenant"
+            self._write_member_pyproject(
+                tenant_repo_path / "addons" / "tenant_addon",
+                dependencies=("httpx==0.28.1",),
+            )
+            manifest = self._write_manifest(temp_root=temp_root, tenant_repo_path=tenant_repo_path)
+
+            with mock.patch("odoo_devkit.dependency_workspace._run_uv_lock") as run_uv_lock:
+                with self.assertRaisesRegex(ValueError, "cannot be normalized"):
+                    normalize_dependency_workspace(manifest=manifest)
+
+            run_uv_lock.assert_not_called()
+
+    def test_normalize_uv_commands_match_generation_and_tenant_ci_export(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory_name:
+            staged_root = Path(temporary_directory_name)
+            export_path = staged_root / "tenant-requirements.txt"
+
+            def run_uv(
+                command: list[str],
+                *,
+                cwd: Path,
+                capture_output: bool,
+                text: bool,
+                env: dict[str, str],
+            ) -> object:
+                self.assertEqual(cwd, staged_root)
+                self.assertTrue(capture_output)
+                self.assertTrue(text)
+                self.assertEqual(env["KEEP_ME"], "yes")
+                if command[1] == "export":
+                    export_path.write_text("# frozen tenant dependencies\n", encoding="utf-8")
+                return mock.Mock(returncode=0, stderr="", stdout="")
+
+            with mock.patch.dict(
+                dependency_workspace.os.environ,
+                {"KEEP_ME": "yes", "PIP_INDEX_URL": "https://private.invalid", "UV_INDEX_URL": "https://private.invalid"},
+                clear=True,
+            ):
+                with mock.patch("odoo_devkit.dependency_workspace.subprocess.run", side_effect=run_uv) as run_mock:
+                    dependency_workspace._run_uv_lock(staged_root=staged_root, python_version="3.13")
+                    dependency_workspace._write_frozen_dependency_export(
+                        staged_root=staged_root,
+                        export_path=export_path,
+                    )
+
+            lock_call, export_call = run_mock.call_args_list
+            self.assertEqual(lock_call.args[0], ["uv", "lock", "--python", "3.13", "--no-config"])
+            self.assertEqual(
+                export_call.args[0],
+                [
+                    "uv",
+                    "export",
+                    "--frozen",
+                    "--all-packages",
+                    "--no-emit-workspace",
+                    "--no-default-groups",
+                    "--no-config",
+                    "--output-file",
+                    "tenant-requirements.txt",
+                ],
+            )
+            for call in (lock_call, export_call):
+                self.assertEqual(call.kwargs["cwd"], staged_root)
+                self.assertEqual(call.kwargs["env"]["KEEP_ME"], "yes")
+                self.assertNotIn("PIP_INDEX_URL", call.kwargs["env"])
+                self.assertNotIn("UV_INDEX_URL", call.kwargs["env"])
+
+    def test_cli_normalize_emits_machine_readable_result(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory_name:
+            temp_root = Path(temporary_directory_name)
+            tenant_repo_path = temp_root / "tenant"
+            manifest = self._write_manifest(temp_root=temp_root, tenant_repo_path=tenant_repo_path)
+            arguments = build_parser().parse_args(
+                [
+                    "dependencies",
+                    "normalize",
+                    "--manifest",
+                    str(manifest.manifest_path),
+                    "--output-dir",
+                    str(temp_root / "normalized"),
+                ]
+            )
+            result = mock.Mock()
+            result.to_dict.return_value = {"schema_version": 1, "changed": False}
+
+            with (
+                mock.patch("odoo_devkit.cli.normalize_dependency_workspace", return_value=result) as normalize,
+                contextlib.redirect_stdout(io.StringIO()) as output,
+            ):
+                arguments.handler(arguments)
+
+            self.assertEqual(json.loads(output.getvalue()), result.to_dict.return_value)
+            normalize.assert_called_once_with(manifest=manifest, output_directory=temp_root / "normalized")
 
     def test_cli_inspect_and_check_emit_structured_status(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory_name:
