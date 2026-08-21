@@ -319,7 +319,8 @@ class DependencyWorkspaceTests(unittest.TestCase):
                 shared_repo_path=shared_repo_path,
             )
 
-            def validate_staged_workspace(staged_root: Path) -> bool:
+            def validate_staged_workspace(staged_root: Path, *, python_version: str | None = None) -> bool:
+                self.assertEqual(python_version, "3.13")
                 self.assertTrue((staged_root / "addons" / "tenant_addon" / "pyproject.toml").is_file())
                 self.assertTrue((staged_root / "addons" / "shared" / "shared_addon" / "pyproject.toml").is_file())
                 return True
@@ -680,10 +681,12 @@ class DependencyWorkspaceTests(unittest.TestCase):
             normalized_lock_bytes = b"version = 1\nrevision = 2\n"
             output_directory = temp_root / "normalized"
 
-            def lock_is_current(staged_root: Path) -> bool:
+            def lock_is_current(staged_root: Path, *, python_version: str | None = None) -> bool:
+                self.assertEqual(python_version, "3.13")
                 return (staged_root / "uv.lock").read_bytes() == normalized_lock_bytes
 
-            def normalize_staged_lock(*, staged_root: Path) -> None:
+            def normalize_staged_lock(*, staged_root: Path, python_version: str) -> None:
+                self.assertEqual(python_version, "3.13")
                 self.assertTrue((staged_root / "addons" / "shared" / "shared_addon" / "pyproject.toml").is_file())
                 (staged_root / "uv.lock").write_bytes(normalized_lock_bytes)
 
@@ -711,6 +714,7 @@ class DependencyWorkspaceTests(unittest.TestCase):
                 [repository["role"] for repository in result.provenance["source"]["repositories"]],
                 ["tenant", "shared_addons"],
             )
+            self.assertTrue(result.provenance["source"]["repositories"][0]["dirty"])
             source_inputs = result.provenance["source"]["inputs"]
             self.assertIn(
                 {
@@ -753,6 +757,7 @@ class DependencyWorkspaceTests(unittest.TestCase):
             self.assertTrue(first_result.changed)
             self.assertFalse(second_result.changed)
             self.assertTrue(second_result.inspection.publishable)
+            self.assertIn('requires-python = ">=3.13"', first_lock_bytes.decode())
             self.assertEqual((tenant_repo_path / "uv.lock").read_bytes(), first_lock_bytes)
             self.assertEqual((output_directory / "tenant-requirements.txt").read_bytes(), first_export_bytes)
 
@@ -795,7 +800,8 @@ class DependencyWorkspaceTests(unittest.TestCase):
             manifest = self._write_manifest(temp_root=temp_root, tenant_repo_path=tenant_repo_path)
             original_lock_bytes = (tenant_repo_path / "uv.lock").read_bytes()
 
-            def normalize_staged_lock(*, staged_root: Path) -> None:
+            def normalize_staged_lock(*, staged_root: Path, python_version: str) -> None:
+                self.assertEqual(python_version, "3.13")
                 (staged_root / "uv.lock").write_text("version = 1\nrevision = 2\n", encoding="utf-8")
 
             def write_export(*, staged_root: Path, export_path: Path) -> None:
@@ -857,14 +863,14 @@ class DependencyWorkspaceTests(unittest.TestCase):
                 clear=True,
             ):
                 with mock.patch("odoo_devkit.dependency_workspace.subprocess.run", side_effect=run_uv) as run_mock:
-                    dependency_workspace._run_uv_lock(staged_root=staged_root)
+                    dependency_workspace._run_uv_lock(staged_root=staged_root, python_version="3.13")
                     dependency_workspace._write_frozen_dependency_export(
                         staged_root=staged_root,
                         export_path=export_path,
                     )
 
             lock_call, export_call = run_mock.call_args_list
-            self.assertEqual(lock_call.args[0], ["uv", "lock", "--no-config"])
+            self.assertEqual(lock_call.args[0], ["uv", "lock", "--python", "3.13", "--no-config"])
             self.assertEqual(
                 export_call.args[0],
                 [

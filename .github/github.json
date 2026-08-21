@@ -1,6 +1,22 @@
 {
   "defaultBranch": "main",
   "projectType": "odoo-workspace-devkit",
+  "commands": {
+    "dependencies": {
+      "inspect": {
+        "command": "uv run platform dependencies inspect --manifest <workspace.toml>",
+        "mutates": false
+      },
+      "check": {
+        "command": "uv run platform dependencies check --manifest <workspace.toml>",
+        "mutates": false
+      },
+      "normalize": {
+        "command": "uv run platform dependencies normalize --manifest <workspace.toml> [--output-dir <directory>]",
+        "mutates": true
+      }
+    }
+  },
   "docs": {
     "index": "docs/README.md",
     "overview": "README.md",
@@ -13,11 +29,6 @@
     "tenantOverlay": "docs/tooling/tenant-overlay.md"
   },
   "qualityGate": {
-    "dependencies": {
-      "inspect": "uv run platform dependencies inspect --manifest <workspace.toml>",
-      "check": "uv run platform dependencies check --manifest <workspace.toml>",
-      "normalize": "uv run platform dependencies normalize --manifest <workspace.toml> [--output-dir <directory>]"
-    },
     "setup": {
       "default": "uv sync --locked"
     },

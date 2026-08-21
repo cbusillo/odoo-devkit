@@ -67,6 +67,7 @@ class DependencyNormalizationInput(TypedDict):
 class DependencyNormalizationRepository(TypedDict):
     role: str
     commit: str
+    dirty: bool
 
 
 class DependencyNormalizationSource(TypedDict):
@@ -282,7 +283,10 @@ def inspect_dependency_workspace(*, manifest: WorkspaceManifest) -> DependencyWo
             except DependencyWorkspaceError as error:
                 findings.append(str(error))
             if not findings:
-                tenant_lock_current = _uv_lock_is_current(staged_root)
+                tenant_lock_current = _uv_lock_is_current(
+                    staged_root,
+                    python_version=manifest.workspace.python_version,
+                )
                 if not tenant_lock_current:
                     findings.append(_STALE_TENANT_LOCK_FINDING)
             else:
@@ -368,8 +372,15 @@ def normalize_dependency_workspace(
             project_inputs=project_inputs,
             staged_root=staged_root,
         )
-        _run_uv_lock(staged_root=staged_root)
-        require_staged_dependency_workspace_current(staged_root=staged_root, label="normalized dependency")
+        _run_uv_lock(
+            staged_root=staged_root,
+            python_version=manifest.workspace.python_version,
+        )
+        require_staged_dependency_workspace_current(
+            staged_root=staged_root,
+            label="normalized dependency",
+            python_version=manifest.workspace.python_version,
+        )
         export_path = staged_root / "tenant-requirements.txt"
         _write_frozen_dependency_export(staged_root=staged_root, export_path=export_path)
 
@@ -393,7 +404,7 @@ def normalize_dependency_workspace(
             if output_directory is not None:
                 retained_export_path = output_directory.expanduser().resolve() / "tenant-requirements.txt"
                 _atomic_write_bytes(path=retained_export_path, content=export_path.read_bytes())
-        except Exception as error:
+        except BaseException as error:
             if lock_replaced:
                 try:
                     _atomic_write_bytes(path=tenant_lock_path, content=original_lock_bytes)
@@ -455,8 +466,13 @@ def stage_publishable_dependency_workspace(
     return inspection
 
 
-def require_staged_dependency_workspace_current(*, staged_root: Path, label: str = "dependency") -> None:
-    if not _uv_lock_is_current(staged_root):
+def require_staged_dependency_workspace_current(
+    *,
+    staged_root: Path,
+    label: str = "dependency",
+    python_version: str | None = None,
+) -> None:
+    if not _uv_lock_is_current(staged_root, python_version=python_version):
         raise DependencyWorkspaceError(f"Staged {label} uv.lock changed or is not current for the exact artifact inputs.")
 
 
@@ -1074,8 +1090,8 @@ def _git_head_commit(repo_path: Path) -> str:
     return commit
 
 
-def _run_uv_lock(*, staged_root: Path) -> None:
-    result = _run_uv(["uv", "lock", "--no-config"], cwd=staged_root)
+def _run_uv_lock(*, staged_root: Path, python_version: str) -> None:
+    result = _run_uv(["uv", "lock", "--python", python_version, "--no-config"], cwd=staged_root)
     if result.returncode != 0:
         message = result.stderr.strip() or result.stdout.strip() or "uv lock failed"
         raise DependencyWorkspaceError(f"Dependency workspace normalization failed: {message}")
@@ -1118,10 +1134,14 @@ def _uv_command_env() -> dict[str, str]:
     return environment
 
 
-def _uv_lock_is_current(staged_root: Path) -> bool:
+def _uv_lock_is_current(staged_root: Path, *, python_version: str | None = None) -> bool:
+    command = ["uv", "lock", "--check", "--offline"]
+    if python_version is not None:
+        command.extend(["--python", python_version])
+    command.extend(["--no-config", "--project", str(staged_root)])
     try:
         result = subprocess.run(
-            ["uv", "lock", "--check", "--offline", "--no-config", "--project", str(staged_root)],
+            command,
             cwd=staged_root,
             capture_output=True,
             text=True,
@@ -1166,9 +1186,21 @@ def _normalization_provenance(
     normalized_lock_path: Path,
     export_path: Path,
 ) -> DependencyNormalizationProvenance:
-    repositories: list[DependencyNormalizationRepository] = [{"role": "tenant", "commit": _git_head_commit(tenant_repo_path)}]
+    repositories: list[DependencyNormalizationRepository] = [
+        {
+            "role": "tenant",
+            "commit": _git_head_commit(tenant_repo_path),
+            "dirty": _git_worktree_dirty(tenant_repo_path),
+        }
+    ]
     if shared_addons_repo_path is not None and any(item["owner"] == "shared_addons" for item in source_inputs):
-        repositories.append({"role": "shared_addons", "commit": _git_head_commit(shared_addons_repo_path)})
+        repositories.append(
+            {
+                "role": "shared_addons",
+                "commit": _git_head_commit(shared_addons_repo_path),
+                "dirty": _git_worktree_dirty(shared_addons_repo_path),
+            }
+        )
     return {
         "source": {
             "tenant": manifest.tenant,
@@ -1178,7 +1210,7 @@ def _normalization_provenance(
         "tool": {
             "command": "platform dependencies normalize",
             "uv_version": _uv_version(),
-            "lock_arguments": ["uv", "lock", "--no-config"],
+            "lock_arguments": ["uv", "lock", "--python", manifest.workspace.python_version, "--no-config"],
             "export_arguments": [
                 "uv",
                 "export",
@@ -1206,8 +1238,22 @@ def _uv_version() -> str:
     return result.stdout.strip()
 
 
+def _git_worktree_dirty(repo_path: Path) -> bool:
+    result = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=normal"],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        env=_git_command_env(),
+    )
+    if result.returncode != 0:
+        raise DependencyWorkspaceError("Dependency normalization requires readable Git worktree status")
+    return bool(result.stdout)
+
+
 def _atomic_write_bytes(*, path: Path, content: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    mode = path.stat().st_mode & 0o777 if path.exists() else 0o644
     file_descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temporary_path = Path(temporary_name)
     try:
@@ -1215,9 +1261,9 @@ def _atomic_write_bytes(*, path: Path, content: bytes) -> None:
             temporary_file.write(content)
             temporary_file.flush()
             os.fsync(temporary_file.fileno())
-        temporary_path.chmod(0o644)
+        temporary_path.chmod(mode)
         os.replace(temporary_path, path)
-    except Exception:
+    except BaseException:
         temporary_path.unlink(missing_ok=True)
         raise
 
