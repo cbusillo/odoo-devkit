@@ -37,6 +37,9 @@ uv run platform workspace clean --manifest /path/to/workspace.toml
 uv run platform workspace run --manifest /path/to/workspace.toml -- pwd
 uv run platform dependencies inspect --manifest /path/to/workspace.toml
 uv run platform dependencies check --manifest /path/to/workspace.toml
+uv run platform dependencies normalize --manifest /path/to/workspace.toml
+uv run platform dependencies normalize --manifest /path/to/workspace.toml \
+  --output-dir /path/to/normalization-output
 uv run platform runtime select --manifest /path/to/workspace.toml
 uv run platform runtime build --manifest /path/to/workspace.toml --no-cache
 uv run platform runtime up --manifest /path/to/workspace.toml --build
@@ -139,6 +142,31 @@ Purpose
   tenant evidence without claiming runtime dependencies that do not exist.
 - `inspect` prints structured JSON. `check` prints the same report and exits
   nonzero when `current` is false.
+
+## `dependencies normalize`
+
+Purpose
+
+- Regenerate the canonical tenant root `uv.lock` inside the same staged
+  tenant/shared-addon workspace used by dependency inspection, then atomically
+  copy only the verified lock back to the tenant repo.
+- Preserve strict tenant CI: normalization proceeds only when the workspace is
+  already publishable or stale lock state is its sole finding, and the written
+  lock must pass the existing offline, no-config publishability check.
+- Run `uv lock --no-config` without broad upgrade flags. This lets the trusted
+  normalization caller resolve an explicitly changed dependency while the
+  existing lock continues to constrain unaffected packages.
+- Produce the frozen export shape used by tenant CI with `uv export --frozen
+  --all-packages --no-emit-workspace --no-default-groups --no-config`. The
+  export is verified and hashed on every run; pass `--output-dir` to retain it
+  as `tenant-requirements.txt`.
+- Emit sorted JSON with source input hashes, tenant/shared source commits, uv
+  version and arguments, final artifact hashes, strict post-check results, and
+  `changed = false` for a measured no-change run. Output omits credentials,
+  repository URLs, and machine-specific source paths.
+- Restore the original tenant `uv.lock` if the strict post-check or retained
+  export write fails. Tenant manifests, addon metadata, shared-addon sources,
+  and CI workflows remain owned by their existing repositories.
 
 ## `workspace scaffold-cockpit-root`
 
