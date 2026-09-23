@@ -23,6 +23,8 @@ Runtime ownership is split by target type:
 
 ```bash
 uv run platform workspace sync --manifest /path/to/workspace.toml
+uv run platform workspace prepare-ide --manifest /path/to/tenant/workspace.toml \
+  --odoo-source /path/to/odoo-19 --odoo-series 19.0 --odoo-commit <full-source-sha>
 uv run platform workspace status --manifest /path/to/workspace.toml
 uv run platform workspace status --manifest /path/to/workspace.toml --check
 uv run platform workspace scaffold-tenant-overlay \
@@ -77,6 +79,49 @@ Purpose
   - `docs/session-prompt.md`
 - Generate PyCharm metadata plus run configurations.
 - Emit `workspace.lock.toml` with the exact assembled local state.
+
+## `workspace prepare-ide`
+
+Prepare the exact tenant checkout before opening it in PyCharm or running a
+JetBrains inspection. The Odoo plugin needs the matching community core and
+addons visible as project content roots to resolve references such as
+`website.snippets`. Listing paths in the workspace metadata alone does not
+attach them to the IDE.
+
+1. Obtain an official [Odoo community checkout](https://github.com/odoo/odoo)
+   outside the tenant repository, using the series required by the runtime.
+   Keep it in the host's shared dependency cache and pin a full commit SHA.
+2. Close only the exact tenant project being prepared, or prepare it before its
+   first open. Do not run the generator while that project has an active IDE
+   writer or inspection. Other worktrees can keep their own projects open.
+3. Run `workspace prepare-ide` with that tenant worktree's `workspace.toml`,
+   `--odoo-source`, `--odoo-series`, and `--odoo-commit`. Keep machine-local
+   paths in local invocation/configuration, outside tracked tenant files.
+4. Open and inspect the tenant worktree through the normal inspection helper.
+   Core sources supply resolution context; keep the inspection scope on the
+   tenant files. A successful preparation is setup evidence, not an inspection
+   verdict or a runtime update.
+
+The command checks the source checkout's commit, clean Git state, core/addon
+layout, and release series without importing Odoo or changing the dependency.
+It adds the content root to the sole local Python module, or creates a minimal
+project when no module exists. Existing SDK assignments, content roots, module
+dependencies, inspection profiles, and other project state remain in place.
+This implements the plugin author's supported
+[content-root setup](https://github.com/odoo-ide/pycharm-odoo/wiki/Structure-Odoo-Projects).
+
+Only already ignored, untracked IDE metadata may be changed. Tracked metadata,
+ambiguous local modules, malformed paths/XML, a different attached Odoo source,
+or symlinked project metadata require local reconciliation first. The generator
+does not edit ignore policy or overwrite another project's configuration.
+Repeated preparation with the same source is a no-op. JSON output records the
+exact project/module paths, source path, commit, series, and changed files.
+
+This command works without workspace materialization, Docker, runtime secrets,
+an installed Odoo interpreter, or tenant code changes. It can serve as the
+repository's configured inspection preparation command when its caller supplies
+the local devkit/source paths and pin. Normal workspace sync continues to own
+the generated cockpit and run configurations; it does not change IDE roots.
 
 ## `workspace status`
 

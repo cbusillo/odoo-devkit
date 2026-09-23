@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .dependency_workspace import inspect_dependency_workspace, normalize_dependency_workspace
 from .manifest import WorkspaceManifest, load_workspace_manifest
+from .pycharm_sources import prepare_odoo_sources
 from .runtime import (
     run_native_runtime_build,
     run_native_runtime_down,
@@ -45,6 +46,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     sync_parser = _add_manifest_argument(workspace_subparsers.add_parser("sync", help="Assemble or refresh a workspace"))
     sync_parser.set_defaults(handler=_handle_workspace_sync)
+
+    ide_parser = _add_manifest_argument(
+        workspace_subparsers.add_parser("prepare-ide", help="Attach pinned Odoo sources to the exact tenant PyCharm project")
+    )
+    ide_parser.add_argument("--odoo-source", type=Path, required=True, help="Existing clean Odoo community Git checkout")
+    ide_parser.add_argument("--odoo-commit", required=True, help="Expected full source commit SHA")
+    ide_parser.add_argument("--odoo-series", required=True, help="Expected Odoo series, for example 19.0")
+    ide_parser.set_defaults(handler=_handle_workspace_prepare_ide)
 
     status_parser = _add_manifest_argument(workspace_subparsers.add_parser("status", help="Report workspace status"))
     status_parser.add_argument(
@@ -254,6 +263,19 @@ def _handle_workspace_sync(arguments: argparse.Namespace) -> None:
         "attached_paths": [str(path) for path in result.attached_paths],
         "run_configuration_paths": [str(path) for path in result.run_configuration_paths],
     }
+    print(json.dumps(summary, indent=2, sort_keys=True))
+
+
+def _handle_workspace_prepare_ide(arguments: argparse.Namespace) -> None:
+    try:
+        summary = prepare_odoo_sources(
+            manifest=_load_manifest(arguments.manifest),
+            source_path=arguments.odoo_source,
+            expected_commit=arguments.odoo_commit,
+            expected_series=arguments.odoo_series,
+        )
+    except (ValueError, OSError) as error:
+        raise SystemExit(str(error)) from error
     print(json.dumps(summary, indent=2, sort_keys=True))
 
 
