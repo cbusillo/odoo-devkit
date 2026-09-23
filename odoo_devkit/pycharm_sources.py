@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import tempfile
+import tomllib
 import xml.etree.ElementTree as element_tree
 from pathlib import Path
 from urllib.parse import unquote
@@ -37,7 +38,7 @@ def prepare_odoo_sources(
         raise ValueError(f"Missing NewModuleRootManager in {module_path.name}")
     attached = False
     for content in manager.findall("content"):
-        content_path = _idea_path(content.get("url", ""), project_path, module_path.parent).resolve()
+        content_path = _idea_path(content.get("url", ""), project_path, _module_directory(module_path)).resolve()
         if content_path == source_path:
             attached = True
         elif (content_path / "odoo" / "release.py").is_file():
@@ -101,17 +102,26 @@ def _project_module(project_path: Path, modules_path: Path) -> tuple[Path, eleme
     if not modules_path.exists():
         if list(modules_path.parent.glob("*.iml")):
             raise ValueError("Existing module files have no modules.xml; reconcile the project in PyCharm first")
-        module_path = modules_path.parent / "odoo-devkit.iml"
-        module_root = element_tree.Element("module", {"type": "PYTHON_MODULE", "version": "4"})
+        module_name = project_path.name
+        attributes = {"type": "PYTHON_MODULE", "version": "4"}
+        pyproject_path = project_path / "pyproject.toml"
+        if pyproject_path.is_file():
+            pyproject = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+            module_name = pyproject.get("project", {}).get("name", module_name)
+            attributes["external.system.id"] = "pyproject.toml"
+        if not isinstance(module_name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", module_name):
+            raise ValueError("Cannot derive a safe PyCharm module name from the tenant project")
+        module_path = modules_path.parent / f"{module_name}.iml"
+        module_root = element_tree.Element("module", attributes)
         manager = element_tree.SubElement(module_root, "component", {"name": "NewModuleRootManager"})
-        content = element_tree.SubElement(manager, "content", {"url": "file://$MODULE_DIR$/.."})
-        element_tree.SubElement(content, "excludeFolder", {"url": "file://$MODULE_DIR$/../.venv"})
+        content = element_tree.SubElement(manager, "content", {"url": project_path.as_uri()})
+        element_tree.SubElement(content, "excludeFolder", {"url": (project_path / ".venv").as_uri()})
         element_tree.SubElement(manager, "orderEntry", {"type": "inheritedJdk"})
         element_tree.SubElement(manager, "orderEntry", {"type": "sourceFolder", "forTests": "false"})
         modules_root = element_tree.Element("project", {"version": "4"})
         component = element_tree.SubElement(modules_root, "component", {"name": "ProjectModuleManager"})
         modules = element_tree.SubElement(component, "modules")
-        relative_path = "$PROJECT_DIR$/.idea/odoo-devkit.iml"
+        relative_path = f"$PROJECT_DIR$/.idea/{module_name}.iml"
         element_tree.SubElement(modules, "module", {"fileurl": f"file://{relative_path}", "filepath": relative_path})
         return module_path, module_root, modules_root
     modules_root = _read_xml(modules_path)
@@ -124,10 +134,16 @@ def _project_module(project_path: Path, modules_path: Path) -> tuple[Path, eleme
         if module_path.is_symlink():
             raise ValueError("IDE preparation cannot follow a symlinked module")
         module_root = _read_xml(module_path)
-        if module_root.get("type") == "PYTHON_MODULE":
+        content_paths = [
+            _idea_path(content.get("url", ""), project_path, _module_directory(module_path)).resolve()
+            for content in module_root.findall("./component[@name='NewModuleRootManager']/content")
+        ]
+        if module_root.get("type") == "PYTHON_MODULE" and project_path in content_paths:
             candidates.append((module_path, module_root))
     if len(candidates) != 1:
-        raise ValueError("IDE preparation requires exactly one local Python module; reconcile Project Structure first")
+        raise ValueError(
+            "IDE preparation requires exactly one Python module rooted at the tenant; reconcile Project Structure first"
+        )
     module_path, module_root = candidates[0]
     return module_path, module_root, None
 
@@ -138,6 +154,12 @@ def _idea_path(value: str, project_path: Path, module_directory: Path) -> Path:
     if not value or "$" in value or not Path(value).is_absolute():
         raise ValueError("Cannot resolve an existing IDE path; reconcile Project Structure first")
     return Path(os.path.abspath(value))
+
+
+def _module_directory(module_path: Path) -> Path:
+    # PyCharm's directory-based project store expands MODULE_DIR relative to
+    # the project, even though its module file lives directly under .idea.
+    return module_path.parent.parent if module_path.parent.name == ".idea" else module_path.parent
 
 
 def _read_xml(path: Path) -> element_tree.Element:

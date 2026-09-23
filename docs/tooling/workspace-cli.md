@@ -104,14 +104,15 @@ attach them to the IDE.
 
 The command checks the source checkout's commit, clean Git state, core/addon
 layout, and release series without importing Odoo or changing the dependency.
-It adds the content root to the sole local Python module, or creates a minimal
-project when no module exists. Existing SDK assignments, content roots, module
+It adds the content root to the Python module rooted at the exact tenant, or
+creates a minimal project using the tenant's `pyproject.toml` project name when
+no module exists. Existing SDK assignments, content roots, module
 dependencies, inspection profiles, and other project state remain in place.
 This implements the plugin author's supported
 [content-root setup](https://github.com/odoo-ide/pycharm-odoo/wiki/Structure-Odoo-Projects).
 
 Only already ignored, untracked IDE metadata may be changed. Tracked metadata,
-ambiguous local modules, malformed paths/XML, a different attached Odoo source,
+ambiguous tenant modules, malformed paths/XML, a different attached Odoo source,
 or symlinked project metadata require local reconciliation first. The generator
 does not edit ignore policy or overwrite another project's configuration.
 Repeated preparation with the same source is a no-op. JSON output records the

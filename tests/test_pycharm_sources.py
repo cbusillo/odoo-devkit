@@ -36,6 +36,7 @@ class OdooSourcesTestCase(unittest.TestCase):
         self.git(self.source, "commit", "-qm", "Source fixture")
         self.commit = self.git(self.source, "rev-parse", "HEAD")
         (self.project / ".gitignore").write_text(".idea/\n")
+        (self.project / "pyproject.toml").write_text('[project]\nname = "tenant-dependencies"\nversion = "0.1.0"\n')
         self.manifest_path = self.project / "workspace.toml"
         self.manifest_path.write_text(
             'schema_version = 1\ntenant = "test"\n'
@@ -83,14 +84,16 @@ class OdooSourcesTestCase(unittest.TestCase):
         module_path = Path(summary["module_path"])
         module = element_tree.parse(module_path)
         content_urls = [content.get("url") for content in module.findall("./component/content")]
-        self.assertEqual(content_urls, ["file://$MODULE_DIR$/..", self.source.as_uri()])
+        self.assertEqual(module.getroot().get("external.system.id"), "pyproject.toml")
+        self.assertEqual(module_path.name, "tenant-dependencies.iml")
+        self.assertEqual(content_urls, [self.project.as_uri(), self.source.as_uri()])
         before = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in (self.project / ".idea").iterdir()}
         self.assertFalse(self.prepare()["changed"])
         self.assertEqual(before, {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in before})
 
     def test_existing_module_preserves_sdk_roots_comments_and_other_ide_files(self) -> None:
         self.prepare()
-        module_path = self.project / ".idea" / "odoo-devkit.iml"
+        module_path = self.project / ".idea" / "tenant-dependencies.iml"
         module = element_tree.parse(module_path)
         manager = module.find("./component")
         manager.remove(manager.findall("content")[1])
@@ -134,12 +137,12 @@ class OdooSourcesTestCase(unittest.TestCase):
         self.assertFalse((self.project / ".idea").exists())
         (self.project / ".gitignore").write_text(".idea/\n")
         self.prepare()
-        module_path = self.project / ".idea" / "odoo-devkit.iml"
+        module_path = self.project / ".idea" / "tenant-dependencies.iml"
         module = element_tree.parse(module_path)
         manager = module.find("./component")
         manager.remove(manager.findall("content")[1])
         module.write(module_path)
-        self.git(self.project, "add", "-f", ".idea/odoo-devkit.iml")
+        self.git(self.project, "add", "-f", ".idea/tenant-dependencies.iml")
         before = module_path.read_bytes()
         with self.assertRaisesRegex(ValueError, "tracked"):
             self.prepare()
@@ -163,7 +166,10 @@ class OdooSourcesTestCase(unittest.TestCase):
     def test_multiple_local_modules_fail_before_writing(self) -> None:
         self.prepare()
         other_module = self.project / ".idea" / "other.iml"
-        other_module.write_text('<module type="PYTHON_MODULE" />')
+        other_module.write_text(
+            '<module type="PYTHON_MODULE"><component name="NewModuleRootManager">'
+            '<content url="file://$MODULE_DIR$" /></component></module>'
+        )
         modules_path = self.project / ".idea" / "modules.xml"
         modules = element_tree.parse(modules_path)
         element_tree.SubElement(modules.find("./component/modules"), "module", {"filepath": str(other_module)})
@@ -189,7 +195,7 @@ class OdooSourcesTestCase(unittest.TestCase):
         other_source = self.root / "other-odoo"
         (other_source / "odoo").mkdir(parents=True)
         (other_source / "odoo" / "release.py").write_text("version_info = (18, 0)\n")
-        module_path = self.project / ".idea" / "odoo-devkit.iml"
+        module_path = self.project / ".idea" / "tenant-dependencies.iml"
         module = element_tree.parse(module_path)
         module.findall("./component/content")[1].set("url", other_source.as_uri())
         module.write(module_path)
@@ -200,7 +206,7 @@ class OdooSourcesTestCase(unittest.TestCase):
 
     def test_symlinked_module_is_not_followed(self) -> None:
         self.prepare()
-        module_path = self.project / ".idea" / "odoo-devkit.iml"
+        module_path = self.project / ".idea" / "tenant-dependencies.iml"
         original = module_path.read_bytes()
         saved_module = self.project / ".idea" / "owner.iml"
         module_path.rename(saved_module)
@@ -208,6 +214,18 @@ class OdooSourcesTestCase(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "symlinked module"):
             self.prepare()
         self.assertEqual(saved_module.read_bytes(), original)
+
+    def test_pycharm_serialized_module_paths_remain_idempotent(self) -> None:
+        self.prepare()
+        module_path = self.project / ".idea" / "tenant-dependencies.iml"
+        module = element_tree.parse(module_path)
+        contents = module.findall("./component/content")
+        contents[0].set("url", "file://$MODULE_DIR$")
+        contents[1].set("url", "file://$MODULE_DIR$/../odoo 19")
+        module.write(module_path)
+        original = module_path.read_bytes()
+        self.assertFalse(self.prepare()["changed"])
+        self.assertEqual(module_path.read_bytes(), original)
 
 
 if __name__ == "__main__":
