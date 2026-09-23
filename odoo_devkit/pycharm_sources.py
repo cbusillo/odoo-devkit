@@ -6,8 +6,8 @@ import re
 import subprocess
 import tempfile
 import tomllib
-import xml.etree.ElementTree as ET
 from pathlib import Path
+from xml.etree import ElementTree
 
 from .manifest import WorkspaceManifest
 from .runtime_environment import sanitized_subprocess_environment
@@ -45,7 +45,7 @@ def prepare_odoo_sources(
 
     writes: dict[Path, bytes] = {}
     if not attached:
-        ET.SubElement(manager, "content", {"url": _idea_url(source_path)})
+        ElementTree.SubElement(manager, "content", {"url": _idea_url(source_path)})
         writes[module_path] = _xml_bytes(module_root)
     if modules_root is not None:
         writes[modules_path] = _xml_bytes(modules_root)
@@ -106,7 +106,7 @@ def _verify_source(source_path: Path, expected_commit: str, expected_series: str
     return commit, series
 
 
-def _project_module(project_path: Path, modules_path: Path) -> tuple[Path, ET.Element, ET.Element | None]:
+def _project_module(project_path: Path, modules_path: Path) -> tuple[Path, ElementTree.Element, ElementTree.Element | None]:
     if modules_path.is_symlink():
         raise ValueError("IDE preparation cannot follow a symlinked modules.xml")
     if not modules_path.exists():
@@ -126,17 +126,17 @@ def _project_module(project_path: Path, modules_path: Path) -> tuple[Path, ET.El
         if not isinstance(module_name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", module_name):
             raise ValueError("Cannot derive a safe PyCharm module name from the tenant project")
         module_path = modules_path.parent / f"{module_name}.iml"
-        module_root = ET.Element("module", attributes)
-        manager = ET.SubElement(module_root, "component", {"name": "NewModuleRootManager"})
-        content = ET.SubElement(manager, "content", {"url": _idea_url(project_path)})
-        ET.SubElement(content, "excludeFolder", {"url": _idea_url(project_path / ".venv")})
-        ET.SubElement(manager, "orderEntry", {"type": "inheritedJdk"})
-        ET.SubElement(manager, "orderEntry", {"type": "sourceFolder", "forTests": "false"})
-        modules_root = ET.Element("project", {"version": "4"})
-        component = ET.SubElement(modules_root, "component", {"name": "ProjectModuleManager"})
-        modules = ET.SubElement(component, "modules")
+        module_root = ElementTree.Element("module", attributes)
+        manager = ElementTree.SubElement(module_root, "component", {"name": "NewModuleRootManager"})
+        content = ElementTree.SubElement(manager, "content", {"url": _idea_url(project_path)})
+        ElementTree.SubElement(content, "excludeFolder", {"url": _idea_url(project_path / ".venv")})
+        ElementTree.SubElement(manager, "orderEntry", {"type": "inheritedJdk"})
+        ElementTree.SubElement(manager, "orderEntry", {"type": "sourceFolder", "forTests": "false"})
+        modules_root = ElementTree.Element("project", {"version": "4"})
+        component = ElementTree.SubElement(modules_root, "component", {"name": "ProjectModuleManager"})
+        modules = ElementTree.SubElement(component, "modules")
         relative_path = f"$PROJECT_DIR$/.idea/{module_name}.iml"
-        ET.SubElement(modules, "module", {"fileurl": f"file://{relative_path}", "filepath": relative_path})
+        ElementTree.SubElement(modules, "module", {"fileurl": f"file://{relative_path}", "filepath": relative_path})
         return module_path, module_root, modules_root
     modules_root = _read_xml(modules_path)
     candidates = []
@@ -182,17 +182,17 @@ def _module_directory(module_path: Path) -> Path:
     return module_path.parent.parent if module_path.parent.name == ".idea" else module_path.parent
 
 
-def _read_xml(path: Path) -> ET.Element:
-    parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True))
+def _read_xml(path: Path) -> ElementTree.Element:
+    parser = ElementTree.XMLParser(target=ElementTree.TreeBuilder(insert_comments=True))
     try:
-        return ET.parse(path, parser=parser).getroot()
-    except ET.ParseError as error:
+        return ElementTree.parse(path, parser=parser).getroot()
+    except ElementTree.ParseError as error:
         raise ValueError(f"Invalid IDE XML in {path.name}: {error}") from error
 
 
-def _xml_bytes(root: ET.Element) -> bytes:
-    ET.indent(root)
-    return ET.tostring(root, encoding="utf-8", xml_declaration=True) + b"\n"
+def _xml_bytes(root: ElementTree.Element) -> bytes:
+    ElementTree.indent(root)
+    return ElementTree.tostring(root, encoding="utf-8", xml_declaration=True) + b"\n"
 
 
 def _require_local_ignored_file(project_path: Path, path: Path) -> None:

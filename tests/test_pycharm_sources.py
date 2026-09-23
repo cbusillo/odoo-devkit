@@ -6,9 +6,9 @@ import json
 import subprocess
 import tempfile
 import unittest
-import xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest import mock
+from xml.etree import ElementTree
 
 from odoo_devkit.cli import build_parser
 from odoo_devkit.manifest import load_workspace_manifest
@@ -81,7 +81,7 @@ class OdooSourcesTestCase(unittest.TestCase):
         self.assertEqual(summary["odoo_commit"], self.commit)
         self.assertEqual(summary["odoo_series"], "19.0")
         module_path = Path(summary["module_path"])
-        module = ET.parse(module_path)
+        module = ElementTree.parse(module_path)
         content_urls = [content.get("url") for content in module.findall("./component/content")]
         self.assertEqual(module.getroot().get("external.system.id"), "pyproject.toml")
         self.assertEqual(module_path.name, "tenant-dependencies.iml")
@@ -93,12 +93,12 @@ class OdooSourcesTestCase(unittest.TestCase):
     def test_existing_module_preserves_sdk_roots_comments_and_other_ide_files(self) -> None:
         self.prepare()
         module_path = self.project / ".idea" / "tenant-dependencies.iml"
-        module = ET.parse(module_path)
+        module = ElementTree.parse(module_path)
         manager = module.find("./component")
         manager.remove(manager.findall("content")[1])
-        ET.SubElement(manager, "orderEntry", {"type": "jdk", "jdkName": "Owner SDK"})
-        ET.SubElement(manager, "content", {"url": (self.root / "shared-addons").as_uri()})
-        manager.append(ET.Comment(" keep my project settings "))
+        ElementTree.SubElement(manager, "orderEntry", {"type": "jdk", "jdkName": "Owner SDK"})
+        ElementTree.SubElement(manager, "content", {"url": (self.root / "shared-addons").as_uri()})
+        manager.append(ElementTree.Comment(" keep my project settings "))
         module.write(module_path)
         workspace_path = self.project / ".idea" / "workspace.xml"
         workspace_path.write_bytes(b"owner state must not change\n")
@@ -137,7 +137,7 @@ class OdooSourcesTestCase(unittest.TestCase):
         (self.project / ".gitignore").write_text(".idea/\n")
         self.prepare()
         module_path = self.project / ".idea" / "tenant-dependencies.iml"
-        module = ET.parse(module_path)
+        module = ElementTree.parse(module_path)
         manager = module.find("./component")
         manager.remove(manager.findall("content")[1])
         module.write(module_path)
@@ -154,8 +154,8 @@ class OdooSourcesTestCase(unittest.TestCase):
         foreign_module = foreign / "main.iml"
         foreign_module.write_text('<module type="PYTHON_MODULE" />')
         modules_path = self.project / ".idea" / "modules.xml"
-        modules = ET.parse(modules_path)
-        ET.SubElement(modules.find("./component/modules"), "module", {"filepath": str(foreign_module)})
+        modules = ElementTree.parse(modules_path)
+        ElementTree.SubElement(modules.find("./component/modules"), "module", {"filepath": str(foreign_module)})
         modules.write(modules_path)
         before = modules_path.read_bytes()
         self.assertFalse(self.prepare()["changed"])
@@ -170,8 +170,8 @@ class OdooSourcesTestCase(unittest.TestCase):
             '<content url="file://$MODULE_DIR$" /></component></module>'
         )
         modules_path = self.project / ".idea" / "modules.xml"
-        modules = ET.parse(modules_path)
-        ET.SubElement(modules.find("./component/modules"), "module", {"filepath": str(other_module)})
+        modules = ElementTree.parse(modules_path)
+        ElementTree.SubElement(modules.find("./component/modules"), "module", {"filepath": str(other_module)})
         modules.write(modules_path)
         before = {path: path.read_bytes() for path in modules_path.parent.iterdir()}
         with self.assertRaisesRegex(ValueError, "exactly one"):
@@ -195,7 +195,7 @@ class OdooSourcesTestCase(unittest.TestCase):
         (other_source / "odoo").mkdir(parents=True)
         (other_source / "odoo" / "release.py").write_text("version_info = (18, 0)\n")
         module_path = self.project / ".idea" / "tenant-dependencies.iml"
-        module = ET.parse(module_path)
+        module = ElementTree.parse(module_path)
         module.findall("./component/content")[1].set("url", other_source.as_uri())
         module.write(module_path)
         before = module_path.read_bytes()
@@ -217,7 +217,7 @@ class OdooSourcesTestCase(unittest.TestCase):
     def test_pycharm_serialized_module_paths_remain_idempotent(self) -> None:
         self.prepare()
         module_path = self.project / ".idea" / "tenant-dependencies.iml"
-        module = ET.parse(module_path)
+        module = ElementTree.parse(module_path)
         contents = module.findall("./component/content")
         contents[0].set("url", "file://$MODULE_DIR$")
         contents[1].set("url", "file://$MODULE_DIR$/../odoo 19")
@@ -232,7 +232,7 @@ class OdooSourcesTestCase(unittest.TestCase):
         self.source = source
         self.prepare()
         module_path = self.project / ".idea" / "tenant-dependencies.iml"
-        module = ET.parse(module_path)
+        module = ElementTree.parse(module_path)
         contents = module.findall("./component/content")
         self.assertEqual(contents[1].get("url"), f"file://{source}")
         contents[1].set("url", f"file://$USER_HOME$/{source.name}")
@@ -261,9 +261,11 @@ class OdooSourcesTestCase(unittest.TestCase):
     def test_tool_only_pyproject_uses_directory_module_without_external_ownership(self) -> None:
         (self.project / "pyproject.toml").write_text("[tool.ruff]\nline-length = 100\n")
         summary = self.prepare()
-        module = ET.parse(str(summary["module_path"]))
+        module_path = summary["module_path"]
+        assert isinstance(module_path, str)
+        module = ElementTree.parse(module_path)
         self.assertNotIn("external.system.id", module.getroot().attrib)
-        self.assertEqual(Path(str(summary["module_path"])).name, "tenant.iml")
+        self.assertEqual(Path(module_path).name, "tenant.iml")
 
     def test_invalid_project_table_fails_without_writing_metadata(self) -> None:
         (self.project / "pyproject.toml").write_text('project = "invalid"\n')
