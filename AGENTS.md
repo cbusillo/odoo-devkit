@@ -24,6 +24,8 @@ into the generated workspace root.
   `AGENTS.md` and `docs/README.md` surface.
 - `odoo_devkit/pycharm.py` owns PyCharm metadata and run configuration
   generation.
+- `odoo_devkit/pycharm_sources.py` owns pinned Odoo source attachment in the
+  exact tenant's local PyCharm project.
 - `odoo_devkit/ide_support.py` owns the pure PyCharm Odoo-conf rendering logic
   shared with tenant repos.
 - `tests/` should validate the workspace contract as a user-facing system, not

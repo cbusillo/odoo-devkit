@@ -6,8 +6,9 @@ import json
 import subprocess
 import tempfile
 import unittest
-import xml.etree.ElementTree as element_tree
+import xml.etree.ElementTree as ET
 from pathlib import Path
+from unittest import mock
 
 from odoo_devkit.cli import build_parser
 from odoo_devkit.manifest import load_workspace_manifest
@@ -50,15 +51,13 @@ class OdooSourcesTestCase(unittest.TestCase):
     def git(path: Path, *arguments: str) -> str:
         return subprocess.run(["git", "-C", str(path), *arguments], check=True, capture_output=True, text=True).stdout.strip()
 
-    def prepare(self, **overrides: object) -> dict[str, object]:
-        arguments = {
-            "manifest": load_workspace_manifest(self.manifest_path),
-            "source_path": self.source,
-            "expected_commit": self.commit,
-            "expected_series": "19.0",
-        }
-        arguments.update(overrides)
-        return prepare_odoo_sources(**arguments)
+    def prepare(self, *, expected_commit: str | None = None, expected_series: str = "19.0") -> dict[str, object]:
+        return prepare_odoo_sources(
+            manifest=load_workspace_manifest(self.manifest_path),
+            source_path=self.source,
+            expected_commit=expected_commit or self.commit,
+            expected_series=expected_series,
+        )
 
     def test_cli_creates_exact_project_and_repeated_preparation_does_not_rewrite(self) -> None:
         arguments = build_parser().parse_args(
@@ -82,11 +81,11 @@ class OdooSourcesTestCase(unittest.TestCase):
         self.assertEqual(summary["odoo_commit"], self.commit)
         self.assertEqual(summary["odoo_series"], "19.0")
         module_path = Path(summary["module_path"])
-        module = element_tree.parse(module_path)
+        module = ET.parse(module_path)
         content_urls = [content.get("url") for content in module.findall("./component/content")]
         self.assertEqual(module.getroot().get("external.system.id"), "pyproject.toml")
         self.assertEqual(module_path.name, "tenant-dependencies.iml")
-        self.assertEqual(content_urls, [self.project.as_uri(), self.source.as_uri()])
+        self.assertEqual(content_urls, [f"file://{self.project}", f"file://{self.source}"])
         before = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in (self.project / ".idea").iterdir()}
         self.assertFalse(self.prepare()["changed"])
         self.assertEqual(before, {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in before})
@@ -94,12 +93,12 @@ class OdooSourcesTestCase(unittest.TestCase):
     def test_existing_module_preserves_sdk_roots_comments_and_other_ide_files(self) -> None:
         self.prepare()
         module_path = self.project / ".idea" / "tenant-dependencies.iml"
-        module = element_tree.parse(module_path)
+        module = ET.parse(module_path)
         manager = module.find("./component")
         manager.remove(manager.findall("content")[1])
-        element_tree.SubElement(manager, "orderEntry", {"type": "jdk", "jdkName": "Owner SDK"})
-        element_tree.SubElement(manager, "content", {"url": (self.root / "shared-addons").as_uri()})
-        manager.append(element_tree.Comment(" keep my project settings "))
+        ET.SubElement(manager, "orderEntry", {"type": "jdk", "jdkName": "Owner SDK"})
+        ET.SubElement(manager, "content", {"url": (self.root / "shared-addons").as_uri()})
+        manager.append(ET.Comment(" keep my project settings "))
         module.write(module_path)
         workspace_path = self.project / ".idea" / "workspace.xml"
         workspace_path.write_bytes(b"owner state must not change\n")
@@ -138,7 +137,7 @@ class OdooSourcesTestCase(unittest.TestCase):
         (self.project / ".gitignore").write_text(".idea/\n")
         self.prepare()
         module_path = self.project / ".idea" / "tenant-dependencies.iml"
-        module = element_tree.parse(module_path)
+        module = ET.parse(module_path)
         manager = module.find("./component")
         manager.remove(manager.findall("content")[1])
         module.write(module_path)
@@ -155,8 +154,8 @@ class OdooSourcesTestCase(unittest.TestCase):
         foreign_module = foreign / "main.iml"
         foreign_module.write_text('<module type="PYTHON_MODULE" />')
         modules_path = self.project / ".idea" / "modules.xml"
-        modules = element_tree.parse(modules_path)
-        element_tree.SubElement(modules.find("./component/modules"), "module", {"filepath": str(foreign_module)})
+        modules = ET.parse(modules_path)
+        ET.SubElement(modules.find("./component/modules"), "module", {"filepath": str(foreign_module)})
         modules.write(modules_path)
         before = modules_path.read_bytes()
         self.assertFalse(self.prepare()["changed"])
@@ -171,8 +170,8 @@ class OdooSourcesTestCase(unittest.TestCase):
             '<content url="file://$MODULE_DIR$" /></component></module>'
         )
         modules_path = self.project / ".idea" / "modules.xml"
-        modules = element_tree.parse(modules_path)
-        element_tree.SubElement(modules.find("./component/modules"), "module", {"filepath": str(other_module)})
+        modules = ET.parse(modules_path)
+        ET.SubElement(modules.find("./component/modules"), "module", {"filepath": str(other_module)})
         modules.write(modules_path)
         before = {path: path.read_bytes() for path in modules_path.parent.iterdir()}
         with self.assertRaisesRegex(ValueError, "exactly one"):
@@ -196,7 +195,7 @@ class OdooSourcesTestCase(unittest.TestCase):
         (other_source / "odoo").mkdir(parents=True)
         (other_source / "odoo" / "release.py").write_text("version_info = (18, 0)\n")
         module_path = self.project / ".idea" / "tenant-dependencies.iml"
-        module = element_tree.parse(module_path)
+        module = ET.parse(module_path)
         module.findall("./component/content")[1].set("url", other_source.as_uri())
         module.write(module_path)
         before = module_path.read_bytes()
@@ -218,7 +217,7 @@ class OdooSourcesTestCase(unittest.TestCase):
     def test_pycharm_serialized_module_paths_remain_idempotent(self) -> None:
         self.prepare()
         module_path = self.project / ".idea" / "tenant-dependencies.iml"
-        module = element_tree.parse(module_path)
+        module = ET.parse(module_path)
         contents = module.findall("./component/content")
         contents[0].set("url", "file://$MODULE_DIR$")
         contents[1].set("url", "file://$MODULE_DIR$/../odoo 19")
@@ -226,6 +225,51 @@ class OdooSourcesTestCase(unittest.TestCase):
         original = module_path.read_bytes()
         self.assertFalse(self.prepare()["changed"])
         self.assertEqual(module_path.read_bytes(), original)
+
+    def test_home_macro_and_literal_percent_characters_are_not_rewritten(self) -> None:
+        source = self.root / "odoo 19%20#é"
+        self.source.rename(source)
+        self.source = source
+        self.prepare()
+        module_path = self.project / ".idea" / "tenant-dependencies.iml"
+        module = ET.parse(module_path)
+        contents = module.findall("./component/content")
+        self.assertEqual(contents[1].get("url"), f"file://{source}")
+        contents[1].set("url", f"file://$USER_HOME$/{source.name}")
+        module.write(module_path)
+        original = module_path.read_bytes()
+        with mock.patch("odoo_devkit.pycharm_sources.Path.home", return_value=self.root):
+            self.assertFalse(self.prepare()["changed"])
+        self.assertEqual(module_path.read_bytes(), original)
+
+    def test_partial_new_project_write_can_be_retried(self) -> None:
+        from odoo_devkit import pycharm_sources
+
+        write_atomic = pycharm_sources._write_atomic
+
+        def fail_modules(path: Path, content: bytes) -> None:
+            if path.name == "modules.xml":
+                raise PermissionError("injected modules.xml write failure")
+            write_atomic(path, content)
+
+        with mock.patch.object(pycharm_sources, "_write_atomic", side_effect=fail_modules):
+            with self.assertRaisesRegex(PermissionError, "injected"):
+                self.prepare()
+        self.assertEqual(list((self.project / ".idea").iterdir()), [])
+        self.assertTrue(self.prepare()["changed"])
+
+    def test_tool_only_pyproject_uses_directory_module_without_external_ownership(self) -> None:
+        (self.project / "pyproject.toml").write_text("[tool.ruff]\nline-length = 100\n")
+        summary = self.prepare()
+        module = ET.parse(str(summary["module_path"]))
+        self.assertNotIn("external.system.id", module.getroot().attrib)
+        self.assertEqual(Path(str(summary["module_path"])).name, "tenant.iml")
+
+    def test_invalid_project_table_fails_without_writing_metadata(self) -> None:
+        (self.project / "pyproject.toml").write_text('project = "invalid"\n')
+        with self.assertRaisesRegex(ValueError, r"Expected \[project\]"):
+            self.prepare()
+        self.assertFalse((self.project / ".idea").exists())
 
 
 if __name__ == "__main__":

@@ -6,9 +6,8 @@ import re
 import subprocess
 import tempfile
 import tomllib
-import xml.etree.ElementTree as element_tree
+import xml.etree.ElementTree as ET
 from pathlib import Path
-from urllib.parse import unquote
 
 from .manifest import WorkspaceManifest
 from .runtime_environment import sanitized_subprocess_environment
@@ -46,7 +45,7 @@ def prepare_odoo_sources(
 
     writes: dict[Path, bytes] = {}
     if not attached:
-        element_tree.SubElement(manager, "content", {"url": source_path.as_uri()})
+        ET.SubElement(manager, "content", {"url": _idea_url(source_path)})
         writes[module_path] = _xml_bytes(module_root)
     if modules_root is not None:
         writes[modules_path] = _xml_bytes(modules_root)
@@ -54,8 +53,19 @@ def prepare_odoo_sources(
     # configuration is policy, not a place to persist a machine-local source path.
     for path in writes:
         _require_local_ignored_file(project_path, path)
-    for path, content_bytes in writes.items():
-        _write_atomic(path, content_bytes)
+    written_paths = []
+    try:
+        for path, content_bytes in writes.items():
+            _write_atomic(path, content_bytes)
+            written_paths.append(path)
+    except OSError:
+        if modules_root is not None:
+            # Both files are newly owned when creating a project. Do not leave
+            # an orphan module if publishing its modules.xml fails.
+            for path in written_paths:
+                if path.read_bytes() == writes[path]:
+                    path.unlink()
+        raise
     return {
         "project_path": str(project_path),
         "module_path": str(module_path),
@@ -96,7 +106,7 @@ def _verify_source(source_path: Path, expected_commit: str, expected_series: str
     return commit, series
 
 
-def _project_module(project_path: Path, modules_path: Path) -> tuple[Path, element_tree.Element, element_tree.Element | None]:
+def _project_module(project_path: Path, modules_path: Path) -> tuple[Path, ET.Element, ET.Element | None]:
     if modules_path.is_symlink():
         raise ValueError("IDE preparation cannot follow a symlinked modules.xml")
     if not modules_path.exists():
@@ -107,22 +117,26 @@ def _project_module(project_path: Path, modules_path: Path) -> tuple[Path, eleme
         pyproject_path = project_path / "pyproject.toml"
         if pyproject_path.is_file():
             pyproject = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
-            module_name = pyproject.get("project", {}).get("name", module_name)
-            attributes["external.system.id"] = "pyproject.toml"
+            project_table = pyproject.get("project", {})
+            if not isinstance(project_table, dict):
+                raise ValueError("Expected [project] to be a table in pyproject.toml")
+            if "name" in project_table:
+                module_name = project_table["name"]
+                attributes["external.system.id"] = "pyproject.toml"
         if not isinstance(module_name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", module_name):
             raise ValueError("Cannot derive a safe PyCharm module name from the tenant project")
         module_path = modules_path.parent / f"{module_name}.iml"
-        module_root = element_tree.Element("module", attributes)
-        manager = element_tree.SubElement(module_root, "component", {"name": "NewModuleRootManager"})
-        content = element_tree.SubElement(manager, "content", {"url": project_path.as_uri()})
-        element_tree.SubElement(content, "excludeFolder", {"url": (project_path / ".venv").as_uri()})
-        element_tree.SubElement(manager, "orderEntry", {"type": "inheritedJdk"})
-        element_tree.SubElement(manager, "orderEntry", {"type": "sourceFolder", "forTests": "false"})
-        modules_root = element_tree.Element("project", {"version": "4"})
-        component = element_tree.SubElement(modules_root, "component", {"name": "ProjectModuleManager"})
-        modules = element_tree.SubElement(component, "modules")
+        module_root = ET.Element("module", attributes)
+        manager = ET.SubElement(module_root, "component", {"name": "NewModuleRootManager"})
+        content = ET.SubElement(manager, "content", {"url": _idea_url(project_path)})
+        ET.SubElement(content, "excludeFolder", {"url": _idea_url(project_path / ".venv")})
+        ET.SubElement(manager, "orderEntry", {"type": "inheritedJdk"})
+        ET.SubElement(manager, "orderEntry", {"type": "sourceFolder", "forTests": "false"})
+        modules_root = ET.Element("project", {"version": "4"})
+        component = ET.SubElement(modules_root, "component", {"name": "ProjectModuleManager"})
+        modules = ET.SubElement(component, "modules")
         relative_path = f"$PROJECT_DIR$/.idea/{module_name}.iml"
-        element_tree.SubElement(modules, "module", {"fileurl": f"file://{relative_path}", "filepath": relative_path})
+        ET.SubElement(modules, "module", {"fileurl": f"file://{relative_path}", "filepath": relative_path})
         return module_path, module_root, modules_root
     modules_root = _read_xml(modules_path)
     candidates = []
@@ -148,9 +162,15 @@ def _project_module(project_path: Path, modules_path: Path) -> tuple[Path, eleme
     return module_path, module_root, None
 
 
+def _idea_url(path: Path) -> str:
+    # IntelliJ VFS URLs contain a raw path, not a percent-encoded URI.
+    return "file://" + path.as_posix()
+
+
 def _idea_path(value: str, project_path: Path, module_directory: Path) -> Path:
-    value = unquote(value.removeprefix("file://"))
+    value = value.removeprefix("file://")
     value = value.replace("$PROJECT_DIR$", str(project_path)).replace("$MODULE_DIR$", str(module_directory))
+    value = value.replace("$USER_HOME$", str(Path.home()))
     if not value or "$" in value or not Path(value).is_absolute():
         raise ValueError("Cannot resolve an existing IDE path; reconcile Project Structure first")
     return Path(os.path.abspath(value))
@@ -162,17 +182,17 @@ def _module_directory(module_path: Path) -> Path:
     return module_path.parent.parent if module_path.parent.name == ".idea" else module_path.parent
 
 
-def _read_xml(path: Path) -> element_tree.Element:
-    parser = element_tree.XMLParser(target=element_tree.TreeBuilder(insert_comments=True))
+def _read_xml(path: Path) -> ET.Element:
+    parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True))
     try:
-        return element_tree.parse(path, parser=parser).getroot()
-    except element_tree.ParseError as error:
+        return ET.parse(path, parser=parser).getroot()
+    except ET.ParseError as error:
         raise ValueError(f"Invalid IDE XML in {path.name}: {error}") from error
 
 
-def _xml_bytes(root: element_tree.Element) -> bytes:
-    element_tree.indent(root, space="  ")
-    return element_tree.tostring(root, encoding="utf-8", xml_declaration=True) + b"\n"
+def _xml_bytes(root: ET.Element) -> bytes:
+    ET.indent(root)
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True) + b"\n"
 
 
 def _require_local_ignored_file(project_path: Path, path: Path) -> None:
@@ -184,7 +204,6 @@ def _require_local_ignored_file(project_path: Path, path: Path) -> None:
     ignored = subprocess.run(
         ["git", "-C", str(project_path), "check-ignore", "-q", "--", relative_path],
         env=sanitized_subprocess_environment(),
-        check=False,
     )
     if ignored.returncode != 0:
         raise ValueError(f"{relative_path} must already be Git-ignored before IDE preparation")
@@ -207,7 +226,6 @@ def _git(directory: Path, *arguments: str) -> str:
         capture_output=True,
         text=True,
         env=sanitized_subprocess_environment(),
-        check=False,
     )
     if result.returncode != 0:
         raise ValueError(f"Cannot read Git state in {directory}: {result.stderr.strip()}")
