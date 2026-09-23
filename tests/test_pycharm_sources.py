@@ -267,6 +267,31 @@ class OdooSourcesTestCase(unittest.TestCase):
         self.assertNotIn("external.system.id", module.getroot().attrib)
         self.assertEqual(Path(module_path).name, "tenant.iml")
 
+    def test_failed_temp_write_leaves_no_orphan_and_preserves_existing_file(self) -> None:
+        from odoo_devkit import pycharm_sources
+
+        target = self.root / "owner.iml"
+        target.write_bytes(b"original settings")
+        temporary_file = tempfile.NamedTemporaryFile(dir=self.root, delete=False)
+        temporary_path = Path(temporary_file.name)
+        with mock.patch.object(pycharm_sources.tempfile, "NamedTemporaryFile", return_value=temporary_file):
+            with mock.patch.object(temporary_file, "write", side_effect=OSError("disk full")):
+                with self.assertRaisesRegex(OSError, "disk full"):
+                    pycharm_sources._write_atomic(target, b"replacement")
+        self.assertEqual(target.read_bytes(), b"original settings")
+        self.assertFalse(temporary_path.exists())
+
+    def test_unresolved_custom_macro_fails_before_any_write(self) -> None:
+        self.prepare()
+        module_path = self.project / ".idea" / "tenant-dependencies.iml"
+        module = ElementTree.parse(module_path)
+        module.findall("./component/content")[1].set("url", "file://$ODOO_SRC$")
+        module.write(module_path)
+        original = module_path.read_bytes()
+        with self.assertRaisesRegex(ValueError, "Cannot resolve an existing IDE path"):
+            self.prepare()
+        self.assertEqual(module_path.read_bytes(), original)
+
     def test_invalid_project_table_fails_without_writing_metadata(self) -> None:
         (self.project / "pyproject.toml").write_text('project = "invalid"\n')
         with self.assertRaisesRegex(ValueError, r"Expected \[project\]"):

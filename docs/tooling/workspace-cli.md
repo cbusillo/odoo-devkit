@@ -112,10 +112,15 @@ This implements the plugin author's supported
 [content-root setup](https://github.com/odoo-ide/pycharm-odoo/wiki/Structure-Odoo-Projects).
 
 Only already ignored, untracked IDE metadata may be changed. Tracked metadata,
-ambiguous tenant modules, malformed paths/XML, a different attached Odoo source,
+ambiguous tenant modules, malformed paths/XML, a different existing Odoo content
+root on the tenant module,
 or symlinked project metadata require local reconciliation first. The generator
 does not edit ignore policy or overwrite another project's configuration.
-Repeated preparation with the same source is a no-op. JSON output records the
+Paths may use `$PROJECT_DIR$`, `$MODULE_DIR$`, or `$USER_HOME$`. Custom IDE path
+variables remain unsupported and fail before writing; their resolution is a
+separate setup requirement. Interpreter libraries and other modules' content
+roots remain outside this command's source-attachment check.
+Repeated preparation with the same source and supported paths is a no-op. JSON output records the
 exact project/module paths, source path, commit, series, and changed files.
 
 This command works without workspace materialization, Docker, runtime secrets,

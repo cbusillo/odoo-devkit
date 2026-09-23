@@ -211,13 +211,15 @@ def _require_local_ignored_file(project_path: Path, path: Path) -> None:
 
 def _write_atomic(path: Path, content: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}.", delete=False) as temporary_file:
-        temporary_path = Path(temporary_file.name)
-        temporary_file.write(content)
+    temporary_path = None
     try:
+        with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}.", delete=False) as temporary_file:
+            temporary_path = Path(temporary_file.name)
+            temporary_file.write(content)
         os.replace(temporary_path, path)
     finally:
-        temporary_path.unlink(missing_ok=True)
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 def _git(directory: Path, *arguments: str) -> str:
