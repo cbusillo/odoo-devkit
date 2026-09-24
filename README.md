@@ -194,6 +194,11 @@ Current runtime ownership is intentionally narrow and explicit:
   tenant database. This preserves boot for tenant databases that renamed or
   removed the default `admin` login while still checking active default admin
   passwords when matching users exist.
+- Startup verifies an existing administrator password before writing it. A
+  matching configured password is left unchanged, avoiding password-change
+  emails on ordinary restarts. Actual configured password changes still use
+  Odoo's normal write path and security notifications. Quotes and backslashes
+  in configured passwords are preserved when passed into the startup shell.
 - A Postgres major-version bump is not a routine dependency refresh on this
   surface. Treat it as explicit migration work with a documented upgrade path
   for existing tenant data volumes.

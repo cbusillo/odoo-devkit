@@ -13,9 +13,10 @@ from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 if TYPE_CHECKING:
+    from docker.scripts import run_odoo_startup as odoo_startup
     from docker.scripts.run_odoo_startup import StartupSettings
 
 
@@ -41,7 +42,8 @@ def _load_startup_module() -> types.ModuleType:
     return module
 
 
-odoo_startup = _load_startup_module()
+if not TYPE_CHECKING:
+    odoo_startup = _load_startup_module()
 
 
 class OdooStartupDependencySyncTests(unittest.TestCase):
@@ -291,16 +293,74 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
         environment = run_mock.call_args.kwargs["env"]
         self.assertEqual(environment["PYTHONPATH"], "/volumes/scripts:/opt/custom")
 
-    def test_admin_hardening_skips_missing_configured_admin(self) -> None:
-        settings = self._settings(platform_instance="testing", admin_password="safe-admin-password")
+    @staticmethod
+    def _execute_admin_hardening(settings: StartupSettings, environment: MagicMock) -> str:
+        exceptions = types.ModuleType("odoo.exceptions")
+        exceptions.__dict__["AccessDenied"] = PermissionError
 
-        with patch.object(odoo_startup, "_run_odoo_shell") as run_shell:
+        def run_shell(_settings: StartupSettings, script: str, *, label: str) -> None:
+            _ = label
+            exec(script, {"env": environment})
+
+        output = io.StringIO()
+        with (
+            patch.dict(sys.modules, {"odoo.exceptions": exceptions}),
+            patch.object(odoo_startup, "_run_odoo_shell", side_effect=run_shell),
+            redirect_stdout(output),
+        ):
             odoo_startup._apply_admin_password_if_configured(settings)
+        return output.getvalue()
 
-        run_shell.assert_called_once()
-        script_text = run_shell.call_args.args[1]
-        self.assertIn("configured_admin_user_found=false", script_text)
-        self.assertNotIn("Configured admin user not found", script_text)
+    def test_admin_hardening_only_writes_when_configured_password_changes(self) -> None:
+        configured_password = "configured-'\"\\-password"
+        settings = self._settings(platform_instance="testing", admin_password=configured_password)
+        environment = MagicMock()
+        admin = environment["res.users"].sudo().with_context().search()
+        admin.with_user.return_value = admin
+        admin.with_context.return_value = admin
+        admin.sudo.return_value = admin
+        stored = {"password": "initial-password"}
+
+        def check_credentials(credential: dict[str, str], _request_environment: dict[str, bool]) -> None:
+            if credential["password"] != stored["password"]:
+                raise PermissionError
+
+        admin._check_credentials.side_effect = check_credentials
+        admin.write.side_effect = stored.update
+        self._execute_admin_hardening(settings, environment)
+        self._execute_admin_hardening(settings, environment)
+        admin.write.assert_called_once_with({"password": configured_password})
+
+        rotated = replace(settings, admin_password="rotated-password")
+        self._execute_admin_hardening(rotated, environment)
+        self._execute_admin_hardening(rotated, environment)
+        self.assertEqual(admin.write.call_count, 2)
+        self.assertEqual(stored["password"], "rotated-password")
+        environment.cr.commit.assert_called()
+
+    def test_admin_hardening_skips_missing_configured_admin(self) -> None:
+        settings = self._settings(platform_instance="testing", admin_password="configured-password")
+        environment = MagicMock()
+        users = environment["res.users"].sudo().with_context()
+        users.search.return_value = None
+
+        output = self._execute_admin_hardening(settings, environment)
+
+        self.assertIn("configured_admin_user_found=false", output)
+        environment.cr.commit.assert_not_called()
+
+    def test_admin_hardening_does_not_write_after_unexpected_credential_check_failure(self) -> None:
+        settings = self._settings(platform_instance="testing", admin_password="configured-password")
+        environment = MagicMock()
+        admin = environment["res.users"].sudo().with_context().search()
+        admin.with_user.return_value = admin
+        admin._check_credentials.side_effect = RuntimeError("credential backend unavailable")
+
+        with self.assertRaisesRegex(RuntimeError, "credential backend unavailable"):
+            self._execute_admin_hardening(settings, environment)
+
+        admin.with_context.assert_not_called()
+        environment.cr.commit.assert_not_called()
 
 
 if __name__ == "__main__":
