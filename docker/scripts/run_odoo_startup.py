@@ -35,6 +35,15 @@ RUNTIME_OPTION_MAP: tuple[tuple[str, str], ...] = (
     ("ODOO_LIMIT_MEMORY_SOFT", "limit_memory_soft"),
     ("ODOO_LIMIT_MEMORY_HARD", "limit_memory_hard"),
 )
+MAIL_OPTION_MAP: tuple[tuple[str, str], ...] = (
+    ("ODOO_SMTP_SERVER", "smtp_server"),
+    ("ODOO_SMTP_PORT", "smtp_port"),
+    ("ODOO_SMTP_USER", "smtp_user"),
+    ("ODOO_SMTP_PASSWORD", "smtp_password"),
+    ("ODOO_SMTP_SSL", "smtp_ssl"),
+    ("ODOO_EMAIL_FROM", "email_from"),
+    ("ODOO_FROM_FILTER", "from_filter"),
+)
 
 UNSAFE_MASTER_PASSWORDS = {"admin"}
 LOCAL_INSTANCE_NAMES = {"", "local", "dev", "development"}
@@ -181,6 +190,12 @@ def _write_runtime_config(settings: StartupSettings) -> None:
         if option_value:
             options[option_name] = option_value
 
+    # Explicit empty values clear inherited mail options. Preserve password bytes.
+    for env_name, option_name in MAIL_OPTION_MAP:
+        if env_name in os.environ:
+            value = os.environ[env_name]
+            options[option_name] = value if option_name == "smtp_password" else value.strip()
+
     dev_mode_value = os.environ.get("ODOO_DEV_MODE", "").strip()
     if dev_mode_value:
         options["dev_mode"] = dev_mode_value
@@ -191,7 +206,9 @@ def _write_runtime_config(settings: StartupSettings) -> None:
     config_directory = os.path.dirname(config_path)
     if config_directory:
         os.makedirs(config_directory, exist_ok=True)
-    with open(config_path, "w", encoding="utf-8") as config_file:
+    descriptor = os.open(config_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as config_file:
+        os.fchmod(config_file.fileno(), 0o600)
         config_parser.write(config_file)
 
 

@@ -465,6 +465,17 @@ def apply_website_bootstrap(env: Any, parsed_payload: dict[str, object] | None) 
         create_values = _field_values(website_model, {"name": default_name})
         website = website_model.create(create_values or {"name": default_name})
 
+    company_email = str(website_payload.get("company_email") or "").strip()
+    if company_email:
+        _require_existing_fields(website, ("company_id",), label="website company")
+        company = website.company_id
+        if not company:
+            raise RuntimeError("Website bootstrap cannot set company email; the selected website has no company.")
+        _require_existing_fields(company, ("email",), label="company email")
+        company.sudo().write({"email": company_email})
+        _assert_field_value(company, "email", company_email, label="company email")
+        print("website_bootstrap_company_email_matches=true")
+
     website_values: dict[str, object] = {}
     website_name = str(website_payload.get("name") or "").strip()
     if website_name:

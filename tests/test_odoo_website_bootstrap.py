@@ -143,6 +143,29 @@ class FakeEnv:
 
 
 class WebsiteBootstrapHelperTests(unittest.TestCase):
+    def test_company_sender_is_set_on_selected_website_and_verified(self) -> None:
+        env = FakeEnv()
+        company = FakeRecord(fields=("email",), values={"email": False})
+        env.website._fields.add("company_id")
+        env.website.company_id = company
+        payload = {"website_bootstrap": {"name": "Example", "company_email": "support@example.test"}}
+        with redirect_stdout(io.StringIO()):
+            website_bootstrap.apply_website_bootstrap(env, payload)
+        self.assertEqual(company.email, "support@example.test")
+        company.persist_writes = False
+        company.email = False
+        with self.assertRaisesRegex(RuntimeError, "failed to persist company email"):
+            website_bootstrap.apply_website_bootstrap(env, payload)
+
+    def test_company_sender_request_fails_when_selected_website_has_no_company(self) -> None:
+        env = FakeEnv()
+        env.website._fields.add("company_id")
+        env.website.company_id = FakeRecord(truthy=False)
+        with self.assertRaisesRegex(RuntimeError, "selected website has no company"):
+            website_bootstrap.apply_website_bootstrap(
+                env, {"website_bootstrap": {"name": "Example", "company_email": "support@example.test"}}
+            )
+
     def test_required_instance_overrides_fail_without_payload(self) -> None:
         with patch.dict(
             os.environ,

@@ -3,11 +3,15 @@ from __future__ import annotations
 import argparse
 import configparser
 import importlib.util
+import io
 import os
 import sys
 import types
 import unittest
+from contextlib import redirect_stdout
+from dataclasses import replace
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 
@@ -154,11 +158,11 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
         settings = self._settings(platform_instance="testing", admin_password="safe-admin-password")
         parser = configparser.ConfigParser(interpolation=None)
 
-        with patch("builtins.open", unittest.mock.mock_open()) as open_mock:
-            odoo_startup._write_runtime_config(settings)
-
-        written_config = "".join(call.args[0] for call in open_mock().write.call_args_list)
-        parser.read_string(written_config)
+        with TemporaryDirectory() as directory:
+            settings = replace(settings, config_path=str(Path(directory) / "odoo.conf"), base_config_path="")
+            with patch.dict(os.environ, {}, clear=True):
+                odoo_startup._write_runtime_config(settings)
+            parser.read(settings.config_path)
 
         self.assertEqual(parser["options"]["db_name"], "opw")
         self.assertEqual(parser["options"]["dbfilter"], "^opw$")
@@ -167,14 +171,50 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
         settings = self._settings(platform_instance="local")
         parser = configparser.ConfigParser(interpolation=None)
 
-        with patch("builtins.open", unittest.mock.mock_open()) as open_mock:
-            odoo_startup._write_runtime_config(settings)
-
-        written_config = "".join(call.args[0] for call in open_mock().write.call_args_list)
-        parser.read_string(written_config)
+        with TemporaryDirectory() as directory:
+            settings = replace(settings, config_path=str(Path(directory) / "odoo.conf"), base_config_path="")
+            with patch.dict(os.environ, {}, clear=True):
+                odoo_startup._write_runtime_config(settings)
+            parser.read(settings.config_path)
 
         self.assertEqual(parser["options"]["db_name"], "opw")
         self.assertNotIn("dbfilter", parser["options"])
+
+    def test_managed_mail_options_replace_base_config_without_logging_password(self) -> None:
+        environment = {
+            "ODOO_SMTP_SERVER": "smtp.example.test",
+            "ODOO_SMTP_PORT": "587",
+            "ODOO_SMTP_USER": "mailbox@example.test",
+            "ODOO_SMTP_PASSWORD": "secret%with#punctuation",
+            "ODOO_SMTP_SSL": "True",
+            "ODOO_EMAIL_FROM": "support@example.test",
+            "ODOO_FROM_FILTER": "support@example.test",
+        }
+        output = io.StringIO()
+        with TemporaryDirectory() as directory:
+            base = Path(directory) / "base.conf"
+            target = Path(directory) / "runtime.conf"
+            base.write_text("[options]\nsmtp_server = old.example.test\nsmtp_password = old-secret\n", encoding="utf-8")
+            target.touch(mode=0o644)
+            target.chmod(0o644)
+            settings = replace(self._settings(), base_config_path=str(base), config_path=str(target))
+            with patch.dict(os.environ, environment, clear=True), redirect_stdout(output):
+                odoo_startup._write_runtime_config(settings)
+            parser = configparser.ConfigParser(interpolation=None)
+            parser.read(target)
+            self.assertEqual(parser["options"]["smtp_server"], "smtp.example.test")
+            self.assertEqual(parser["options"].getint("smtp_port"), 587)
+            self.assertEqual(parser["options"]["smtp_user"], "mailbox@example.test")
+            self.assertEqual(parser["options"]["smtp_password"], environment["ODOO_SMTP_PASSWORD"])
+            self.assertTrue(parser["options"].getboolean("smtp_ssl"))
+            self.assertEqual(parser["options"]["email_from"], "support@example.test")
+            self.assertEqual(parser["options"]["from_filter"], "support@example.test")
+            self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+            with patch.dict(os.environ, {"ODOO_SMTP_PASSWORD": ""}, clear=True):
+                odoo_startup._write_runtime_config(settings)
+            parser.read(target)
+            self.assertEqual(parser["options"]["smtp_password"], "")
+        self.assertNotIn(environment["ODOO_SMTP_PASSWORD"], output.getvalue())
 
     def test_database_filter_escapes_database_name(self) -> None:
         pattern = odoo_startup._database_filter_pattern("tenant.prod")
