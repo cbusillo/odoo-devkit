@@ -434,6 +434,7 @@ def _apply_admin_password_if_configured(settings: StartupSettings) -> None:
     }
     script = """
 import json
+from odoo.exceptions import AccessDenied
 
 payload = json.loads('__PAYLOAD__')
 admin_user = env['res.users'].sudo().with_context(active_test=False).search(
@@ -443,9 +444,17 @@ admin_user = env['res.users'].sudo().with_context(active_test=False).search(
 if not admin_user:
     print(f"configured_admin_user_found=false login={payload['login']}")
 else:
-    admin_user.with_context(no_reset_password=True).sudo().write({'password': payload['password']})
+    try:
+        admin_user.with_user(admin_user)._check_credentials(
+            {'type': 'password', 'password': payload['password']},
+            {'interactive': True},
+        )
+    except AccessDenied:
+        admin_user.with_context(no_reset_password=True).sudo().write({'password': payload['password']})
+        print('admin_password_updated=true')
+    else:
+        print('admin_password_updated=false')
     env.cr.commit()
-    print('admin_password_updated=true')
 """.replace("__PAYLOAD__", json.dumps(payload))
     _run_odoo_shell(settings, script, label="admin hardening")
 
