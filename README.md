@@ -164,7 +164,9 @@ Current runtime ownership is intentionally narrow and explicit:
   Existing Odoo outgoing-server records take precedence over the config fallback.
   Restored databases that undergo sanitization get an active dummy outgoing
   server, following Odoo's neutralization behavior, so even configured SMTP
-  fallback cannot send copied customer mail. Copied SMTP credentials are cleared.
+  fallback cannot send copied customer mail. Copied SMTP usernames/passwords are
+  cleared. Fresh bootstrap does not insert that dummy server, so an empty new
+  database can use the operator's explicitly supplied mail configuration.
 - An optional `company_email` in Launchplane's website-bootstrap payload sets
   the selected website company's sender address and verifies it was saved.
   Omission preserves the existing company email. This fixes the company sender

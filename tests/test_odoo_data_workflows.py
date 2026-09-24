@@ -46,18 +46,38 @@ odoo_data_workflows = _load_data_workflows_module()
 
 
 class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
-    def test_sanitized_database_blocks_configured_smtp_fallback_and_removes_copied_credentials(self) -> None:
+    def test_bootstrap_allows_configured_mail_but_sanitized_restores_block_it(self) -> None:
         with closing(sqlite3.connect(":memory:")) as database:
             database.execute(
                 "CREATE TABLE ir_mail_server (name TEXT, smtp_port INTEGER, smtp_host TEXT, smtp_encryption TEXT, "
                 "active BOOLEAN, smtp_authentication TEXT, smtp_user TEXT, smtp_pass TEXT)"
             )
+            runner = odoo_data_workflows.OdooDataWorkflowRunner(self._local_settings(), upstream=None, env_file=None)
+            runner.local.db_conn = types.SimpleNamespace(cursor=lambda: closing(database.cursor()), commit=database.commit)
+            with patch.multiple(
+                runner,
+                _resolve_filestore_owner=MagicMock(return_value=None),
+                database_exists=MagicMock(return_value=False),
+                _clean_filestore=MagicMock(),
+                normalize_filestore_permissions=MagicMock(),
+                create_database=MagicMock(),
+                _reset_db_connection=MagicMock(),
+                needs_base_install=MagicMock(return_value=False),
+                install_addons=MagicMock(),
+                update_addons=MagicMock(),
+                call_odoo_sql=MagicMock(return_value=[]),
+                assert_install_queue_is_resolvable=MagicMock(),
+                apply_environment_overrides=MagicMock(),
+                ensure_admin_user=MagicMock(),
+                assert_core_schema_healthy=MagicMock(),
+                ensure_gpt_users=MagicMock(),
+            ):
+                runner.run_bootstrap(do_sanitize=True)
+            self.assertEqual(database.execute("SELECT count(*) FROM ir_mail_server WHERE active = true").fetchone()[0], 0)
             database.execute(
                 "INSERT INTO ir_mail_server VALUES ('Production', 587, 'smtp.example.test', 'starttls', true, 'login', "
                 "'mailbox@example.test', 'copied-secret')"
             )
-            runner = odoo_data_workflows.OdooDataWorkflowRunner(self._local_settings(), upstream=None, env_file=None)
-            runner.local.db_conn = types.SimpleNamespace(cursor=lambda: closing(database.cursor()))
             with patch.object(runner, "call_odoo_sql", return_value=[]):
                 runner.sanitize_database()
                 runner.sanitize_database()
