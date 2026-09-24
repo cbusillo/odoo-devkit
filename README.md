@@ -162,6 +162,9 @@ Current runtime ownership is intentionally narrow and explicit:
   clear inherited mail options; omitted values preserve the base config.
   The generated config containing credentials is readable only by its owner.
   Existing Odoo outgoing-server records take precedence over the config fallback.
+  Restored databases that undergo sanitization get an active dummy outgoing
+  server, following Odoo's neutralization behavior, so even configured SMTP
+  fallback cannot send copied customer mail. Copied SMTP credentials are cleared.
 - An optional `company_email` in Launchplane's website-bootstrap payload sets
   the selected website company's sender address and verifies it was saved.
   Omission preserves the existing company email. This fixes the company sender

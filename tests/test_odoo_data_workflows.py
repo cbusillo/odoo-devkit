@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import sqlite3
 import subprocess
 import sys
 import types
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -44,6 +46,32 @@ odoo_data_workflows = _load_data_workflows_module()
 
 
 class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
+    def test_sanitized_database_blocks_configured_smtp_fallback_and_removes_copied_credentials(self) -> None:
+        with closing(sqlite3.connect(":memory:")) as database:
+            database.execute(
+                "CREATE TABLE ir_mail_server (name TEXT, smtp_port INTEGER, smtp_host TEXT, smtp_encryption TEXT, "
+                "active BOOLEAN, smtp_authentication TEXT, smtp_user TEXT, smtp_pass TEXT)"
+            )
+            database.execute(
+                "INSERT INTO ir_mail_server VALUES ('Production', 587, 'smtp.example.test', 'starttls', true, 'login', "
+                "'mailbox@example.test', 'copied-secret')"
+            )
+            runner = odoo_data_workflows.OdooDataWorkflowRunner(self._local_settings(), upstream=None, env_file=None)
+            runner.local.db_conn = types.SimpleNamespace(cursor=lambda: closing(database.cursor()))
+            with patch.object(runner, "call_odoo_sql", return_value=[]):
+                runner.sanitize_database()
+                runner.sanitize_database()
+            self.assertEqual(
+                database.execute("SELECT smtp_host, smtp_port FROM ir_mail_server WHERE active = true").fetchall(),
+                [("invalid", 1025)],
+            )
+            self.assertEqual(
+                database.execute(
+                    "SELECT count(*) FROM ir_mail_server WHERE smtp_user IS NOT NULL OR smtp_pass IS NOT NULL"
+                ).fetchone()[0],
+                0,
+            )
+
     @staticmethod
     def _local_settings() -> object:
         return odoo_data_workflows.LocalServerSettings(
