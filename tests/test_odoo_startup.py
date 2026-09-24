@@ -312,7 +312,8 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
         return output.getvalue()
 
     def test_admin_hardening_only_writes_when_configured_password_changes(self) -> None:
-        settings = self._settings(platform_instance="testing", admin_password="configured-password")
+        configured_password = "configured-'\"\\-password"
+        settings = self._settings(platform_instance="testing", admin_password=configured_password)
         environment = MagicMock()
         admin = environment["res.users"].sudo().with_context().search()
         admin.with_user.return_value = admin
@@ -328,7 +329,7 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
         admin.write.side_effect = stored.update
         self._execute_admin_hardening(settings, environment)
         self._execute_admin_hardening(settings, environment)
-        admin.write.assert_called_once_with({"password": "configured-password"})
+        admin.write.assert_called_once_with({"password": configured_password})
 
         rotated = replace(settings, admin_password="rotated-password")
         self._execute_admin_hardening(rotated, environment)
