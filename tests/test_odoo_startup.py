@@ -12,7 +12,11 @@ from contextlib import redirect_stdout
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import TYPE_CHECKING
 from unittest.mock import patch
+
+if TYPE_CHECKING:
+    from docker.scripts.run_odoo_startup import StartupSettings
 
 
 def _load_startup_module() -> types.ModuleType:
@@ -47,7 +51,7 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
         platform_instance: str = "local",
         master_password: str = "master-password",
         admin_password: str = "",
-    ) -> object:
+    ) -> StartupSettings:
         return odoo_startup.StartupSettings(
             config_path="/tmp/generated.conf",
             base_config_path="/tmp/base.conf",
