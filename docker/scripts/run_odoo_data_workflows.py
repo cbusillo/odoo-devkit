@@ -904,11 +904,10 @@ class OdooDataWorkflowRunner:
             else:
                 return []
 
-    def sanitize_database(self) -> None:
+    def sanitize_database(self, *, block_smtp_fallback: bool = True) -> None:
         disable_cron = self.local.disable_cron
 
         sql_calls: list[SqlCall] = [
-            SqlCall("ir.mail_server", KeyValuePair("active", False)),
             SqlCall("ir.config_parameter", KeyValuePair("value", "False"), KeyValuePair("key", "mail.catchall.domain")),
             SqlCall("ir.config_parameter", KeyValuePair("value", "False"), KeyValuePair("key", "mail.catchall.alias")),
             SqlCall("ir.config_parameter", KeyValuePair("value", "False"), KeyValuePair("key", "mail.bounce.alias")),
@@ -917,6 +916,15 @@ class OdooDataWorkflowRunner:
             sql_calls.append(SqlCall("ir.cron", KeyValuePair("active", False)))
 
         _logger.info("Sanitizing database...")
+        # An active dummy server also blocks Odoo's config/CLI SMTP fallback.
+        # Match Odoo's neutralization behavior and remove copied credentials.
+        with self.connect_to_db().cursor() as cursor:
+            cursor.execute("UPDATE ir_mail_server SET active = false, smtp_user = NULL, smtp_pass = NULL")
+            if block_smtp_fallback:
+                cursor.execute(
+                    "INSERT INTO ir_mail_server (name, smtp_port, smtp_host, smtp_encryption, active, smtp_authentication) "
+                    "VALUES ('neutralization - disable emails', 1025, 'invalid', 'none', true, 'login')"
+                )
         # noinspection PyUnresolvedReferences  # call_odoo_sql exists on this class; PyCharm false positive.
         call_odoo_sql = self.call_odoo_sql
         for sql_call in sql_calls:
@@ -1503,7 +1511,7 @@ with registry.cursor() as cr:
         self.connect_to_db()
 
         if do_sanitize:
-            self.sanitize_database()
+            self.sanitize_database(block_smtp_fallback=False)
             self.local.db_conn.commit()
         else:
             _logger.info("Skipping sanitization per --no-sanitize flag.")
