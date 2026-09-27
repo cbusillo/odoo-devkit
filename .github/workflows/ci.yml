@@ -13,6 +13,7 @@ permissions:
 jobs:
   runtime-python-lock:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -30,6 +31,9 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    # Pull-request budget: the lane runs in about 30 seconds; a run past
+    # 5 minutes fails here instead of queueing silently.
+    timeout-minutes: 5
     steps:
       - name: Checkout
         uses: actions/checkout@v7

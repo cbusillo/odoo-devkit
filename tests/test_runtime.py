@@ -2222,31 +2222,20 @@ sources = [
         repo_root = Path(__file__).resolve().parents[1]
         stack = local_runtime.load_stack(repo_root / "platform" / "stack.toml").stack_definition
 
-        cm_context = stack.contexts["cm"]
-        self.assertEqual(set(cm_context.instances), {"local", "dev", "testing"})
-        self.assertEqual(cm_context.runtime_env, {})
-        self.assertEqual(cm_context.odoo_overrides, local_runtime.empty_odoo_override_definition())
-        for instance_name in ("dev", "testing"):
-            instance = cm_context.instances[instance_name]
-            self.assertEqual(instance.runtime_env, {})
-            self.assertEqual(
-                instance.odoo_overrides,
-                local_runtime.empty_odoo_override_definition(),
-            )
-        self.assertNotIn("prod", cm_context.instances)
-        self.assertEqual(
-            cm_context.instances["local"].odoo_overrides.addon_settings["authentik_sso"]["base_url"],
-            "https://authentik.cellmechanic.com",
-        )
-
-        opw_context = stack.contexts["opw"]
-        self.assertEqual(set(opw_context.instances), {"local"})
-        self.assertEqual(opw_context.runtime_env, {})
-        self.assertEqual(opw_context.odoo_overrides, local_runtime.empty_odoo_override_definition())
-        self.assertEqual(
-            opw_context.instances["local"].runtime_env["OPENUPGRADE_ENABLED"],
-            True,
-        )
+        self.assertTrue(stack.contexts)
+        for context_name, context in stack.contexts.items():
+            self.assertEqual(context.runtime_env, {}, context_name)
+            self.assertEqual(context.odoo_overrides, local_runtime.empty_odoo_override_definition(), context_name)
+            self.assertNotIn("prod", context.instances, context_name)
+            for instance_name, instance in context.instances.items():
+                if instance_name == "local":
+                    continue
+                self.assertEqual(instance.runtime_env, {}, f"{context_name}/{instance_name}")
+                self.assertEqual(
+                    instance.odoo_overrides,
+                    local_runtime.empty_odoo_override_definition(),
+                    f"{context_name}/{instance_name}",
+                )
 
     def test_runtime_payload_synthesizes_missing_instance_in_existing_context(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

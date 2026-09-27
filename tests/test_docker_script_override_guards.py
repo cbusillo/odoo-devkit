@@ -1,48 +1,116 @@
+"""Run the Odoo-shell snippets that apply Launchplane overrides against a stub Odoo env.
+
+The startup and data-workflow scripts hand these snippets to `odoo shell`, so they
+never execute in the unit suite on their own. These tests capture the snippet each
+script would send and run it, which checks the guard behaviour rather than its text.
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import os
+import sys
+import types
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+import test_odoo_data_workflows
+import test_odoo_startup
+
+odoo_data_workflows = test_odoo_data_workflows.odoo_data_workflows
+odoo_startup = test_odoo_startup.odoo_startup
+
+SCRIPTS_DIRECTORY = Path(__file__).resolve().parents[1] / "docker" / "scripts"
+SETTINGS_PAYLOAD = {"config_parameters": [{"key": "web.base.url", "value": "https://example.test"}]}
 
 
-class DockerScriptOverrideGuardTests(unittest.TestCase):
-    def test_data_workflow_fails_when_typed_override_payload_has_no_consumer(self) -> None:
-        script = (REPO_ROOT / "docker/scripts/run_odoo_data_workflows.py").read_text(encoding="utf-8")
+def _fake_env(*, installed_models: set[str]) -> MagicMock:
+    env = MagicMock()
+    env.registry = installed_models
+    return env
 
-        self.assertIn("typed_override_payload_present", script)
-        self.assertIn("payload_has_launchplane_settings", script)
-        self.assertIn("require_launchplane_payloads_if_configured", script)
-        self.assertIn("ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64", script)
-        self.assertIn("launchplane.settings", script)
-        self.assertIn("but launchplane.settings is not installed", script)
-        self.assertIn("apply_website_bootstrap", script)
-        self.assertIn("from odoo_website_bootstrap import", script)
-        self.assertNotIn("environment.overrides", script)
-        self.assertNotIn("authentik.sso.config", script)
 
-    def test_startup_fails_when_typed_override_payload_has_no_consumer(self) -> None:
-        script = (REPO_ROOT / "docker/scripts/run_odoo_startup.py").read_text(encoding="utf-8")
+def _payload_environment(payload: dict[str, object]) -> dict[str, str]:
+    encoded = base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
+    return {"ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64": encoded}
 
-        self.assertIn("typed_override_payload_present", script)
-        self.assertIn("payload_has_launchplane_settings", script)
-        self.assertIn("require_launchplane_payloads_if_configured", script)
-        self.assertIn("ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64", script)
-        self.assertIn("launchplane.settings", script)
-        self.assertIn("but launchplane.settings is not installed", script)
-        self.assertIn("apply_website_bootstrap", script)
-        self.assertIn("from odoo_website_bootstrap import", script)
-        self.assertNotIn("environment.overrides", script)
-        self.assertNotIn("authentik.sso.config", script)
 
-    def test_website_bootstrap_helper_is_part_of_docker_payload(self) -> None:
-        dockerfile = (REPO_ROOT / "docker/Dockerfile").read_text(encoding="utf-8")
-        helper = (REPO_ROOT / "docker/scripts/odoo_website_bootstrap.py").read_text(encoding="utf-8")
+def _run_snippet(script: str, namespace: dict[str, object]) -> None:
+    original_sys_path = list(sys.path)
+    sys.path.insert(0, str(SCRIPTS_DIRECTORY))
+    try:
+        exec(compile(script, "<odoo shell snippet>", "exec"), namespace)
+    finally:
+        sys.path[:] = original_sys_path
 
-        self.assertIn("COPY /docker/scripts /payload/volumes/scripts", dockerfile)
-        self.assertIn("def apply_website_bootstrap", helper)
-        self.assertIn("LAUNCHPLANE_INSTANCE_OVERRIDES_REQUIRED", helper)
-        self.assertIn("LAUNCHPLANE_WEBSITE_BOOTSTRAP_REQUIRED", helper)
-        self.assertIn("def require_launchplane_payloads_if_configured", helper)
-        self.assertIn("website_bootstrap_applied=true", helper)
+
+def _startup_snippet() -> str:
+    captured: list[str] = []
+    with patch.object(odoo_startup, "_run_odoo_shell", side_effect=lambda _settings, script, *, label: captured.append(script)):
+        odoo_startup._apply_environment_overrides_if_available(test_odoo_startup.OdooStartupDependencySyncTests._settings())
+    return captured[0]
+
+
+def _data_workflow_snippet() -> str:
+    captured: list[str] = []
+    runner = odoo_data_workflows.OdooDataWorkflowRunner(
+        test_odoo_data_workflows.OdooDataWorkflowShellEnvironmentTests._local_settings(), upstream=None, env_file=None
+    )
+    with patch.object(runner, "_run_odoo_shell", side_effect=lambda script, _label: captured.append(script)):
+        runner.apply_environment_overrides()
+    return captured[0]
+
+
+def _run_data_workflow_snippet(env: MagicMock) -> None:
+    odoo_module = types.ModuleType("odoo")
+    odoo_module.SUPERUSER_ID = 1
+    odoo_module.api = types.SimpleNamespace(Environment=lambda _cr, _uid, _context: env)
+    registry_module = types.ModuleType("odoo.modules.registry")
+    registry_module.Registry = lambda _database: MagicMock()
+    stub_modules = {
+        "odoo": odoo_module,
+        "odoo.modules": types.ModuleType("odoo.modules"),
+        "odoo.modules.registry": registry_module,
+    }
+    with patch.dict(sys.modules, stub_modules):
+        _run_snippet(_data_workflow_snippet(), {})
+
+
+class OverrideSnippetGuardTests(unittest.TestCase):
+    def test_startup_rejects_settings_payload_without_launchplane_settings_addon(self) -> None:
+        env = _fake_env(installed_models=set())
+        with patch.dict(os.environ, _payload_environment(SETTINGS_PAYLOAD), clear=True):
+            with self.assertRaisesRegex(RuntimeError, "launchplane.settings is not installed"):
+                _run_snippet(_startup_snippet(), {"env": env})
+
+    def test_startup_applies_settings_when_addon_is_installed(self) -> None:
+        env = _fake_env(installed_models={"launchplane.settings"})
+        with patch.dict(os.environ, _payload_environment(SETTINGS_PAYLOAD), clear=True):
+            _run_snippet(_startup_snippet(), {"env": env})
+
+        env.__getitem__.assert_called_with("launchplane.settings")
+        env.__getitem__.return_value.sudo.return_value.apply_from_env.assert_called_once_with()
+
+    def test_startup_enforces_required_payload_flag(self) -> None:
+        env = _fake_env(installed_models={"launchplane.settings"})
+        with patch.dict(os.environ, {"LAUNCHPLANE_INSTANCE_OVERRIDES_REQUIRED": "true"}, clear=True):
+            with self.assertRaises(RuntimeError):
+                _run_snippet(_startup_snippet(), {"env": env})
+
+    def test_data_workflow_rejects_settings_payload_without_launchplane_settings_addon(self) -> None:
+        env = _fake_env(installed_models=set())
+        with patch.dict(os.environ, _payload_environment(SETTINGS_PAYLOAD), clear=True):
+            with self.assertRaisesRegex(RuntimeError, "launchplane.settings is not installed"):
+                _run_data_workflow_snippet(env)
+
+    def test_data_workflow_skips_settings_apply_without_payload_or_addon(self) -> None:
+        env = _fake_env(installed_models=set())
+        with patch.dict(os.environ, {}, clear=True):
+            _run_data_workflow_snippet(env)
+
+        env.__getitem__.assert_not_called()
 
 
 if __name__ == "__main__":

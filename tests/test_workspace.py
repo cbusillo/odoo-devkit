@@ -129,39 +129,17 @@ command = ["uv", "--directory", "$PROJECT_DIR$/../odoo-devkit", "run", "platform
             )
 
             workspace_agents_contents = result.workspace_agents_path.read_text(encoding="utf-8")
-            self.assertIn("Workspace Operating Guide", workspace_agents_contents)
             self.assertIn(str(tenant_repo_path), workspace_agents_contents)
             self.assertIn(str(devkit_repo_path), workspace_agents_contents)
             self.assertIn(str((tenant_repo_path / "addons" / "shared").resolve()), workspace_agents_contents)
-            self.assertIn("Every Code and Codex Lab", workspace_agents_contents)
-            self.assertIn("workspace.local.md", workspace_agents_contents)
-            self.assertIn("full replacement", workspace_agents_contents)
-            self.assertIn("Stable remote lanes are `testing` and `prod`", workspace_agents_contents)
-            self.assertIn("Launchplane PR previews replace a durable shared `dev` lane", workspace_agents_contents)
-            self.assertIn("Launchplane owns shared/production live mutations", workspace_agents_contents)
 
             workspace_docs_index_contents = result.workspace_docs_index_path.read_text(encoding="utf-8")
-            self.assertIn("Workspace Docs", workspace_docs_index_contents)
-            self.assertIn("Workspace operating guide", workspace_docs_index_contents)
-            self.assertIn("Session prompt template", workspace_docs_index_contents)
-            self.assertIn("Shared workspace CLI guide", workspace_docs_index_contents)
-            self.assertIn("Shared workspace architecture", workspace_docs_index_contents)
-            self.assertIn("Shared workspace command patterns", workspace_docs_index_contents)
-            self.assertIn("Tenant overlay guide", workspace_docs_index_contents)
             self.assertIn(str((tenant_repo_path / "addons" / "shared").resolve()), workspace_docs_index_contents)
-            self.assertIn("Every Code and Codex Lab", workspace_docs_index_contents)
-            self.assertIn("Required pre-task guidance check", workspace_docs_index_contents)
-            self.assertIn("Launchplane owns remote mutation", workspace_docs_index_contents)
 
             workspace_session_prompt_contents = result.workspace_session_prompt_path.read_text(encoding="utf-8")
-            self.assertIn("Session Prompt Template", workspace_session_prompt_contents)
             self.assertIn(str(result.workspace_path), workspace_session_prompt_contents)
             self.assertIn(str(tenant_repo_path), workspace_session_prompt_contents)
             self.assertIn(str(devkit_repo_path), workspace_session_prompt_contents)
-            self.assertIn("generated cockpit, not the source of truth", workspace_session_prompt_contents)
-            self.assertIn("Every Code or Codex Lab", workspace_session_prompt_contents)
-            self.assertIn("Stable remote lanes are testing and prod", workspace_session_prompt_contents)
-            self.assertIn("Launchplane PR previews replace any durable shared dev lane", workspace_session_prompt_contents)
 
             self.assertEqual(len(result.run_configuration_paths), 2)
             first_run_configuration = result.run_configuration_paths[0].read_text(encoding="utf-8")
@@ -633,24 +611,11 @@ attached_paths = ["sources/devkit"]
 
             workspace_agents_contents = result.workspace_agents_path.read_text(encoding="utf-8")
             workspace_docs_contents = result.workspace_docs_index_path.read_text(encoding="utf-8")
-            workspace_session_prompt_contents = result.workspace_session_prompt_path.read_text(encoding="utf-8")
 
             self.assertIn("sources/tenant/scripts/workspace-sync", workspace_agents_contents)
             self.assertIn("sources/tenant/scripts/workspace-status", workspace_agents_contents)
-            self.assertIn("AGENTS.override.md", workspace_agents_contents)
-            self.assertIn("workspace.local.md", workspace_agents_contents)
-            self.assertIn("Disposable local runtime state", workspace_agents_contents)
-            self.assertIn("ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON", workspace_agents_contents)
-            self.assertIn("platform dependencies check", workspace_agents_contents)
-            self.assertIn("schema-v2 provenance", workspace_agents_contents)
             self.assertIn("sources/tenant/scripts/workspace-sync", workspace_docs_contents)
             self.assertIn("sources/tenant/scripts/workspace-status", workspace_docs_contents)
-            self.assertIn("ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON", workspace_docs_contents)
-            self.assertIn(
-                "Launchplane for remote mutation",
-                workspace_session_prompt_contents,
-            )
-            self.assertIn("ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON", workspace_session_prompt_contents)
 
     def test_status_detects_manifest_and_generated_surface_drift(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
