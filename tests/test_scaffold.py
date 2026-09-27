@@ -4,6 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from odoo_devkit.artifact_inputs import load_artifact_inputs_definition
+from odoo_devkit.manifest import load_workspace_manifest
 from odoo_devkit.scaffold import scaffold_tenant_overlay, scaffold_workspace_cockpit
 from odoo_devkit.workspace_cockpit import load_workspace_cockpit_manifest, sync_workspace_cockpit, workspace_cockpit_status
 
@@ -52,40 +54,23 @@ class TenantOverlayScaffoldTests(unittest.TestCase):
                     force=False,
                 )
 
-    def test_real_template_renders_current_shared_addons_contract(self) -> None:
+    def test_real_template_renders_a_loadable_tenant_overlay(self) -> None:
         repo_root = Path(__file__).resolve().parent.parent
         with tempfile.TemporaryDirectory() as temporary_directory:
             output_directory = Path(temporary_directory) / "tenant-repo"
 
-            scaffold_tenant_overlay(
+            result = scaffold_tenant_overlay(
                 repo_root=repo_root,
                 output_directory=output_directory,
                 tenant="opw",
                 force=False,
             )
 
-            manifest_text = (output_directory / "workspace.toml").read_text(encoding="utf-8")
-            artifact_inputs_text = (output_directory / "artifact-inputs.toml").read_text(encoding="utf-8")
-            agents_text = (output_directory / "AGENTS.md").read_text(encoding="utf-8")
-            docs_index_text = (output_directory / "docs" / "README.md").read_text(encoding="utf-8")
-            workspace_sync_text = (output_directory / "scripts" / "workspace-sync").read_text(encoding="utf-8")
-            workspace_status_text = (output_directory / "scripts" / "workspace-status").read_text(encoding="utf-8")
-
-            self.assertIn('name = "odoo-devkit"', manifest_text)
-            self.assertIn("[repos.runtime]", manifest_text)
-            self.assertIn('path = "../odoo-devkit"', manifest_text)
-            self.assertIn('name = "odoo-shared-addons"', manifest_text)
-            self.assertIn('path = "../odoo-shared-addons"', manifest_text)
-            self.assertIn('addons_paths = ["sources/tenant/addons", "sources/shared-addons"]', manifest_text)
-            self.assertIn('focus_paths = ["addons", "docs", "workspace.toml", "artifact-inputs.toml"]', manifest_text)
-            self.assertIn('repository = "cbusillo/disable_odoo_online"', artifact_inputs_text)
-            self.assertIn('selector = "main"', artifact_inputs_text)
-            self.assertIn('platform", "runtime", "workflow"', manifest_text)
-            self.assertIn('name = "opw Platform Update Local"', manifest_text)
-            self.assertIn("sibling\n  `odoo-devkit` repo", agents_text)
-            self.assertIn("current runtime commands in the sibling `odoo-devkit` repo", docs_index_text)
-            self.assertIn('platform workspace sync --manifest "$repo_root/workspace.toml"', workspace_sync_text)
-            self.assertIn('platform workspace status --manifest "$repo_root/workspace.toml"', workspace_status_text)
+            for written_path in result.written_paths:
+                self.assertNotIn("replace-me", written_path.read_text(encoding="utf-8"), written_path)
+            manifest = load_workspace_manifest(output_directory / "workspace.toml")
+            self.assertEqual(manifest.tenant, "opw")
+            self.assertIsNotNone(load_artifact_inputs_definition(manifest=manifest))
 
 
 class WorkspaceCockpitScaffoldTests(unittest.TestCase):
@@ -182,7 +167,7 @@ repo_name = "harbor"
                     force=False,
                 )
 
-    def test_real_workspace_cockpit_template_links_back_to_devkit(self) -> None:
+    def test_real_workspace_cockpit_template_scaffolds_a_current_root(self) -> None:
         repo_root = Path(__file__).resolve().parent.parent
         with tempfile.TemporaryDirectory() as temporary_directory:
             output_directory = Path(temporary_directory) / "workspace-root"
@@ -193,27 +178,8 @@ repo_name = "harbor"
                 force=False,
             )
 
-            manifest_text = (output_directory / "workspace-cockpit.toml").read_text(encoding="utf-8")
-            agents_text = (output_directory / "AGENTS.md").read_text(encoding="utf-8")
-            docs_index_text = (output_directory / "docs" / "README.md").read_text(encoding="utf-8")
-            session_prompt_text = (output_directory / "docs" / "session-prompt.md").read_text(encoding="utf-8")
-
-            self.assertIn('path = "sources/devkit"', manifest_text)
-            self.assertIn("[guidance.agents]", manifest_text)
-            self.assertIn("[guidance.docs]", manifest_text)
-            self.assertIn("[guidance.session_prompt]", manifest_text)
-            self.assertIn("sources/devkit/AGENTS.md", agents_text)
-            self.assertIn("sources/devkit/docs/README.md", agents_text)
-            self.assertIn("AGENTS.override.md", agents_text)
-            self.assertIn("workspace.local.md", agents_text)
-            self.assertIn("Shared operating guide", docs_index_text)
-            self.assertIn("Shared workspace CLI guide", docs_index_text)
-            self.assertIn("workspace-cockpit.toml", agents_text)
-            self.assertIn("uv --project sources/devkit", agents_text)
-            self.assertIn("status-cockpit-root", agents_text)
-            self.assertIn("When cockpit-root files disagree", session_prompt_text)
-            self.assertIn("repo-owned code/docs", session_prompt_text)
-            self.assertIn("launchplane for remote release actions", session_prompt_text)
+            manifest = load_workspace_cockpit_manifest(output_directory / "workspace-cockpit.toml")
+            self.assertTrue(workspace_cockpit_status(manifest=manifest, output_directory=output_directory).is_current)
 
 
 class WorkspaceCockpitSyncTests(unittest.TestCase):

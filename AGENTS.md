@@ -56,6 +56,20 @@ into the generated workspace root.
 - When behavior changes, update the shared docs here in the same change so the
   workspace-root surface stays honest.
 
+## Test Rules
+
+- A test stays only if it fails when the product is broken and passes when
+  someone makes an intended change.
+- No test may assert a literal defined elsewhere (versions, toolchain pins,
+  hashes, image tags, generated guidance prose, template wording). Check
+  agreement with the one source of truth, or test the behaviour that uses it.
+- No test may assert workflow or config *text* (CI YAML, compose files,
+  Dockerfiles, script source). Enforce the rule where it executes.
+- Verification and loading code must not depend on the state of the working
+  tree; check live state only on the path that acts on it. Tests must not skip
+  or change outcome based on untracked local files.
+- Byte-exact and hash checks are for real artifacts and immutable evidence only.
+
 ## Validation
 
 - Use [`.github/github.json`](.github/github.json)
