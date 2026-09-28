@@ -96,6 +96,7 @@ class UpstreamRestoreFailureTests(unittest.TestCase):
                 FIXTURE_RESTORE_STATUS=str(restore_status),
             )
             runner.local.filestore_path = root / "data" / "filestore"
+            runner.local.data_workflow_lock_file = root / "data" / ".data_workflow_in_progress"
 
             def overwrite_filestore(_owner: str | None) -> MagicMock:
                 filestore.write_text("restored filestore")
@@ -205,6 +206,51 @@ class UpstreamRestoreFailureTests(unittest.TestCase):
             self.assertEqual(list(root.rglob("database.*")), [])
             self.assertEqual((root / "database").read_text(), "original database")
             self.assertEqual((root / "filestore").read_text(), "original filestore")
+
+    def test_restore_uses_writable_lock_parent_when_filestore_root_is_read_only(self) -> None:
+        with self.restore_fixture() as (runner, root):
+            runner.local.filestore_path.mkdir(parents=True)
+            runner.local.filestore_path.chmod(0o555)
+            try:
+                runner.run_restore(do_sanitize=False)
+            finally:
+                runner.local.filestore_path.chmod(0o755)
+            self.assertEqual((root / "database").read_text(), "restored")
+            self.assertEqual(list(root.rglob("database.*")), [])
+
+    def test_capacity_failure_after_capture_preserves_target_and_verified_dump(self) -> None:
+        with self.restore_fixture() as (runner, root):
+            runner._assert_filestore_capacity.side_effect = [
+                None,
+                odoo_data_workflows.OdooRestorerError("Insufficient local storage after capture"),
+            ]
+            with self.assertRaises(odoo_data_workflows.OdooRestorerError):
+                runner.run_restore(do_sanitize=False)
+            self.assertEqual((root / "database").read_text(), "original database")
+            self.assertEqual((root / "filestore").read_text(), "original filestore")
+            retained = list(root.rglob("database.dump"))
+            self.assertEqual(len(retained), 1)
+            self.assertEqual(retained[0].read_text(), "fixture archive")
+
+    def test_recovery_cleanup_failure_does_not_report_a_failed_restore(self) -> None:
+        with self.restore_fixture() as (runner, root):
+            with patch.object(odoo_data_workflows.shutil, "rmtree", side_effect=PermissionError("cleanup denied")):
+                runner.run_restore(do_sanitize=False)
+            self.assertEqual((root / "database").read_text(), "restored")
+            self.assertEqual(len(list(root.rglob("database.dump"))), 1)
+
+    def test_restore_io_error_returns_the_restore_failure_exit_code(self) -> None:
+        with self.restore_fixture() as (runner, root):
+            with (
+                patch.object(odoo_data_workflows, "LocalServerSettings", return_value=runner.local),
+                patch.object(odoo_data_workflows, "UpstreamServerSettings", return_value=runner.upstream),
+                patch.object(odoo_data_workflows, "OdooDataWorkflowRunner", return_value=runner),
+                patch.object(runner, "run_restore", side_effect=PermissionError("capture directory denied")),
+            ):
+                result = odoo_data_workflows.main(["--no-sanitize"])
+            self.assertEqual(result, odoo_data_workflows.ExitCode.RESTORE_FAILED)
+            self.assertFalse(runner.local.data_workflow_lock_file.exists())
+            self.assertEqual((root / "database").read_text(), "original database")
 
 
 class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):

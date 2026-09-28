@@ -164,7 +164,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         try:
             workflow_runner.run_restore(do_sanitize=not no_sanitize)
             return ExitCode.SUCCESS
-        except (OdooRestorerError, OdooDatabaseUpdateError) as restore_error:
+        except (OdooRestorerError, OdooDatabaseUpdateError, OSError) as restore_error:
             _logger.error(
                 "Upstream restore failed (%s). Not bootstrapping; inspect restore logs for target state.",
                 restore_error,
@@ -2122,11 +2122,11 @@ with registry.cursor() as cr:
     def run_restore(self, do_sanitize: bool = True) -> None:
         self._require_upstream()
         self._assert_filestore_capacity()
-        backup_directory = self._local_database_filestore_path().with_name(f".{self.local.db_name}-upstream-restore")
-        backup_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        backup_directory = self.local.data_workflow_lock_file.with_name(f".{self.local.db_name}-upstream-restore")
         backup_path = backup_directory / "database.dump"
         partial_path = backup_directory / "database.partial"
         try:
+            backup_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
             self.capture_upstream_database(partial_path)
             partial_path.replace(backup_path)
         except BaseException:
@@ -2136,14 +2136,29 @@ with registry.cursor() as cr:
             _logger.error("Upstream capture or validation failed before target database or filestore replacement.")
             raise
         try:
-            self._restore_from_verified_dump(backup_path, do_sanitize=do_sanitize)
+            self._assert_filestore_capacity()
         except BaseException:
             _logger.error(
-                "Restore failed; target database or filestore may be partially changed. Verified upstream dump retained at %s",
+                "Capacity check failed before target replacement; verified unsanitized upstream dump retained at %s",
                 backup_path,
             )
             raise
-        shutil.rmtree(backup_directory)
+        try:
+            self._restore_from_verified_dump(backup_path, do_sanitize=do_sanitize)
+        except BaseException:
+            _logger.error(
+                "Restore failed; target database or filestore may be partially changed. Verified unsanitized upstream dump retained at %s",
+                backup_path,
+            )
+            raise
+        try:
+            shutil.rmtree(backup_directory)
+        except OSError:
+            _logger.warning(
+                "Restore completed, but recovery cleanup failed; unsanitized upstream dump may remain at %s",
+                backup_path,
+                exc_info=True,
+            )
 
     def _restore_from_verified_dump(self, backup_path: Path, *, do_sanitize: bool) -> None:
         target_owner = self._resolve_filestore_owner()
