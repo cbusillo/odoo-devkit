@@ -16,7 +16,6 @@ from contextlib import suppress
 from dataclasses import dataclass
 from enum import Enum, IntEnum
 from pathlib import Path
-from tempfile import mkdtemp
 from unittest.mock import patch
 
 import psycopg2
@@ -2123,17 +2122,26 @@ with registry.cursor() as cr:
     def run_restore(self, do_sanitize: bool = True) -> None:
         self._require_upstream()
         self._assert_filestore_capacity()
-        backup_directory = Path(mkdtemp(prefix="odoo-upstream-restore-"))
+        backup_directory = self._local_database_filestore_path().with_name(f".{self.local.db_name}-upstream-restore")
+        backup_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         backup_path = backup_directory / "database.dump"
+        partial_path = backup_directory / "database.partial"
         try:
-            self.capture_upstream_database(backup_path)
-        except Exception:
-            shutil.rmtree(backup_directory)
+            self.capture_upstream_database(partial_path)
+            partial_path.replace(backup_path)
+        except BaseException:
+            with suppress(OSError):
+                partial_path.unlink(missing_ok=True)
+                backup_directory.rmdir()
+            _logger.error("Upstream capture or validation failed before target database or filestore replacement.")
             raise
         try:
             self._restore_from_verified_dump(backup_path, do_sanitize=do_sanitize)
-        except Exception:
-            _logger.error("Restore failed; verified upstream dump retained at %s", backup_path)
+        except BaseException:
+            _logger.error(
+                "Restore failed; target database or filestore may be partially changed. Verified upstream dump retained at %s",
+                backup_path,
+            )
             raise
         shutil.rmtree(backup_directory)
 

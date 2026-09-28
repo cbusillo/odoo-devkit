@@ -10,7 +10,7 @@ import unittest
 from collections.abc import Iterator
 from contextlib import ExitStack, closing, contextmanager
 from pathlib import Path
-from tempfile import TemporaryDirectory, mkdtemp
+from tempfile import TemporaryDirectory
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -95,6 +95,7 @@ class UpstreamRestoreFailureTests(unittest.TestCase):
                 FIXTURE_VALIDATION_STATUS=str(validation_status),
                 FIXTURE_RESTORE_STATUS=str(restore_status),
             )
+            runner.local.filestore_path = root / "data" / "filestore"
 
             def overwrite_filestore(_owner: str | None) -> MagicMock:
                 filestore.write_text("restored filestore")
@@ -102,9 +103,6 @@ class UpstreamRestoreFailureTests(unittest.TestCase):
                 process.wait.return_value = 0
                 return process
 
-            stack.enter_context(
-                patch.object(odoo_data_workflows, "mkdtemp", side_effect=lambda **kwargs: mkdtemp(dir=root, **kwargs))
-            )
             stack.enter_context(
                 patch.multiple(
                     runner,
@@ -132,7 +130,7 @@ class UpstreamRestoreFailureTests(unittest.TestCase):
                 runner.run_restore(do_sanitize=False)
             self.assertEqual((root / "database").read_text(), "original database")
             self.assertEqual((root / "filestore").read_text(), "original filestore")
-            self.assertEqual(list(root.glob("odoo-upstream-restore-*")), [])
+            self.assertEqual(list(root.rglob("database.*")), [])
 
     def test_pipeline_reports_failed_producer_even_when_compression_succeeds(self) -> None:
         with self.restore_fixture(ssh_status=255) as (runner, _root):
@@ -150,7 +148,7 @@ class UpstreamRestoreFailureTests(unittest.TestCase):
         with self.restore_fixture(restore_status=1) as (runner, root):
             with self.assertRaises(odoo_data_workflows.OdooRestorerError):
                 runner.run_restore(do_sanitize=False)
-            retained = list(root.glob("odoo-upstream-restore-*/database.dump"))
+            retained = list(root.rglob("database.dump"))
             self.assertEqual(len(retained), 1)
             self.assertEqual(retained[0].read_text(), "fixture archive")
             self.assertEqual((root / "database").read_text(), "empty")
@@ -160,7 +158,7 @@ class UpstreamRestoreFailureTests(unittest.TestCase):
             runner.run_restore(do_sanitize=False)
             self.assertEqual((root / "database").read_text(), "restored")
             self.assertEqual((root / "filestore").read_text(), "restored filestore")
-            self.assertEqual(list(root.glob("odoo-upstream-restore-*")), [])
+            self.assertEqual(list(root.rglob("database.*")), [])
 
     def test_failed_module_update_retains_dump_after_database_restore(self) -> None:
         with self.restore_fixture() as (runner, root):
@@ -168,9 +166,45 @@ class UpstreamRestoreFailureTests(unittest.TestCase):
             with self.assertRaises(odoo_data_workflows.OdooRestorerError):
                 runner.run_restore(do_sanitize=False)
             self.assertEqual((root / "database").read_text(), "restored")
-            retained = list(root.glob("odoo-upstream-restore-*/database.dump"))
+            retained = list(root.rglob("database.dump"))
             self.assertEqual(len(retained), 1)
             self.assertEqual(retained[0].read_text(), "fixture archive")
+
+    def test_failed_recapture_preserves_the_previous_verified_dump(self) -> None:
+        with self.restore_fixture(restore_status=1) as (runner, root):
+            with self.assertRaises(odoo_data_workflows.OdooRestorerError):
+                runner.run_restore(do_sanitize=False)
+            retained = next(root.rglob("database.dump"))
+            retained.write_text("previous verified archive")
+            runner.os_env["FIXTURE_SSH_STATUS"] = "255"
+            with self.assertRaises(odoo_data_workflows.OdooRestorerError):
+                runner.run_restore(do_sanitize=False)
+            self.assertEqual(retained.read_text(), "previous verified archive")
+            self.assertEqual(list(root.rglob("database.partial")), [])
+
+    def test_later_failed_restores_keep_one_verified_dump_on_the_data_volume(self) -> None:
+        with self.restore_fixture(restore_status=1) as (runner, root):
+            for _ in range(2):
+                with self.assertRaises(odoo_data_workflows.OdooRestorerError):
+                    runner.run_restore(do_sanitize=False)
+            retained = list((root / "data").rglob("database.dump"))
+            self.assertEqual(len(retained), 1)
+            self.assertEqual(retained[0].parent.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(list(root.rglob("database.partial")), [])
+
+    def test_interrupted_capture_does_not_leave_a_verified_dump(self) -> None:
+        with self.restore_fixture() as (runner, root):
+
+            def interrupt_capture(path: Path) -> None:
+                path.write_text("partial archive")
+                raise KeyboardInterrupt
+
+            with patch.object(runner, "capture_upstream_database", side_effect=interrupt_capture):
+                with self.assertRaises(KeyboardInterrupt):
+                    runner.run_restore(do_sanitize=False)
+            self.assertEqual(list(root.rglob("database.*")), [])
+            self.assertEqual((root / "database").read_text(), "original database")
+            self.assertEqual((root / "filestore").read_text(), "original filestore")
 
 
 class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):

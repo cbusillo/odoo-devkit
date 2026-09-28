@@ -391,12 +391,18 @@ Notes
   retaining a read lock on `ir_module_module` while the child process performs
   schema-changing module upgrades.
 - Upstream restores capture the custom-format database dump in a private
-  temporary directory and read the complete archive with `pg_restore` before
-  changing the target database or filestore. Shell pipelines fail when any component fails,
-  including SSH. A verified dump is removed only after the complete restore,
-  migration, and sanitization workflow succeeds; failures retain it at the path
-  reported in the logs for operator recovery. An early capture failure leaves
-  target data unchanged; a later failure can leave a partially restored target.
+  `.<database>-upstream-restore` directory beside the target database's filestore
+  on the mounted data volume. The complete archive is read with `pg_restore`
+  before changing the target database or filestore. Shell pipelines fail when
+  any component fails, including SSH. Incomplete captures use `database.partial`;
+  only a validated capture replaces `database.dump`. The last verified dump
+  survives failed recaptures and container recreation. Later failures keep that
+  one dump at the logged path for operator recovery; a fully successful restore,
+  migration, and sanitization removes it. This is temporary recovery retention,
+  not a backup of the previous target or protection against data-volume removal.
+  An early capture failure leaves target data unchanged; a later failure can
+  leave a partially restored target. Capture and validation now finish before
+  filestore copying begins, increasing the time web is stopped for large restores.
 - Release/deploy ownership for remote environments stays in
   `launchplane`, even when the same tenant manifest is used to anchor
   local runtime context.
