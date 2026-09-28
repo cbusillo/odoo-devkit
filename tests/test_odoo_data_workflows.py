@@ -514,5 +514,92 @@ class SanitizeCronTests(unittest.TestCase):
         self.assertEqual(cron_table.active_by_name, {"Mail: send queue": True})
 
 
+class UpdateAddonsModuleDetectionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary_directory.cleanup)
+        self.root = Path(temporary_directory.name).resolve()
+        self.core_addons = self.root / "odoo" / "addons"
+        self.tenant_addons = self.root / "tenant" / "addons"
+        self.shared_addons = self.root / "shared-addons"
+        self._write_module(self.core_addons, "sale")
+        self._write_module(self.tenant_addons, "tenant_core", depends=("base", "sale", "tenant_helper"))
+        self._write_module(self.tenant_addons, "tenant_helper", depends=("tenant_deep",))
+        self._write_module(self.tenant_addons, "tenant_deep")
+        self._write_module(self.tenant_addons, "tenant_unused")
+        self._write_module(self.tenant_addons, "tenant_legacy", manifest_name="__openerp__.py")
+        (self.tenant_addons / "notes").mkdir()
+        self._write_module(self.shared_addons, "shared_tools")
+
+    @staticmethod
+    def _write_module(
+        addons_root: Path, module_name: str, *, depends: tuple[str, ...] = (), manifest_name: str = "__manifest__.py"
+    ) -> None:
+        module_path = addons_root / module_name
+        module_path.mkdir(parents=True)
+        manifest = {"name": module_name, "depends": list(depends)}
+        (module_path / manifest_name).write_text(repr(manifest), encoding="utf-8")
+
+    def _update(
+        self, *, installed_modules: set[str], update_modules: str | None = None, explicit_modules: list[str] | None = None
+    ) -> MagicMock:
+        settings_values: dict[str, object] = {
+            "ODOO_DB_HOST": "database",
+            "ODOO_DB_USER": "odoo",
+            "ODOO_DB_PASSWORD": "database-password",
+            "ODOO_DB_NAME": "cm",
+            "ODOO_FILESTORE_PATH": "/volumes/data/filestore/cm",
+            "ODOO_ADDONS_PATH": f"{self.core_addons},{self.tenant_addons}",
+            "LOCAL_ADDONS_DIRS": str(self.shared_addons),
+        }
+        if update_modules is not None:
+            settings_values["ODOO_UPDATE_MODULES"] = update_modules
+        settings = odoo_data_workflows.LocalServerSettings(**settings_values)
+        runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
+        with (
+            patch.object(runner, "_installed_modules", return_value=installed_modules),
+            patch.object(runner, "_apply_module_updates") as apply_module_updates,
+        ):
+            runner.update_addons(explicit_modules=explicit_modules)
+        return apply_module_updates
+
+    def test_auto_updates_installed_local_modules_and_their_uninstalled_local_dependencies(self) -> None:
+        installed_modules = {"base", "sale", "tenant_core", "tenant_legacy", "shared_tools"}
+        for update_modules in (None, "AUTO", "auto"):
+            with self.subTest(update_modules=update_modules):
+                apply_module_updates = self._update(installed_modules=installed_modules, update_modules=update_modules)
+
+                apply_module_updates.assert_called_once()
+                desired_modules = apply_module_updates.call_args.args[0]
+                self.assertEqual(
+                    sorted(desired_modules),
+                    ["shared_tools", "tenant_core", "tenant_deep", "tenant_helper", "tenant_legacy"],
+                )
+                local_module_paths = apply_module_updates.call_args.kwargs["local_module_paths"]
+                self.assertEqual(local_module_paths["tenant_core"], self.tenant_addons / "tenant_core")
+                self.assertNotIn("sale", local_module_paths)
+
+    def test_auto_skips_the_update_when_no_local_module_is_installed(self) -> None:
+        apply_module_updates = self._update(installed_modules={"base", "sale"})
+
+        apply_module_updates.assert_not_called()
+
+    def test_configured_module_list_is_used_without_auto_detection(self) -> None:
+        apply_module_updates = self._update(installed_modules=set(), update_modules=" tenant_unused , sale ,")
+
+        apply_module_updates.assert_called_once()
+        self.assertEqual(list(apply_module_updates.call_args.args[0]), ["tenant_unused", "sale"])
+        self.assertIsNone(apply_module_updates.call_args.kwargs["local_module_paths"])
+
+    def test_explicit_modules_override_configured_modules(self) -> None:
+        apply_module_updates = self._update(
+            installed_modules=set(), update_modules="tenant_unused", explicit_modules=["website", " "]
+        )
+
+        apply_module_updates.assert_called_once()
+        self.assertEqual(list(apply_module_updates.call_args.args[0]), ["website"])
+
+
 if __name__ == "__main__":
     unittest.main()
