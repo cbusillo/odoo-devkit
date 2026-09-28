@@ -7,8 +7,11 @@ import subprocess
 import sys
 import types
 import unittest
-from contextlib import closing
+from collections.abc import Iterator
+from contextlib import ExitStack, closing, contextmanager
 from pathlib import Path
+from tempfile import TemporaryDirectory, mkdtemp
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 
@@ -43,6 +46,131 @@ def _load_data_workflows_module() -> types.ModuleType:
 
 
 odoo_data_workflows = _load_data_workflows_module()
+
+
+class UpstreamRestoreFailureTests(unittest.TestCase):
+    @contextmanager
+    def restore_fixture(
+        self, *, ssh_status: int = 0, validation_status: int = 0, restore_status: int = 0
+    ) -> Iterator[tuple[Any, Path]]:
+        with TemporaryDirectory() as directory, ExitStack() as stack:
+            root = Path(directory)
+            binary_directory = root / "bin"
+            binary_directory.mkdir()
+            programs = {
+                "ssh": 'printf "fixture archive"\nexit "$FIXTURE_SSH_STATUS"\n',
+                "pg_restore": (
+                    'if [ "$1" = "--file=/dev/null" ]; then\n'
+                    '  exit "$FIXTURE_VALIDATION_STATUS"\n'
+                    "fi\n"
+                    'if [ "$FIXTURE_RESTORE_STATUS" != 0 ]; then exit "$FIXTURE_RESTORE_STATUS"; fi\n'
+                    'printf restored > "$FIXTURE_DATABASE"\n'
+                ),
+                "dropdb": 'printf dropped > "$FIXTURE_DATABASE"\n',
+                "createdb": 'printf empty > "$FIXTURE_DATABASE"\n',
+            }
+            for name, program in programs.items():
+                path = binary_directory / name
+                path.write_text("#!/bin/sh\n" + program)
+                path.chmod(0o755)
+            database = root / "database"
+            filestore = root / "filestore"
+            database.write_text("original database")
+            filestore.write_text("original filestore")
+            runner = odoo_data_workflows.OdooDataWorkflowRunner(
+                local=OdooDataWorkflowShellEnvironmentTests._local_settings(),
+                upstream=odoo_data_workflows.UpstreamServerSettings(
+                    ODOO_UPSTREAM_HOST="upstream.example.invalid",
+                    ODOO_UPSTREAM_USER="backup",
+                    ODOO_UPSTREAM_DB_NAME="source",
+                    ODOO_UPSTREAM_DB_USER="odoo",
+                    ODOO_UPSTREAM_FILESTORE_PATH="/source/filestore",
+                ),
+                env_file=None,
+            )
+            runner.os_env.update(
+                PATH=str(binary_directory) + os.pathsep + os.environ["PATH"],
+                FIXTURE_DATABASE=str(database),
+                FIXTURE_SSH_STATUS=str(ssh_status),
+                FIXTURE_VALIDATION_STATUS=str(validation_status),
+                FIXTURE_RESTORE_STATUS=str(restore_status),
+            )
+
+            def overwrite_filestore(_owner: str | None) -> MagicMock:
+                filestore.write_text("restored filestore")
+                process = MagicMock()
+                process.wait.return_value = 0
+                return process
+
+            stack.enter_context(
+                patch.object(odoo_data_workflows, "mkdtemp", side_effect=lambda **kwargs: mkdtemp(dir=root, **kwargs))
+            )
+            stack.enter_context(
+                patch.multiple(
+                    runner,
+                    _assert_filestore_capacity=MagicMock(),
+                    _resolve_filestore_owner=MagicMock(return_value=None),
+                    overwrite_filestore=overwrite_filestore,
+                    _set_database_allow_connections=MagicMock(),
+                    terminate_all_db_connections=MagicMock(),
+                    normalize_filestore_permissions=MagicMock(),
+                    install_addons=MagicMock(),
+                    update_addons=MagicMock(),
+                    connect_to_db=MagicMock(),
+                    reconcile_missing_manifest_install_queue=MagicMock(),
+                    assert_install_queue_is_resolvable=MagicMock(),
+                    apply_environment_overrides=MagicMock(),
+                    assert_core_schema_healthy=MagicMock(),
+                    ensure_gpt_users=MagicMock(),
+                )
+            )
+            yield runner, root
+
+    def test_failed_ssh_dump_preserves_database_and_filestore(self) -> None:
+        with self.restore_fixture(ssh_status=255) as (runner, root):
+            with self.assertRaises(odoo_data_workflows.OdooRestorerError):
+                runner.run_restore(do_sanitize=False)
+            self.assertEqual((root / "database").read_text(), "original database")
+            self.assertEqual((root / "filestore").read_text(), "original filestore")
+            self.assertEqual(list(root.glob("odoo-upstream-restore-*")), [])
+
+    def test_pipeline_reports_failed_producer_even_when_compression_succeeds(self) -> None:
+        with self.restore_fixture(ssh_status=255) as (runner, _root):
+            with self.assertRaises(odoo_data_workflows.OdooRestorerError):
+                runner.run_command("ssh upstream.example.invalid | gzip > /dev/null")
+
+    def test_invalid_archive_preserves_database_and_filestore(self) -> None:
+        with self.restore_fixture(validation_status=1) as (runner, root):
+            with self.assertRaises(odoo_data_workflows.OdooRestorerError):
+                runner.run_restore(do_sanitize=False)
+            self.assertEqual((root / "database").read_text(), "original database")
+            self.assertEqual((root / "filestore").read_text(), "original filestore")
+
+    def test_failed_target_restore_retains_verified_dump_for_recovery(self) -> None:
+        with self.restore_fixture(restore_status=1) as (runner, root):
+            with self.assertRaises(odoo_data_workflows.OdooRestorerError):
+                runner.run_restore(do_sanitize=False)
+            retained = list(root.glob("odoo-upstream-restore-*/database.dump"))
+            self.assertEqual(len(retained), 1)
+            self.assertEqual(retained[0].read_text(), "fixture archive")
+            self.assertEqual((root / "database").read_text(), "empty")
+
+    def test_successful_restore_removes_temporary_dump_after_target_is_restored(self) -> None:
+        with self.restore_fixture() as (runner, root):
+            runner.run_restore(do_sanitize=False)
+            self.assertEqual((root / "database").read_text(), "restored")
+            self.assertEqual((root / "filestore").read_text(), "restored filestore")
+            self.assertEqual(list(root.glob("odoo-upstream-restore-*")), [])
+
+    def test_failed_module_update_retains_dump_after_database_restore(self) -> None:
+        with self.restore_fixture() as (runner, root):
+            runner.update_addons.side_effect = odoo_data_workflows.OdooRestorerError("module update failed")
+            with self.assertRaises(odoo_data_workflows.OdooRestorerError):
+                runner.run_restore(do_sanitize=False)
+            self.assertEqual((root / "database").read_text(), "restored")
+            retained = list(root.glob("odoo-upstream-restore-*/database.dump"))
+            self.assertEqual(len(retained), 1)
+            self.assertEqual(retained[0].read_text(), "fixture archive")
 
 
 class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):

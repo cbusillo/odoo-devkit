@@ -390,6 +390,13 @@ Notes
   an Odoo install/update subprocess. This prevents the parent workflow from
   retaining a read lock on `ir_module_module` while the child process performs
   schema-changing module upgrades.
+- Upstream restores capture the custom-format database dump in a private
+  temporary directory and read the complete archive with `pg_restore` before
+  changing the target database or filestore. Shell pipelines fail when any component fails,
+  including SSH. A verified dump is removed only after the complete restore,
+  migration, and sanitization workflow succeeds; failures retain it at the path
+  reported in the logs for operator recovery. An early capture failure leaves
+  target data unchanged; a later failure can leave a partially restored target.
 - Release/deploy ownership for remote environments stays in
   `launchplane`, even when the same tenant manifest is used to anchor
   local runtime context.

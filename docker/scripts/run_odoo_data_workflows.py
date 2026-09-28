@@ -16,6 +16,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from enum import Enum, IntEnum
 from pathlib import Path
+from tempfile import mkdtemp
 from unittest.mock import patch
 
 import psycopg2
@@ -166,7 +167,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return ExitCode.SUCCESS
         except (OdooRestorerError, OdooDatabaseUpdateError) as restore_error:
             _logger.error(
-                "Upstream restore failed (%s). Not bootstrapping; data left intact.",
+                "Upstream restore failed (%s). Not bootstrapping; inspect restore logs for target state.",
                 restore_error,
             )
             return ExitCode.RESTORE_FAILED
@@ -457,7 +458,7 @@ class OdooDataWorkflowRunner:
     def run_command(self, command: str) -> None:
         _logger.info(f"Running command: {command}")
         try:
-            subprocess.run(command, shell=True, env=self.os_env, check=True)
+            subprocess.run(["bash", "-o", "pipefail", "-c", command], env=self.os_env, check=True)
         except subprocess.CalledProcessError as command_error:
             raise OdooRestorerError(f"Command failed: {command}\nError: {command_error}") from command_error
 
@@ -678,17 +679,13 @@ class OdooDataWorkflowRunner:
         chown_command = f"chown -R {target_owner} {shlex.quote(str(local_database_filestore_path))}"
         self.run_command(chown_command)
 
-    def overwrite_database(self) -> None:
+    def capture_upstream_database(self, backup_path: Path) -> None:
         upstream = self._require_upstream()
-        backup_path = "/tmp/upstream_db_backup.sql.gz"
-        local_host = shlex.quote(self.local.host)
-        local_user = shlex.quote(self.local.db_user)
-        local_db = shlex.quote(self.local.db_name)
         remote_user = shlex.quote(upstream.user)
         remote_host = shlex.quote(upstream.host)
         upstream_db_user = shlex.quote(upstream.db_user)
         upstream_db_name = shlex.quote(upstream.db_name)
-        backup_path_quoted = shlex.quote(backup_path)
+        backup_path_quoted = shlex.quote(str(backup_path))
         ssh_parts = self._build_ssh_command()
         ssh_command = shlex.join(ssh_parts)
         _logger.info(
@@ -698,10 +695,17 @@ class OdooDataWorkflowRunner:
         )
         dump_cmd = (
             f'{ssh_command} {remote_user}@{remote_host} "cd /tmp && sudo -u {upstream_db_user} '
-            f'pg_dump -Fc {upstream_db_name}" | gzip > {backup_path_quoted}'
+            f'pg_dump -Fc {upstream_db_name}" > {backup_path_quoted}'
         )
         self.run_command(dump_cmd)
-        _logger.info("Upstream database dump and transfer completed.")
+        self.run_command(f"pg_restore --file=/dev/null {backup_path_quoted}")
+        _logger.info("Upstream database dump transferred and validated.")
+
+    def overwrite_database(self, backup_path: Path) -> None:
+        local_host = shlex.quote(self.local.host)
+        local_user = shlex.quote(self.local.db_user)
+        local_db = shlex.quote(self.local.db_name)
+        backup_path_quoted = shlex.quote(str(backup_path))
         self._set_database_allow_connections(False)
         try:
             self.terminate_all_db_connections()
@@ -711,13 +715,9 @@ class OdooDataWorkflowRunner:
             raise
         self.run_command(f"createdb -h {local_host} -U {local_user} {local_db}")
         _logger.info("Restoring database into %s", self.local.db_name)
-        restore_cmd = (
-            f"gunzip < {backup_path_quoted} | pg_restore -d {local_db} -h {local_host} "
-            f"-U {local_user} --no-owner --role={local_user}"
-        )
+        restore_cmd = f"pg_restore -d {local_db} -h {local_host} -U {local_user} --no-owner --role={local_user} {backup_path_quoted}"
         self.run_command(restore_cmd)
         _logger.info("Database restore completed.")
-        self.run_command(f"rm {backup_path_quoted}")
 
     def connect_to_db(self) -> connection:
         if not self.local.db_conn:
@@ -2123,11 +2123,26 @@ with registry.cursor() as cr:
     def run_restore(self, do_sanitize: bool = True) -> None:
         self._require_upstream()
         self._assert_filestore_capacity()
+        backup_directory = Path(mkdtemp(prefix="odoo-upstream-restore-"))
+        backup_path = backup_directory / "database.dump"
+        try:
+            self.capture_upstream_database(backup_path)
+        except Exception:
+            shutil.rmtree(backup_directory)
+            raise
+        try:
+            self._restore_from_verified_dump(backup_path, do_sanitize=do_sanitize)
+        except Exception:
+            _logger.error("Restore failed; verified upstream dump retained at %s", backup_path)
+            raise
+        shutil.rmtree(backup_directory)
+
+    def _restore_from_verified_dump(self, backup_path: Path, *, do_sanitize: bool) -> None:
         target_owner = self._resolve_filestore_owner()
         _logger.info("Resolved filestore owner: %s", target_owner or "<default>")
         filestore_process = self.overwrite_filestore(target_owner)
         try:
-            self.overwrite_database()
+            self.overwrite_database(backup_path)
             _logger.info("Database overwrite completed.")
         except Exception:
             filestore_returncode = filestore_process.wait()
