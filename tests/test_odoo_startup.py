@@ -506,6 +506,34 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
 
         self.assertEqual(users.authenticated_logins, [])
 
+    def test_startup_waits_until_data_workflow_lock_is_released(self) -> None:
+        with TemporaryDirectory() as temporary_directory:
+            lock_path = Path(temporary_directory) / ".data_workflow_in_progress"
+            lock_path.write_text("pid=1\n", encoding="utf-8")
+            settings = replace(self._settings(), data_workflow_lock_file=str(lock_path), data_workflow_lock_timeout_seconds=60)
+
+            with (
+                patch.object(odoo_startup.time, "sleep", side_effect=lambda _seconds: lock_path.unlink()) as sleep,
+                redirect_stdout(io.StringIO()),
+            ):
+                odoo_startup._wait_for_data_workflow_lock(settings)
+
+            sleep.assert_called_once()
+            self.assertFalse(lock_path.exists())
+
+    def test_startup_fails_when_data_workflow_lock_outlives_timeout(self) -> None:
+        with TemporaryDirectory() as temporary_directory:
+            lock_path = Path(temporary_directory) / ".data_workflow_in_progress"
+            lock_path.write_text("pid=1\n", encoding="utf-8")
+            settings = replace(self._settings(), data_workflow_lock_file=str(lock_path), data_workflow_lock_timeout_seconds=0)
+
+            wait_past_deadline = AssertionError("lock wait continued past its timeout")
+            with patch.object(odoo_startup.time, "sleep", side_effect=wait_past_deadline), redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(RuntimeError, str(lock_path)):
+                    odoo_startup._wait_for_data_workflow_lock(settings)
+
+            self.assertTrue(lock_path.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
