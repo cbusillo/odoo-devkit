@@ -390,6 +390,24 @@ Notes
   an Odoo install/update subprocess. This prevents the parent workflow from
   retaining a read lock on `ir_module_module` while the child process performs
   schema-changing module upgrades.
+- Upstream restores capture the custom-format database dump in a private
+  `.<database>-upstream-restore` directory beside the workflow lock file
+  (on the mounted data volume by default). Keep that lock directory on persistent
+  storage when overriding its path. The complete archive is read with `pg_restore`
+  before changing the target database or filestore. Shell pipelines fail when
+  any component fails, including SSH. Incomplete captures use `database.partial`;
+  only a validated capture replaces `database.dump`. The last verified dump
+  survives failed recaptures and container recreation. Later failures keep that
+  one dump at the logged path for operator recovery; a fully successful restore,
+  migration, and sanitization removes it. The retained dump contains unsanitized
+  source data and credentials; restrict access and remove it after operator
+  recovery if no successful retry follows. This is temporary recovery retention,
+  not a backup of the previous target or protection against data-volume removal.
+  An early capture failure leaves target data unchanged; a later failure can
+  leave a partially restored target. Filestore capacity is checked again after
+  capture so the dump's space is reflected before replacement begins.
+  Capture and validation now finish before
+  filestore copying begins, increasing the time web is stopped for large restores.
 - Release/deploy ownership for remote environments stays in
   `launchplane`, even when the same tenant manifest is used to anchor
   local runtime context.
