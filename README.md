@@ -169,7 +169,8 @@ Current runtime ownership is intentionally narrow and explicit:
   database can use the operator's explicitly supplied mail configuration.
 - Restores onto a non-production instance also clear the copy's production
   integration credentials and signing keys (Shopify, PrintNode, map and media
-  tokens, web push keys and devices, `database.secret`). A restore that fails
+  tokens, web push keys and devices, `database.secret`), and the copy's
+  production-store Shopify external IDs and export state. A restore that fails
   before the Launchplane settings apply drops the restored database. See
   `docs/tooling/workspace-cli.md` for the full contract.
 - An optional `company_email` in Launchplane's website-bootstrap payload sets

@@ -82,6 +82,16 @@ SHOPIFY_SECRET_PARAMETER_SUFFIXES = ("_key", "_token", "_secret", "_password")
 SHOPIFY_IMPORT_CURSOR_PREFIX = "shopify.last_"
 SHOPIFY_IMPORT_CURSOR_SUFFIX = "_import_time"
 SHOPIFY_OPEN_JOB_STATES = ("draft", "queued", "running")
+# The copy's links to production-store records: external IDs under this external system, and
+# each product's export state (column, cleared value). A copy that kept them would update or
+# reference production-store products from any store it is later pointed at.
+SHOPIFY_EXTERNAL_SYSTEM_CODE = "shopify"
+SHOPIFY_PRODUCT_EXPORT_STATE_COLUMNS = (
+    ("shopify_next_export", "FALSE"),
+    ("shopify_next_export_quantity_change_amount", "0"),
+    ("shopify_last_exported_at", "NULL"),
+    ("shopify_created_at", "NULL"),
+)
 WEB_PUSH_TABLES = ("mail_push", "mail_push_device")
 
 
@@ -1060,14 +1070,7 @@ class OdooDataWorkflowRunner:
                 f"UPDATE shopify_sync SET state = 'canceled' WHERE state IN ({state_placeholders})",
                 SHOPIFY_OPEN_JOB_STATES,
             )
-        product_columns = self._table_columns(cursor, "product_product")
-        if "shopify_next_export" in product_columns:
-            cursor.execute("UPDATE product_product SET shopify_next_export = FALSE WHERE shopify_next_export")
-        if "shopify_next_export_quantity_change_amount" in product_columns:
-            cursor.execute(
-                "UPDATE product_product SET shopify_next_export_quantity_change_amount = 0 "
-                "WHERE shopify_next_export_quantity_change_amount <> 0"
-            )
+        self._forget_production_shopify_records(cursor)
         if "ir_actions_server_id" not in self._table_columns(cursor, "ir_cron"):
             return
         cursor.execute(
@@ -1079,6 +1082,40 @@ class OdooDataWorkflowRunner:
             ("%shopify%", "shopify.%", "%shopify%"),
         )
 
+    def _shopify_external_id_filter(self, cursor: Any) -> str | None:
+        """SQL selecting the copy's Shopify external IDs, or None when the addon's tables are absent."""
+        if "system_id" not in self._table_columns(cursor, "external_id"):
+            return None
+        if "code" not in self._table_columns(cursor, "external_system"):
+            return None
+        return "system_id IN (SELECT id FROM external_system WHERE code = %s)"
+
+    def _forget_production_shopify_records(self, cursor: Any) -> None:
+        """Drop the copy's production-store IDs and export state, the same data Reset Shopify clears.
+
+        No store is contacted. The next export then creates every product in whichever store
+        Launchplane applies, instead of updating production-store product IDs.
+        """
+        external_id_filter = self._shopify_external_id_filter(cursor)
+        if external_id_filter is not None:
+            cursor.execute(f"DELETE FROM external_id WHERE {external_id_filter}", (SHOPIFY_EXTERNAL_SYSTEM_CODE,))
+        product_columns = self._table_columns(cursor, "product_product")
+        for column, cleared_value in SHOPIFY_PRODUCT_EXPORT_STATE_COLUMNS:
+            if column not in product_columns:
+                continue
+            cursor.execute(
+                sql.SQL("UPDATE product_product SET {column} = {value} WHERE {column} IS DISTINCT FROM {value}").format(
+                    column=sql.Identifier(column), value=sql.SQL(cleared_value)
+                )
+            )
+
+    def _surviving_shopify_external_ids(self, cursor: Any) -> int:
+        external_id_filter = self._shopify_external_id_filter(cursor)
+        if external_id_filter is None:
+            return 0
+        cursor.execute(f"SELECT count(*) FROM external_id WHERE {external_id_filter}", (SHOPIFY_EXTERNAL_SYSTEM_CODE,))
+        return cursor.fetchone()[0]
+
     def verify_production_credentials_cleared(self) -> None:
         """Fail the restore when any restored credential value or push subscription survived sanitize."""
         if self._is_production_instance():
@@ -1089,6 +1126,7 @@ class OdooDataWorkflowRunner:
             if self._table_exists(cursor, "mail_push_device"):
                 cursor.execute("SELECT count(*) FROM mail_push_device")
                 push_devices = cursor.fetchone()[0]
+            shopify_external_ids = self._surviving_shopify_external_ids(cursor)
         unchanged = sorted(
             key
             for key, value in parameters.items()
@@ -1097,6 +1135,8 @@ class OdooDataWorkflowRunner:
         problems = [f"unchanged restored value: {key}" for key in unchanged]
         if push_devices:
             problems.append(f"{push_devices} copied web push subscription(s)")
+        if shopify_external_ids:
+            problems.append(f"{shopify_external_ids} copied production Shopify external ID(s)")
         if problems:
             raise OdooDatabaseUpdateError("Production credentials survived sanitize: " + "; ".join(problems))
         _logger.info("Read-back confirmed no restored production credential remains.")
