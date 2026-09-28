@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
@@ -117,43 +116,6 @@ def _resolve_managed_runtime_repo_path(manifest: WorkspaceManifest) -> Path | No
 
 def _discover_devkit_repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
-
-
-def build_runtime_platform_command(
-    *,
-    manifest: WorkspaceManifest,
-    platform_subcommand: str,
-    platform_arguments: tuple[str, ...] = (),
-) -> tuple[str, ...]:
-    runtime_repo_path = resolve_runtime_repo_path(manifest)
-    return (
-        "uv",
-        "--directory",
-        str(runtime_repo_path),
-        "run",
-        "platform",
-        platform_subcommand,
-        "--context",
-        manifest.runtime.context,
-        "--instance",
-        manifest.runtime.instance,
-        *platform_arguments,
-    )
-
-
-def run_runtime_platform_command(
-    *,
-    manifest: WorkspaceManifest,
-    platform_subcommand: str,
-    platform_arguments: tuple[str, ...] = (),
-) -> int:
-    command = build_runtime_platform_command(
-        manifest=manifest,
-        platform_subcommand=platform_subcommand,
-        platform_arguments=platform_arguments,
-    )
-    completed_process = subprocess.run(command, cwd=manifest.manifest_directory, check=False)
-    return completed_process.returncode
 
 
 def run_native_runtime_select(*, manifest: WorkspaceManifest) -> int:
