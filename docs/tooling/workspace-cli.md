@@ -403,11 +403,30 @@ Notes
   source data and credentials; restrict access and remove it after operator
   recovery if no successful retry follows. This is temporary recovery retention,
   not a backup of the previous target or protection against data-volume removal.
-  An early capture failure leaves target data unchanged; a later failure can
-  leave a partially restored target. Filestore capacity is checked again after
+  An early capture failure leaves target data unchanged. Once the old target
+  database has been dropped, any later failure (a partial `pg_restore`, the
+  filestore copy, OpenUpgrade, sanitize, addon install or update, or the
+  Launchplane settings apply) drops the restored database, so web never boots
+  an unsanitized production copy. Only failures after the settings apply keep
+  the sanitized database. Filestore capacity is checked again after
   capture so the dump's space is reflected before replacement begins.
   Capture and validation now finish before
   filestore copying begins, increasing the time web is stopped for large restores.
+- Every upstream restore onto an instance that is not explicitly production
+  (`PLATFORM_INSTANCE` `prod` or `production`) clears the production
+  integration credentials and signing keys that the copy brought with it.
+  An empty or unknown instance counts as non-production, and `--no-sanitize`
+  does not skip this step. It deletes the Shopify store credentials, the store
+  URL and test-store flags, and the import cursors. It cancels open Shopify
+  sync jobs, clears pending export flags, and turns off the Shopify crons. It
+  deletes the PrintNode key and the Mapbox, Unsplash and Tenor tokens. It deletes
+  both web push VAPID keys along with every push device and queued push; Odoo
+  generates new VAPID keys on demand. It regenerates `database.secret`. The
+  step runs right after `pg_restore`, before any Odoo code, and again after
+  the addon install and update. A read-back then fails the restore if any
+  restored value survived. Launchplane's settings apply runs after that, so the
+  instance's own settings are kept. The key list lives in one place, at the top
+  of `docker/scripts/run_odoo_data_workflows.py`.
 - Release/deploy ownership for remote environments stays in
   `launchplane`, even when the same tenant manifest is used to anchor
   local runtime context.
