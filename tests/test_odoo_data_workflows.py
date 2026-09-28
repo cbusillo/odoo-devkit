@@ -5,6 +5,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import types
 import unittest
 from collections.abc import Iterator
@@ -500,6 +501,322 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
 
         self.assertIsNone(runner.local.db_conn)
         connection.close.assert_called_once_with()
+
+
+class DataWorkflowGuardTests(unittest.TestCase):
+    _LOCAL_ENVIRONMENT = {
+        "ODOO_DB_HOST": "database",
+        "ODOO_DB_USER": "odoo",
+        "ODOO_DB_PASSWORD": "database-password",
+        "ODOO_DB_NAME": "cm",
+        "ODOO_FILESTORE_PATH": "/volumes/data/filestore/cm",
+    }
+    _UPSTREAM_ENVIRONMENT = {
+        "ODOO_UPSTREAM_HOST": "upstream.example.test",
+        "ODOO_UPSTREAM_USER": "backup",
+        "ODOO_UPSTREAM_DB_NAME": "cm",
+        "ODOO_UPSTREAM_DB_USER": "odoo",
+        "ODOO_UPSTREAM_FILESTORE_PATH": "/srv/filestore/cm",
+    }
+
+    def setUp(self) -> None:
+        super().setUp()
+        temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary_directory.cleanup)
+        self.lock_path = Path(temporary_directory.name) / "data" / ".data_workflow_in_progress"
+
+    def _run_main(
+        self, arguments: list[str], *, with_upstream: bool, restore_error: Exception | None = None
+    ) -> tuple[odoo_data_workflows.ExitCode, MagicMock, MagicMock]:
+        environment = {**self._LOCAL_ENVIRONMENT, "ODOO_DATA_WORKFLOW_LOCK_FILE": str(self.lock_path)}
+        if with_upstream:
+            environment.update(self._UPSTREAM_ENVIRONMENT)
+        runner_class = odoo_data_workflows.OdooDataWorkflowRunner
+        with (
+            patch.dict(os.environ, environment, clear=True),
+            patch.object(runner_class, "run_bootstrap") as run_bootstrap,
+            patch.object(runner_class, "run_restore", side_effect=restore_error) as run_restore,
+        ):
+            result = odoo_data_workflows.main(arguments)
+        return result, run_bootstrap, run_restore
+
+    def test_missing_upstream_refuses_instead_of_bootstrapping(self) -> None:
+        result, run_bootstrap, run_restore = self._run_main([], with_upstream=False)
+
+        self.assertEqual(result, odoo_data_workflows.ExitCode.INVALID_ARGS)
+        run_bootstrap.assert_not_called()
+        run_restore.assert_not_called()
+        self.assertFalse(self.lock_path.exists())
+
+    def test_explicit_bootstrap_runs_without_upstream(self) -> None:
+        result, run_bootstrap, run_restore = self._run_main(["--bootstrap"], with_upstream=False)
+
+        self.assertEqual(result, odoo_data_workflows.ExitCode.SUCCESS)
+        run_bootstrap.assert_called_once()
+        run_restore.assert_not_called()
+        self.assertFalse(self.lock_path.exists())
+
+    def test_failed_restore_does_not_fall_back_to_bootstrap(self) -> None:
+        result, run_bootstrap, _ = self._run_main(
+            [], with_upstream=True, restore_error=odoo_data_workflows.OdooRestorerError("rsync failed")
+        )
+
+        self.assertEqual(result, odoo_data_workflows.ExitCode.RESTORE_FAILED)
+        run_bootstrap.assert_not_called()
+        self.assertFalse(self.lock_path.exists())
+
+    def test_existing_workflow_lock_blocks_a_second_workflow_and_is_left_in_place(self) -> None:
+        self.lock_path.parent.mkdir(parents=True)
+        self.lock_path.write_text("pid=1\n", encoding="utf-8")
+
+        result, run_bootstrap, run_restore = self._run_main(["--bootstrap"], with_upstream=True)
+
+        self.assertNotEqual(result, odoo_data_workflows.ExitCode.SUCCESS)
+        run_bootstrap.assert_not_called()
+        run_restore.assert_not_called()
+        self.assertEqual(self.lock_path.read_text(encoding="utf-8"), "pid=1\n")
+
+    def _restore_runner(self, **setting_overrides: object) -> tuple[object, MagicMock]:
+        environment = {
+            **self._LOCAL_ENVIRONMENT,
+            "ODOO_DATA_WORKFLOW_LOCK_FILE": str(self.lock_path),
+            **setting_overrides,
+        }
+        settings = odoo_data_workflows.LocalServerSettings(**environment)
+        upstream = odoo_data_workflows.UpstreamServerSettings(**self._UPSTREAM_ENVIRONMENT)
+        runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=upstream, env_file=None)
+        runner.local.db_conn = MagicMock()
+        filestore_process = MagicMock()
+        filestore_process.wait.return_value = 0
+
+        def capture_archive(path: Path) -> None:
+            path.write_bytes(b"fixture archive")
+
+        restore_steps = {
+            "_assert_filestore_capacity": MagicMock(),
+            "capture_upstream_database": MagicMock(side_effect=capture_archive),
+            "_resolve_filestore_owner": MagicMock(return_value=None),
+            "overwrite_filestore": MagicMock(return_value=filestore_process),
+            "overwrite_database": MagicMock(),
+            "normalize_filestore_permissions": MagicMock(),
+            "snapshot_module_states_before_openupgrade": MagicMock(),
+            "run_openupgrade": MagicMock(),
+            "sanitize_database": MagicMock(),
+            "install_addons": MagicMock(),
+            "update_addons": MagicMock(),
+            "connect_to_db": MagicMock(),
+            "reconcile_missing_manifest_install_queue": MagicMock(),
+            "assert_install_queue_is_resolvable": MagicMock(),
+            "apply_environment_overrides": MagicMock(),
+            "assert_core_schema_healthy": MagicMock(),
+            "ensure_gpt_users": MagicMock(),
+            "drop_database": MagicMock(),
+        }
+        patcher = patch.multiple(runner, **restore_steps)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return runner, restore_steps["drop_database"]
+
+    def test_restore_drops_the_half_restored_database_when_a_later_step_fails(self) -> None:
+        failures = (
+            ("OpenUpgrade", {"OPENUPGRADE_ENABLED": True}, "run_openupgrade", odoo_data_workflows.OdooRestorerError),
+            ("sanitize", {}, "sanitize_database", odoo_data_workflows.OdooDatabaseUpdateError),
+            ("environment overrides", {}, "apply_environment_overrides", odoo_data_workflows.OdooDatabaseUpdateError),
+        )
+        for step_label, setting_overrides, failing_step, error_type in failures:
+            with self.subTest(step_label):
+                runner, drop_database = self._restore_runner(**setting_overrides)
+                getattr(runner, failing_step).side_effect = error_type(f"{step_label} failed")
+
+                with self.assertRaises(error_type):
+                    runner.run_restore()
+
+                drop_database.assert_called_once_with()
+
+    def test_successful_restore_keeps_the_database(self) -> None:
+        runner, drop_database = self._restore_runner()
+
+        runner.run_restore()
+
+        drop_database.assert_not_called()
+        runner.assert_core_schema_healthy.assert_called_once_with()
+
+    def test_restore_does_not_start_when_upstream_settings_are_missing(self) -> None:
+        settings = odoo_data_workflows.LocalServerSettings(**self._LOCAL_ENVIRONMENT)
+        runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
+
+        with patch.object(runner, "overwrite_database") as overwrite_database:
+            with self.assertRaises(odoo_data_workflows.OdooRestorerError):
+                runner.run_restore()
+
+        overwrite_database.assert_not_called()
+
+    def test_workflow_lock_admits_one_holder_until_released(self) -> None:
+        settings = odoo_data_workflows.LocalServerSettings(
+            **self._LOCAL_ENVIRONMENT, ODOO_DATA_WORKFLOW_LOCK_FILE=str(self.lock_path)
+        )
+        first_runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
+        second_runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
+
+        first_runner.acquire_data_workflow_lock()
+        with self.assertRaises(odoo_data_workflows.OdooRestorerError):
+            second_runner.acquire_data_workflow_lock()
+        first_runner.release_data_workflow_lock()
+        second_runner.acquire_data_workflow_lock()
+
+        self.assertTrue(self.lock_path.exists())
+
+
+class _FakeCronTable:
+    """Tracks ir.cron activity through the SQL calls sanitize_database makes."""
+
+    def __init__(self, cron_names: tuple[str, ...], *, stuck_cron_names: tuple[str, ...] = ()) -> None:
+        self.active_by_name = dict.fromkeys(cron_names, True)
+        self.stuck_cron_names = stuck_cron_names
+
+    def call_odoo_sql(self, sql_call: object, call_type: object) -> list[tuple] | None:
+        if sql_call.model != "ir.cron":
+            return []
+        if call_type == odoo_data_workflows.SqlCallType.UPDATE and sql_call.data.key == "active":
+            for cron_name in self.active_by_name:
+                if cron_name not in self.stuck_cron_names:
+                    self.active_by_name[cron_name] = sql_call.data.value
+            return None
+        if call_type == odoo_data_workflows.SqlCallType.SELECT:
+            return [
+                (index, None, None, None, None, None, None, cron_name)
+                for index, (cron_name, active) in enumerate(self.active_by_name.items(), start=1)
+                if active
+            ]
+        return []
+
+
+class SanitizeCronTests(unittest.TestCase):
+    def _sanitize(self, cron_table: _FakeCronTable, **setting_overrides: object) -> None:
+        settings = odoo_data_workflows.LocalServerSettings(
+            ODOO_DB_HOST="database",
+            ODOO_DB_USER="odoo",
+            ODOO_DB_PASSWORD="database-password",
+            ODOO_DB_NAME="cm",
+            ODOO_FILESTORE_PATH="/volumes/data/filestore/cm",
+            **setting_overrides,
+        )
+        runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
+        with closing(sqlite3.connect(":memory:")) as database:
+            database.execute("CREATE TABLE ir_mail_server (active BOOLEAN, smtp_user TEXT, smtp_pass TEXT)")
+            connection = types.SimpleNamespace(cursor=lambda: closing(database.cursor()))
+            with (
+                patch.object(runner, "connect_to_db", return_value=connection),
+                patch.object(runner, "call_odoo_sql", side_effect=cron_table.call_odoo_sql),
+            ):
+                runner.sanitize_database(block_smtp_fallback=False)
+
+    def test_sanitize_disables_every_cron_by_default(self) -> None:
+        cron_table = _FakeCronTable(("Mail: send queue", "Shopify: sync orders"))
+
+        self._sanitize(cron_table)
+
+        self.assertFalse(any(cron_table.active_by_name.values()))
+
+    def test_sanitize_fails_when_a_cron_stays_active(self) -> None:
+        cron_table = _FakeCronTable(("Mail: send queue", "Shopify: sync orders"), stuck_cron_names=("Shopify: sync orders",))
+
+        with self.assertRaisesRegex(odoo_data_workflows.OdooDatabaseUpdateError, "Shopify: sync orders"):
+            self._sanitize(cron_table)
+
+    def test_sanitize_leaves_crons_alone_when_cron_disabling_is_turned_off(self) -> None:
+        cron_table = _FakeCronTable(("Mail: send queue",))
+
+        self._sanitize(cron_table, ENV_OVERRIDE_DISABLE_CRON=False)
+
+        self.assertEqual(cron_table.active_by_name, {"Mail: send queue": True})
+
+
+class UpdateAddonsModuleDetectionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary_directory.cleanup)
+        self.root = Path(temporary_directory.name).resolve()
+        self.core_addons = self.root / "odoo" / "addons"
+        self.tenant_addons = self.root / "tenant" / "addons"
+        self.shared_addons = self.root / "shared-addons"
+        self._write_module(self.core_addons, "sale")
+        self._write_module(self.tenant_addons, "tenant_core", depends=("base", "sale", "tenant_helper"))
+        self._write_module(self.tenant_addons, "tenant_helper", depends=("tenant_deep",))
+        self._write_module(self.tenant_addons, "tenant_deep")
+        self._write_module(self.tenant_addons, "tenant_unused")
+        self._write_module(self.tenant_addons, "tenant_legacy", manifest_name="__openerp__.py")
+        (self.tenant_addons / "notes").mkdir()
+        self._write_module(self.shared_addons, "shared_tools")
+
+    @staticmethod
+    def _write_module(
+        addons_root: Path, module_name: str, *, depends: tuple[str, ...] = (), manifest_name: str = "__manifest__.py"
+    ) -> None:
+        module_path = addons_root / module_name
+        module_path.mkdir(parents=True)
+        manifest = {"name": module_name, "depends": list(depends)}
+        (module_path / manifest_name).write_text(repr(manifest), encoding="utf-8")
+
+    def _update(
+        self, *, installed_modules: set[str], update_modules: str | None = None, explicit_modules: list[str] | None = None
+    ) -> MagicMock:
+        settings_values: dict[str, object] = {
+            "ODOO_DB_HOST": "database",
+            "ODOO_DB_USER": "odoo",
+            "ODOO_DB_PASSWORD": "database-password",
+            "ODOO_DB_NAME": "cm",
+            "ODOO_FILESTORE_PATH": "/volumes/data/filestore/cm",
+            "ODOO_ADDONS_PATH": f"{self.core_addons},{self.tenant_addons}",
+            "LOCAL_ADDONS_DIRS": str(self.shared_addons),
+        }
+        if update_modules is not None:
+            settings_values["ODOO_UPDATE_MODULES"] = update_modules
+        settings = odoo_data_workflows.LocalServerSettings(**settings_values)
+        runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
+        with (
+            patch.object(runner, "_installed_modules", return_value=installed_modules),
+            patch.object(runner, "_apply_module_updates") as apply_module_updates,
+        ):
+            runner.update_addons(explicit_modules=explicit_modules)
+        return apply_module_updates
+
+    def test_auto_updates_installed_local_modules_and_their_uninstalled_local_dependencies(self) -> None:
+        installed_modules = {"base", "sale", "tenant_core", "tenant_legacy", "shared_tools"}
+        for update_modules in (None, "AUTO", "auto"):
+            with self.subTest(update_modules=update_modules):
+                apply_module_updates = self._update(installed_modules=installed_modules, update_modules=update_modules)
+
+                apply_module_updates.assert_called_once()
+                desired_modules = apply_module_updates.call_args.args[0]
+                self.assertEqual(
+                    sorted(desired_modules),
+                    ["shared_tools", "tenant_core", "tenant_deep", "tenant_helper", "tenant_legacy"],
+                )
+                local_module_paths = apply_module_updates.call_args.kwargs["local_module_paths"]
+                self.assertEqual(local_module_paths["tenant_core"], self.tenant_addons / "tenant_core")
+                self.assertNotIn("sale", local_module_paths)
+
+    def test_auto_skips_the_update_when_no_local_module_is_installed(self) -> None:
+        apply_module_updates = self._update(installed_modules={"base", "sale"})
+
+        apply_module_updates.assert_not_called()
+
+    def test_configured_module_list_is_used_without_auto_detection(self) -> None:
+        apply_module_updates = self._update(installed_modules=set(), update_modules=" tenant_unused , sale ,")
+
+        apply_module_updates.assert_called_once()
+        self.assertEqual(list(apply_module_updates.call_args.args[0]), ["tenant_unused", "sale"])
+        self.assertIsNone(apply_module_updates.call_args.kwargs["local_module_paths"])
+
+    def test_explicit_modules_override_configured_modules(self) -> None:
+        apply_module_updates = self._update(
+            installed_modules=set(), update_modules="tenant_unused", explicit_modules=["website", " "]
+        )
+
+        apply_module_updates.assert_called_once()
+        self.assertEqual(list(apply_module_updates.call_args.args[0]), ["website"])
 
 
 if __name__ == "__main__":

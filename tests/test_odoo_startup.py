@@ -8,7 +8,7 @@ import os
 import sys
 import types
 import unittest
-from contextlib import redirect_stdout
+from contextlib import ExitStack, redirect_stdout
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -44,6 +44,32 @@ def _load_startup_module() -> types.ModuleType:
 
 if not TYPE_CHECKING:
     odoo_startup = _load_startup_module()
+
+
+class _FakeUsers:
+    """Stand-in for Odoo's res.users model as the default-password policy uses it."""
+
+    def __init__(self, *, existing_logins: set[str], default_password_logins: set[str]) -> None:
+        self.existing_logins = existing_logins
+        self.default_password_logins = default_password_logins
+        self.authenticated_logins: list[str] = []
+
+    def sudo(self) -> _FakeUsers:
+        return self
+
+    def with_context(self, **_context: object) -> _FakeUsers:
+        return self
+
+    def search(self, domain: list[tuple[str, str, str]], limit: int) -> bool:
+        _ = limit
+        return domain[0][2] in self.existing_logins
+
+    def authenticate(self, credential: dict[str, str], _user_agent_environment: dict[str, bool]) -> dict[str, int]:
+        login = credential["login"]
+        self.authenticated_logins.append(login)
+        if login in self.default_password_logins and credential["password"] == "admin":
+            return {"uid": 1}
+        raise PermissionError
 
 
 class OdooStartupDependencySyncTests(unittest.TestCase):
@@ -361,6 +387,152 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
 
         admin.with_context.assert_not_called()
         environment.cr.commit.assert_not_called()
+
+    _STARTUP_STEP_NAMES = (
+        "_enforce_public_credential_preflight",
+        "_write_runtime_config",
+        "_wait_for_database",
+        "_wait_for_data_workflow_lock",
+        "_sync_python_dependencies_if_needed",
+        "_run_initialization_if_needed",
+        "_apply_environment_overrides_if_available",
+        "_apply_admin_password_if_configured",
+        "_assert_active_admin_password_is_not_default",
+    )
+
+    def _run_main(self, settings: StartupSettings, recorder: MagicMock) -> list[str]:
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(odoo_startup, "_parse_arguments", return_value=argparse.Namespace()))
+            stack.enter_context(patch.object(odoo_startup, "_load_settings", return_value=settings))
+            for step_name in self._STARTUP_STEP_NAMES:
+                stack.enter_context(patch.object(odoo_startup, step_name, getattr(recorder, step_name)))
+            stack.enter_context(patch.object(odoo_startup.os, "execv", recorder.execv))
+            stack.enter_context(redirect_stdout(io.StringIO()))
+            odoo_startup.main()
+        return [recorded_call[0] for recorded_call in recorder.mock_calls]
+
+    def assertRunsBefore(self, call_names: list[str], earlier: str, later: str) -> None:
+        self.assertIn(earlier, call_names)
+        self.assertIn(later, call_names)
+        self.assertLess(call_names.index(earlier), call_names.index(later), f"{earlier} must run before {later}")
+
+    def test_startup_runs_admin_password_policy_for_public_runtimes_and_configured_passwords(self) -> None:
+        cases = (
+            ("public runtime", self._settings(platform_instance="testing", admin_password="configured-password"), True),
+            ("local runtime with configured password", self._settings(admin_password="configured-password"), True),
+            ("local runtime without configured password", self._settings(), False),
+        )
+        for case_name, settings, expects_policy in cases:
+            with self.subTest(case_name):
+                call_names = self._run_main(settings, MagicMock())
+
+                self.assertEqual(call_names[-1], "execv")
+                self.assertEqual(call_names[0], "_enforce_public_credential_preflight")
+                self.assertRunsBefore(call_names, "_wait_for_data_workflow_lock", "_run_initialization_if_needed")
+                self.assertRunsBefore(call_names, "_run_initialization_if_needed", "_apply_environment_overrides_if_available")
+                self.assertRunsBefore(call_names, "_apply_environment_overrides_if_available", "_apply_admin_password_if_configured")
+                if expects_policy:
+                    self.assertRunsBefore(
+                        call_names, "_apply_admin_password_if_configured", "_assert_active_admin_password_is_not_default"
+                    )
+                else:
+                    self.assertNotIn("_assert_active_admin_password_is_not_default", call_names)
+
+    def test_startup_stops_before_touching_odoo_when_credential_preflight_fails(self) -> None:
+        recorder = MagicMock()
+        recorder._enforce_public_credential_preflight.side_effect = RuntimeError("Insecure configuration")
+
+        with self.assertRaisesRegex(RuntimeError, "Insecure configuration"):
+            self._run_main(self._settings(platform_instance="testing"), recorder)
+
+        self.assertEqual([recorded_call[0] for recorded_call in recorder.mock_calls], ["_enforce_public_credential_preflight"])
+
+    def test_startup_does_not_start_server_when_admin_password_policy_fails(self) -> None:
+        recorder = MagicMock()
+        recorder._assert_active_admin_password_is_not_default.side_effect = ValueError("Insecure configuration")
+
+        with self.assertRaisesRegex(ValueError, "Insecure configuration"):
+            self._run_main(self._settings(platform_instance="testing", admin_password="configured-password"), recorder)
+
+        recorder.execv.assert_not_called()
+
+    @staticmethod
+    def _execute_default_password_policy(settings: StartupSettings, users: _FakeUsers) -> None:
+        exceptions = types.ModuleType("odoo.exceptions")
+        exceptions.__dict__["AccessDenied"] = PermissionError
+
+        def run_shell(_settings: StartupSettings, script: str, *, label: str) -> None:
+            _ = label
+            exec(script, {"env": {"res.users": users}})
+
+        with (
+            patch.dict(sys.modules, {"odoo.exceptions": exceptions}),
+            patch.object(odoo_startup, "_run_odoo_shell", side_effect=run_shell),
+            redirect_stdout(io.StringIO()),
+        ):
+            odoo_startup._assert_active_admin_password_is_not_default(settings)
+
+    def test_default_password_policy_rejects_admin_password_on_default_or_configured_login(self) -> None:
+        configured_login = "ops'lead\\\""
+        settings = replace(
+            self._settings(platform_instance="testing", admin_password="configured-password"), admin_login=configured_login
+        )
+        for login_with_default_password in ("admin", configured_login):
+            with self.subTest(login=login_with_default_password):
+                users = _FakeUsers(
+                    existing_logins={"admin", configured_login},
+                    default_password_logins={login_with_default_password},
+                )
+
+                with self.assertRaisesRegex(ValueError, "Insecure configuration"):
+                    self._execute_default_password_policy(settings, users)
+
+    def test_default_password_policy_accepts_hardened_accounts_and_checks_every_login(self) -> None:
+        configured_login = "ops'lead\\\""
+        settings = replace(
+            self._settings(platform_instance="testing", admin_password="configured-password"), admin_login=configured_login
+        )
+        users = _FakeUsers(existing_logins={"admin", configured_login}, default_password_logins=set())
+
+        self._execute_default_password_policy(settings, users)
+
+        self.assertEqual(users.authenticated_logins, ["admin", configured_login])
+
+    def test_default_password_policy_skips_missing_accounts(self) -> None:
+        settings = self._settings(platform_instance="testing", admin_password="configured-password")
+        users = _FakeUsers(existing_logins=set(), default_password_logins={"admin"})
+
+        self._execute_default_password_policy(settings, users)
+
+        self.assertEqual(users.authenticated_logins, [])
+
+    def test_startup_waits_until_data_workflow_lock_is_released(self) -> None:
+        with TemporaryDirectory() as temporary_directory:
+            lock_path = Path(temporary_directory) / ".data_workflow_in_progress"
+            lock_path.write_text("pid=1\n", encoding="utf-8")
+            settings = replace(self._settings(), data_workflow_lock_file=str(lock_path), data_workflow_lock_timeout_seconds=60)
+
+            with (
+                patch.object(odoo_startup.time, "sleep", side_effect=lambda _seconds: lock_path.unlink()) as sleep,
+                redirect_stdout(io.StringIO()),
+            ):
+                odoo_startup._wait_for_data_workflow_lock(settings)
+
+            sleep.assert_called_once()
+            self.assertFalse(lock_path.exists())
+
+    def test_startup_fails_when_data_workflow_lock_outlives_timeout(self) -> None:
+        with TemporaryDirectory() as temporary_directory:
+            lock_path = Path(temporary_directory) / ".data_workflow_in_progress"
+            lock_path.write_text("pid=1\n", encoding="utf-8")
+            settings = replace(self._settings(), data_workflow_lock_file=str(lock_path), data_workflow_lock_timeout_seconds=0)
+
+            wait_past_deadline = AssertionError("lock wait continued past its timeout")
+            with patch.object(odoo_startup.time, "sleep", side_effect=wait_past_deadline), redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(RuntimeError, str(lock_path)):
+                    odoo_startup._wait_for_data_workflow_lock(settings)
+
+            self.assertTrue(lock_path.exists())
 
 
 if __name__ == "__main__":

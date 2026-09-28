@@ -495,7 +495,7 @@ def _assert_active_admin_password_is_not_default(settings: StartupSettings) -> N
 import json
 from odoo.exceptions import AccessDenied
 
-payload = json.loads('__PAYLOAD__')
+payload = json.loads(__PAYLOAD__)
 
 for login_name in payload['logins']:
     target_user = env['res.users'].sudo().with_context(active_test=False).search(
@@ -519,7 +519,7 @@ for login_name in payload['logins']:
         raise ValueError(f"Insecure configuration: active password for {login_name} is 'admin'.")
 
 print('admin_default_password_active=false')
-""".replace("__PAYLOAD__", json.dumps(payload))
+""".replace("__PAYLOAD__", repr(json.dumps(payload)))
     _run_odoo_shell(settings, script, label="admin password policy")
 
 

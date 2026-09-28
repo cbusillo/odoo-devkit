@@ -25,7 +25,6 @@ from odoo_devkit.cli import (
 )
 from odoo_devkit.manifest import load_workspace_manifest
 from odoo_devkit.runtime import (
-    build_runtime_platform_command,
     resolve_runtime_repo_path,
     run_native_runtime_build,
     run_native_runtime_down,
@@ -38,7 +37,6 @@ from odoo_devkit.runtime import (
     run_native_runtime_select,
     run_native_runtime_up,
     run_native_runtime_workflow,
-    run_runtime_platform_command,
 )
 from odoo_devkit.workspace import sync_workspace
 
@@ -801,25 +799,6 @@ attached_paths = ["sources/devkit"]
             self.assertTrue(materialized_runtime_repo_path.exists())
             self.assertFalse(materialized_runtime_repo_path.is_symlink())
             self.assertEqual(resolve_runtime_repo_path(manifest), materialized_runtime_repo_path.resolve())
-            self.assertEqual(
-                build_runtime_platform_command(
-                    manifest=manifest,
-                    platform_subcommand="restore",
-                ),
-                (
-                    "uv",
-                    "--directory",
-                    str(materialized_runtime_repo_path.resolve()),
-                    "run",
-                    "platform",
-                    "restore",
-                    "--context",
-                    "opw",
-                    "--instance",
-                    "local",
-                ),
-            )
-
             payload = json.dumps(
                 {
                     "context": "opw",
@@ -934,136 +913,6 @@ attached_paths = ["sources/devkit"]
 
             with self.assertRaisesRegex(ValueError, r"must declare \[repos.runtime\]"):
                 resolve_runtime_repo_path(manifest)
-
-    def test_build_runtime_platform_command_uses_manifest_context_and_instance(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            temp_root = Path(temporary_directory)
-            tenant_repo_path = temp_root / "tenant-repo"
-            runtime_repo_path = temp_root / "runtime-repo"
-            tenant_repo_path.mkdir(parents=True, exist_ok=True)
-            runtime_repo_path.mkdir(parents=True, exist_ok=True)
-
-            manifest_path = tenant_repo_path / "workspace.toml"
-            manifest_path.write_text(
-                """
-schema_version = 1
-tenant = "opw"
-
-[workspace]
-name = "opw"
-python = "3.13"
-
-[repos.tenant]
-name = "tenant-repo"
-path = "."
-
-[repos.runtime]
-name = "runtime-repo"
-path = "../runtime-repo"
-
-[runtime]
-context = "opw"
-instance = "local"
-database = "opw"
-addons_paths = ["sources/tenant/addons"]
-
-[ide]
-mode = "tenant_repo"
-focus_paths = ["addons/opw_custom"]
-attached_paths = ["sources/devkit"]
-""".strip()
-                + "\n",
-                encoding="utf-8",
-            )
-
-            manifest = load_workspace_manifest(manifest_path)
-
-            self.assertEqual(
-                build_runtime_platform_command(
-                    manifest=manifest,
-                    platform_subcommand="run",
-                    platform_arguments=("--workflow", "update"),
-                ),
-                (
-                    "uv",
-                    "--directory",
-                    str(runtime_repo_path.resolve()),
-                    "run",
-                    "platform",
-                    "run",
-                    "--context",
-                    "opw",
-                    "--instance",
-                    "local",
-                    "--workflow",
-                    "update",
-                ),
-            )
-
-    def test_run_runtime_platform_command_executes_from_manifest_directory(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            temp_root = Path(temporary_directory)
-            tenant_repo_path = temp_root / "tenant-repo"
-            runtime_repo_path = temp_root / "runtime-repo"
-            tenant_repo_path.mkdir(parents=True, exist_ok=True)
-            runtime_repo_path.mkdir(parents=True, exist_ok=True)
-
-            manifest_path = tenant_repo_path / "workspace.toml"
-            manifest_path.write_text(
-                """
-schema_version = 1
-tenant = "opw"
-
-[workspace]
-name = "opw"
-python = "3.13"
-
-[repos.tenant]
-name = "tenant-repo"
-path = "."
-
-[repos.runtime]
-name = "runtime-repo"
-path = "../runtime-repo"
-
-[runtime]
-context = "opw"
-instance = "local"
-database = "opw"
-addons_paths = ["sources/tenant/addons"]
-
-[ide]
-mode = "tenant_repo"
-focus_paths = ["addons/opw_custom"]
-attached_paths = ["sources/devkit"]
-""".strip()
-                + "\n",
-                encoding="utf-8",
-            )
-
-            manifest = load_workspace_manifest(manifest_path)
-
-            completed_process = mock.Mock(returncode=17)
-            with mock.patch("odoo_devkit.runtime.subprocess.run", return_value=completed_process) as run_mock:
-                exit_code = run_runtime_platform_command(manifest=manifest, platform_subcommand="restore")
-
-            self.assertEqual(exit_code, 17)
-            run_mock.assert_called_once_with(
-                (
-                    "uv",
-                    "--directory",
-                    str(runtime_repo_path.resolve()),
-                    "run",
-                    "platform",
-                    "restore",
-                    "--context",
-                    "opw",
-                    "--instance",
-                    "local",
-                ),
-                cwd=tenant_repo_path.resolve(),
-                check=False,
-            )
 
     def test_native_runtime_select_writes_runtime_env_and_pycharm_conf(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -2635,102 +2484,54 @@ sources = [
         self.assertEqual(execution_env["GIT_CONFIG_KEY_1"], "credential.useHttpPath")
         self.assertEqual(execution_env["GIT_CONFIG_VALUE_1"], "true")
 
-    def test_resolve_artifact_runtime_source_refs_uses_environment_token_fallback(self) -> None:
-        runtime_values = {
-            "ODOO_ADDON_REPOSITORIES": "cbusillo/disable_odoo_online@main",
-        }
-        with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "env-token"}):
-            with mock.patch(
-                "odoo_devkit.local_runtime.resolve_source_repository_ref_to_git_sha",
-                return_value="411f6b8e85cac72dc7aa2e2dc5540001043c327d",
-            ) as resolve_ref_mock:
-                resolved_values, selector_metadata = local_runtime.resolve_artifact_runtime_source_repository_refs(
-                    runtime_values=runtime_values
-                )
-
-        resolve_ref_mock.assert_called_once_with(
-            repository="cbusillo/disable_odoo_online",
-            ref="main",
-            github_token="env-token",
-        )
-        self.assertEqual(
-            resolved_values["ODOO_ADDON_REPOSITORIES"],
-            "cbusillo/disable_odoo_online@411f6b8e85cac72dc7aa2e2dc5540001043c327d",
-        )
-        self.assertEqual(
-            selector_metadata,
+    def test_resolve_artifact_runtime_source_refs_selects_token_by_precedence(self) -> None:
+        resolved_sha = "411f6b8e85cac72dc7aa2e2dc5540001043c327d"
+        token_environment_keys = (*local_runtime.SOURCE_GITHUB_TOKEN_ENV_KEYS, "GITHUB_TOKEN", "GH_TOKEN")
+        cases = (
+            ("environment token fallback", {}, {"GITHUB_TOKEN": "env-token"}, "env-token"),
             (
-                {
-                    "repository": "cbusillo/disable_odoo_online",
-                    "selector": "main",
-                    "resolved_ref": "411f6b8e85cac72dc7aa2e2dc5540001043c327d",
-                },
+                "dedicated devkit source token",
+                {},
+                {"ODOO_DEVKIT_SOURCE_GITHUB_TOKEN": "source-env-token", "GITHUB_TOKEN": "github-env-token"},
+                "source-env-token",
+            ),
+            (
+                "CI source token",
+                {},
+                {"ODOO_SOURCE_GITHUB_TOKEN": "ci-source-token", "GITHUB_TOKEN": "github-env-token"},
+                "ci-source-token",
+            ),
+            (
+                "runtime token wins over environment",
+                {"GITHUB_TOKEN": "source-token"},
+                {"GHCR_TOKEN": "package-token", "GITHUB_TOKEN": "env-token"},
+                "source-token",
             ),
         )
+        for case_name, runtime_token_values, environment_values, expected_token in cases:
+            with self.subTest(case_name):
+                runtime_values = {
+                    **runtime_token_values,
+                    "ODOO_ADDON_REPOSITORIES": "cbusillo/disable_odoo_online@main",
+                }
+                environment = {key: value for key, value in os.environ.items() if key not in token_environment_keys}
+                environment.update(environment_values)
+                with mock.patch.dict(os.environ, environment, clear=True):
+                    with mock.patch(
+                        "odoo_devkit.local_runtime.resolve_source_repository_ref_to_git_sha",
+                        return_value=resolved_sha,
+                    ) as resolve_ref_mock:
+                        resolved_values, selector_metadata = local_runtime.resolve_artifact_runtime_source_repository_refs(
+                            runtime_values=runtime_values
+                        )
 
-    def test_resolve_artifact_runtime_source_refs_uses_dedicated_source_token_env(self) -> None:
-        runtime_values = {
-            "ODOO_ADDON_REPOSITORIES": "cbusillo/disable_odoo_online@main",
-        }
-        with mock.patch.dict(
-            os.environ,
-            {
-                "ODOO_DEVKIT_SOURCE_GITHUB_TOKEN": "source-env-token",
-                "GITHUB_TOKEN": "github-env-token",
-            },
-        ):
-            with mock.patch(
-                "odoo_devkit.local_runtime.resolve_source_repository_ref_to_git_sha",
-                return_value="411f6b8e85cac72dc7aa2e2dc5540001043c327d",
-            ) as resolve_ref_mock:
-                local_runtime.resolve_artifact_runtime_source_repository_refs(runtime_values=runtime_values)
-
-        resolve_ref_mock.assert_called_once_with(
-            repository="cbusillo/disable_odoo_online",
-            ref="main",
-            github_token="source-env-token",
-        )
-
-    def test_resolve_artifact_runtime_source_refs_supports_ci_source_token_env(self) -> None:
-        runtime_values = {
-            "ODOO_ADDON_REPOSITORIES": "cbusillo/disable_odoo_online@main",
-        }
-        with mock.patch.dict(
-            os.environ,
-            {
-                "ODOO_SOURCE_GITHUB_TOKEN": "ci-source-token",
-                "GITHUB_TOKEN": "github-env-token",
-            },
-        ):
-            with mock.patch(
-                "odoo_devkit.local_runtime.resolve_source_repository_ref_to_git_sha",
-                return_value="411f6b8e85cac72dc7aa2e2dc5540001043c327d",
-            ) as resolve_ref_mock:
-                local_runtime.resolve_artifact_runtime_source_repository_refs(runtime_values=runtime_values)
-
-        resolve_ref_mock.assert_called_once_with(
-            repository="cbusillo/disable_odoo_online",
-            ref="main",
-            github_token="ci-source-token",
-        )
-
-    def test_resolve_artifact_runtime_source_refs_prefers_runtime_github_token(self) -> None:
-        runtime_values = {
-            "GITHUB_TOKEN": "source-token",
-            "ODOO_ADDON_REPOSITORIES": "cbusillo/disable_odoo_online@main",
-        }
-        with mock.patch.dict(os.environ, {"GHCR_TOKEN": "package-token", "GITHUB_TOKEN": "env-token"}):
-            with mock.patch(
-                "odoo_devkit.local_runtime.resolve_source_repository_ref_to_git_sha",
-                return_value="411f6b8e85cac72dc7aa2e2dc5540001043c327d",
-            ) as resolve_ref_mock:
-                local_runtime.resolve_artifact_runtime_source_repository_refs(runtime_values=runtime_values)
-
-        resolve_ref_mock.assert_called_once_with(
-            repository="cbusillo/disable_odoo_online",
-            ref="main",
-            github_token="source-token",
-        )
+                resolve_ref_mock.assert_called_once()
+                self.assertEqual(resolve_ref_mock.call_args.kwargs["github_token"], expected_token)
+                self.assertEqual(resolved_values["ODOO_ADDON_REPOSITORIES"], f"cbusillo/disable_odoo_online@{resolved_sha}")
+                self.assertEqual(
+                    selector_metadata,
+                    ({"repository": "cbusillo/disable_odoo_online", "selector": "main", "resolved_ref": resolved_sha},),
+                )
 
     def test_resolve_source_repository_ref_to_git_sha_rejects_ambiguous_matches(self) -> None:
         ambiguous_stdout = (
@@ -3373,7 +3174,7 @@ sources = [
             with self.assertRaisesRegex(ValueError, "requires --instance local"):
                 run_native_runtime_workflow(manifest=manifest, workflow="openupgrade")
 
-    def test_cli_runtime_workflow_rejects_non_local_mutations_without_platform_fallback(self) -> None:
+    def test_cli_runtime_workflow_rejects_non_local_mutations(self) -> None:
         workflow_cases = (
             ("init", "dev"),
             ("openupgrade", "testing"),
@@ -3395,18 +3196,16 @@ sources = [
                     )
                     arguments = argparse.Namespace(manifest=manifest_path, workflow=workflow_name)
 
-                    with mock.patch("odoo_devkit.cli.run_runtime_platform_command") as platform_command:
-                        with self.assertRaises(SystemExit) as captured_exit:
-                            _handle_runtime_workflow(arguments)
+                    with self.assertRaises(SystemExit) as captured_exit:
+                        _handle_runtime_workflow(arguments)
 
                     self.assertIsInstance(captured_exit.exception.code, str)
                     self.assertTrue(
                         "requires --instance local" in str(captured_exit.exception.code)
                         or "belongs in Launchplane" in str(captured_exit.exception.code)
                     )
-                    platform_command.assert_not_called()
 
-    def test_cli_runtime_workflow_rejects_unknown_workflows_without_platform_fallback(self) -> None:
+    def test_cli_runtime_workflow_rejects_unknown_workflows(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
             tenant_repo_path = temp_root / "tenant-repo"
@@ -3419,15 +3218,13 @@ sources = [
             )
             arguments = argparse.Namespace(manifest=manifest_path, workflow="custom-remote-flow")
 
-            with mock.patch("odoo_devkit.cli.run_runtime_platform_command") as platform_command:
-                with self.assertRaises(SystemExit) as captured_exit:
-                    _handle_runtime_workflow(arguments)
+            with self.assertRaises(SystemExit) as captured_exit:
+                _handle_runtime_workflow(arguments)
 
             self.assertIsInstance(captured_exit.exception.code, str)
             self.assertIn("Unsupported runtime workflow", str(captured_exit.exception.code))
-            platform_command.assert_not_called()
 
-    def test_cli_runtime_restore_rejects_non_local_without_platform_fallback(self) -> None:
+    def test_cli_runtime_restore_rejects_non_local(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
             tenant_repo_path = temp_root / "tenant-repo"
@@ -3441,13 +3238,11 @@ sources = [
             )
             arguments = argparse.Namespace(manifest=manifest_path, runtime_instance=None)
 
-            with mock.patch("odoo_devkit.cli.run_runtime_platform_command") as platform_command:
-                with self.assertRaises(SystemExit) as captured_exit:
-                    _handle_runtime_restore(arguments)
+            with self.assertRaises(SystemExit) as captured_exit:
+                _handle_runtime_restore(arguments)
 
             self.assertIsInstance(captured_exit.exception.code, str)
             self.assertIn("belongs in Launchplane", str(captured_exit.exception.code))
-            platform_command.assert_not_called()
 
     @staticmethod
     def _runtime_data_workflow_side_effect() -> mock.Mock:
