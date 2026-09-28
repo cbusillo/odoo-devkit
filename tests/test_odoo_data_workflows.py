@@ -8,7 +8,7 @@ import sys
 import tempfile
 import types
 import unittest
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import ExitStack, closing, contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -114,6 +114,9 @@ class UpstreamRestoreFailureTests(unittest.TestCase):
                     _set_database_allow_connections=MagicMock(),
                     terminate_all_db_connections=MagicMock(),
                     normalize_filestore_permissions=MagicMock(),
+                    fingerprint_restored_credentials=MagicMock(),
+                    neutralize_production_credentials=MagicMock(),
+                    verify_production_credentials_cleared=MagicMock(),
                     install_addons=MagicMock(),
                     update_addons=MagicMock(),
                     connect_to_db=MagicMock(),
@@ -153,7 +156,8 @@ class UpstreamRestoreFailureTests(unittest.TestCase):
             retained = list(root.rglob("database.dump"))
             self.assertEqual(len(retained), 1)
             self.assertEqual(retained[0].read_text(), "fixture archive")
-            self.assertEqual((root / "database").read_text(), "empty")
+            # A partial pg_restore can already hold copied credentials, so it is dropped.
+            self.assertEqual((root / "database").read_text(), "dropped")
 
     def test_successful_restore_removes_temporary_dump_after_target_is_restored(self) -> None:
         with self.restore_fixture() as (runner, root):
@@ -162,12 +166,12 @@ class UpstreamRestoreFailureTests(unittest.TestCase):
             self.assertEqual((root / "filestore").read_text(), "restored filestore")
             self.assertEqual(list(root.rglob("database.*")), [])
 
-    def test_failed_module_update_retains_dump_after_database_restore(self) -> None:
+    def test_failed_module_update_drops_the_restored_database_and_retains_dump(self) -> None:
         with self.restore_fixture() as (runner, root):
             runner.update_addons.side_effect = odoo_data_workflows.OdooRestorerError("module update failed")
             with self.assertRaises(odoo_data_workflows.OdooRestorerError):
                 runner.run_restore(do_sanitize=False)
-            self.assertEqual((root / "database").read_text(), "restored")
+            self.assertEqual((root / "database").read_text(), "dropped")
             retained = list(root.rglob("database.dump"))
             self.assertEqual(len(retained), 1)
             self.assertEqual(retained[0].read_text(), "fixture archive")
@@ -599,6 +603,9 @@ class DataWorkflowGuardTests(unittest.TestCase):
             "overwrite_filestore": MagicMock(return_value=filestore_process),
             "overwrite_database": MagicMock(),
             "normalize_filestore_permissions": MagicMock(),
+            "fingerprint_restored_credentials": MagicMock(),
+            "neutralize_production_credentials": MagicMock(),
+            "verify_production_credentials_cleared": MagicMock(),
             "snapshot_module_states_before_openupgrade": MagicMock(),
             "run_openupgrade": MagicMock(),
             "sanitize_database": MagicMock(),
@@ -617,11 +624,20 @@ class DataWorkflowGuardTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         return runner, restore_steps["drop_database"]
 
-    def test_restore_drops_the_half_restored_database_when_a_later_step_fails(self) -> None:
+    def test_restore_drops_the_restored_database_when_any_step_before_the_settings_apply_fails(self) -> None:
+        database_error = odoo_data_workflows.psycopg2.Error
         failures = (
+            ("credential clearing", {}, "neutralize_production_credentials", database_error),
+            ("credential read-back", {}, "verify_production_credentials_cleared", odoo_data_workflows.OdooDatabaseUpdateError),
+            ("filestore permissions", {}, "normalize_filestore_permissions", PermissionError),
             ("OpenUpgrade", {"OPENUPGRADE_ENABLED": True}, "run_openupgrade", odoo_data_workflows.OdooRestorerError),
             ("sanitize", {}, "sanitize_database", odoo_data_workflows.OdooDatabaseUpdateError),
+            ("sanitize database error", {}, "sanitize_database", database_error),
+            ("addon install", {}, "install_addons", odoo_data_workflows.OdooRestorerError),
+            ("addon update", {}, "update_addons", odoo_data_workflows.OdooRestorerError),
+            ("install queue", {}, "assert_install_queue_is_resolvable", odoo_data_workflows.OdooDatabaseUpdateError),
             ("environment overrides", {}, "apply_environment_overrides", odoo_data_workflows.OdooDatabaseUpdateError),
+            ("interrupt", {}, "update_addons", KeyboardInterrupt),
         )
         for step_label, setting_overrides, failing_step, error_type in failures:
             with self.subTest(step_label):
@@ -632,6 +648,67 @@ class DataWorkflowGuardTests(unittest.TestCase):
                     runner.run_restore()
 
                 drop_database.assert_called_once_with()
+
+    def test_failed_filestore_copy_drops_the_restored_database(self) -> None:
+        runner, drop_database = self._restore_runner()
+        runner.overwrite_filestore.return_value.wait.return_value = 23
+
+        with self.assertRaisesRegex(odoo_data_workflows.OdooRestorerError, "rsync failed"):
+            runner.run_restore()
+
+        drop_database.assert_called_once_with()
+        runner.install_addons.assert_not_called()
+
+    def test_a_failed_drop_still_raises_the_original_restore_error(self) -> None:
+        runner, drop_database = self._restore_runner()
+        runner.install_addons.side_effect = odoo_data_workflows.OdooRestorerError("install failed")
+        drop_database.side_effect = odoo_data_workflows.OdooRestorerError("dropdb failed")
+
+        with self.assertRaisesRegex(odoo_data_workflows.OdooRestorerError, "install failed"):
+            runner.run_restore()
+
+    def test_failures_after_the_settings_apply_keep_the_sanitized_database(self) -> None:
+        runner, drop_database = self._restore_runner()
+        runner.ensure_gpt_users.side_effect = odoo_data_workflows.OdooRestorerError("service user failed")
+
+        with self.assertRaises(odoo_data_workflows.OdooRestorerError):
+            runner.run_restore()
+
+        drop_database.assert_not_called()
+
+    def test_credentials_are_cleared_before_odoo_runs_and_again_before_the_settings_apply(self) -> None:
+        for do_sanitize in (True, False):
+            with self.subTest(do_sanitize=do_sanitize):
+                runner, _drop_database = self._restore_runner(OPENUPGRADE_ENABLED=True, OPENUPGRADE_SKIP_UPDATE_ADDONS=False)
+                calls: list[str] = []
+                for step in (
+                    "overwrite_database",
+                    "fingerprint_restored_credentials",
+                    "neutralize_production_credentials",
+                    "run_openupgrade",
+                    "sanitize_database",
+                    "install_addons",
+                    "update_addons",
+                    "verify_production_credentials_cleared",
+                    "apply_environment_overrides",
+                ):
+                    getattr(runner, step).side_effect = lambda *_args, _step=step, _calls=calls, **_kwargs: _calls.append(_step)
+
+                runner.run_restore(do_sanitize=do_sanitize)
+
+                expected = [
+                    "overwrite_database",
+                    "fingerprint_restored_credentials",
+                    "neutralize_production_credentials",
+                    "run_openupgrade",
+                    *(["sanitize_database"] if do_sanitize else []),
+                    "install_addons",
+                    "update_addons",
+                    "neutralize_production_credentials",
+                    "verify_production_credentials_cleared",
+                    "apply_environment_overrides",
+                ]
+                self.assertEqual(calls, expected)
 
     def test_successful_restore_keeps_the_database(self) -> None:
         runner, drop_database = self._restore_runner()
@@ -730,6 +807,314 @@ class SanitizeCronTests(unittest.TestCase):
         self._sanitize(cron_table, ENV_OVERRIDE_DISABLE_CRON=False)
 
         self.assertEqual(cron_table.active_by_name, {"Mail: send queue": True})
+
+
+PRODUCTION_PARAMETERS = {
+    "shopify.shop_url_key": "production-store",
+    "shopify.api_token": "production-shopify-token",
+    "shopify.webhook_key": "production-webhook-key",
+    "shopify.shop_url": "https://production-store.example.test",
+    "shopify.test_store": "False",
+    "shopify.last_product_import_time": "2026-09-28 14:57:00",
+    "printnode.api_key": "production-printnode-key",
+    "web_map.token_map_box": "production-mapbox-token",
+    "unsplash.access_key": "production-unsplash-key",
+    "discuss.tenor_api_key": "production-tenor-key",
+    "mail.web_push_vapid_private_key": "production-vapid-private",
+    "mail.web_push_vapid_public_key": "production-vapid-public",
+    "database.secret": "production-database-secret",
+}
+UNRELATED_PARAMETERS = {
+    "shopify.api_version": "2026-07",
+    "shopify.pause_webhook_processing": "False",
+    "web.base.url": "https://testing.example.test",
+    "database.uuid": "copied-uuid",
+}
+
+
+class _RestoredProductionCopy:
+    """A SQLite stand-in for the tables sanitize touches, seeded like a restored production database."""
+
+    def __init__(self) -> None:
+        self.database = sqlite3.connect(":memory:")
+        self.database.executescript(
+            """
+            CREATE TABLE ir_config_parameter (key TEXT PRIMARY KEY, value TEXT);
+            CREATE TABLE mail_push_device (id INTEGER PRIMARY KEY, endpoint TEXT);
+            CREATE TABLE mail_push (id INTEGER PRIMARY KEY, mail_push_device_id INTEGER, payload TEXT);
+            CREATE TABLE shopify_sync (id INTEGER PRIMARY KEY, mode TEXT, state TEXT);
+            CREATE TABLE product_product (
+                id INTEGER PRIMARY KEY, shopify_next_export BOOLEAN, shopify_next_export_quantity_change_amount INTEGER
+            );
+            CREATE TABLE ir_model (id INTEGER PRIMARY KEY, model TEXT);
+            CREATE TABLE ir_act_server (id INTEGER PRIMARY KEY, model_id INTEGER, code TEXT);
+            CREATE TABLE ir_cron (id INTEGER PRIMARY KEY, cron_name TEXT, active BOOLEAN, ir_actions_server_id INTEGER);
+            CREATE TABLE ir_model_data (id INTEGER PRIMARY KEY, module TEXT, name TEXT, model TEXT, res_id INTEGER);
+            """
+        )
+        self.tables = {row[0] for row in self.database.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        self.database.create_function("to_regclass", 1, lambda name: name if name in self.tables else None)
+        parameters = {**PRODUCTION_PARAMETERS, **UNRELATED_PARAMETERS}
+        self.database.executemany("INSERT INTO ir_config_parameter VALUES (?, ?)", parameters.items())
+        self.database.executemany(
+            "INSERT INTO mail_push_device VALUES (?, ?)", [(1, "https://push.example.test/a"), (2, "https://push.example.test/b")]
+        )
+        self.database.execute("INSERT INTO mail_push VALUES (1, 1, 'queued notification')")
+        self.database.executemany(
+            "INSERT INTO shopify_sync VALUES (?, ?, ?)",
+            [
+                (1, "export_changed_products", "running"),
+                (2, "import_then_export_products", "queued"),
+                (3, "export_changed_products", "draft"),
+                (4, "import_products", "success"),
+            ],
+        )
+        self.database.executemany("INSERT INTO product_product VALUES (?, ?, ?)", [(1, True, 3), (2, False, 0)])
+        self.database.executemany("INSERT INTO ir_model VALUES (?, ?)", [(1, "shopify.sync"), (2, "mail.mail")])
+        self.database.executemany(
+            "INSERT INTO ir_act_server VALUES (?, ?, ?)",
+            [(1, 1, "model._cron_dispatch_next()"), (2, 2, "model.process_email_queue()"), (3, 2, "env['shopify.sync'].run()")],
+        )
+        self.database.executemany(
+            "INSERT INTO ir_cron VALUES (?, ?, ?, ?)",
+            [(1, "Shopify Sync - Dispatcher", True, 1), (2, "Mail: send queue", True, 2), (3, "Shopify reconcile", True, 3)],
+        )
+        self.database.execute("INSERT INTO ir_model_data VALUES (1, 'shopify_sync', 'ir_cron_shopify_sync_dispatch', 'ir.cron', 1)")
+
+    def cursor(self) -> closing:
+        return closing(_ParamstyleCursor(self.database.cursor()))
+
+    def commit(self) -> None:
+        self.database.commit()
+
+    def close(self) -> None:
+        self.database.close()
+
+    def parameters(self) -> dict[str, str]:
+        return dict(self.database.execute("SELECT key, value FROM ir_config_parameter"))
+
+    def scalar(self, query: str) -> object:
+        return self.database.execute(query).fetchone()[0]
+
+
+class _ParamstyleCursor:
+    """Runs the workflow's psycopg2-style (%s) SQL against SQLite."""
+
+    def __init__(self, cursor: sqlite3.Cursor) -> None:
+        self._cursor = cursor
+
+    def execute(self, query: str, parameters: Sequence[object] = ()) -> None:
+        self._cursor.execute(str(query).replace("%s", "?"), tuple(parameters))
+
+    def fetchone(self) -> tuple | None:
+        return self._cursor.fetchone()
+
+    def fetchall(self) -> list[tuple]:
+        return self._cursor.fetchall()
+
+    @property
+    def description(self) -> object:
+        return self._cursor.description
+
+    def close(self) -> None:
+        self._cursor.close()
+
+
+class ProductionCredentialSanitizeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.copy = _RestoredProductionCopy()
+        self.addCleanup(self.copy.close)
+
+    def _runner(self, platform_instance: str | None = "testing") -> object:
+        environment: dict[str, object] = {
+            "ODOO_DB_HOST": "database",
+            "ODOO_DB_USER": "odoo",
+            "ODOO_DB_PASSWORD": "database-password",
+            "ODOO_DB_NAME": "opw",
+            "ODOO_FILESTORE_PATH": "/volumes/data/filestore/opw",
+            "ENV_OVERRIDE_DISABLE_CRON": False,
+        }
+        if platform_instance is not None:
+            environment["PLATFORM_INSTANCE"] = platform_instance
+        with patch.dict(os.environ, {}, clear=True):
+            settings = odoo_data_workflows.LocalServerSettings(**environment)
+        runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
+        runner.local.db_conn = self.copy
+        patcher = patch.object(runner, "connect_to_db", return_value=self.copy)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return runner
+
+    def _assert_production_credentials_cleared(self) -> None:
+        parameters = self.copy.parameters()
+        for key, production_value in PRODUCTION_PARAMETERS.items():
+            with self.subTest(key=key):
+                self.assertNotEqual(parameters.get(key), production_value)
+        self.assertEqual({key: parameters[key] for key in UNRELATED_PARAMETERS}, UNRELATED_PARAMETERS)
+
+    def test_restored_copy_on_a_non_production_instance_loses_every_production_credential(self) -> None:
+        runner = self._runner("testing")
+
+        runner.fingerprint_restored_credentials()
+        runner.neutralize_production_credentials()
+        runner.verify_production_credentials_cleared()
+
+        self._assert_production_credentials_cleared()
+        parameters = self.copy.parameters()
+        cleared = set(PRODUCTION_PARAMETERS) - {"database.secret"}
+        self.assertEqual(cleared & set(parameters), set())
+        self.assertTrue(parameters["database.secret"])
+        self.assertEqual(self.copy.scalar("SELECT count(*) FROM mail_push_device"), 0)
+        self.assertEqual(self.copy.scalar("SELECT count(*) FROM mail_push"), 0)
+        self.assertEqual(
+            dict(self.copy.database.execute("SELECT id, state FROM shopify_sync")),
+            {1: "canceled", 2: "canceled", 3: "canceled", 4: "success"},
+        )
+        self.assertEqual(
+            self.copy.scalar(
+                "SELECT count(*) FROM product_product WHERE shopify_next_export OR shopify_next_export_quantity_change_amount <> 0"
+            ),
+            0,
+        )
+        self.assertEqual(
+            dict(self.copy.database.execute("SELECT cron_name, active FROM ir_cron")),
+            {"Shopify Sync - Dispatcher": 0, "Mail: send queue": 1, "Shopify reconcile": 0},
+        )
+
+    def test_each_restore_regenerates_a_different_database_secret(self) -> None:
+        runner = self._runner("testing")
+
+        runner.neutralize_production_credentials()
+        first_secret = self.copy.parameters()["database.secret"]
+        runner.neutralize_production_credentials()
+
+        self.assertNotEqual(self.copy.parameters()["database.secret"], first_secret)
+
+    def test_empty_or_missing_instance_is_treated_as_non_production(self) -> None:
+        for platform_instance in ("", "  ", None, "staging-unknown"):
+            with self.subTest(platform_instance=platform_instance):
+                self.copy.close()
+                self.copy = _RestoredProductionCopy()
+                runner = self._runner(platform_instance)
+
+                runner.fingerprint_restored_credentials()
+                runner.neutralize_production_credentials()
+                runner.verify_production_credentials_cleared()
+
+                self._assert_production_credentials_cleared()
+
+    def test_production_instance_keeps_every_value(self) -> None:
+        for platform_instance in ("prod", "PROD", " production "):
+            with self.subTest(platform_instance=platform_instance):
+                runner = self._runner(platform_instance)
+                before = self.copy.parameters()
+
+                runner.fingerprint_restored_credentials()
+                runner.neutralize_production_credentials()
+                runner.verify_production_credentials_cleared()
+
+                self.assertEqual(self.copy.parameters(), before)
+                self.assertEqual(self.copy.scalar("SELECT count(*) FROM mail_push_device"), 2)
+                self.assertEqual(self.copy.scalar("SELECT count(*) FROM ir_cron WHERE active"), 3)
+
+    def test_read_back_fails_when_a_restored_credential_survives(self) -> None:
+        runner = self._runner("testing")
+        runner.fingerprint_restored_credentials()
+        runner.neutralize_production_credentials()
+        self.copy.database.execute(
+            "INSERT INTO ir_config_parameter VALUES ('printnode.api_key', ?)", (PRODUCTION_PARAMETERS["printnode.api_key"],)
+        )
+        self.copy.database.execute("INSERT INTO mail_push_device VALUES (9, 'https://push.example.test/copied')")
+
+        with self.assertRaisesRegex(
+            odoo_data_workflows.OdooDatabaseUpdateError, r"printnode\.api_key.*1 copied web push subscription"
+        ) as raised:
+            runner.verify_production_credentials_cleared()
+
+        self.assertNotIn(PRODUCTION_PARAMETERS["printnode.api_key"], str(raised.exception))
+
+    def test_credential_clearing_tolerates_a_database_without_optional_addons(self) -> None:
+        for table in ("mail_push", "mail_push_device", "shopify_sync", "product_product", "ir_cron"):
+            self.copy.database.execute(f"DROP TABLE {table}")
+            self.copy.tables.discard(table)
+        runner = self._runner("testing")
+
+        runner.fingerprint_restored_credentials()
+        runner.neutralize_production_credentials()
+        runner.verify_production_credentials_cleared()
+
+        self._assert_production_credentials_cleared()
+
+    def test_restore_clears_credentials_but_keeps_what_launchplane_applies_afterwards(self) -> None:
+        runner = self._runner("testing")
+        development_store = {
+            "shopify.shop_url_key": "development-store",
+            "shopify.api_token": "development-token",
+            "shopify.webhook_key": "development-webhook-key",
+            "shopify.test_store": "True",
+            "printnode.api_key": "testing-printnode-key",
+        }
+
+        def reenable_dispatcher(**_kwargs: object) -> None:
+            # An install hook restoring a pre-migration snapshot turns the dispatcher back on.
+            self.copy.database.execute("UPDATE ir_cron SET active = TRUE WHERE id = 1")
+
+        def apply_launchplane_settings() -> None:
+            self.copy.database.executemany(
+                "INSERT INTO ir_config_parameter VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                development_store.items(),
+            )
+
+        filestore_process = MagicMock()
+        filestore_process.wait.return_value = 0
+        with patch.multiple(
+            runner,
+            _resolve_filestore_owner=MagicMock(return_value=None),
+            overwrite_filestore=MagicMock(return_value=filestore_process),
+            overwrite_database=MagicMock(),
+            normalize_filestore_permissions=MagicMock(),
+            sanitize_database=MagicMock(),
+            install_addons=MagicMock(side_effect=reenable_dispatcher),
+            update_addons=MagicMock(),
+            reconcile_missing_manifest_install_queue=MagicMock(),
+            assert_install_queue_is_resolvable=MagicMock(),
+            apply_environment_overrides=MagicMock(side_effect=apply_launchplane_settings),
+            assert_core_schema_healthy=MagicMock(),
+            ensure_gpt_users=MagicMock(),
+            drop_database=MagicMock(),
+        ):
+            runner._restore_from_verified_dump(Path("/unused/database.dump"), do_sanitize=True)
+            runner.drop_database.assert_not_called()
+
+        parameters = self.copy.parameters()
+        self.assertEqual({key: parameters[key] for key in development_store}, development_store)
+        for key in ("web_map.token_map_box", "mail.web_push_vapid_public_key", "shopify.last_product_import_time"):
+            self.assertNotIn(key, parameters)
+        self.assertNotEqual(parameters["database.secret"], PRODUCTION_PARAMETERS["database.secret"])
+        self.assertEqual(self.copy.scalar("SELECT active FROM ir_cron WHERE id = 1"), 0)
+
+    def test_restore_that_fails_after_pg_restore_drops_the_production_copy(self) -> None:
+        runner = self._runner("testing")
+        filestore_process = MagicMock()
+        filestore_process.wait.return_value = 0
+        dropped: list[bool] = []
+        with patch.multiple(
+            runner,
+            _resolve_filestore_owner=MagicMock(return_value=None),
+            overwrite_filestore=MagicMock(return_value=filestore_process),
+            overwrite_database=MagicMock(),
+            normalize_filestore_permissions=MagicMock(),
+            sanitize_database=MagicMock(),
+            install_addons=MagicMock(side_effect=odoo_data_workflows.OdooRestorerError("install failed")),
+            apply_environment_overrides=MagicMock(),
+            drop_database=MagicMock(side_effect=lambda: dropped.append(True)),
+        ):
+            with self.assertRaisesRegex(odoo_data_workflows.OdooRestorerError, "install failed"):
+                runner._restore_from_verified_dump(Path("/unused/database.dump"), do_sanitize=True)
+            runner.apply_environment_overrides.assert_not_called()
+
+        self.assertEqual(dropped, [True])
 
 
 class UpdateAddonsModuleDetectionTests(unittest.TestCase):

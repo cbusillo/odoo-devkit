@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import ast
+import hashlib
 import json
 import logging
 import os
@@ -11,11 +12,13 @@ import subprocess
 import sys
 import textwrap
 import time
+import uuid
 from collections.abc import Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from enum import Enum, IntEnum
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import psycopg2
@@ -54,6 +57,46 @@ class ExitCode(IntEnum):
 
 
 RUNTIME_SCRIPTS_PATH = "/volumes/scripts"
+
+# Production credentials a restored copy must not keep on a non-production instance.
+# This block is the single list for every tenant; extend it here, not per tenant.
+PRODUCTION_INSTANCE_NAMES = frozenset({"prod", "production"})
+CLEARED_CREDENTIAL_PARAMETER_KEYS = (
+    "printnode.api_key",
+    "web_map.token_map_box",
+    "unsplash.access_key",
+    "discuss.tenor_api_key",
+    # Odoo 19 regenerates both VAPID keys (and drops every push device) when the public key is missing:
+    # mail.push.device.get_web_push_vapid_public_key.
+    "mail.web_push_vapid_private_key",
+    "mail.web_push_vapid_public_key",
+    # Settings that point the copy at the production Shopify store.
+    "shopify.shop_url",
+    "shopify.store_url",
+    "shopify.test_store",
+)
+# Signing keys that must exist but must differ from production (Odoo HMAC tokens use database.secret).
+REGENERATED_SIGNING_PARAMETER_KEYS = ("database.secret",)
+SHOPIFY_PARAMETER_PREFIX = "shopify."
+SHOPIFY_SECRET_PARAMETER_SUFFIXES = ("_key", "_token", "_secret", "_password")
+SHOPIFY_IMPORT_CURSOR_PREFIX = "shopify.last_"
+SHOPIFY_IMPORT_CURSOR_SUFFIX = "_import_time"
+SHOPIFY_OPEN_JOB_STATES = ("draft", "queued", "running")
+WEB_PUSH_TABLES = ("mail_push", "mail_push_device")
+
+
+def is_production_credential_parameter(key: str) -> bool:
+    if key in CLEARED_CREDENTIAL_PARAMETER_KEYS or key in REGENERATED_SIGNING_PARAMETER_KEYS:
+        return True
+    if not key.startswith(SHOPIFY_PARAMETER_PREFIX):
+        return False
+    if key.endswith(SHOPIFY_SECRET_PARAMETER_SUFFIXES):
+        return True
+    return key.startswith(SHOPIFY_IMPORT_CURSOR_PREFIX) and key.endswith(SHOPIFY_IMPORT_CURSOR_SUFFIX)
+
+
+def _credential_fingerprint(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
 
 
 def _prepend_pythonpath(environment: dict[str, str], path: str) -> None:
@@ -338,6 +381,7 @@ class LocalServerSettings(BaseSettings):
     no_sanitize: bool = Field(False, alias="NO_SANITIZE")
     admin_login: str = Field("admin", alias="ODOO_ADMIN_LOGIN")
     admin_password: SecretStr | None = Field(None, alias="ODOO_ADMIN_PASSWORD")
+    platform_instance: str = Field("", alias="PLATFORM_INSTANCE")
 
     @field_validator(
         "filestore_owner",
@@ -419,6 +463,7 @@ class OdooDataWorkflowRunner:
         self._pre_openupgrade_module_states: dict[str, str] = {}
         self._odoo_shell_preflight_checked = False
         self._data_workflow_lock_path: Path | None = None
+        self._restored_credential_fingerprints: dict[str, str] = {}
 
     def require_environment_override_payloads_if_configured(self) -> None:
         try:
@@ -712,10 +757,17 @@ class OdooDataWorkflowRunner:
         except OdooRestorerError:
             self._set_database_allow_connections(True)
             raise
-        self.run_command(f"createdb -h {local_host} -U {local_user} {local_db}")
-        _logger.info("Restoring database into %s", self.local.db_name)
-        restore_cmd = f"pg_restore -d {local_db} -h {local_host} -U {local_user} --no-owner --role={local_user} {backup_path_quoted}"
-        self.run_command(restore_cmd)
+        try:
+            self.run_command(f"createdb -h {local_host} -U {local_user} {local_db}")
+            _logger.info("Restoring database into %s", self.local.db_name)
+            restore_cmd = (
+                f"pg_restore -d {local_db} -h {local_host} -U {local_user} --no-owner --role={local_user} {backup_path_quoted}"
+            )
+            self.run_command(restore_cmd)
+        except BaseException:
+            # A partial pg_restore can already hold copied credentials.
+            self._drop_database_after_failed_restore()
+            raise
         _logger.info("Database restore completed.")
 
     def connect_to_db(self) -> connection:
@@ -936,6 +988,130 @@ class OdooDataWorkflowRunner:
             if active_crons:
                 errors = "\n".join(f"- {cron[7]} (id: {cron[0]})" for cron in active_crons)
                 raise OdooDatabaseUpdateError(f"Error: The following cron jobs are still active after sanitization:\n{errors}")
+
+    def _is_production_instance(self) -> bool:
+        return self.local.platform_instance.strip().lower() in PRODUCTION_INSTANCE_NAMES
+
+    def _keeps_production_credentials(self) -> bool:
+        """Only an explicit production instance keeps credentials; empty or unknown names are treated as non-production."""
+        if self._is_production_instance():
+            _logger.info("Production instance; keeping integration credentials and signing keys.")
+            return True
+        if not self.local.platform_instance.strip():
+            _logger.warning("PLATFORM_INSTANCE is empty; treating it as non-production and clearing production credentials.")
+        return False
+
+    @staticmethod
+    def _table_exists(cursor: Any, table: str) -> bool:
+        cursor.execute("SELECT to_regclass(%s) IS NOT NULL", (table,))
+        row = cursor.fetchone()
+        return bool(row and row[0])
+
+    def _table_columns(self, cursor: Any, table: str) -> set[str]:
+        if not self._table_exists(cursor, table):
+            return set()
+        cursor.execute(sql.SQL("SELECT * FROM {} LIMIT 0").format(sql.Identifier(table)))
+        return {column[0] for column in cursor.description}
+
+    @staticmethod
+    def _credential_parameters(cursor: Any) -> dict[str, str | None]:
+        cursor.execute("SELECT key, value FROM ir_config_parameter")
+        return {key: value for key, value in cursor.fetchall() if is_production_credential_parameter(key)}
+
+    def fingerprint_restored_credentials(self) -> None:
+        """Record hashes (never values) of the restored credentials so the read-back can prove they changed."""
+        self._restored_credential_fingerprints = {}
+        if self._is_production_instance():
+            return
+        with self.connect_to_db().cursor() as cursor:
+            parameters = self._credential_parameters(cursor)
+        self._restored_credential_fingerprints = {key: _credential_fingerprint(value) for key, value in parameters.items() if value}
+
+    def neutralize_production_credentials(self) -> None:
+        """Remove what ties a restored production copy to live integrations, devices and signed tokens.
+
+        Runs on every restore onto a non-production instance, independent of --no-sanitize, and is safe
+        to repeat. It only removes what the copy brought with it; Launchplane's settings apply runs later.
+        """
+        if self._keeps_production_credentials():
+            return
+        connection_ = self.connect_to_db()
+        with connection_.cursor() as cursor:
+            parameters = self._credential_parameters(cursor)
+            for key in sorted(parameters):
+                if key in REGENERATED_SIGNING_PARAMETER_KEYS:
+                    cursor.execute(
+                        "UPDATE ir_config_parameter SET value = %s WHERE key = %s",
+                        (str(uuid.uuid4()), key),
+                    )
+                else:
+                    cursor.execute("DELETE FROM ir_config_parameter WHERE key = %s", (key,))
+            for table in WEB_PUSH_TABLES:
+                if self._table_exists(cursor, table):
+                    cursor.execute(sql.SQL("DELETE FROM {}").format(sql.Identifier(table)))
+            self._stop_copied_shopify_work(cursor)
+        connection_.commit()
+        _logger.info("Cleared production integration credentials and regenerated signing keys on the restored copy.")
+
+    def _stop_copied_shopify_work(self, cursor: Any) -> None:
+        state_placeholders = ", ".join(["%s"] * len(SHOPIFY_OPEN_JOB_STATES))
+        if "state" in self._table_columns(cursor, "shopify_sync"):
+            cursor.execute(
+                f"UPDATE shopify_sync SET state = 'canceled' WHERE state IN ({state_placeholders})",
+                SHOPIFY_OPEN_JOB_STATES,
+            )
+        product_columns = self._table_columns(cursor, "product_product")
+        if "shopify_next_export" in product_columns:
+            cursor.execute("UPDATE product_product SET shopify_next_export = FALSE WHERE shopify_next_export")
+        if "shopify_next_export_quantity_change_amount" in product_columns:
+            cursor.execute(
+                "UPDATE product_product SET shopify_next_export_quantity_change_amount = 0 "
+                "WHERE shopify_next_export_quantity_change_amount <> 0"
+            )
+        if "ir_actions_server_id" not in self._table_columns(cursor, "ir_cron"):
+            return
+        cursor.execute(
+            "UPDATE ir_cron SET active = FALSE WHERE active AND ("
+            "id IN (SELECT res_id FROM ir_model_data WHERE model = 'ir.cron' AND (module = 'shopify_sync' OR name LIKE %s)) "
+            "OR ir_actions_server_id IN ("
+            "SELECT action.id FROM ir_act_server AS action JOIN ir_model AS model ON model.id = action.model_id "
+            "WHERE model.model LIKE %s OR action.code LIKE %s))",
+            ("%shopify%", "shopify.%", "%shopify%"),
+        )
+
+    def verify_production_credentials_cleared(self) -> None:
+        """Fail the restore when any restored credential value or push subscription survived sanitize."""
+        if self._is_production_instance():
+            return
+        with self.connect_to_db().cursor() as cursor:
+            parameters = self._credential_parameters(cursor)
+            push_devices = 0
+            if self._table_exists(cursor, "mail_push_device"):
+                cursor.execute("SELECT count(*) FROM mail_push_device")
+                push_devices = cursor.fetchone()[0]
+        unchanged = sorted(
+            key
+            for key, value in parameters.items()
+            if value and self._restored_credential_fingerprints.get(key) == _credential_fingerprint(value)
+        )
+        problems = [f"unchanged restored value: {key}" for key in unchanged]
+        if push_devices:
+            problems.append(f"{push_devices} copied web push subscription(s)")
+        if problems:
+            raise OdooDatabaseUpdateError("Production credentials survived sanitize: " + "; ".join(problems))
+        _logger.info("Read-back confirmed no restored production credential remains.")
+
+    def _drop_database_after_failed_restore(self) -> None:
+        _logger.error("Restore failed after pg_restore; dropping the database so web cannot boot a production copy.")
+        self._reset_db_connection()
+        try:
+            self.drop_database()
+        except BaseException:
+            _logger.critical(
+                "Dropping the failed restore also failed; database %s may hold production credentials. Keep web stopped.",
+                self.local.db_name,
+                exc_info=True,
+            )
 
     def drop_database(self) -> None:
         _logger.info("Rolling back database update: dropping database")
@@ -2164,34 +2340,46 @@ with registry.cursor() as cr:
         target_owner = self._resolve_filestore_owner()
         _logger.info("Resolved filestore owner: %s", target_owner or "<default>")
         filestore_process = self.overwrite_filestore(target_owner)
+        database_restored = False
+        filestore_waited = False
         try:
+            # overwrite_database drops its own partial restore when createdb or pg_restore fails.
             self.overwrite_database(backup_path)
+            database_restored = True
             _logger.info("Database overwrite completed.")
-        except Exception:
+            # Clear credentials before any Odoo code (OpenUpgrade, install hooks) runs against the copy.
+            self.fingerprint_restored_credentials()
+            self.neutralize_production_credentials()
+            filestore_waited = True
             filestore_returncode = filestore_process.wait()
             if filestore_returncode != 0:
-                _logger.warning("Filestore rsync failed (code %s).", filestore_returncode)
+                raise OdooRestorerError(f"Filestore rsync failed with code {filestore_returncode}")
+            _logger.info("Filestore overwrite completed.")
+            self._prepare_restored_database(target_owner, do_sanitize=do_sanitize)
+        except BaseException:
+            if not filestore_waited:
+                filestore_returncode = filestore_process.wait()
+                if filestore_returncode != 0:
+                    _logger.warning("Filestore rsync failed (code %s).", filestore_returncode)
+            if database_restored:
+                self._drop_database_after_failed_restore()
             raise
-        filestore_returncode = filestore_process.wait()
-        if filestore_returncode != 0:
-            raise OdooRestorerError(f"Filestore rsync failed with code {filestore_returncode}")
-        _logger.info("Filestore overwrite completed.")
+
+        self.assert_core_schema_healthy()
+        self.ensure_gpt_users()
+
+        _logger.info("Upstream overwrite completed successfully.")
+
+    def _prepare_restored_database(self, target_owner: str | None, *, do_sanitize: bool) -> None:
+        """Upgrade and sanitize a restored copy through the settings apply. Callers drop the database on any error."""
         self.normalize_filestore_permissions(target_owner)
         if self.local.openupgrade_enabled:
             self.snapshot_module_states_before_openupgrade()
-            try:
-                self.run_openupgrade()
-            except OdooRestorerError:
-                self.drop_database()
-                raise
+            self.run_openupgrade()
 
         if do_sanitize:
-            try:
-                self.sanitize_database()
-                self.local.db_conn.commit()
-            except OdooDatabaseUpdateError:
-                self.drop_database()
-                raise
+            self.sanitize_database()
+            self.local.db_conn.commit()
 
         self.install_addons(reason="restore install")
 
@@ -2209,16 +2397,11 @@ with registry.cursor() as cr:
         self.reconcile_missing_manifest_install_queue()
         self.assert_install_queue_is_resolvable()
 
-        try:
-            self.apply_environment_overrides()
-        except OdooDatabaseUpdateError:
-            self.drop_database()
-            raise
-
-        self.assert_core_schema_healthy()
-        self.ensure_gpt_users()
-
-        _logger.info("Upstream overwrite completed successfully.")
+        # Install hooks and data can re-enable integration crons, so clear again, prove it, and only then
+        # let Launchplane apply this instance's own settings (which the clearing must not overwrite).
+        self.neutralize_production_credentials()
+        self.verify_production_credentials_cleared()
+        self.apply_environment_overrides()
 
 
 if __name__ == "__main__":  # pragma: no cover
