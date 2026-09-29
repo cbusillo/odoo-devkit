@@ -290,38 +290,54 @@ class UpstreamRestoreFailureTests(unittest.TestCase):
 
 
 class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
-    def test_bootstrap_allows_configured_mail_but_sanitized_restores_block_it(self) -> None:
-        with closing(sqlite3.connect(":memory:")) as database:
-            database.execute(
-                "CREATE TABLE ir_mail_server (name TEXT, smtp_port INTEGER, smtp_host TEXT, smtp_encryption TEXT, "
-                "active BOOLEAN, smtp_authentication TEXT, smtp_user TEXT, smtp_pass TEXT)"
-            )
-            runner = odoo_data_workflows.OdooDataWorkflowRunner(self._local_settings(), upstream=None, env_file=None)
-            runner.local.db_conn = types.SimpleNamespace(cursor=lambda: closing(database.cursor()), commit=database.commit)
-            with patch.multiple(
-                runner,
-                _resolve_filestore_owner=MagicMock(return_value=None),
-                database_exists=MagicMock(return_value=False),
-                _clean_filestore=MagicMock(),
-                normalize_filestore_permissions=MagicMock(),
-                create_database=MagicMock(),
-                _reset_db_connection=MagicMock(),
-                needs_base_install=MagicMock(return_value=False),
-                install_addons=MagicMock(),
-                update_addons=MagicMock(),
-                call_odoo_sql=MagicMock(return_value=[]),
-                assert_install_queue_is_resolvable=MagicMock(),
-                apply_environment_overrides=MagicMock(),
-                ensure_admin_user=MagicMock(),
-                assert_core_schema_healthy=MagicMock(),
-                ensure_gpt_users=MagicMock(),
-            ):
-                runner.run_bootstrap(do_sanitize=True)
+    @staticmethod
+    def _mail_database() -> sqlite3.Connection:
+        database = sqlite3.connect(":memory:")
+        database.execute(
+            "CREATE TABLE ir_mail_server (name TEXT, smtp_port INTEGER, smtp_host TEXT, smtp_encryption TEXT, "
+            "active BOOLEAN, smtp_authentication TEXT, smtp_user TEXT, smtp_pass TEXT)"
+        )
+        return database
+
+    @staticmethod
+    def _add_production_mail_server(database: sqlite3.Connection) -> None:
+        database.execute(
+            "INSERT INTO ir_mail_server VALUES ('Production', 587, 'smtp.example.test', 'starttls', true, 'login', "
+            "'mailbox@example.test', 'copied-secret')"
+        )
+
+    def _mail_runner(self, database: sqlite3.Connection, platform_instance: str) -> Any:
+        runner = odoo_data_workflows.OdooDataWorkflowRunner(self._local_settings(platform_instance), upstream=None, env_file=None)
+        runner.local.db_conn = types.SimpleNamespace(cursor=lambda: closing(database.cursor()), commit=database.commit)
+        return runner
+
+    def _run_bootstrap(self, runner: Any) -> None:
+        with patch.multiple(
+            runner,
+            _resolve_filestore_owner=MagicMock(return_value=None),
+            database_exists=MagicMock(return_value=False),
+            _clean_filestore=MagicMock(),
+            normalize_filestore_permissions=MagicMock(),
+            create_database=MagicMock(),
+            _reset_db_connection=MagicMock(),
+            needs_base_install=MagicMock(return_value=False),
+            install_addons=MagicMock(),
+            update_addons=MagicMock(),
+            call_odoo_sql=MagicMock(return_value=[]),
+            assert_install_queue_is_resolvable=MagicMock(),
+            apply_environment_overrides=MagicMock(),
+            ensure_admin_user=MagicMock(),
+            assert_core_schema_healthy=MagicMock(),
+            ensure_gpt_users=MagicMock(),
+        ):
+            runner.run_bootstrap(do_sanitize=True)
+
+    def test_production_bootstrap_allows_configured_mail_but_sanitized_restores_block_it(self) -> None:
+        with closing(self._mail_database()) as database:
+            runner = self._mail_runner(database, "prod")
+            self._run_bootstrap(runner)
             self.assertEqual(database.execute("SELECT count(*) FROM ir_mail_server WHERE active = true").fetchone()[0], 0)
-            database.execute(
-                "INSERT INTO ir_mail_server VALUES ('Production', 587, 'smtp.example.test', 'starttls', true, 'login', "
-                "'mailbox@example.test', 'copied-secret')"
-            )
+            self._add_production_mail_server(database)
             with patch.object(runner, "call_odoo_sql", return_value=[]):
                 runner.sanitize_database()
                 runner.sanitize_database()
@@ -336,9 +352,41 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
                 0,
             )
 
+    def test_non_production_bootstrap_blocks_configured_mail(self) -> None:
+        with closing(self._mail_database()) as database:
+            self._run_bootstrap(self._mail_runner(database, "testing"))
+            self.assertEqual(
+                database.execute("SELECT smtp_host, smtp_port FROM ir_mail_server WHERE active = true").fetchall(),
+                [("invalid", 1025)],
+            )
+
+    def test_non_production_mail_block_is_repeatable_and_clears_credentials(self) -> None:
+        with closing(self._mail_database()) as database:
+            self._add_production_mail_server(database)
+            runner = self._mail_runner(database, "testing")
+            with patch.object(runner, "connect_to_db", return_value=runner.local.db_conn):
+                runner.block_outgoing_mail_outside_production()
+                runner.block_outgoing_mail_outside_production()
+            self.assertEqual(
+                database.execute("SELECT name, active, smtp_user, smtp_pass FROM ir_mail_server ORDER BY name").fetchall(),
+                [("Production", 0, None, None), ("neutralization - disable emails", 1, None, None)],
+            )
+
+    def test_production_mail_is_left_alone(self) -> None:
+        with closing(self._mail_database()) as database:
+            self._add_production_mail_server(database)
+            runner = self._mail_runner(database, "prod")
+            with patch.object(runner, "connect_to_db", return_value=runner.local.db_conn):
+                runner.block_outgoing_mail_outside_production()
+            self.assertEqual(
+                database.execute("SELECT name, active, smtp_user FROM ir_mail_server").fetchall(),
+                [("Production", 1, "mailbox@example.test")],
+            )
+
     @staticmethod
-    def _local_settings() -> object:
+    def _local_settings(platform_instance: str = "") -> object:
         return odoo_data_workflows.LocalServerSettings(
+            PLATFORM_INSTANCE=platform_instance,
             ODOO_DB_HOST="database",
             ODOO_DB_PORT="5432",
             ODOO_DB_USER="odoo",
@@ -382,6 +430,11 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
                 "apply_environment_overrides",
                 side_effect=lambda: calls.append("apply_environment_overrides"),
             ),
+            patch.object(
+                runner,
+                "block_outgoing_mail_outside_production",
+                side_effect=lambda: calls.append("block_outgoing_mail_outside_production"),
+            ),
             patch.object(runner, "ensure_admin_user", side_effect=lambda: calls.append("ensure_admin_user")),
             patch.object(
                 runner,
@@ -402,6 +455,7 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
                 "reconcile_missing_manifest_install_queue",
                 "assert_install_queue_is_resolvable",
                 "apply_environment_overrides",
+                "block_outgoing_mail_outside_production",
                 "ensure_admin_user",
                 "connect_to_db",
                 "assert_core_schema_healthy",
@@ -886,6 +940,10 @@ class _RestoredProductionCopy:
             CREATE TABLE ir_act_server (id INTEGER PRIMARY KEY, model_id INTEGER, code TEXT);
             CREATE TABLE ir_cron (id INTEGER PRIMARY KEY, cron_name TEXT, active BOOLEAN, ir_actions_server_id INTEGER);
             CREATE TABLE ir_model_data (id INTEGER PRIMARY KEY, module TEXT, name TEXT, model TEXT, res_id INTEGER);
+            CREATE TABLE ir_mail_server (
+                name TEXT, smtp_port INTEGER, smtp_host TEXT, smtp_encryption TEXT, active BOOLEAN,
+                smtp_authentication TEXT, smtp_user TEXT, smtp_pass TEXT
+            );
             """
         )
         self.tables = {row[0] for row in self.database.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
@@ -929,6 +987,10 @@ class _RestoredProductionCopy:
             [(1, "Shopify Sync - Dispatcher", True, 1), (2, "Mail: send queue", True, 2), (3, "Shopify reconcile", True, 3)],
         )
         self.database.execute("INSERT INTO ir_model_data VALUES (1, 'shopify_sync', 'ir_cron_shopify_sync_dispatch', 'ir.cron', 1)")
+        self.database.execute(
+            "INSERT INTO ir_mail_server VALUES ('Production', 587, 'smtp.example.test', 'starttls', true, 'login', "
+            "'mailbox@example.test', 'copied-secret')"
+        )
 
     def cursor(self) -> closing:
         return closing(_ParamstyleCursor(self.database.cursor()))
@@ -944,6 +1006,9 @@ class _RestoredProductionCopy:
 
     def scalar(self, query: str) -> object:
         return self.database.execute(query).fetchone()[0]
+
+    def active_mail_servers(self) -> list[tuple]:
+        return self.database.execute("SELECT smtp_host, smtp_user, smtp_pass FROM ir_mail_server WHERE active = true").fetchall()
 
 
 class _ParamstyleCursor:
@@ -964,6 +1029,10 @@ class _ParamstyleCursor:
     @property
     def description(self) -> object:
         return self._cursor.description
+
+    @property
+    def rowcount(self) -> int:
+        return self._cursor.rowcount
 
     def close(self) -> None:
         self._cursor.close()
@@ -1168,6 +1237,8 @@ class ProductionCredentialSanitizeTests(unittest.TestCase):
             self.assertNotIn(key, parameters)
         self.assertNotEqual(parameters["database.secret"], PRODUCTION_PARAMETERS["database.secret"])
         self.assertEqual(self.copy.scalar("SELECT active FROM ir_cron WHERE id = 1"), 0)
+        self.assertEqual(self.copy.active_mail_servers(), [("invalid", None, None)])
+        self.assertEqual(self.copy.scalar("SELECT count(*) FROM ir_mail_server WHERE smtp_pass IS NOT NULL"), 0)
 
     def test_restore_that_fails_after_pg_restore_drops_the_production_copy(self) -> None:
         runner = self._runner("testing")
