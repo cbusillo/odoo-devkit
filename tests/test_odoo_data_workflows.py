@@ -844,7 +844,12 @@ class _RestoredProductionCopy:
             CREATE TABLE mail_push (id INTEGER PRIMARY KEY, mail_push_device_id INTEGER, payload TEXT);
             CREATE TABLE shopify_sync (id INTEGER PRIMARY KEY, mode TEXT, state TEXT);
             CREATE TABLE product_product (
-                id INTEGER PRIMARY KEY, shopify_next_export BOOLEAN, shopify_next_export_quantity_change_amount INTEGER
+                id INTEGER PRIMARY KEY, shopify_next_export BOOLEAN, shopify_next_export_quantity_change_amount INTEGER,
+                shopify_last_exported_at TEXT, shopify_created_at TEXT
+            );
+            CREATE TABLE external_system (id INTEGER PRIMARY KEY, code TEXT);
+            CREATE TABLE external_id (
+                id INTEGER PRIMARY KEY, system_id INTEGER, res_model TEXT, res_id INTEGER, resource TEXT, external_id TEXT
             );
             CREATE TABLE ir_model (id INTEGER PRIMARY KEY, model TEXT);
             CREATE TABLE ir_act_server (id INTEGER PRIMARY KEY, model_id INTEGER, code TEXT);
@@ -869,7 +874,20 @@ class _RestoredProductionCopy:
                 (4, "import_products", "success"),
             ],
         )
-        self.database.executemany("INSERT INTO product_product VALUES (?, ?, ?)", [(1, True, 3), (2, False, 0)])
+        self.database.executemany(
+            "INSERT INTO product_product VALUES (?, ?, ?, ?, ?)",
+            [(1, True, 3, "2026-09-28 15:40:00", "2024-01-02 03:04:05"), (2, False, 0, None, None)],
+        )
+        self.database.executemany("INSERT INTO external_system VALUES (?, ?)", [(1, "shopify"), (2, "ebay")])
+        self.database.executemany(
+            "INSERT INTO external_id VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                (1, 1, "product.product", 1, "product", "8000000000001"),
+                (2, 1, "product.product", 1, "variant", "4000000000001"),
+                (3, 1, "res.partner", 7, "customer", "6000000000001"),
+                (4, 2, "product.type", 3, "category", "ebay-category-9"),
+            ],
+        )
         self.database.executemany("INSERT INTO ir_model VALUES (?, ?)", [(1, "shopify.sync"), (2, "mail.mail")])
         self.database.executemany(
             "INSERT INTO ir_act_server VALUES (?, ?, ?)",
@@ -974,6 +992,7 @@ class ProductionCredentialSanitizeTests(unittest.TestCase):
         self.assertEqual(
             self.copy.scalar(
                 "SELECT count(*) FROM product_product WHERE shopify_next_export OR shopify_next_export_quantity_change_amount <> 0"
+                " OR shopify_last_exported_at IS NOT NULL OR shopify_created_at IS NOT NULL"
             ),
             0,
         )
@@ -981,6 +1000,8 @@ class ProductionCredentialSanitizeTests(unittest.TestCase):
             dict(self.copy.database.execute("SELECT cron_name, active FROM ir_cron")),
             {"Shopify Sync - Dispatcher": 0, "Mail: send queue": 1, "Shopify reconcile": 0},
         )
+        # Every production-store Shopify ID is gone; other systems' external IDs stay.
+        self.assertEqual(self.copy.database.execute("SELECT id, external_id FROM external_id").fetchall(), [(4, "ebay-category-9")])
 
     def test_each_restore_regenerates_a_different_database_secret(self) -> None:
         runner = self._runner("testing")
@@ -1017,6 +1038,8 @@ class ProductionCredentialSanitizeTests(unittest.TestCase):
                 self.assertEqual(self.copy.parameters(), before)
                 self.assertEqual(self.copy.scalar("SELECT count(*) FROM mail_push_device"), 2)
                 self.assertEqual(self.copy.scalar("SELECT count(*) FROM ir_cron WHERE active"), 3)
+                self.assertEqual(self.copy.scalar("SELECT count(*) FROM external_id"), 4)
+                self.assertEqual(self.copy.scalar("SELECT count(*) FROM product_product WHERE shopify_last_exported_at"), 1)
 
     def test_read_back_fails_when_a_restored_credential_survives(self) -> None:
         runner = self._runner("testing")
@@ -1034,8 +1057,29 @@ class ProductionCredentialSanitizeTests(unittest.TestCase):
 
         self.assertNotIn(PRODUCTION_PARAMETERS["printnode.api_key"], str(raised.exception))
 
+    def test_read_back_fails_when_a_production_shopify_external_id_survives(self) -> None:
+        runner = self._runner("testing")
+        runner.fingerprint_restored_credentials()
+        runner.neutralize_production_credentials()
+        self.copy.database.execute("INSERT INTO external_id VALUES (9, 1, 'product.product', 2, 'product', '8000000000002')")
+
+        with self.assertRaisesRegex(
+            odoo_data_workflows.OdooDatabaseUpdateError, r"1 copied production Shopify external ID"
+        ) as raised:
+            runner.verify_production_credentials_cleared()
+
+        self.assertNotIn("8000000000002", str(raised.exception))
+
     def test_credential_clearing_tolerates_a_database_without_optional_addons(self) -> None:
-        for table in ("mail_push", "mail_push_device", "shopify_sync", "product_product", "ir_cron"):
+        for table in (
+            "mail_push",
+            "mail_push_device",
+            "shopify_sync",
+            "product_product",
+            "ir_cron",
+            "external_id",
+            "external_system",
+        ):
             self.copy.database.execute(f"DROP TABLE {table}")
             self.copy.tables.discard(table)
         runner = self._runner("testing")

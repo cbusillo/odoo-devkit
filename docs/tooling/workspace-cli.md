@@ -419,6 +419,11 @@ Notes
   does not skip this step. It deletes the Shopify store credentials, the store
   URL and test-store flags, and the import cursors. It cancels open Shopify
   sync jobs, clears pending export flags, and turns off the Shopify crons. It
+  deletes the copy's Shopify external IDs (every `external_id` row under the
+  `shopify` external system) and clears each product's export timestamps, the
+  same data the addon's Reset Shopify clears, without contacting any store. The
+  next export then creates products in the store Launchplane applies instead of
+  updating production-store product IDs. It
   deletes the PrintNode key and the Mapbox, Unsplash and Tenor tokens. It deletes
   both web push VAPID keys along with every push device and queued push; Odoo
   generates new VAPID keys on demand. It regenerates `database.secret`. The
