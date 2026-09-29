@@ -257,6 +257,37 @@ class UpstreamRestoreFailureTests(unittest.TestCase):
             self.assertFalse(runner.local.data_workflow_lock_file.exists())
             self.assertEqual((root / "database").read_text(), "original database")
 
+    def _run_main_restore(self, runner: Any) -> tuple[int, str]:
+        with (
+            patch.object(odoo_data_workflows, "LocalServerSettings", return_value=runner.local),
+            patch.object(odoo_data_workflows, "UpstreamServerSettings", return_value=runner.upstream),
+            patch.object(odoo_data_workflows, "OdooDataWorkflowRunner", return_value=runner),
+            self.assertLogs(odoo_data_workflows._logger, level="INFO") as captured,
+        ):
+            result = odoo_data_workflows.main(["--no-sanitize"])
+        return result, "\n".join(captured.output)
+
+    def test_unreachable_source_exits_non_zero_before_anything_is_dropped(self) -> None:
+        # ssh exits 255 for an unreachable host and for a failed host-key check.
+        with self.restore_fixture(ssh_status=255) as (runner, root):
+            result, log_output = self._run_main_restore(runner)
+            self.assertEqual(result, odoo_data_workflows.ExitCode.RESTORE_FAILED)
+            self.assertEqual((root / "database").read_text(), "original database")
+            self.assertEqual((root / "filestore").read_text(), "original filestore")
+            self.assertIn("before target database or filestore replacement", log_output)
+            self.assertNotIn("dropdb", log_output)
+            self.assertNotIn("intact", log_output)
+
+    def test_failed_pg_restore_exits_non_zero_and_does_not_claim_the_target_is_intact(self) -> None:
+        with self.restore_fixture(restore_status=1) as (runner, root):
+            result, log_output = self._run_main_restore(runner)
+            self.assertEqual(result, odoo_data_workflows.ExitCode.RESTORE_FAILED)
+            # The target was recreated before pg_restore failed; the partial copy is dropped.
+            self.assertEqual((root / "database").read_text(), "dropped")
+            self.assertIn("Upstream restore failed", log_output)
+            self.assertIn("may be partially changed", log_output)
+            self.assertNotIn("intact", log_output)
+
 
 class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
     def test_bootstrap_allows_configured_mail_but_sanitized_restores_block_it(self) -> None:
