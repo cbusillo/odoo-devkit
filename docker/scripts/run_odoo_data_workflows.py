@@ -1653,20 +1653,31 @@ with registry.cursor() as cr:
             script = textwrap.dedent("""
 import json
 from odoo import api, SUPERUSER_ID
+from odoo.exceptions import AccessDenied
 from odoo.modules.registry import Registry
 
-payload = json.loads('__PAYLOAD__')
+payload = json.loads(__PAYLOAD__)
 registry = Registry(payload['db'])
 with registry.cursor() as cr:
     env = api.Environment(cr, SUPERUSER_ID, {})
     admin = env['res.users'].sudo().search([('login', '=', payload['login'])], limit=1)
     if admin:
         if payload['set_password']:
-            admin.with_context(no_reset_password=True).sudo().write({'password': payload['password']})
+            # Odoo emails a security notice on every password write, so skip unchanged passwords.
+            try:
+                admin.with_user(admin)._check_credentials(
+                    {'type': 'password', 'password': payload['password']},
+                    {'interactive': True},
+                )
+            except AccessDenied:
+                admin.with_context(no_reset_password=True).sudo().write({'password': payload['password']})
+                print('admin_password_updated=true')
+            else:
+                print('admin_password_updated=false')
         if payload['set_email'] and admin.partner_id:
             admin.partner_id.sudo().write({'email': payload['email']})
     cr.commit()
-""").replace("__PAYLOAD__", json.dumps(payload))
+""").replace("__PAYLOAD__", repr(json.dumps(payload)))
 
             _logger.info("Applying admin hardening updates.")
             self._run_odoo_shell(script, "admin hardening")
