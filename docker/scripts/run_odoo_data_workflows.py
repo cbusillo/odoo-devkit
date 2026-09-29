@@ -977,15 +977,11 @@ class OdooDataWorkflowRunner:
             sql_calls.append(SqlCall("ir.cron", KeyValuePair("active", False)))
 
         _logger.info("Sanitizing database...")
-        # An active dummy server also blocks Odoo's config/CLI SMTP fallback.
-        # Match Odoo's neutralization behavior and remove copied credentials.
         with self.connect_to_db().cursor() as cursor:
-            cursor.execute("UPDATE ir_mail_server SET active = false, smtp_user = NULL, smtp_pass = NULL")
             if block_smtp_fallback:
-                cursor.execute(
-                    "INSERT INTO ir_mail_server (name, smtp_port, smtp_host, smtp_encryption, active, smtp_authentication) "
-                    "VALUES ('neutralization - disable emails', 1025, 'invalid', 'none', true, 'login')"
-                )
+                self._block_outgoing_mail(cursor)
+            else:
+                cursor.execute("UPDATE ir_mail_server SET active = false, smtp_user = NULL, smtp_pass = NULL")
         # noinspection PyUnresolvedReferences  # call_odoo_sql exists on this class; PyCharm false positive.
         call_odoo_sql = self.call_odoo_sql
         for sql_call in sql_calls:
@@ -998,6 +994,31 @@ class OdooDataWorkflowRunner:
             if active_crons:
                 errors = "\n".join(f"- {cron[7]} (id: {cron[0]})" for cron in active_crons)
                 raise OdooDatabaseUpdateError(f"Error: The following cron jobs are still active after sanitization:\n{errors}")
+
+    @staticmethod
+    def _block_outgoing_mail(cursor: Any) -> None:
+        # An active dummy server also blocks Odoo's config/CLI SMTP fallback.
+        # Match Odoo's neutralization behavior and remove copied credentials.
+        cursor.execute(
+            "UPDATE ir_mail_server SET active = false, smtp_user = NULL, smtp_pass = NULL "
+            "WHERE name <> 'neutralization - disable emails'"
+        )
+        cursor.execute("UPDATE ir_mail_server SET active = true WHERE name = 'neutralization - disable emails'")
+        if cursor.rowcount == 0:
+            cursor.execute(
+                "INSERT INTO ir_mail_server (name, smtp_port, smtp_host, smtp_encryption, active, smtp_authentication) "
+                "VALUES ('neutralization - disable emails', 1025, 'invalid', 'none', true, 'login')"
+            )
+
+    def block_outgoing_mail_outside_production(self) -> None:
+        """Keep non-production lanes from sending mail, whatever SMTP settings they were given."""
+        if self._is_production_instance():
+            return
+        connection_ = self.connect_to_db()
+        with connection_.cursor() as cursor:
+            self._block_outgoing_mail(cursor)
+        connection_.commit()
+        _logger.info("Blocked outgoing mail on non-production instance '%s'.", self.local.platform_instance)
 
     def _is_production_instance(self) -> bool:
         return self.local.platform_instance.strip().lower() in PRODUCTION_INSTANCE_NAMES
@@ -1750,6 +1771,7 @@ with registry.cursor() as cr:
             self.drop_database()
             raise
 
+        self.block_outgoing_mail_outside_production()
         self.ensure_admin_user()
         self.connect_to_db()
         self.assert_core_schema_healthy()
@@ -1764,6 +1786,7 @@ with registry.cursor() as cr:
         self.reconcile_missing_manifest_install_queue()
         self.assert_install_queue_is_resolvable()
         self.apply_environment_overrides()
+        self.block_outgoing_mail_outside_production()
         self.ensure_admin_user()
         self.connect_to_db()
         self.assert_core_schema_healthy()
@@ -2401,6 +2424,7 @@ with registry.cursor() as cr:
             # Clear credentials before any Odoo code (OpenUpgrade, install hooks) runs against the copy.
             self.fingerprint_restored_credentials()
             self.neutralize_production_credentials()
+            self.block_outgoing_mail_outside_production()
             filestore_waited = True
             filestore_returncode = filestore_process.wait()
             if filestore_returncode != 0:
@@ -2453,6 +2477,7 @@ with registry.cursor() as cr:
         self.neutralize_production_credentials()
         self.verify_production_credentials_cleared()
         self.apply_environment_overrides()
+        self.block_outgoing_mail_outside_production()
 
 
 if __name__ == "__main__":  # pragma: no cover

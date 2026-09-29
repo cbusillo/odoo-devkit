@@ -165,8 +165,13 @@ Current runtime ownership is intentionally narrow and explicit:
   Restored databases that undergo sanitization get an active dummy outgoing
   server, following Odoo's neutralization behavior, so even configured SMTP
   fallback cannot send copied customer mail. Copied SMTP usernames/passwords are
-  cleared. Fresh bootstrap does not insert that dummy server, so an empty new
-  database can use the operator's explicitly supplied mail configuration.
+  cleared. Non-production instances (anything other than `prod`/`production`,
+  including an empty `PLATFORM_INSTANCE`) get the same dummy server on
+  bootstrap, every post-deploy maintenance run, and every restore, even with
+  `--no-sanitize`, so testing and preview lanes cannot send mail whatever SMTP
+  settings they receive. Production bootstrap does not insert the dummy server,
+  so a new production database can use the operator's supplied mail
+  configuration.
 - Restores onto a non-production instance also clear the copy's production
   integration credentials and signing keys (Shopify, PrintNode, map and media
   tokens, web push keys and devices, `database.secret`), and the copy's
