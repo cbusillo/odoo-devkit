@@ -11,8 +11,14 @@ name = "odoo-tenant-replace-me"
 path = "."
 ref = "main"
 
+[build]
+odoo_version = "19.0"
+base_runtime_image = "registry.invalid/private-enterprise-runtime:19.0-runtime"
+base_devtools_image = "registry.invalid/private-enterprise-devtools:19.0-devtools"
+
 [repos.devkit]
 name = "odoo-devkit"
+repository = "replace-owner/odoo-devkit"
 path = "../odoo-devkit"
 ref = "main"
 
@@ -23,6 +29,7 @@ ref = "main"
 
 [repos.shared_addons]
 name = "odoo-shared-addons"
+repository = "replace-owner/odoo-shared-addons"
 path = "../odoo-shared-addons"
 ref = "main"
 

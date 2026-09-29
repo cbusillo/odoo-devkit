@@ -2328,6 +2328,81 @@ runtime_env = { ODOO_VERSION = "18.0", ODOO_BASE_RUNTIME_IMAGE = "ghcr.io/exampl
 
             run_command_mock.assert_not_called()
 
+    def test_publish_values_come_from_the_tenant_manifest_build_table(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = temp_root / "tenant-repo"
+            runtime_repo_path = temp_root / "runtime-repo"
+            tenant_repo_path.mkdir(parents=True, exist_ok=True)
+            self._write_runtime_repo(runtime_repo_path)
+            manifest_path = self._write_manifest(
+                tenant_repo_path=tenant_repo_path,
+                runtime_repo_path=runtime_repo_path,
+                instance_name="testing",
+            )
+            manifest_path.write_text(
+                manifest_path.read_text(encoding="utf-8")
+                + """
+[build]
+odoo_version = "19.0"
+base_runtime_image = "ghcr.io/example/manifest:19.0-runtime"
+base_devtools_image = "ghcr.io/example/manifest:19.0-devtools"
+""",
+                encoding="utf-8",
+            )
+            manifest = load_workspace_manifest(manifest_path)
+            self._configure_publish_runtime_payload(
+                odoo_version="18.0",
+                environment={"PYTHON_VERSION": "3.12"},
+            )
+
+            runtime_context = local_runtime.load_runtime_context(
+                manifest=manifest,
+                runtime_repo_path=runtime_repo_path,
+                require_local_instance=False,
+                enforce_required_environment=False,
+            )
+            runtime_values = local_runtime.build_runtime_env_values(
+                runtime_context=runtime_context,
+                build_target_override="production",
+                include_selection_sources=False,
+                required_environment_keys=(),
+            )
+
+        self.assertEqual(runtime_values["ODOO_VERSION"], manifest.build.odoo_version)
+        self.assertEqual(runtime_values["PYTHON_VERSION"], manifest.workspace.python_version)
+        self.assertEqual(
+            local_runtime.resolve_base_images_for_build(runtime_values),
+            (
+                manifest.build.base_runtime_image,
+                manifest.build.base_devtools_image,
+            ),
+        )
+
+    def test_manifest_repository_must_be_an_owner_name_slug(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            tenant_repo_path = temp_root / "tenant-repo"
+            runtime_repo_path = temp_root / "runtime-repo"
+            tenant_repo_path.mkdir(parents=True, exist_ok=True)
+            manifest_path = self._write_manifest(
+                tenant_repo_path=tenant_repo_path,
+                runtime_repo_path=runtime_repo_path,
+            )
+            manifest_text = manifest_path.read_text(encoding="utf-8")
+            manifest_path.write_text(
+                manifest_text.replace('name = "runtime-repo"', 'name = "runtime-repo"\nrepository = "example/runtime-repo"'),
+                encoding="utf-8",
+            )
+            self.assertEqual(load_workspace_manifest(manifest_path).runtime_repo.repository, "example/runtime-repo")
+
+            manifest_path.write_text(
+                manifest_text.replace('name = "runtime-repo"', 'name = "runtime-repo"\nrepository = "https://example.invalid/x"'),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "owner/name slug"):
+                load_workspace_manifest(manifest_path)
+
     def test_native_runtime_publish_synthesizes_context_from_explicit_runtime_payload(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
