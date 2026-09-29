@@ -52,8 +52,9 @@ repository = "example-owner/odoo-shared-addons"
 ```
 
 - Declared values take precedence over the same keys in the Launchplane runtime
-  payload and over the stack's `odoo_version`. Undeclared keys still fall back
-  to the payload while tenants adopt the table.
+  payload and over the stack's `odoo_version`, for local commands and publish
+  alike. For an undeclared key, publish still takes the payload value while
+  tenants adopt the table; local commands keep the stack's `odoo_version`.
 - Declare base images by tag. Publish resolves each tag to a digest and records
   it in the artifact manifest; the artifact, not the manifest, is the exact
   record of what was built.
