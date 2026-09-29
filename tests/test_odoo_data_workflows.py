@@ -1279,5 +1279,88 @@ class UpdateAddonsModuleDetectionTests(unittest.TestCase):
         self.assertEqual(list(apply_module_updates.call_args.args[0]), ["website"])
 
 
+class EnsureAdminUserTests(unittest.TestCase):
+    def _runner(self, admin_password: str) -> Any:
+        environment: dict[str, object] = {
+            "ODOO_DB_HOST": "database",
+            "ODOO_DB_USER": "odoo",
+            "ODOO_DB_PASSWORD": "database-password",
+            "ODOO_DB_NAME": "cm_website",
+            "ODOO_FILESTORE_PATH": "/volumes/data/filestore/cm_website",
+            "ODOO_ADMIN_PASSWORD": admin_password,
+            "PLATFORM_INSTANCE": "testing",
+        }
+        with patch.dict(os.environ, {}, clear=True):
+            settings = odoo_data_workflows.LocalServerSettings(**environment)
+        runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
+        cursor = MagicMock()
+        cursor.fetchone.side_effect = lambda: (2, 3) if "res_users" in cursor.execute.call_args.args[0] else ("admin@localhost",)
+        runner.local.db_conn = MagicMock()
+        runner.local.db_conn.cursor.return_value.__enter__.return_value = cursor
+        for name in ("connect_to_db", "_reset_db_connection"):
+            patcher = patch.object(runner, name)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return runner
+
+    @staticmethod
+    def _run_admin_hardening(runner: Any, environment: MagicMock) -> None:
+        odoo_module = types.ModuleType("odoo")
+        odoo_module.__dict__.update(api=MagicMock(Environment=MagicMock(return_value=environment)), SUPERUSER_ID=1)
+        exceptions = types.ModuleType("odoo.exceptions")
+        exceptions.__dict__["AccessDenied"] = PermissionError
+        registry_module = types.ModuleType("odoo.modules.registry")
+        registry_module.__dict__["Registry"] = MagicMock()
+
+        def run_shell(script: str, label: str) -> None:
+            if label == "admin hardening":
+                exec(script, {})
+
+        with (
+            patch.dict(
+                sys.modules,
+                {"odoo": odoo_module, "odoo.exceptions": exceptions, "odoo.modules.registry": registry_module},
+            ),
+            patch.object(runner, "_run_odoo_shell", side_effect=run_shell),
+        ):
+            runner.ensure_admin_user()
+
+    def test_post_deploy_admin_hardening_only_writes_when_configured_password_changes(self) -> None:
+        environment = MagicMock()
+        admin = environment["res.users"].sudo().search()
+        admin.with_user.return_value = admin
+        admin.with_context.return_value = admin
+        admin.sudo.return_value = admin
+        stored = {"password": "initial-password"}
+
+        def check_credentials(credential: dict[str, str], _request_environment: dict[str, bool]) -> None:
+            if credential["password"] != stored["password"]:
+                raise PermissionError
+
+        admin._check_credentials.side_effect = check_credentials
+        admin.write.side_effect = stored.update
+        configured_password = "configured-'\"\\-password"
+
+        self._run_admin_hardening(self._runner(configured_password), environment)
+        self._run_admin_hardening(self._runner(configured_password), environment)
+        admin.write.assert_called_once_with({"password": configured_password})
+
+        self._run_admin_hardening(self._runner("rotated-password"), environment)
+        self._run_admin_hardening(self._runner("rotated-password"), environment)
+        self.assertEqual(admin.write.call_count, 2)
+        self.assertEqual(stored["password"], "rotated-password")
+
+    def test_post_deploy_admin_hardening_does_not_write_after_unexpected_credential_check_failure(self) -> None:
+        environment = MagicMock()
+        admin = environment["res.users"].sudo().search()
+        admin.with_user.return_value = admin
+        admin._check_credentials.side_effect = RuntimeError("credential backend unavailable")
+
+        with self.assertRaisesRegex(RuntimeError, "credential backend unavailable"):
+            self._run_admin_hardening(self._runner("configured-password"), environment)
+
+        admin.with_context.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
