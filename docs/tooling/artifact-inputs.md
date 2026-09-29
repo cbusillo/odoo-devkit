@@ -12,7 +12,8 @@ When
 ## Principle
 
 - Keep source input intent versioned in the repo that owns the build.
-- Keep `workspace.toml` focused on workspace assembly and runtime targeting.
+- Keep `workspace.toml` focused on workspace assembly, runtime targeting, and
+  the build inputs in its `[build]` table (see below).
 - Keep runtime stack config focused on local runtime selection state.
 - Keep hosted runtime values in Launchplane records. `artifact-inputs.toml`
   may override source repository selection, not hosted runtime authority.
@@ -26,6 +27,39 @@ When
   repo needs a different layout.
 - `platform runtime` reads this file for source repository selection used by
   local runtime and publish flows.
+
+## Build inputs in `workspace.toml`
+
+The tenant's `workspace.toml` declares what its artifact is built from, so the
+declaration changes with the code in an ordinary pull request:
+
+```toml
+[workspace]
+python = "3.13"                     # PYTHON_VERSION
+
+[build]
+odoo_version = "19.0"               # ODOO_VERSION
+base_runtime_image = "registry.invalid/private-enterprise-runtime:19.0-runtime"
+base_devtools_image = "registry.invalid/private-enterprise-devtools:19.0-devtools"
+
+[repos.devkit]
+name = "odoo-devkit"
+repository = "example-owner/odoo-devkit"   # what hosted publish checks out
+
+[repos.shared_addons]
+name = "odoo-shared-addons"
+repository = "example-owner/odoo-shared-addons"
+```
+
+- Declared values take precedence over the same keys in the Launchplane runtime
+  payload and over the stack's `odoo_version`, for local commands and publish
+  alike. For an undeclared key, publish still takes the payload value while
+  tenants adopt the table; local commands keep the stack's `odoo_version`.
+- Declare base images by tag. Publish resolves each tag to a digest and records
+  it in the artifact manifest; the artifact, not the manifest, is the exact
+  record of what was built.
+- `repository` is an `owner/name` slug. It names the repository a hosted build
+  checks out; `path` and `url` keep their workspace-sync meaning.
 
 ## Immutable publish handoff
 
