@@ -2044,6 +2044,7 @@ def build_runtime_env_values(
     ):
         for runtime_key in ARTIFACT_PUBLISH_RUNTIME_ENV_KEYS:
             runtime_values[runtime_key] = source_environment.get(runtime_key, "")
+    runtime_values.update(manifest_build_values(runtime_context.manifest))
     apply_typed_odoo_instance_override_payload(
         runtime_values=runtime_values,
         context_name=runtime_selection.context_name,
@@ -2057,6 +2058,18 @@ def build_runtime_env_values(
         source_description="Resolved runtime environment",
     )
     return runtime_values
+
+
+def manifest_build_values(manifest: WorkspaceManifest) -> dict[str, str]:
+    """Build inputs the tenant manifest declares; they take precedence over any other source."""
+    build = manifest.build
+    declared = {
+        "PYTHON_VERSION": manifest.workspace.python_version.strip(),
+        "ODOO_VERSION": build.odoo_version,
+        "ODOO_BASE_RUNTIME_IMAGE": build.base_runtime_image,
+        "ODOO_BASE_DEVTOOLS_IMAGE": build.base_devtools_image,
+    }
+    return {key: value for key, value in declared.items() if value}
 
 
 def apply_typed_odoo_instance_override_payload(

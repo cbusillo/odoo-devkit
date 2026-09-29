@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import os
+import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+
+REPOSITORY_SLUG_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 
 @dataclass(frozen=True)
@@ -12,6 +15,7 @@ class RepoDefinition:
     path: str | None = None
     url: str | None = None
     ref: str | None = None
+    repository: str | None = None
 
     def resolve_path(self, *, manifest_directory: Path) -> Path | None:
         if self.path is None:
@@ -67,6 +71,15 @@ class ArtifactsDefinition:
 
 
 @dataclass(frozen=True)
+class BuildDefinition:
+    """What a tenant's artifact is built from; the build records the exact digests it used."""
+
+    odoo_version: str | None = None
+    base_runtime_image: str | None = None
+    base_devtools_image: str | None = None
+
+
+@dataclass(frozen=True)
 class WorkspaceManifest:
     schema_version: int
     tenant: str
@@ -77,6 +90,7 @@ class WorkspaceManifest:
     codex: CodexDefinition
     artifacts: ArtifactsDefinition
     tenant_repo: RepoDefinition
+    build: BuildDefinition = BuildDefinition()
     shared_addons_repo: RepoDefinition | None = None
     devkit_repo: RepoDefinition | None = None
     runtime_repo: RepoDefinition | None = None
@@ -98,6 +112,7 @@ def load_workspace_manifest(manifest_path: Path) -> WorkspaceManifest:
     ide_table = _read_required_table(manifest_data, "ide")
     codex_table = _read_optional_table(manifest_data, "codex")
     artifacts_table = _read_optional_table(manifest_data, "artifacts")
+    build_table = _read_optional_table(manifest_data, "build")
     repositories_table = _read_required_table(manifest_data, "repos")
     tenant_repo = _parse_repo_definition(repositories_table, "tenant")
     shared_addons_repo = _parse_optional_repo_definition(repositories_table, "shared_addons")
@@ -133,6 +148,11 @@ def load_workspace_manifest(manifest_path: Path) -> WorkspaceManifest:
     artifacts_definition = ArtifactsDefinition(
         inputs_file=_read_optional_string(artifacts_table, "inputs_file"),
     )
+    build_definition = BuildDefinition(
+        odoo_version=_read_optional_nonempty_string(build_table, "odoo_version"),
+        base_runtime_image=_read_optional_nonempty_string(build_table, "base_runtime_image"),
+        base_devtools_image=_read_optional_nonempty_string(build_table, "base_devtools_image"),
+    )
     return WorkspaceManifest(
         schema_version=schema_version,
         tenant=tenant_name,
@@ -143,6 +163,7 @@ def load_workspace_manifest(manifest_path: Path) -> WorkspaceManifest:
         codex=codex_definition,
         artifacts=artifacts_definition,
         tenant_repo=tenant_repo,
+        build=build_definition,
         shared_addons_repo=shared_addons_repo,
         devkit_repo=devkit_repo,
         runtime_repo=runtime_repo,
@@ -150,13 +171,7 @@ def load_workspace_manifest(manifest_path: Path) -> WorkspaceManifest:
 
 
 def _parse_repo_definition(repositories_table: dict[str, object], key: str) -> RepoDefinition:
-    repository_table = _read_required_table(repositories_table, key)
-    return RepoDefinition(
-        name=_read_required_string(repository_table, "name"),
-        path=_read_optional_string(repository_table, "path"),
-        url=_read_optional_string(repository_table, "url"),
-        ref=_read_optional_string(repository_table, "ref"),
-    )
+    return _repo_definition(_read_required_table(repositories_table, key))
 
 
 def _parse_optional_repo_definition(repositories_table: dict[str, object], key: str) -> RepoDefinition | None:
@@ -165,11 +180,19 @@ def _parse_optional_repo_definition(repositories_table: dict[str, object], key: 
     repository_value = repositories_table[key]
     if not isinstance(repository_value, dict):
         raise ValueError(f"Expected [repos.{key}] to be a table")
+    return _repo_definition(repository_value)
+
+
+def _repo_definition(repository_table: dict[str, object]) -> RepoDefinition:
+    repository = _read_optional_nonempty_string(repository_table, "repository")
+    if repository is not None and REPOSITORY_SLUG_PATTERN.fullmatch(repository) is None:
+        raise ValueError(f"Expected repository to be an owner/name slug, got {repository!r}")
     return RepoDefinition(
-        name=_read_required_string(repository_value, "name"),
-        path=_read_optional_string(repository_value, "path"),
-        url=_read_optional_string(repository_value, "url"),
-        ref=_read_optional_string(repository_value, "ref"),
+        name=_read_required_string(repository_table, "name"),
+        path=_read_optional_string(repository_table, "path"),
+        url=_read_optional_string(repository_table, "url"),
+        ref=_read_optional_string(repository_table, "ref"),
+        repository=repository,
     )
 
 
@@ -218,6 +241,13 @@ def _read_optional_string(source: dict[str, object], key: str) -> str | None:
     if not isinstance(value, str):
         raise ValueError(f"Expected {key} to be a string when present")
     return value
+
+
+def _read_optional_nonempty_string(source: dict[str, object], key: str) -> str | None:
+    value = _read_optional_string(source, key)
+    if value is not None and not value.strip():
+        raise ValueError(f"Expected {key} to be a non-empty string when present")
+    return value.strip() if value is not None else None
 
 
 def _read_optional_bool(source: dict[str, object], key: str, *, default: bool) -> bool:
