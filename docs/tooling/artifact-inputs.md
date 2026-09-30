@@ -73,9 +73,12 @@ support lock and tenant lock catalog. When the manifest includes the devkit
 repo, `platform dependencies check` reports that build-tool mismatch before the
 publish workflow reaches Buildx.
 Devkit alone writes those markers from the verified Git snapshots used for the
-build. Each recorded source commit must also be advertised by a ref in its
-normalized GitHub origin; changing only `.git/config` cannot reattribute a
-local commit to another repository.
+build. Each recorded source commit must also be published in its normalized
+GitHub origin: either a ref points at it, or a branch or tag there contains it.
+A pin keeps working after its branch moves on. Changing only `.git/config`
+cannot reattribute a local commit to another repository, and a commit reachable
+only through the fork network does not count, because the check never fetches
+a commit by id.
 
 The artifact build uses two explicit uv roots:
 

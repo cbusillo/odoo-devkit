@@ -2801,7 +2801,7 @@ def require_remote_source_commit(
     label: str,
     github_token: str | None = None,
 ) -> None:
-    remote_url = f"https://github.com/{repository}.git"
+    remote_url = source_repository_remote_url(repository)
     execution_env = artifact_git_command_env()
     normalized_token = clean_optional_value(github_token)
     if normalized_token:
@@ -2833,8 +2833,61 @@ def require_remote_source_commit(
         for line in remote_result.stdout.splitlines()
         if "\t" in line and GIT_SHA_PATTERN.fullmatch(line.split("\t", 1)[0].strip())
     }
-    if commit not in advertised_commits:
-        raise RuntimeCommandError(f"Artifact publish requires {label} commit {commit} to be advertised by a ref in {repository}.")
+    if commit in advertised_commits:
+        return
+    if not remote_branch_or_tag_contains_commit(remote_url=remote_url, commit=commit, execution_env=execution_env):
+        raise RuntimeCommandError(
+            f"Artifact publish requires {label} commit {commit} to be advertised by a ref in {repository}, "
+            "or reachable from one of its branches or tags."
+        )
+
+
+def source_repository_remote_url(repository: str) -> str:
+    return f"https://github.com/{repository}.git"
+
+
+def remote_branch_or_tag_contains_commit(*, remote_url: str, commit: str, execution_env: dict[str, str]) -> bool:
+    """Whether a branch or tag of the remote contains the commit.
+
+    Fetch only the commit history of branches and tags, then look for the commit
+    there. The commit is never fetched by id: GitHub serves any commit in a fork
+    network that way, which would let another repository's commit pass as this one's.
+    """
+    # Never lazily fetch a missing object by id from the promisor remote.
+    history_env = {**execution_env, "GIT_NO_LAZY_FETCH": "1"}
+    with tempfile.TemporaryDirectory(prefix="odoo-devkit-source-history-") as temporary_directory:
+        history_path = Path(temporary_directory)
+
+        def git(*arguments: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                ["git", *arguments],
+                cwd=history_path,
+                capture_output=True,
+                text=True,
+                env=history_env,
+            )
+
+        # An empty template: an inherited template must not seed refs or objects.
+        if git("init", "--quiet", "--bare", "--template=").returncode != 0:
+            return False
+        fetch_result = git(
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--filter=tree:0",
+            remote_url,
+            "+refs/heads/*:refs/remotes/source/*",
+            "+refs/tags/*:refs/tags/*",
+        )
+        if fetch_result.returncode != 0:
+            details = clean_optional_value(fetch_result.stderr) or clean_optional_value(fetch_result.stdout)
+            raise RuntimeCommandError(
+                f"Artifact publish could not read branch and tag history from {remote_url}."
+                + (f"\nGit reported: {details}" if details else "")
+            )
+        # An unknown commit makes this fail, which counts as not contained.
+        containing_refs = git("for-each-ref", "--contains", commit, "--format=%(refname)", "refs/remotes/source", "refs/tags")
+        return containing_refs.returncode == 0 and bool(containing_refs.stdout.strip())
 
 
 def require_artifact_git_sources_unchanged(sources: tuple[GitSourceSnapshot | None, ...]) -> None:
