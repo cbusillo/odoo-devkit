@@ -2853,6 +2853,8 @@ def remote_branch_or_tag_contains_commit(*, remote_url: str, commit: str, execut
     there. The commit is never fetched by id: GitHub serves any commit in a fork
     network that way, which would let another repository's commit pass as this one's.
     """
+    # Never lazily fetch a missing object by id from the promisor remote.
+    history_env = {**execution_env, "GIT_NO_LAZY_FETCH": "1"}
     with tempfile.TemporaryDirectory(prefix="odoo-devkit-source-history-") as temporary_directory:
         history_path = Path(temporary_directory)
 
@@ -2862,10 +2864,11 @@ def remote_branch_or_tag_contains_commit(*, remote_url: str, commit: str, execut
                 cwd=history_path,
                 capture_output=True,
                 text=True,
-                env=execution_env,
+                env=history_env,
             )
 
-        if git("init", "--quiet", "--bare").returncode != 0:
+        # An empty template: an inherited template must not seed refs or objects.
+        if git("init", "--quiet", "--bare", "--template=").returncode != 0:
             return False
         fetch_result = git(
             "fetch",
@@ -2882,8 +2885,7 @@ def remote_branch_or_tag_contains_commit(*, remote_url: str, commit: str, execut
                 f"Artifact publish could not read branch and tag history from {remote_url}."
                 + (f"\nGit reported: {details}" if details else "")
             )
-        if git("cat-file", "-e", f"{commit}^{{commit}}").returncode != 0:
-            return False
+        # An unknown commit makes this fail, which counts as not contained.
         containing_refs = git("for-each-ref", "--contains", commit, "--format=%(refname)", "refs/remotes/source", "refs/tags")
         return containing_refs.returncode == 0 and bool(containing_refs.stdout.strip())
 
