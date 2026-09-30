@@ -1935,6 +1935,20 @@ with registry.cursor() as cr:
             grouped_dirs.append(child_path)
         return grouped_dirs
 
+    def _local_dependency_closure(self, modules: Sequence[str], local_module_paths: dict[str, Path]) -> set[str]:
+        """Return the modules plus every local addon they depend on, directly or not."""
+        closure = set(modules)
+        pending = list(modules)
+        while pending:
+            addon_path = local_module_paths.get(pending.pop())
+            if not addon_path:
+                continue
+            for dependency_name in self._load_manifest_dependencies(addon_path):
+                if dependency_name in local_module_paths and dependency_name not in closure:
+                    closure.add(dependency_name)
+                    pending.append(dependency_name)
+        return closure
+
     @staticmethod
     def _load_manifest_dependencies(addon_path: Path) -> list[str]:
         manifest_path = addon_path / "__manifest__.py"
@@ -2053,19 +2067,7 @@ with registry.cursor() as cr:
                 _logger.info("ODOO_UPDATE_MODULES unset/AUTO and no installed local modules detected; skipping.")
                 return
             mode_label = mods_env.upper() if mods_env else "AUTO"
-            desired_set = set(installed_local_modules)
-            pending = list(installed_local_modules)
-            while pending:
-                module_name = pending.pop()
-                addon_path = local_module_paths.get(module_name)
-                if not addon_path:
-                    continue
-                for dependency_name in self._load_manifest_dependencies(addon_path):
-                    if dependency_name not in local_modules:
-                        continue
-                    if dependency_name not in desired_set:
-                        desired_set.add(dependency_name)
-                        pending.append(dependency_name)
+            desired_set = self._local_dependency_closure(installed_local_modules, local_module_paths)
             missing_dependencies = sorted(name for name in desired_set if name not in installed_modules)
             if missing_dependencies:
                 _logger.info(
@@ -2087,6 +2089,18 @@ with registry.cursor() as cr:
             if not desired:
                 _logger.info("ODOO_UPDATE_MODULES is empty after parsing; skipping.")
                 return
+            # Odoo's -u upgrades a module's dependents, not its dependencies, so a
+            # changed local dependency (a new cron, view or record) would otherwise
+            # load only on the next restore.
+            closure = self._local_dependency_closure(desired, self._resolve_local_module_paths())
+            installed_modules = self._installed_modules()
+            installed_dependencies = sorted(name for name in closure - set(desired) if name in installed_modules)
+            if installed_dependencies:
+                _logger.info(
+                    "ODOO_UPDATE_MODULES; also upgrading installed local dependencies: %s",
+                    ", ".join(installed_dependencies),
+                )
+                desired = [*desired, *installed_dependencies]
             modules_source_label = "ODOO_UPDATE_MODULES"
 
         if explicit_modules is not None:
