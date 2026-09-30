@@ -1341,6 +1341,15 @@ class UpdateAddonsModuleDetectionTests(unittest.TestCase):
         self.assertEqual(list(apply_module_updates.call_args.args[0]), ["tenant_unused", "sale"])
         self.assertIsNone(apply_module_updates.call_args.kwargs["local_module_paths"])
 
+    def test_configured_module_list_also_upgrades_its_installed_local_dependencies(self) -> None:
+        # tenant_core depends on sale (core), tenant_helper and, through it, tenant_deep.
+        apply_module_updates = self._update(
+            installed_modules={"base", "sale", "tenant_core", "tenant_helper"}, update_modules="tenant_core"
+        )
+
+        apply_module_updates.assert_called_once()
+        self.assertEqual(list(apply_module_updates.call_args.args[0]), ["tenant_core", "tenant_helper"])
+
     def test_explicit_modules_override_configured_modules(self) -> None:
         apply_module_updates = self._update(
             installed_modules=set(), update_modules="tenant_unused", explicit_modules=["website", " "]
