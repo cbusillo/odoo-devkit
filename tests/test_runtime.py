@@ -438,10 +438,13 @@ attached_paths = ["sources/devkit"]
 
     def test_remote_source_commit_must_be_advertised_by_origin_ref(self) -> None:
         commit = "a" * 40
-        with mock.patch(
-            "odoo_devkit.local_runtime.subprocess.run",
-            return_value=mock.Mock(returncode=0, stdout=f"{'b' * 40}\trefs/heads/main\n", stderr=""),
-        ) as run_mock:
+        with (
+            mock.patch(
+                "odoo_devkit.local_runtime.subprocess.run",
+                return_value=mock.Mock(returncode=0, stdout=f"{'b' * 40}\trefs/heads/main\n", stderr=""),
+            ) as run_mock,
+            mock.patch("odoo_devkit.local_runtime.remote_branch_or_tag_contains_commit", return_value=False),
+        ):
             with self.assertRaisesRegex(ValueError, "advertised by a ref"):
                 self.remote_source_commit_verifier(
                     repository="example/source-repo",
@@ -454,6 +457,35 @@ attached_paths = ["sources/devkit"]
         execution_environment = run_mock.call_args.kwargs["env"]
         self.assertEqual(execution_environment["GIT_CONFIG_GLOBAL"], os.devnull)
         self.assertEqual(execution_environment["ODOO_DEVKIT_GITHUB_TOKEN"], "secret-token")
+
+    def test_remote_source_commit_accepts_an_ancestor_of_a_branch_and_refuses_an_orphan(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            origin_path = self._create_git_repo(Path(temporary_directory) / "source-repo")
+            git_environment = {
+                **os.environ,
+                "GIT_AUTHOR_NAME": "t",
+                "GIT_AUTHOR_EMAIL": "t@example.invalid",
+                "GIT_COMMITTER_NAME": "t",
+                "GIT_COMMITTER_EMAIL": "t@example.invalid",
+            }
+
+            def git(*arguments: str) -> str:
+                return subprocess.run(
+                    ["git", *arguments], cwd=origin_path, check=True, capture_output=True, text=True, env=git_environment
+                ).stdout.strip()
+
+            earlier_commit = git("rev-parse", "HEAD")
+            git("commit", "--allow-empty", "--quiet", "-m", "newer tip")
+            git("checkout", "--quiet", "-b", "abandoned")
+            git("commit", "--allow-empty", "--quiet", "-m", "never merged")
+            orphan_commit = git("rev-parse", "HEAD")
+            git("checkout", "--quiet", "-")
+            git("branch", "--quiet", "-D", "abandoned")
+
+            with mock.patch("odoo_devkit.local_runtime.source_repository_remote_url", return_value=str(origin_path)):
+                self.remote_source_commit_verifier(repository="example/source-repo", commit=earlier_commit, label="source-repo")
+                with self.assertRaisesRegex(ValueError, "reachable from one of its branches or tags"):
+                    self.remote_source_commit_verifier(repository="example/source-repo", commit=orphan_commit, label="source-repo")
 
     def test_clean_git_source_verifies_normalized_origin_and_commit(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
