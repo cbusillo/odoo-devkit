@@ -25,6 +25,9 @@ lanes live in `launchplane`.
 - [tooling/tenant-overlay.md](tooling/tenant-overlay.md) for the thin tenant
   repo shape used by the current workspace model.
 
+- [tooling/python-inspection.md](tooling/python-inspection.md) for reproducible
+  linked-worktree Python inspection preparation.
+
 ## Shared Responsibilities
 
 - Define how `workspace.toml` is interpreted.

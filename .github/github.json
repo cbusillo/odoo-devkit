@@ -56,7 +56,21 @@
         "changed_files",
         "directory",
         "whole_project"
-      ]
+      ],
+      "prepare": {
+        "python": {
+          "version": "3.13",
+          "moduleName": "odoo-devkit",
+          "testRoots": [
+            "tests"
+          ],
+          "sync": true,
+          "requiredGeneratedState": [
+            ".venv",
+            ".idea"
+          ]
+        }
+      }
     },
     "docsRequiredWhen": [
       "behavior changes",

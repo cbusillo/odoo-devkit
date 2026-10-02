@@ -37,3 +37,8 @@ platform/secrets.toml
 tmp/
 docker-compose.override.yml
 /handoff*.md
+
+# Worktree-local PyCharm project and interpreter bindings
+.idea/misc.xml
+.idea/modules.xml
+.idea/*.iml
