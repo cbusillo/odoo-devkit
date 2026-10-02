@@ -13,8 +13,16 @@ creates ignored `.idea/misc.xml`, `.idea/modules.xml`, and
 `docker/scripts/`, and `tests/`, with `tests/` marked as a test root. It uses
 that worktree's `.venv/bin/python`, without sibling projects or a
 primary-checkout SDK name. Shared inspection profiles remain tracked.
+After updating an existing checkout that tracked these files, run preparation
+there before opening it again; the old tracked project bindings are removed
+by the update.
 The environment contains the root project's locked dependencies; runtime-only
 packages supplied by the container may still produce unresolved imports locally.
+Runtime scripts also import sibling scripts through their execution directory;
+that directory is not declared as a separate IDE source root. Inspect those
+imports explicitly before attributing unresolved references to container packages.
+The generated module does not exclude `tmp/`; keep scratch Python files out of
+whole-project evidence or select explicit files for a bounded assessment.
 
 For a preparation/open-only check, use the skill's `open-worktree` command.
 Preparation must leave tracked files and the Git index unchanged. Do not copy
