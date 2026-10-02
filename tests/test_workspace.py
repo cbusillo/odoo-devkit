@@ -785,7 +785,6 @@ path = "{shared_addons_path}"
             result = sync_workspace(manifest=manifest, devkit_repo_path=devkit_repo_path)
             workspace_agents_contents = result.workspace_agents_path.read_text(encoding="utf-8")
             self.assertIn("workspace.local.md", workspace_agents_contents)
-            self.assertIn("loads it instead of this file", workspace_agents_contents)
 
             (result.workspace_path / "workspace.local.md").write_text("local non-secret note\n", encoding="utf-8")
             local_notes_status = workspace_status(manifest=manifest, devkit_repo_path=devkit_repo_path)

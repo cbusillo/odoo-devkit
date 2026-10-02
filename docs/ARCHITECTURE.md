@@ -16,7 +16,7 @@ When
 ## Core Shape
 
 - PyCharm opens the tenant repo directly.
-- Every Code and Codex Lab start from the materialized workspace root.
+- Codex and Claude Code start from the materialized workspace root.
 - `odoo-devkit` owns the shared local DX/runtime/bootstrap contract.
 - The control plane owns canonical deploy/build tuples and release-sensitive
   behavior.
@@ -61,7 +61,7 @@ When
   workspace still has it.
 - Optional local `workspace.local.md` for supplemental non-secret facts that
   should stay out of generated docs. `AGENTS.override.md` is reserved as a full
-  replacement by Codex Lab, not an additive notes file. Local runtime secrets
+  replacement input, not an additive notes file. Local runtime secrets
   are injected through `ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON`, not stored in
   workspace files.
 
