@@ -26,7 +26,8 @@
     "artifactInputs": "docs/tooling/artifact-inputs.md",
     "buildToolUpgrades": "docs/tooling/build-tool-upgrades.md",
     "commandPatterns": "docs/tooling/command-patterns.md",
-    "tenantOverlay": "docs/tooling/tenant-overlay.md"
+    "tenantOverlay": "docs/tooling/tenant-overlay.md",
+    "pythonInspection": "docs/tooling/python-inspection.md"
   },
   "qualityGate": {
     "setup": {
@@ -56,7 +57,21 @@
         "changed_files",
         "directory",
         "whole_project"
-      ]
+      ],
+      "prepare": {
+        "python": {
+          "version": "3.13",
+          "moduleName": "odoo-devkit",
+          "testRoots": [
+            "tests"
+          ],
+          "sync": true,
+          "requiredGeneratedState": [
+            ".venv",
+            ".idea"
+          ]
+        }
+      }
     },
     "docsRequiredWhen": [
       "behavior changes",
