@@ -24,6 +24,8 @@ lanes live in `launchplane`.
   workspace command examples.
 - [tooling/tenant-overlay.md](tooling/tenant-overlay.md) for the thin tenant
   repo shape used by the current workspace model.
+- [tooling/python-inspection.md](tooling/python-inspection.md) for reproducible
+  linked-worktree Python inspection preparation.
 
 ## Shared Responsibilities
 

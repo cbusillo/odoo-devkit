@@ -196,6 +196,9 @@ Current runtime ownership is intentionally narrow and explicit:
   loadable even when downstream image layers override `ODOO_ADDONS_PATH`.
   `/web/health` remains the local container liveness check; Launchplane runtime
   identity evidence is exposed by the base image at `/launchplane/health`.
+- Startup treats every instance as public except an explicit `local`, `dev`,
+  or `development` `PLATFORM_INSTANCE`. An empty or unset value is public, so
+  the credential checks and `dbfilter` below apply to it.
 - Public single-database runtimes pin both `db_name` and `dbfilter` to the
   configured `ODOO_DB_NAME`, and keep database listing disabled. This keeps
   normal website requests on the public hostname bound to the tenant database
