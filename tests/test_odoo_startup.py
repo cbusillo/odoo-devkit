@@ -186,6 +186,45 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
 
         odoo_startup._enforce_public_credential_preflight(settings)
 
+    def test_empty_or_unset_platform_instance_requires_public_credentials(self) -> None:
+        environment = {
+            "ODOO_DB_NAME": "opw",
+            "ODOO_MASTER_PASSWORD": "master-password",
+        }
+        for platform_instance in (None, "", "  "):
+            with self.subTest(platform_instance=platform_instance):
+                instance_environment = dict(environment)
+                if platform_instance is not None:
+                    instance_environment["PLATFORM_INSTANCE"] = platform_instance
+                with patch.dict(os.environ, instance_environment, clear=True):
+                    settings = odoo_startup._load_settings(argparse.Namespace(config_path="/tmp/generated.conf"))
+
+                with self.assertRaisesRegex(RuntimeError, "ODOO_ADMIN_PASSWORD"):
+                    odoo_startup._enforce_public_credential_preflight(settings)
+
+    def test_explicit_local_instance_names_skip_public_credential_preflight(self) -> None:
+        for platform_instance in ("local", "dev", "development", "Local"):
+            with self.subTest(platform_instance=platform_instance):
+                settings = self._settings(platform_instance=platform_instance, master_password="admin")
+
+                odoo_startup._enforce_public_credential_preflight(settings)
+
+    def test_database_filter_applies_unless_instance_is_explicitly_local(self) -> None:
+        for platform_instance, expected_filter in (("", "^opw$"), ("preview", "^opw$"), ("local", None)):
+            with self.subTest(platform_instance=platform_instance):
+                settings = self._settings(platform_instance=platform_instance, admin_password="safe-admin-password")
+                parser = configparser.ConfigParser(interpolation=None)
+
+                with TemporaryDirectory() as directory:
+                    settings = replace(settings, config_path=str(Path(directory) / "odoo.conf"), base_config_path="")
+                    with patch.dict(os.environ, {}, clear=True):
+                        odoo_startup._write_runtime_config(settings)
+                    parser.read(settings.config_path)
+
+                self.assertEqual(parser["options"].get("dbfilter"), expected_filter)
+                odoo_command = odoo_startup._build_odoo_command(settings, stop_after_init=False)
+                self.assertEqual(f"--db-filter={expected_filter}" in odoo_command, expected_filter is not None)
+
     def test_public_runtime_config_pins_http_database_filter_to_configured_database(self) -> None:
         settings = self._settings(platform_instance="testing", admin_password="safe-admin-password")
         parser = configparser.ConfigParser(interpolation=None)
