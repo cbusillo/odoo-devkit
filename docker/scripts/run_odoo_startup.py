@@ -46,7 +46,9 @@ MAIL_OPTION_MAP: tuple[tuple[str, str], ...] = (
 )
 
 UNSAFE_MASTER_PASSWORDS = {"admin"}
-LOCAL_INSTANCE_NAMES = {"", "local", "dev", "development"}
+# An empty or unset PLATFORM_INSTANCE counts as public; only an explicit local
+# name relaxes the public credential and dbfilter rules.
+LOCAL_INSTANCE_NAMES = {"local", "dev", "development"}
 RUNTIME_SCRIPTS_PATH = "/volumes/scripts"
 LAUNCHPLANE_ADDONS_PATH = "/opt/launchplane/addons"
 
