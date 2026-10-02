@@ -15,7 +15,15 @@ that worktree's `.venv/bin/python`, without sibling projects or a
 primary-checkout SDK name. Shared inspection profiles remain tracked.
 After updating an existing checkout that tracked these files, run preparation
 there before opening it again; the old tracked project bindings are removed
-by the update.
+by the update. Preparation refuses an existing `.venv` built with another
+Python minor version, even one `requires-python` allows. If it reports
+`existing virtual environment uses Python 3.x, expected 3.13`, run
+`uv venv --clear --python 3.13` in that checkout, then run preparation again.
+The update also removes the sibling modules and sibling VCS mappings the old
+tracked files attached. To work on Launchplane, `odoo-docker`, or another
+sibling, open it as its own PyCharm project. Attaching it to this project does
+not persist: preparation rewrites the module files, and the attachment adds a
+mapping to the tracked `.idea/vcs.xml`.
 The environment contains the root project's locked dependencies; runtime-only
 packages supplied by the container may still produce unresolved imports locally.
 Runtime scripts also import sibling scripts through their execution directory;
