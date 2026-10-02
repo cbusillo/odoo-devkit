@@ -197,8 +197,8 @@ def _render_workspace_agents(manifest: WorkspaceCockpitManifest) -> str:
     return (
         "# Workspace Cockpit\n\n"
         "This workspace is the shared coding-agent cockpit for multi-repo Odoo work.\n\n"
-        "- Start Every Code or Codex Lab from this workspace root when the task spans multiple durable\n"
-        "  repos.\n"
+        "- Start Codex or Claude Code from this workspace root when the task spans multiple durable\n"
+        "  repos. For Claude Code, use `docs/session-prompt.md` and explicitly read `AGENTS.md`; it is not loaded automatically.\n"
         "- Treat the repos under `sources/` as the primary system under construction.\n\n"
         "## Repo map\n\n"
         f"{repo_map_lines}\n\n"
@@ -260,7 +260,7 @@ def _render_workspace_docs_index(manifest: WorkspaceCockpitManifest) -> str:
         f"{operational_note_lines}\n"
         "## Session prompt helper\n\n"
         "- Use [session-prompt.md](session-prompt.md) as the starting prompt template\n"
-        "  for a new multi-repo Every Code or Codex Lab session.\n"
+        "  for a new multi-repo Codex or Claude Code session.\n"
     )
 
 
@@ -270,7 +270,7 @@ def _render_workspace_session_prompt(manifest: WorkspaceCockpitManifest) -> str:
     working_rule_lines = _render_plain_bullets(manifest.session_prompt_rule_lines)
     return (
         "# Session Prompt Template\n\n"
-        "Use this as a starting prompt for a new multi-repo Every Code or Codex Lab session from the\n"
+        "Use this as a starting prompt for a new multi-repo Codex or Claude Code session from the\n"
         "workspace root.\n\n"
         "```text\n"
         "You are working in the shared Odoo cockpit at the workspace root.\n\n"
@@ -330,7 +330,7 @@ def _default_agents_first_read_lines() -> tuple[str, ...]:
     return (
         "Open [docs/README.md](docs/README.md) in this workspace root first.",
         "After the canonical guide, open [workspace.local.md](workspace.local.md) if present for supplemental, non-secret local details.",
-        "Treat `AGENTS.override.md` as reserved full-replacement input in Codex Lab, never additive local notes.",
+        "Treat `AGENTS.override.md` as reserved full-replacement input, never additive local notes.",
         "Use [sources/devkit/AGENTS.md](sources/devkit/AGENTS.md) for the canonical shared operating guide.",
         "Use [sources/devkit/docs/README.md](sources/devkit/docs/README.md) for the canonical shared docs index.",
         "Use the tenant-specific `workspace.toml` manifests when you need to run current local runtime commands through `odoo-devkit`.",
@@ -372,9 +372,7 @@ def _default_docs_working_split_lines() -> tuple[str, ...]:
 
 
 def _default_docs_operational_note_lines() -> tuple[str, ...]:
-    return (
-        "Historical plans normally live under `/Users/cbusillo/.code/plans/`; check `/Users/cbusillo/.codex/plans/` only for legacy rationale or prior sequencing.",
-    )
+    return ("GitHub issues record current plans and direction. Local plan files are historical context only.",)
 
 
 def _default_session_prompt_rule_lines() -> tuple[str, ...]:

@@ -1,7 +1,7 @@
 # Workspace CLI
 
 `odoo-devkit` owns the manifest-driven workspace command surface used to build
-the coding-agent workspace consumed by Every Code and Codex Lab, plus the local
+the coding-agent workspace consumed by Codex and Claude Code, plus the local
 runtime assembly.
 
 Runtime ownership is split by target type:
@@ -233,7 +233,7 @@ Purpose
   that config.
 - Point operators to optional `workspace.local.md` for supplemental non-secret
   facts that must not be baked into generated shared docs.
-- Document `AGENTS.override.md` as a deliberate full replacement in Codex Lab,
+- Document `AGENTS.override.md` as reserved full-replacement input,
   never the normal additive-notes path.
 - Keep non-repo workspace roots thin, link-heavy, and synced from
   `odoo-devkit` instead of hand-maintaining the same entrypoint docs.
@@ -517,7 +517,9 @@ Notes
 ## Ownership Rules
 
 - PyCharm should still open the tenant repo directly.
-- Every Code and Codex Lab should start from the assembled workspace root.
+- Codex and Claude Code should start from the assembled workspace root.
+  For Claude Code, start with `docs/session-prompt.md` and explicitly read the
+  generated `AGENTS.md`; it is not loaded automatically.
 - Generated workspace-root files are a cockpit layer; they are not the
   source-of-truth repo.
 - If a generated file is wrong, change the generator in `odoo-devkit`.

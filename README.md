@@ -13,7 +13,7 @@ The current workspace flow:
 - inspects combined tenant/shared-addon uv workspaces before artifact publish,
 - generates a minimal runtime config scaffold under `.generated/`, and
 - generates workspace-root `AGENTS.md`, `docs/README.md`, and
-  `docs/session-prompt.md` so Every Code, Codex Lab, and other coding-agent
+  `docs/session-prompt.md` so Codex, Claude Code, and other coding-agent
   consumers can use the assembled workspace without turning each tenant repo
   into a copy of the shared operating guide, and
 - owns the pure PyCharm Odoo-conf helper and the starter templates for thin
@@ -131,7 +131,7 @@ those workspaces.
   editability. Path-linked sources are edit roots; managed checkouts are not.
 - Use an optional regular-file `workspace.local.md` for supplemental non-secret
   notes; symlinks and non-files fail the workspace check.
-  `AGENTS.override.md` is reserved full-replacement input in Codex Lab and its
+  `AGENTS.override.md` is reserved full-replacement input and its
   presence fails the normal workspace status check.
 
 Current runtime ownership is intentionally narrow and explicit:

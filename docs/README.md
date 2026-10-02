@@ -30,8 +30,8 @@ lanes live in `launchplane`.
 ## Shared Responsibilities
 
 - Define how `workspace.toml` is interpreted.
-- Generate the workspace-root coding-agent surface consumed by Every Code and
-  Codex Lab.
+- Generate the workspace-root coding-agent surface consumed by Codex and
+  Claude Code.
 - Generate PyCharm metadata and run configurations while keeping the IDE
   tenant-focused.
 - Own the pure PyCharm Odoo-conf rendering helper shared by tenant repos.

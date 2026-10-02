@@ -5,7 +5,7 @@ plans_directory = "~/.code/plans"
 first_reads = [
   "Open [docs/README.md](docs/README.md) in this workspace root first.",
   "After the canonical guide, open [workspace.local.md](workspace.local.md) if present for supplemental, non-secret local details.",
-  "Treat `AGENTS.override.md` as reserved full-replacement input in Codex Lab, never additive local notes.",
+  "Treat `AGENTS.override.md` as reserved full-replacement input, never additive local notes.",
   "Use [sources/devkit/AGENTS.md](sources/devkit/AGENTS.md) for the canonical shared operating guide.",
   "Use [sources/devkit/docs/README.md](sources/devkit/docs/README.md) for the canonical shared docs index.",
   "Use the tenant-specific `workspace.toml` manifests when you need to run current local runtime commands through `odoo-devkit`.",
@@ -35,7 +35,7 @@ working_split = [
   "Launchplane PR previews replace any durable shared `dev` lane.",
 ]
 operational_notes = [
-  "Historical plans normally live under `/Users/cbusillo/.code/plans/`; check `/Users/cbusillo/.codex/plans/` only for legacy rationale or prior sequencing.",
+  "GitHub issues record current plans and direction. Local plan files are historical context only.",
 ]
 
 [guidance.session_prompt]

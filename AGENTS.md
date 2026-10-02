@@ -11,7 +11,9 @@ into the generated workspace root.
   surface.
 - Keep the human-facing split clear:
   - PyCharm opens the tenant repo.
-  - Every Code and Codex Lab start from the materialized workspace root.
+  - Codex and Claude Code start from the materialized workspace root.
+  For Claude Code, start with `docs/session-prompt.md` and explicitly read the
+  generated `AGENTS.md`; it is not loaded automatically.
   - `odoo-devkit` owns the shared instructions and generators that make that
     split coherent.
 
