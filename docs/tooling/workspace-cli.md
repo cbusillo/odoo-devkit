@@ -518,6 +518,8 @@ Notes
 
 - PyCharm should still open the tenant repo directly.
 - Codex and Claude Code should start from the assembled workspace root.
+  For Claude Code, start with `docs/session-prompt.md` and explicitly read the
+  generated `AGENTS.md`; it is not loaded automatically.
 - Generated workspace-root files are a cockpit layer; they are not the
   source-of-truth repo.
 - If a generated file is wrong, change the generator in `odoo-devkit`.

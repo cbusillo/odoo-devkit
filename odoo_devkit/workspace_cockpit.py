@@ -198,7 +198,7 @@ def _render_workspace_agents(manifest: WorkspaceCockpitManifest) -> str:
         "# Workspace Cockpit\n\n"
         "This workspace is the shared coding-agent cockpit for multi-repo Odoo work.\n\n"
         "- Start Codex or Claude Code from this workspace root when the task spans multiple durable\n"
-        "  repos.\n"
+        "  repos. For Claude Code, use `docs/session-prompt.md` and explicitly read `AGENTS.md`; it is not loaded automatically.\n"
         "- Treat the repos under `sources/` as the primary system under construction.\n\n"
         "## Repo map\n\n"
         f"{repo_map_lines}\n\n"

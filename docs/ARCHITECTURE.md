@@ -17,6 +17,8 @@ When
 
 - PyCharm opens the tenant repo directly.
 - Codex and Claude Code start from the materialized workspace root.
+  For Claude Code, start with `docs/session-prompt.md` and explicitly read the
+  generated `AGENTS.md`; it is not loaded automatically.
 - `odoo-devkit` owns the shared local DX/runtime/bootstrap contract.
 - The control plane owns canonical deploy/build tuples and release-sensitive
   behavior.

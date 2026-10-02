@@ -71,7 +71,8 @@ uv run platform workspace scaffold-tenant-overlay \
 1. Edit code in the tenant repo or `odoo-devkit`.
 2. Re-run `workspace sync` when the workspace contract or generated surface
    changes.
-3. Start Codex or Claude Code from the workspace root.
+3. Start Codex or Claude Code from the workspace root. For Claude Code, use
+   `docs/session-prompt.md` and explicitly read the generated `AGENTS.md`.
 4. Keep PyCharm opened on the tenant repo.
 
 ## What To Check After `workspace sync`
