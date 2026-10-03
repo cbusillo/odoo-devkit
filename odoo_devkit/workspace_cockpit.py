@@ -26,7 +26,6 @@ class WorkspaceCockpitManifest:
     docs_working_split_lines: tuple[str, ...]
     docs_operational_note_lines: tuple[str, ...]
     session_prompt_rule_lines: tuple[str, ...]
-    plans_directory: str = "~/.code/plans"
 
     @property
     def manifest_directory(self) -> Path:
@@ -93,7 +92,6 @@ def load_workspace_cockpit_manifest(manifest_path: Path) -> WorkspaceCockpitMani
         session_prompt_rule_lines=(
             _read_string_tuple(session_prompt_table, "working_rules") or _default_session_prompt_rule_lines()
         ),
-        plans_directory=_read_optional_string(manifest_data, "plans_directory") or "~/.code/plans",
     )
 
 
