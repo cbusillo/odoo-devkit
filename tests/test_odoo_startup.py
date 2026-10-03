@@ -142,7 +142,7 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
 
     @staticmethod
     def test_sync_python_dependencies_runs_for_local_dev_runtime() -> None:
-        settings = OdooStartupDependencySyncTests._settings(platform_instance="local")
+        settings = OdooStartupDependencySyncTests._settings()
 
         with (
             patch.dict(os.environ, {"ODOO_DEV_MODE": "reload"}, clear=True),
@@ -172,7 +172,7 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
             odoo_startup._enforce_public_credential_preflight(settings)
 
     def test_public_runtime_requires_configured_admin_password(self) -> None:
-        settings = self._settings(platform_instance="testing", admin_password="")
+        settings = self._settings(platform_instance="testing")
 
         with self.assertRaisesRegex(RuntimeError, "ODOO_ADMIN_PASSWORD"):
             odoo_startup._enforce_public_credential_preflight(settings)
@@ -180,7 +180,6 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
     def test_public_runtime_accepts_non_default_configured_credentials(self) -> None:
         settings = self._settings(
             platform_instance="prod",
-            master_password="master-password",
             admin_password="safe-admin-password",
         )
 
@@ -239,7 +238,7 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
         self.assertEqual(parser["options"]["dbfilter"], "^opw$")
 
     def test_local_runtime_config_does_not_pin_http_database_filter(self) -> None:
-        settings = self._settings(platform_instance="local")
+        settings = self._settings()
         parser = configparser.ConfigParser(interpolation=None)
 
         with TemporaryDirectory() as directory:
@@ -314,7 +313,7 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
         self.assertIn("--stop-after-init", command)
 
     def test_local_odoo_server_command_does_not_pin_database_filter(self) -> None:
-        settings = self._settings(platform_instance="local")
+        settings = self._settings()
 
         command = odoo_startup._build_odoo_command(settings, stop_after_init=False)
 
@@ -328,7 +327,7 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
         self.assertFalse(any(argument.startswith("--db-filter=") for argument in command))
 
     def test_local_runtime_allows_missing_admin_password(self) -> None:
-        settings = self._settings(platform_instance="local", admin_password="")
+        settings = self._settings()
 
         odoo_startup._enforce_public_credential_preflight(settings)
 

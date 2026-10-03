@@ -16,6 +16,16 @@ from odoo_devkit.workspace import clean_workspace, resolve_workspace_path, sync_
 
 
 class WorkspaceSyncTestCase(unittest.TestCase):
+    def test_manifest_rejects_run_configurations_without_an_array_of_tables(self) -> None:
+        for raw_value in ('""', '"command"', "42", "false", "{}", '["command"]'):
+            with self.subTest(raw_value=raw_value), tempfile.TemporaryDirectory() as directory:
+                manifest_path = self._write_minimal_manifest(Path(directory))
+                with manifest_path.open("a", encoding="utf-8") as manifest_file:
+                    manifest_file.write(f"\nrun_configurations = {raw_value}\n")
+
+                with self.assertRaisesRegex(ValueError, r"ide\.run_configurations"):
+                    load_workspace_manifest(manifest_path)
+
     def test_internal_git_commands_exclude_runtime_payload(self) -> None:
         completed_process = mock.Mock(returncode=0, stdout="main\n", stderr="")
         with mock.patch.dict(os.environ, {RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR: "test-payload"}):
