@@ -16,6 +16,14 @@ from odoo_devkit.workspace import clean_workspace, resolve_workspace_path, sync_
 
 
 class WorkspaceSyncTestCase(unittest.TestCase):
+    def test_manifest_accepts_an_explicit_empty_run_configuration_array(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manifest_path = self._write_minimal_manifest(Path(directory))
+            with manifest_path.open("a", encoding="utf-8") as manifest_file:
+                manifest_file.write("\nrun_configurations = []\n")
+
+            self.assertEqual(load_workspace_manifest(manifest_path).ide.run_configurations, ())
+
     def test_manifest_rejects_run_configurations_without_an_array_of_tables(self) -> None:
         for raw_value in ('""', '"command"', "42", "false", "{}", '["command"]'):
             with self.subTest(raw_value=raw_value), tempfile.TemporaryDirectory() as directory:
