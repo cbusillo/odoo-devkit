@@ -8,6 +8,8 @@ script would send and run it, which checks the guard behaviour rather than its t
 from __future__ import annotations
 
 import base64
+import contextlib
+import io
 import json
 import os
 import sys
@@ -87,11 +89,38 @@ class OverrideSnippetGuardTests(unittest.TestCase):
 
     def test_startup_applies_settings_when_addon_is_installed(self) -> None:
         env = _fake_env(installed_models={"launchplane.settings"})
+        output = io.StringIO()
         with patch.dict(os.environ, _payload_environment(SETTINGS_PAYLOAD), clear=True):
-            _run_snippet(_startup_snippet(), {"env": env})
+            with contextlib.redirect_stdout(output):
+                _run_snippet(_startup_snippet(), {"env": env})
 
         env.__getitem__.assert_called_with("launchplane.settings")
         env.__getitem__.return_value.sudo.return_value.apply_from_env.assert_called_once_with()
+        self.assertIn("launchplane_settings_applied=true", output.getvalue())
+
+    def test_startup_reports_no_settings_payload_honestly(self) -> None:
+        for installed_models in (set(), {"launchplane.settings"}):
+            for payload_environment in ({}, _payload_environment({})):
+                with self.subTest(installed_models=installed_models, payload_environment=payload_environment):
+                    env = _fake_env(installed_models=installed_models)
+                    output = io.StringIO()
+                    with patch.dict(os.environ, payload_environment, clear=True), contextlib.redirect_stdout(output):
+                        _run_snippet(_startup_snippet(), {"env": env})
+                    self.assertIn("launchplane_settings_applied=false reason=no_payload", output.getvalue())
+                    self.assertNotIn("launchplane_settings_applied=true", output.getvalue())
+                    env.cr.commit.assert_called_once_with()
+                    if installed_models:
+                        env.__getitem__.return_value.sudo.return_value.apply_from_env.assert_called_once_with()
+
+    def test_startup_does_not_report_success_when_settings_apply_fails(self) -> None:
+        env = _fake_env(installed_models={"launchplane.settings"})
+        env.__getitem__.return_value.sudo.return_value.apply_from_env.side_effect = RuntimeError("apply failed")
+        output = io.StringIO()
+        with patch.dict(os.environ, _payload_environment(SETTINGS_PAYLOAD), clear=True), contextlib.redirect_stdout(output):
+            with self.assertRaisesRegex(RuntimeError, "apply failed"):
+                _run_snippet(_startup_snippet(), {"env": env})
+        self.assertNotIn("launchplane_settings_applied=true", output.getvalue())
+        env.cr.commit.assert_not_called()
 
     def test_startup_enforces_required_payload_flag(self) -> None:
         env = _fake_env(installed_models={"launchplane.settings"})

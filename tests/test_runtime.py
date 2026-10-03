@@ -2809,6 +2809,77 @@ sources = [
             self.assertTrue(any(command[-2:] == ["stop", "web"] for command in commands))
             self.assertTrue(any(command[-4:] == ["up", "-d", "--remove-orphans", "web"] for command in commands))
 
+    def test_native_runtime_restore_reports_failures_without_restarting_web(self) -> None:
+        for failure_stage, failure_code in (("stop", 2), ("restore", 1), ("restore", 10), ("restart", 3)):
+            with self.subTest(stage=failure_stage, code=failure_code), tempfile.TemporaryDirectory() as temporary_directory:
+                temp_root = Path(temporary_directory)
+                tenant_repo_path = temp_root / "tenant-repo"
+                runtime_repo_path = temp_root / "runtime-repo"
+                tenant_repo_path.mkdir()
+                self._write_runtime_repo(runtime_repo_path)
+                manifest = load_workspace_manifest(
+                    self._write_manifest(tenant_repo_path=tenant_repo_path, runtime_repo_path=runtime_repo_path)
+                )
+                successful_command = self._runtime_data_workflow_side_effect()
+
+                def run_side_effect(
+                    command: list[str],
+                    *,
+                    failure_stage: str = failure_stage,
+                    failure_code: int = failure_code,
+                    successful_command: mock.Mock = successful_command,
+                    **kwargs: object,
+                ) -> mock.Mock:
+                    failing = (
+                        (failure_stage == "stop" and command[-2:] == ["stop", "web"])
+                        or (failure_stage == "restore" and local_runtime.DATA_WORKFLOW_SCRIPT in command)
+                        or (failure_stage == "restart" and command[-4:] == ["up", "-d", "--remove-orphans", "web"])
+                    )
+                    return mock.Mock(returncode=failure_code) if failing else successful_command(command, **kwargs)
+
+                with mock.patch("odoo_devkit.local_runtime.subprocess.run", side_effect=run_side_effect) as run_mock:
+                    with (
+                        contextlib.redirect_stdout(io.StringIO()),
+                        self.assertRaisesRegex(ValueError, f"Command failed \\({failure_code}\\)"),
+                    ):
+                        run_native_runtime_restore(manifest=manifest)
+                commands = [call.args[0] for call in run_mock.call_args_list]
+                if failure_stage == "stop":
+                    self.assertFalse(any(local_runtime.DATA_WORKFLOW_SCRIPT in command for command in commands))
+                if failure_stage != "restart":
+                    self.assertFalse(any(command[-4:] == ["up", "-d", "--remove-orphans", "web"] for command in commands))
+
+    def test_temporarily_stopped_web_checks_stop_operation_and_restart(self) -> None:
+        for failure_stage in (None, "stop", "operation", "restart"):
+            with self.subTest(stage=failure_stage):
+                operation = mock.Mock()
+                if failure_stage == "operation":
+                    operation.side_effect = local_runtime.RuntimeCommandError("password guard refused")
+                events: list[str] = []
+
+                def run_side_effect(
+                    command: list[str], *, failure_stage: str | None = failure_stage, events: list[str] = events, **_kwargs: object
+                ) -> mock.Mock:
+                    stage = "stop" if command[-2:] == ["stop", "web"] else "restart"
+                    events.append(stage)
+                    return mock.Mock(returncode=2 if stage == failure_stage else 0)
+
+                with (
+                    mock.patch("odoo_devkit.local_runtime.compose_base_command", return_value=["docker", "compose"]),
+                    mock.patch("odoo_devkit.local_runtime.subprocess.run", side_effect=run_side_effect),
+                ):
+                    if failure_stage is None:
+                        local_runtime.run_with_web_temporarily_stopped(
+                            runtime_repo_path=Path("."), runtime_env_file=Path("runtime.env"), operation=operation
+                        )
+                    else:
+                        with self.assertRaises(local_runtime.RuntimeCommandError):
+                            local_runtime.run_with_web_temporarily_stopped(
+                                runtime_repo_path=Path("."), runtime_env_file=Path("runtime.env"), operation=operation
+                            )
+                self.assertEqual(events, ["stop"] if failure_stage in {"stop", "operation"} else ["stop", "restart"])
+                self.assertEqual(operation.call_count, 0 if failure_stage == "stop" else 1)
+
     def test_native_runtime_odoo_shell_executes_script_runner_with_script_and_log_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)

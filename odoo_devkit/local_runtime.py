@@ -989,16 +989,13 @@ def run_local_data_workflow(
         update_only=update_only,
     )
 
-    run_command_best_effort(runtime_repo_path=runtime_repo_path, command=stop_web_command)
-    try:
-        run_command(
-            runtime_repo_path=runtime_repo_path,
-            command=data_workflow_command,
-            environment_overrides=data_workflow_exec_environment,
-            allowed_return_codes={0, 10},
-        )
-    finally:
-        run_command_best_effort(runtime_repo_path=runtime_repo_path, command=up_web_command)
+    run_command(runtime_repo_path=runtime_repo_path, command=stop_web_command)
+    run_command(
+        runtime_repo_path=runtime_repo_path,
+        command=data_workflow_command,
+        environment_overrides=data_workflow_exec_environment,
+    )
+    run_command(runtime_repo_path=runtime_repo_path, command=up_web_command)
 
 
 def load_runtime_context(
@@ -3710,11 +3707,9 @@ def run_with_web_temporarily_stopped(
     compose_command = compose_base_command(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file)
     stop_web_command = compose_command + ["stop", "web"]
     up_web_command = compose_command + ["up", "-d", "web"]
-    run_command_best_effort(runtime_repo_path=runtime_repo_path, command=stop_web_command)
-    try:
-        operation()
-    finally:
-        run_command_best_effort(runtime_repo_path=runtime_repo_path, command=up_web_command)
+    run_command(runtime_repo_path=runtime_repo_path, command=stop_web_command)
+    operation()
+    run_command(runtime_repo_path=runtime_repo_path, command=up_web_command)
 
 
 def apply_admin_password_if_configured(
