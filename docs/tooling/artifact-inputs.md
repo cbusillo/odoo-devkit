@@ -146,8 +146,9 @@ Rules:
 - `schema_version` must be `1`.
 - Each `sources` or `sources_add` entry must set exactly one of `selector` or
   `exact_ref`.
-- Context and instance entries merge by the exact `repository` string, so a
-  later entry with the same spelling overrides an earlier one.
+- Context and instance entries merge by the `repository` string after trimming
+  surrounding whitespace (case-sensitive), so a later entry with the same
+  spelling overrides an earlier one.
 
 ## Odoo example
 

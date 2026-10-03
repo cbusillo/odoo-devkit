@@ -260,8 +260,9 @@ Purpose
   render output.
 - Report the reserved root `AGENTS.override.md` and mark the cockpit non-current
   when it would replace the canonical generated guide.
-- Give manual cockpit roots a native drift check before or after sync. The
-  command always exits 0; gate on the reported `is_current` value.
+- Give manual cockpit roots a native drift check before or after sync. A
+  completed status check exits 0 even when `is_current` is false; gate on the
+  reported `is_current` value.
 
 ## `workspace clean`
 
