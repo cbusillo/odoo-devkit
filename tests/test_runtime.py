@@ -8,6 +8,7 @@ import io
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -2845,6 +2846,24 @@ sources = [
             self.assertIn("script-runner", command)
             self.assertIn("shell", command)
             self.assertIn("opw-alt", command)
+            self.assertNotIn("runtime-payload-database", " ".join(command))
+            self.assertFalse(any(argument.startswith("--db_password") for argument in command))
+            # Execute the actual container-side wrapper with an inert stand-in
+            # for Odoo to prove password and argument forwarding, including quotes.
+            wrapper_index = command.index("/bin/sh")
+            container_environment = os.environ.copy()
+            password = "database 'password' with \"quotes\" $and `backticks`\\slashes"
+            container_environment["ODOO_DB_PASSWORD"] = password
+            probe_command = command[wrapper_index : wrapper_index + 4] + [
+                sys.executable,
+                "-c",
+                "import json, os, sys; print(json.dumps([os.environ['PGPASSWORD'], sys.argv[1:]]))",
+                *command[wrapper_index + 5 :],
+            ]
+            probe = subprocess.run(probe_command, env=container_environment, capture_output=True, text=True, check=True)
+            forwarded_password, forwarded_arguments = json.loads(probe.stdout)
+            self.assertEqual(forwarded_password, password)
+            self.assertEqual(forwarded_arguments, command[wrapper_index + 5 :])
             self.assertEqual(run_mock.call_args.kwargs["cwd"], runtime_repo_path.resolve())
             self.assertEqual(run_mock.call_args.kwargs["stderr"], subprocess.STDOUT)
             self.assertEqual(run_mock.call_args.kwargs["input"], b"print('hello from shell')\n")
@@ -2885,6 +2904,9 @@ sources = [
             self.assertIn("<", output)
             self.assertIn(">", output)
             self.assertIn("odoo-shell.log", output)
+            self.assertNotIn("runtime-payload-database", output)
+            self.assertNotIn("runtime-payload-master", output)
+            self.assertNotIn("--db_password", output)
 
     def test_native_runtime_restore_rejects_non_local_instance(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
