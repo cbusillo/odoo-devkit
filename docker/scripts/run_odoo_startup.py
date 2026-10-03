@@ -471,7 +471,7 @@ from odoo_website_bootstrap import (
 )
 
 instance_override_payload = load_instance_override_payload()
-typed_override_payload_present = instance_override_payload is not None
+settings_payload_present = payload_has_launchplane_settings(instance_override_payload)
 require_launchplane_payloads_if_configured(instance_override_payload)
 if 'launchplane.settings' in env.registry:
     env['launchplane.settings'].sudo().apply_from_env()
@@ -482,7 +482,12 @@ elif payload_has_launchplane_settings(instance_override_payload):
     )
 apply_website_bootstrap(env, instance_override_payload)
 env.cr.commit()
-print('launchplane_settings_applied=true')
+if settings_payload_present:
+    print('launchplane_settings_applied=true')
+elif instance_override_payload is None:
+    print('launchplane_settings_applied=false reason=no_payload')
+else:
+    print('launchplane_settings_applied=false reason=no_managed_settings')
 """
     _run_odoo_shell(settings, script, label="environment overrides")
 

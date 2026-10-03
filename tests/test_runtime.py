@@ -2810,6 +2810,116 @@ sources = [
             self.assertTrue(any(command[-2:] == ["stop", "web"] for command in commands))
             self.assertTrue(any(command[-4:] == ["up", "-d", "--remove-orphans", "web"] for command in commands))
 
+    def test_native_runtime_data_workflows_report_failures_without_restarting_web(self) -> None:
+        cases = (
+            (workflow, stage, code)
+            for workflow in ("restore", "openupgrade")
+            for stage, code in (("stop", 2), ("operation", 1), ("operation", 10), ("restart", 3))
+        )
+        for workflow, failure_stage, failure_code in cases:
+            with (
+                self.subTest(workflow=workflow, stage=failure_stage, code=failure_code),
+                tempfile.TemporaryDirectory() as temporary_directory,
+            ):
+                temp_root = Path(temporary_directory)
+                tenant_repo_path = temp_root / "tenant-repo"
+                runtime_repo_path = temp_root / "runtime-repo"
+                tenant_repo_path.mkdir()
+                self._write_runtime_repo(runtime_repo_path)
+                manifest = load_workspace_manifest(
+                    self._write_manifest(tenant_repo_path=tenant_repo_path, runtime_repo_path=runtime_repo_path)
+                )
+                with contextlib.redirect_stdout(io.StringIO()):
+                    run_native_runtime_select(manifest=manifest)
+                successful_command = self._runtime_data_workflow_side_effect()
+
+                def run_side_effect(
+                    command: list[str],
+                    *,
+                    failure_stage: str = failure_stage,
+                    failure_code: int = failure_code,
+                    successful_command: mock.Mock = successful_command,
+                    **kwargs: object,
+                ) -> mock.Mock:
+                    failing = (
+                        (failure_stage == "stop" and command[-2:] == ["stop", "web"])
+                        or (
+                            failure_stage == "operation"
+                            and any(
+                                script in command
+                                for script in (local_runtime.DATA_WORKFLOW_SCRIPT, "/volumes/scripts/run_openupgrade.py")
+                            )
+                        )
+                        or (failure_stage == "restart" and "up" in command and command[-1] == "web")
+                    )
+                    return mock.Mock(returncode=failure_code) if failing else successful_command(command, **kwargs)
+
+                with mock.patch("odoo_devkit.local_runtime.subprocess.run", side_effect=run_side_effect) as run_mock:
+                    with (
+                        contextlib.redirect_stdout(io.StringIO()),
+                        self.assertRaisesRegex(ValueError, f"Command failed \\({failure_code}\\)") as failure,
+                    ):
+                        if workflow == "restore":
+                            run_native_runtime_restore(manifest=manifest)
+                        else:
+                            run_native_runtime_workflow(manifest=manifest, workflow=workflow)
+                if failure_stage == "operation":
+                    self.assertIn("Web remains stopped", str(failure.exception))
+                    self.assertIn("rerun the same local workflow", str(failure.exception))
+                if failure_stage == "restart":
+                    self.assertIn("Operation completed", str(failure.exception))
+                    self.assertIn("platform runtime up", str(failure.exception))
+                commands = [call.args[0] for call in run_mock.call_args_list]
+                if failure_stage == "stop":
+                    self.assertFalse(
+                        any(
+                            script in command
+                            for command in commands
+                            for script in (local_runtime.DATA_WORKFLOW_SCRIPT, "/volumes/scripts/run_openupgrade.py")
+                        )
+                    )
+                if failure_stage != "restart":
+                    self.assertFalse(any("up" in command and command[-1] == "web" for command in commands))
+
+    def test_temporarily_stopped_web_checks_stop_operation_and_restart(self) -> None:
+        for failure_stage in (None, "stop", "operation", "restart", "interrupt"):
+            with self.subTest(stage=failure_stage):
+                operation = mock.Mock()
+                if failure_stage == "operation":
+                    operation.side_effect = local_runtime.RuntimeCommandError("password guard refused")
+                elif failure_stage == "interrupt":
+                    operation.side_effect = KeyboardInterrupt()
+                events: list[str] = []
+
+                def run_side_effect(
+                    command: list[str], *, failure_stage: str | None = failure_stage, events: list[str] = events, **_kwargs: object
+                ) -> mock.Mock:
+                    stage = "stop" if command[-2:] == ["stop", "web"] else "restart"
+                    events.append(stage)
+                    return mock.Mock(returncode=2 if stage == failure_stage else 0)
+
+                with (
+                    mock.patch("odoo_devkit.local_runtime.compose_base_command", return_value=["docker", "compose"]),
+                    mock.patch("odoo_devkit.local_runtime.subprocess.run", side_effect=run_side_effect),
+                ):
+                    if failure_stage is None:
+                        local_runtime.run_with_web_temporarily_stopped(
+                            runtime_repo_path=Path("."), runtime_env_file=Path("runtime.env"), operation=operation
+                        )
+                    elif failure_stage == "interrupt":
+                        with self.assertRaises(KeyboardInterrupt) as interruption:
+                            local_runtime.run_with_web_temporarily_stopped(
+                                runtime_repo_path=Path("."), runtime_env_file=Path("runtime.env"), operation=operation
+                            )
+                        self.assertIn("Web remains stopped", " ".join(interruption.exception.__notes__))
+                    else:
+                        with self.assertRaises(local_runtime.RuntimeCommandError):
+                            local_runtime.run_with_web_temporarily_stopped(
+                                runtime_repo_path=Path("."), runtime_env_file=Path("runtime.env"), operation=operation
+                            )
+                self.assertEqual(events, ["stop"] if failure_stage in {"stop", "operation", "interrupt"} else ["stop", "restart"])
+                self.assertEqual(operation.call_count, 0 if failure_stage == "stop" else 1)
+
     def test_native_runtime_odoo_shell_executes_script_runner_with_script_and_log_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)

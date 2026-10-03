@@ -398,6 +398,18 @@ Notes
   an Odoo install/update subprocess. This prevents the parent workflow from
   retaining a read lock on `ir_module_module` while the child process performs
   schema-changing module upgrades.
+- Startup reports `launchplane_settings_applied=false reason=no_payload` when
+  there is no override payload, or `reason=no_managed_settings` when the supplied
+  payload has no managed settings. A successful managed settings apply reports
+  `launchplane_settings_applied=true` after commit.
+- Local restore, bootstrap, update, init, and OpenUpgrade workflows require a successful
+  web stop before proceeding and restart web only after the operation succeeds.
+  A failed stop, operation (including exit code 10), or restart fails the command.
+  After a failed operation, web stays stopped for recovery; correct the failure
+  and rerun the same local workflow to restart it on success.
+  If the operation completed and only the web restart failed, correct the startup
+  problem and use `platform runtime up` with the same manifest; the data workflow
+  does not need to run again. Interrupting an operation also leaves web stopped.
 - Upstream restores capture the custom-format database dump in a private
   `.<database>-upstream-restore` directory beside the workflow lock file
   (on the mounted data volume by default). Keep that lock directory on persistent

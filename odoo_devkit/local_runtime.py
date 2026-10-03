@@ -887,7 +887,6 @@ def run_openupgrade_workflow(*, manifest: WorkspaceManifest, runtime_repo_path: 
     )
     compose_command = compose_base_command(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file)
     up_script_runner_command = compose_command + ["up", "-d", "script-runner"]
-    stop_web_command = compose_command + ["stop", "web"]
     openupgrade_exec_command = compose_command + [
         "exec",
         "-T",
@@ -895,13 +894,14 @@ def run_openupgrade_workflow(*, manifest: WorkspaceManifest, runtime_repo_path: 
         "python3",
         "/volumes/scripts/run_openupgrade.py",
     ]
-    up_web_command = compose_command + ["up", "-d", "web"]
-    run_command_best_effort(runtime_repo_path=runtime_repo_path, command=stop_web_command)
-    try:
+
+    def run_openupgrade_operation() -> None:
         run_command(runtime_repo_path=runtime_repo_path, command=up_script_runner_command)
         run_command(runtime_repo_path=runtime_repo_path, command=openupgrade_exec_command)
-    finally:
-        run_command_best_effort(runtime_repo_path=runtime_repo_path, command=up_web_command)
+
+    run_with_web_temporarily_stopped(
+        runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file, operation=run_openupgrade_operation
+    )
 
 
 def run_restore_workflow(*, manifest: WorkspaceManifest, runtime_repo_path: Path, no_sanitize: bool = False) -> None:
@@ -989,16 +989,19 @@ def run_local_data_workflow(
         update_only=update_only,
     )
 
-    run_command_best_effort(runtime_repo_path=runtime_repo_path, command=stop_web_command)
+    run_command(runtime_repo_path=runtime_repo_path, command=stop_web_command)
     try:
         run_command(
             runtime_repo_path=runtime_repo_path,
             command=data_workflow_command,
             environment_overrides=data_workflow_exec_environment,
-            allowed_return_codes={0, 10},
         )
-    finally:
-        run_command_best_effort(runtime_repo_path=runtime_repo_path, command=up_web_command)
+    except RuntimeCommandError as error:
+        raise RuntimeCommandError(f"{error}\nWeb remains stopped. Correct the failure and rerun the same local workflow.") from error
+    except BaseException as error:
+        error.add_note("Web remains stopped. Correct the failure and rerun the same local workflow.")
+        raise
+    restart_web_after_success(runtime_repo_path=runtime_repo_path, command=up_web_command)
 
 
 def load_runtime_context(
@@ -3713,11 +3716,25 @@ def run_with_web_temporarily_stopped(
     compose_command = compose_base_command(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file)
     stop_web_command = compose_command + ["stop", "web"]
     up_web_command = compose_command + ["up", "-d", "web"]
-    run_command_best_effort(runtime_repo_path=runtime_repo_path, command=stop_web_command)
+    run_command(runtime_repo_path=runtime_repo_path, command=stop_web_command)
     try:
         operation()
-    finally:
-        run_command_best_effort(runtime_repo_path=runtime_repo_path, command=up_web_command)
+    except RuntimeCommandError as error:
+        raise RuntimeCommandError(f"{error}\nWeb remains stopped. Correct the failure and rerun the same local workflow.") from error
+    except BaseException as error:
+        error.add_note("Web remains stopped. Correct the failure and rerun the same local workflow.")
+        raise
+    restart_web_after_success(runtime_repo_path=runtime_repo_path, command=up_web_command)
+
+
+def restart_web_after_success(*, runtime_repo_path: Path, command: list[str]) -> None:
+    try:
+        run_command(runtime_repo_path=runtime_repo_path, command=command)
+    except RuntimeCommandError as error:
+        raise RuntimeCommandError(
+            f"{error}\nOperation completed, but web restart failed. Correct the startup problem and run "
+            "'platform runtime up' with the same manifest. The completed data workflow does not need to be rerun."
+        ) from error
 
 
 def apply_admin_password_if_configured(
