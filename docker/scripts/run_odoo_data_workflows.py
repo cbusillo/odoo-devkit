@@ -61,22 +61,44 @@ RUNTIME_SCRIPTS_PATH = "/volumes/scripts"
 # Production credentials a restored copy must not keep on a non-production instance.
 # This block is the single list for every tenant; extend it here, not per tenant.
 PRODUCTION_INSTANCE_NAMES = frozenset({"prod", "production"})
-CLEARED_CREDENTIAL_PARAMETER_KEYS = (
-    "printnode.api_key",
-    "web_map.token_map_box",
-    "unsplash.access_key",
-    "discuss.tenor_api_key",
+# ir_config_parameter keys per integration. The names are the ones Launchplane's integration
+# read-back and lane allowances use, so ODOO_RESTORE_KEPT_INTEGRATIONS can name them directly.
+INTEGRATION_CREDENTIAL_PARAMETER_KEYS: dict[str, tuple[str, ...]] = {
+    "printnode": ("printnode.api_key",),
+    "mapbox": ("web_map.token_map_box",),
+    "unsplash": ("unsplash.access_key",),
+    "tenor": ("discuss.tenor_api_key",),
+    # Settings that point the copy at the production Shopify store; secret-shaped shopify.* keys and
+    # the import cursors are matched by the rules below.
+    "shopify": ("shopify.shop_url", "shopify.store_url", "shopify.test_store"),
+    # Import sources: their crons ship active, so a copy holding these connects to the production databases.
+    "fishbowl": ("fishbowl.host", "fishbowl.db", "fishbowl.user", "fishbowl.password"),
+    "repairshopr": (
+        "repairshopr.sync_db.host",
+        "repairshopr.sync_db.name",
+        "repairshopr.sync_db.user",
+        "repairshopr.sync_db.password",
+    ),
+    "cm_data": ("cm_data.db.host", "cm_data.db.name", "cm_data.db.user", "cm_data.db.password"),
     # Odoo 19 regenerates both VAPID keys (and drops every push device) when the public key is missing:
     # mail.push.device.get_web_push_vapid_public_key.
-    "mail.web_push_vapid_private_key",
-    "mail.web_push_vapid_public_key",
-    # Settings that point the copy at the production Shopify store.
-    "shopify.shop_url",
-    "shopify.store_url",
-    "shopify.test_store",
-)
+    "web_push": ("mail.web_push_vapid_private_key", "mail.web_push_vapid_public_key"),
+}
+# Integrations whose settings live in tables rather than ir_config_parameter.
+PAYMENT_INTEGRATION = "payment"
+INCOMING_MAIL_INTEGRATION = "incoming_mail"
+IAP_INTEGRATION = "iap"
+# Integrations a restore request may keep (a lane's pre_live allowance). Web push, signing keys and
+# user API keys are never kept: each one lets the copy act as production toward users or clients.
+KEEPABLE_INTEGRATIONS = (frozenset(INTEGRATION_CREDENTIAL_PARAMETER_KEYS) - {"web_push"}) | {
+    PAYMENT_INTEGRATION,
+    INCOMING_MAIL_INTEGRATION,
+    IAP_INTEGRATION,
+}
 # Signing keys that must exist but must differ from production (Odoo HMAC tokens use database.secret).
+# database.uuid stays: it identifies the database and authenticates nothing, and Odoo's own neutralize keeps it.
 REGENERATED_SIGNING_PARAMETER_KEYS = ("database.secret",)
+SIGNING_KEYS = "signing_keys"
 SHOPIFY_PARAMETER_PREFIX = "shopify."
 SHOPIFY_SECRET_PARAMETER_SUFFIXES = ("_key", "_token", "_secret", "_password")
 SHOPIFY_IMPORT_CURSOR_PREFIX = "shopify.last_"
@@ -93,16 +115,49 @@ SHOPIFY_PRODUCT_EXPORT_STATE_COLUMNS = (
     ("shopify_created_at", "NULL"),
 )
 WEB_PUSH_TABLES = ("mail_push", "mail_push_device")
+# Payment providers with no remote service; every other provider is disabled, including "test",
+# which still reaches the provider's sandbox with stored credentials. Matches Launchplane's read-back.
+LOCAL_PAYMENT_PROVIDER_CODES = ("none", "custom", "demo")
+# Provider credential fields are text columns named like these (stripe_secret_key, aps_sha_request,
+# payu_merchant_salt, authorize_login, ...). Provider modules add them, so they are found by name.
+PAYMENT_CREDENTIAL_COLUMN_PATTERN = re.compile(
+    r"secret|key|token|password|passphrase|signature|hmac|sha_|salt|hash|login|access_code"
+)
+TEXT_COLUMN_TYPES = ("character varying", "text")
+# Rows that authenticate to a remote service: (integration, table, credential column). A None
+# integration is never kept. Odoo stores only a hash in res_users_apikeys.key, but whoever holds the
+# production key authenticates against any copy that kept that hash.
+# Gmail and Outlook mail servers authenticate with these OAuth tokens instead of a password.
+MAIL_SERVER_OAUTH_TOKEN_COLUMNS = (
+    "google_gmail_access_token",
+    "google_gmail_refresh_token",
+    "microsoft_outlook_access_token",
+    "microsoft_outlook_refresh_token",
+)
+TABLE_CREDENTIAL_COLUMNS = (
+    (INCOMING_MAIL_INTEGRATION, "fetchmail_server", "password"),
+    *((INCOMING_MAIL_INTEGRATION, "fetchmail_server", column) for column in MAIL_SERVER_OAUTH_TOKEN_COLUMNS),
+    # Outgoing mail is blocked on every non-production instance, so its tokens are never kept.
+    *((None, "ir_mail_server", column) for column in MAIL_SERVER_OAUTH_TOKEN_COLUMNS),
+    (IAP_INTEGRATION, "iap_account", "account_token"),
+    (None, "res_users_apikeys", "key"),
+)
 
 
-def is_production_credential_parameter(key: str) -> bool:
-    if key in CLEARED_CREDENTIAL_PARAMETER_KEYS or key in REGENERATED_SIGNING_PARAMETER_KEYS:
-        return True
+def credential_parameter_integration(key: str) -> str | None:
+    """The integration a production credential parameter belongs to, or None for any other parameter."""
+    if key in REGENERATED_SIGNING_PARAMETER_KEYS:
+        return SIGNING_KEYS
+    for integration, keys in INTEGRATION_CREDENTIAL_PARAMETER_KEYS.items():
+        if key in keys:
+            return integration
     if not key.startswith(SHOPIFY_PARAMETER_PREFIX):
-        return False
+        return None
     if key.endswith(SHOPIFY_SECRET_PARAMETER_SUFFIXES):
-        return True
-    return key.startswith(SHOPIFY_IMPORT_CURSOR_PREFIX) and key.endswith(SHOPIFY_IMPORT_CURSOR_SUFFIX)
+        return "shopify"
+    if key.startswith(SHOPIFY_IMPORT_CURSOR_PREFIX) and key.endswith(SHOPIFY_IMPORT_CURSOR_SUFFIX):
+        return "shopify"
+    return None
 
 
 def _credential_fingerprint(value: str) -> str:
@@ -392,6 +447,9 @@ class LocalServerSettings(BaseSettings):
     admin_login: str = Field("admin", alias="ODOO_ADMIN_LOGIN")
     admin_password: SecretStr | None = Field(None, alias="ODOO_ADMIN_PASSWORD")
     platform_instance: str = Field("", alias="PLATFORM_INSTANCE")
+    # Integrations whose restored settings a non-production restore keeps, comma-separated
+    # (Launchplane sets it from the lane's pre_live allowances). Unset clears every integration.
+    restore_kept_integrations: str | None = Field(None, alias="ODOO_RESTORE_KEPT_INTEGRATIONS")
 
     @field_validator(
         "filestore_owner",
@@ -402,6 +460,7 @@ class LocalServerSettings(BaseSettings):
         "update_modules",
         "local_addons_dirs",
         "openupgrade_target_version",
+        "restore_kept_integrations",
         mode="before",
     )
     @classmethod
@@ -473,7 +532,7 @@ class OdooDataWorkflowRunner:
         self._pre_openupgrade_module_states: dict[str, str] = {}
         self._odoo_shell_preflight_checked = False
         self._data_workflow_lock_path: Path | None = None
-        self._restored_credential_fingerprints: dict[str, str] = {}
+        self._restored_credential_fingerprints: dict[str, frozenset[str]] = {}
 
     def require_environment_override_payloads_if_configured(self) -> None:
         try:
@@ -1044,10 +1103,63 @@ class OdooDataWorkflowRunner:
         cursor.execute(sql.SQL("SELECT * FROM {} LIMIT 0").format(sql.Identifier(table)))
         return {column[0] for column in cursor.description}
 
-    @staticmethod
-    def _credential_parameters(cursor: Any) -> dict[str, str | None]:
+    def _kept_integrations(self) -> frozenset[str]:
+        """Integrations this restore request allows the copy to keep; anything not keepable is cleared anyway."""
+        requested = {
+            name.strip().lower() for name in re.split(r"[,\s]+", self.local.restore_kept_integrations or "") if name.strip()
+        }
+        ignored = sorted(requested - KEEPABLE_INTEGRATIONS)
+        if ignored:
+            _logger.warning(
+                "Restore request names integrations that are never kept or unknown; clearing them: %s", ", ".join(ignored)
+            )
+        return frozenset(requested & KEEPABLE_INTEGRATIONS)
+
+    def _credential_parameters(self, cursor: Any) -> dict[str, str | None]:
+        kept = self._kept_integrations()
         cursor.execute("SELECT key, value FROM ir_config_parameter")
-        return {key: value for key, value in cursor.fetchall() if is_production_credential_parameter(key)}
+        return {
+            key: value
+            for key, value in cursor.fetchall()
+            if (integration := credential_parameter_integration(key)) is not None and integration not in kept
+        }
+
+    @staticmethod
+    def _payment_credential_columns(cursor: Any) -> list[str]:
+        cursor.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'payment_provider' AND is_nullable = 'YES' AND data_type IN (%s, %s)",
+            TEXT_COLUMN_TYPES,
+        )
+        return sorted(column for (column,) in cursor.fetchall() if PAYMENT_CREDENTIAL_COLUMN_PATTERN.search(column))
+
+    def _cleared_table_columns(self, cursor: Any) -> list[tuple[str, str]]:
+        """(table, column) pairs holding credentials this restore clears, for tables present in the copy."""
+        kept = self._kept_integrations()
+        columns: list[tuple[str, str]] = []
+        if PAYMENT_INTEGRATION not in kept and self._table_exists(cursor, "payment_provider"):
+            columns.extend(("payment_provider", column) for column in self._payment_credential_columns(cursor))
+        for integration, table, column in TABLE_CREDENTIAL_COLUMNS:
+            if integration in kept:
+                continue
+            if column in self._table_columns(cursor, table):
+                columns.append((table, column))
+        return columns
+
+    def _credential_values(self, cursor: Any) -> dict[str, frozenset[str]]:
+        """Every non-empty credential value this restore clears, by parameter key or table.column."""
+        values: dict[str, frozenset[str]] = {
+            key: frozenset({value}) for key, value in self._credential_parameters(cursor).items() if value
+        }
+        for table, column in self._cleared_table_columns(cursor):
+            cursor.execute(
+                sql.SQL("SELECT DISTINCT {column} FROM {table} WHERE {column} IS NOT NULL AND {column} <> ''").format(
+                    column=sql.Identifier(column), table=sql.Identifier(table)
+                )
+            )
+            if found := frozenset(value for (value,) in cursor.fetchall()):
+                values[f"{table}.{column}"] = found
+        return values
 
     def fingerprint_restored_credentials(self) -> None:
         """Record hashes (never values) of the restored credentials so the read-back can prove they changed."""
@@ -1055,17 +1167,23 @@ class OdooDataWorkflowRunner:
         if self._is_production_instance():
             return
         with self.connect_to_db().cursor() as cursor:
-            parameters = self._credential_parameters(cursor)
-        self._restored_credential_fingerprints = {key: _credential_fingerprint(value) for key, value in parameters.items() if value}
+            values = self._credential_values(cursor)
+        self._restored_credential_fingerprints = {
+            label: frozenset(_credential_fingerprint(value) for value in found) for label, found in values.items()
+        }
 
     def neutralize_production_credentials(self) -> None:
-        """Remove what ties a restored production copy to live integrations, devices and signed tokens.
+        """Remove what ties a restored production copy to live integrations, devices, clients and signed tokens.
 
         Runs on every restore onto a non-production instance, independent of --no-sanitize, and is safe
-        to repeat. It only removes what the copy brought with it; Launchplane's settings apply runs later.
+        to repeat. It only removes what the copy brought with it, except the integrations the restore
+        request keeps; Launchplane's settings apply runs later.
         """
         if self._keeps_production_credentials():
             return
+        kept = self._kept_integrations()
+        if kept:
+            _logger.info("Keeping the restored settings of: %s", ", ".join(sorted(kept)))
         connection_ = self.connect_to_db()
         with connection_.cursor() as cursor:
             parameters = self._credential_parameters(cursor)
@@ -1080,9 +1198,41 @@ class OdooDataWorkflowRunner:
             for table in WEB_PUSH_TABLES:
                 if self._table_exists(cursor, table):
                     cursor.execute(sql.SQL("DELETE FROM {}").format(sql.Identifier(table)))
-            self._stop_copied_shopify_work(cursor)
+            if "shopify" not in kept:
+                self._stop_copied_shopify_work(cursor)
+            if PAYMENT_INTEGRATION not in kept:
+                self._disable_payment_providers(cursor)
+            if INCOMING_MAIL_INTEGRATION not in kept and "active" in self._table_columns(cursor, "fetchmail_server"):
+                cursor.execute("UPDATE fetchmail_server SET active = FALSE WHERE active")
+            for table, column in self._cleared_table_columns(cursor):
+                self._clear_credential_column(cursor, table, column)
         connection_.commit()
         _logger.info("Cleared production integration credentials and regenerated signing keys on the restored copy.")
+
+    def _disable_payment_providers(self, cursor: Any) -> None:
+        if "state" not in self._table_columns(cursor, "payment_provider"):
+            return
+        placeholders = ", ".join(["%s"] * len(LOCAL_PAYMENT_PROVIDER_CODES))
+        cursor.execute(
+            f"UPDATE payment_provider SET state = 'disabled' WHERE state <> 'disabled' AND code NOT IN ({placeholders})",
+            LOCAL_PAYMENT_PROVIDER_CODES,
+        )
+
+    @staticmethod
+    def _clear_credential_column(cursor: Any, table: str, column: str) -> None:
+        if table == "res_users_apikeys":
+            cursor.execute("DELETE FROM res_users_apikeys")
+        elif table == "iap_account":
+            # A fresh token is a new, empty IAP account: nothing is charged to production's credits.
+            cursor.execute("SELECT id FROM iap_account WHERE account_token IS NOT NULL")
+            for (account_id,) in cursor.fetchall():
+                cursor.execute("UPDATE iap_account SET account_token = %s WHERE id = %s", (uuid.uuid4().hex, account_id))
+        else:
+            cursor.execute(
+                sql.SQL("UPDATE {table} SET {column} = NULL WHERE {column} IS NOT NULL").format(
+                    table=sql.Identifier(table), column=sql.Identifier(column)
+                )
+            )
 
     def _stop_copied_shopify_work(self, cursor: Any) -> None:
         state_placeholders = ", ".join(["%s"] * len(SHOPIFY_OPEN_JOB_STATES))
@@ -1138,29 +1288,49 @@ class OdooDataWorkflowRunner:
         return cursor.fetchone()[0]
 
     def verify_production_credentials_cleared(self) -> None:
-        """Fail the restore when any restored credential value or push subscription survived sanitize."""
+        """Fail the restore when any restored credential value, push subscription or live connection survived sanitize."""
         if self._is_production_instance():
             return
+        kept = self._kept_integrations()
         with self.connect_to_db().cursor() as cursor:
-            parameters = self._credential_parameters(cursor)
+            values = self._credential_values(cursor)
             push_devices = 0
             if self._table_exists(cursor, "mail_push_device"):
                 cursor.execute("SELECT count(*) FROM mail_push_device")
                 push_devices = cursor.fetchone()[0]
-            shopify_external_ids = self._surviving_shopify_external_ids(cursor)
+            shopify_external_ids = 0 if "shopify" in kept else self._surviving_shopify_external_ids(cursor)
+            enabled_payment_providers = 0 if PAYMENT_INTEGRATION in kept else self._enabled_remote_payment_providers(cursor)
+            active_incoming_mail_servers = 0
+            if INCOMING_MAIL_INTEGRATION not in kept and "active" in self._table_columns(cursor, "fetchmail_server"):
+                cursor.execute("SELECT count(*) FROM fetchmail_server WHERE active")
+                active_incoming_mail_servers = cursor.fetchone()[0]
         unchanged = sorted(
-            key
-            for key, value in parameters.items()
-            if value and self._restored_credential_fingerprints.get(key) == _credential_fingerprint(value)
+            label
+            for label, found in values.items()
+            if any(_credential_fingerprint(value) in self._restored_credential_fingerprints.get(label, ()) for value in found)
         )
-        problems = [f"unchanged restored value: {key}" for key in unchanged]
+        problems = [f"unchanged restored value: {label}" for label in unchanged]
         if push_devices:
             problems.append(f"{push_devices} copied web push subscription(s)")
         if shopify_external_ids:
             problems.append(f"{shopify_external_ids} copied production Shopify external ID(s)")
+        if enabled_payment_providers:
+            problems.append(f"{enabled_payment_providers} payment provider(s) still enabled")
+        if active_incoming_mail_servers:
+            problems.append(f"{active_incoming_mail_servers} incoming mail server(s) still active")
         if problems:
             raise OdooDatabaseUpdateError("Production credentials survived sanitize: " + "; ".join(problems))
         _logger.info("Read-back confirmed no restored production credential remains.")
+
+    def _enabled_remote_payment_providers(self, cursor: Any) -> int:
+        if "state" not in self._table_columns(cursor, "payment_provider"):
+            return 0
+        placeholders = ", ".join(["%s"] * len(LOCAL_PAYMENT_PROVIDER_CODES))
+        cursor.execute(
+            f"SELECT count(*) FROM payment_provider WHERE state <> 'disabled' AND code NOT IN ({placeholders})",
+            LOCAL_PAYMENT_PROVIDER_CODES,
+        )
+        return cursor.fetchone()[0]
 
     def _drop_database_after_failed_restore(self) -> None:
         _logger.error("Restore failed after pg_restore; dropping the database so web cannot boot a production copy.")

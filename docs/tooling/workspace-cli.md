@@ -434,14 +434,38 @@ Notes
   same data the addon's Reset Shopify clears, without contacting any store. The
   next export then creates products in the store Launchplane applies instead of
   updating production-store product IDs. It
-  deletes the PrintNode key and the Mapbox, Unsplash and Tenor tokens. It deletes
-  both web push VAPID keys along with every push device and queued push; Odoo
-  generates new VAPID keys on demand. It regenerates `database.secret`. The
-  step runs right after `pg_restore`, before any Odoo code, and again after
+  deletes the PrintNode key and the Mapbox, Unsplash and Tenor tokens. It
+  deletes the Fishbowl, RepairShopr sync and cm_data database connections
+  (host, database, user and password), so import crons that install hooks turn
+  back on cannot reach the production databases. It disables every payment
+  provider that reaches a remote service (anything but `none`, `custom` and
+  `demo`, including providers in `test` state) and blanks the providers'
+  credential fields. It deactivates every incoming mail server and blanks its
+  password and its Gmail or Outlook OAuth tokens (outgoing servers lose their
+  OAuth tokens too), and replaces each IAP account token with a new one, so the copy
+  cannot spend production's credits. It deletes every user API key
+  (`res_users_apikeys`); GPT users get theirs again after the restore. It
+  deletes both web push VAPID keys along with every push device and queued
+  push; Odoo generates new VAPID keys on demand. It regenerates
+  `database.secret`. `database.uuid` is kept: it identifies the database,
+  authenticates nothing, and Odoo's own neutralize keeps it too.
+- `ODOO_RESTORE_KEPT_INTEGRATIONS` (comma-separated) names integrations whose
+  restored settings stay, using the integration names of Launchplane's
+  read-back: `shopify`, `printnode`, `fishbowl`, `repairshopr`, `cm_data`,
+  `payment`, `incoming_mail`, `iap`, `mapbox`, `unsplash`, `tenor`.
+  Launchplane sets it from a lane's `pre_live` allowances. Settings under a
+  `dev_store` or `read_only_source` allowance don't need it, because
+  Launchplane applies them after the clearing. Unset keeps nothing. Web push,
+  user API keys and `database.secret` are cleared whatever it says, and other
+  or unknown names are logged and ignored.
+- The step runs right after `pg_restore`, before any Odoo code, and again after
   the addon install and update. A read-back then fails the restore if any
-  restored value survived. Launchplane's settings apply runs after that, so the
-  instance's own settings are kept. The key list lives in one place, at the top
-  of `docker/scripts/run_odoo_data_workflows.py`.
+  restored value of a cleared integration survived, by parameter or by
+  table column. It also fails the restore if a remote payment provider is
+  still enabled or an incoming mail server is still active. Launchplane's
+  settings apply runs after that, so the instance's own settings are kept.
+  The key list lives in one place, at the top of
+  `docker/scripts/run_odoo_data_workflows.py`.
 - Release/deploy ownership for remote environments stays in
   `launchplane`, even when the same tenant manifest is used to anchor
   local runtime context.

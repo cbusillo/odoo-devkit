@@ -908,13 +908,38 @@ PRODUCTION_PARAMETERS = {
     "mail.web_push_vapid_private_key": "production-vapid-private",
     "mail.web_push_vapid_public_key": "production-vapid-public",
     "database.secret": "production-database-secret",
+    "fishbowl.host": "fishbowl.production.example.test",
+    "fishbowl.db": "production-fishbowl",
+    "fishbowl.user": "fishbowl-reader",
+    "fishbowl.password": "production-fishbowl-password",
+    "repairshopr.sync_db.host": "repairshopr.production.example.test",
+    "repairshopr.sync_db.name": "repairshopr",
+    "repairshopr.sync_db.user": "repairshopr-sync",
+    "repairshopr.sync_db.password": "production-repairshopr-password",
+    "cm_data.db.host": "cm-data.production.example.test",
+    "cm_data.db.name": "cm_data",
+    "cm_data.db.user": "cm-data-sync",
+    "cm_data.db.password": "production-cm-data-password",
+}
+IMPORT_SOURCE_PARAMETERS = {
+    key: value for key, value in PRODUCTION_PARAMETERS.items() if key.startswith(("fishbowl.", "repairshopr.", "cm_data."))
 }
 UNRELATED_PARAMETERS = {
     "shopify.api_version": "2026-07",
     "shopify.pause_webhook_processing": "False",
     "web.base.url": "https://testing.example.test",
     "database.uuid": "copied-uuid",
+    "fishbowl.port": "3306",
+    "cm_data.last_sync_at": "2026-09-28 14:57:00",
 }
+# (id, code, state, stripe_secret_key, stripe_publishable_key, aps_sha_request, paypal_email_account, allow_tokenization)
+PAYMENT_PROVIDERS = (
+    (1, "stripe", "enabled", "sk_live_production", "pk_live_production", None, None, True),
+    (2, "aps", "test", None, None, "production-sha-phrase", None, False),
+    (3, "paypal", "disabled", None, None, None, "payments@example.test", False),
+    (4, "custom", "enabled", None, None, None, None, False),
+)
+PRODUCTION_API_KEY_HASH = "$pbkdf2-sha512$600000$production-api-key-hash"
 
 
 class _RestoredProductionCopy:
@@ -942,11 +967,45 @@ class _RestoredProductionCopy:
             CREATE TABLE ir_model_data (id INTEGER PRIMARY KEY, module TEXT, name TEXT, model TEXT, res_id INTEGER);
             CREATE TABLE ir_mail_server (
                 name TEXT, smtp_port INTEGER, smtp_host TEXT, smtp_encryption TEXT, active BOOLEAN,
-                smtp_authentication TEXT, smtp_user TEXT, smtp_pass TEXT
+                smtp_authentication TEXT, smtp_user TEXT, smtp_pass TEXT, google_gmail_refresh_token TEXT
             );
+            CREATE TABLE payment_provider (
+                id INTEGER PRIMARY KEY, code TEXT NOT NULL, state TEXT NOT NULL, stripe_secret_key TEXT,
+                stripe_publishable_key TEXT, aps_sha_request TEXT, paypal_email_account TEXT, allow_tokenization BOOLEAN
+            );
+            CREATE TABLE fetchmail_server (
+                id INTEGER PRIMARY KEY, name TEXT, server TEXT, active BOOLEAN, password TEXT, microsoft_outlook_refresh_token TEXT
+            );
+            CREATE TABLE iap_account (id INTEGER PRIMARY KEY, service_id INTEGER, account_token TEXT);
+            CREATE TABLE res_users_apikeys (id INTEGER PRIMARY KEY, user_id INTEGER, name TEXT, key TEXT);
+            ATTACH DATABASE ':memory:' AS information_schema;
+            CREATE TABLE information_schema.columns (table_name TEXT, column_name TEXT, is_nullable TEXT, data_type TEXT);
             """
         )
         self.tables = {row[0] for row in self.database.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        self.database.executemany(
+            "INSERT INTO information_schema.columns VALUES ('payment_provider', ?, ?, ?)",
+            [
+                ("id", "NO", "integer"),
+                ("code", "NO", "character varying"),
+                ("state", "NO", "character varying"),
+                ("stripe_secret_key", "YES", "character varying"),
+                ("stripe_publishable_key", "YES", "character varying"),
+                ("aps_sha_request", "YES", "character varying"),
+                ("paypal_email_account", "YES", "character varying"),
+                ("allow_tokenization", "YES", "boolean"),
+            ],
+        )
+        self.database.executemany("INSERT INTO payment_provider VALUES (?, ?, ?, ?, ?, ?, ?, ?)", PAYMENT_PROVIDERS)
+        self.database.execute(
+            "INSERT INTO fetchmail_server VALUES "
+            "(1, 'Support inbox', 'imap.example.test', true, 'production-imap-password', 'production-outlook-refresh-token')"
+        )
+        self.database.execute("INSERT INTO iap_account VALUES (1, 1, 'production-iap-token')")
+        self.database.executemany(
+            "INSERT INTO res_users_apikeys VALUES (?, ?, ?, ?)",
+            [(1, 7, "Data access", PRODUCTION_API_KEY_HASH), (2, 8, "Integration", "$pbkdf2-sha512$600000$second-hash")],
+        )
         self.database.create_function("to_regclass", 1, lambda name: name if name in self.tables else None)
         parameters = {**PRODUCTION_PARAMETERS, **UNRELATED_PARAMETERS}
         self.database.executemany("INSERT INTO ir_config_parameter VALUES (?, ?)", parameters.items())
@@ -989,7 +1048,7 @@ class _RestoredProductionCopy:
         self.database.execute("INSERT INTO ir_model_data VALUES (1, 'shopify_sync', 'ir_cron_shopify_sync_dispatch', 'ir.cron', 1)")
         self.database.execute(
             "INSERT INTO ir_mail_server VALUES ('Production', 587, 'smtp.example.test', 'starttls', true, 'login', "
-            "'mailbox@example.test', 'copied-secret')"
+            "'mailbox@example.test', 'copied-secret', 'production-gmail-refresh-token')"
         )
 
     def cursor(self) -> closing:
@@ -1009,6 +1068,9 @@ class _RestoredProductionCopy:
 
     def active_mail_servers(self) -> list[tuple]:
         return self.database.execute("SELECT smtp_host, smtp_user, smtp_pass FROM ir_mail_server WHERE active = true").fetchall()
+
+    def payment_providers(self) -> list[tuple]:
+        return self.database.execute("SELECT * FROM payment_provider ORDER BY id").fetchall()
 
 
 class _ParamstyleCursor:
@@ -1044,7 +1106,7 @@ class ProductionCredentialSanitizeTests(unittest.TestCase):
         self.copy = _RestoredProductionCopy()
         self.addCleanup(self.copy.close)
 
-    def _runner(self, platform_instance: str | None = "testing") -> object:
+    def _runner(self, platform_instance: str | None = "testing", **extra_environment: object) -> object:
         environment: dict[str, object] = {
             "ODOO_DB_HOST": "database",
             "ODOO_DB_USER": "odoo",
@@ -1055,6 +1117,7 @@ class ProductionCredentialSanitizeTests(unittest.TestCase):
         }
         if platform_instance is not None:
             environment["PLATFORM_INSTANCE"] = platform_instance
+        environment.update(extra_environment)
         with patch.dict(os.environ, {}, clear=True):
             settings = odoo_data_workflows.LocalServerSettings(**environment)
         runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
@@ -1102,6 +1165,28 @@ class ProductionCredentialSanitizeTests(unittest.TestCase):
         )
         # Every production-store Shopify ID is gone; other systems' external IDs stay.
         self.assertEqual(self.copy.database.execute("SELECT id, external_id FROM external_id").fetchall(), [(4, "ebay-category-9")])
+        self._assert_table_credentials_cleared()
+
+    def _assert_table_credentials_cleared(self) -> None:
+        # Remote providers are disabled and lose their credentials; the provider identity fields stay.
+        self.assertEqual(
+            self.copy.payment_providers(),
+            [
+                (1, "stripe", "disabled", None, None, None, None, True),
+                (2, "aps", "disabled", None, None, None, None, False),
+                (3, "paypal", "disabled", None, None, None, "payments@example.test", False),
+                (4, "custom", "enabled", None, None, None, None, False),
+            ],
+        )
+        self.assertEqual(
+            self.copy.database.execute("SELECT active, password, microsoft_outlook_refresh_token FROM fetchmail_server").fetchall(),
+            [(0, None, None)],
+        )
+        self.assertEqual(self.copy.scalar("SELECT count(*) FROM ir_mail_server WHERE google_gmail_refresh_token IS NOT NULL"), 0)
+        iap_token = self.copy.scalar("SELECT account_token FROM iap_account")
+        self.assertTrue(iap_token)
+        self.assertNotEqual(iap_token, "production-iap-token")
+        self.assertEqual(self.copy.scalar("SELECT count(*) FROM res_users_apikeys"), 0)
 
     def test_each_restore_regenerates_a_different_database_secret(self) -> None:
         runner = self._runner("testing")
@@ -1140,6 +1225,9 @@ class ProductionCredentialSanitizeTests(unittest.TestCase):
                 self.assertEqual(self.copy.scalar("SELECT count(*) FROM ir_cron WHERE active"), 3)
                 self.assertEqual(self.copy.scalar("SELECT count(*) FROM external_id"), 4)
                 self.assertEqual(self.copy.scalar("SELECT count(*) FROM product_product WHERE shopify_last_exported_at"), 1)
+                self.assertEqual(self.copy.payment_providers(), list(PAYMENT_PROVIDERS))
+                self.assertEqual(self.copy.scalar("SELECT count(*) FROM res_users_apikeys"), 2)
+                self.assertEqual(self.copy.scalar("SELECT password FROM fetchmail_server WHERE active"), "production-imap-password")
 
     def test_read_back_fails_when_a_restored_credential_survives(self) -> None:
         runner = self._runner("testing")
@@ -1156,6 +1244,92 @@ class ProductionCredentialSanitizeTests(unittest.TestCase):
             runner.verify_production_credentials_cleared()
 
         self.assertNotIn(PRODUCTION_PARAMETERS["printnode.api_key"], str(raised.exception))
+
+    def test_restore_keeps_only_the_integrations_the_request_allows(self) -> None:
+        runner = self._runner("testing", ODOO_RESTORE_KEPT_INTEGRATIONS="fishbowl, payment incoming_mail")
+
+        runner.fingerprint_restored_credentials()
+        runner.neutralize_production_credentials()
+        runner.verify_production_credentials_cleared()
+
+        parameters = self.copy.parameters()
+        fishbowl = {key: value for key, value in IMPORT_SOURCE_PARAMETERS.items() if key.startswith("fishbowl.")}
+        self.assertEqual({key: parameters.get(key) for key in fishbowl}, fishbowl)
+        for key in set(IMPORT_SOURCE_PARAMETERS) - set(fishbowl):
+            with self.subTest(key=key):
+                self.assertNotIn(key, parameters)
+        self.assertNotIn("printnode.api_key", parameters)
+        self.assertEqual(self.copy.payment_providers(), list(PAYMENT_PROVIDERS))
+        self.assertEqual(
+            self.copy.database.execute("SELECT active, password, microsoft_outlook_refresh_token FROM fetchmail_server").fetchall(),
+            [(1, "production-imap-password", "production-outlook-refresh-token")],
+        )
+        # User API keys and signing keys are never kept, whatever the request says.
+        self.assertEqual(self.copy.scalar("SELECT count(*) FROM res_users_apikeys"), 0)
+        self.assertNotEqual(parameters["database.secret"], PRODUCTION_PARAMETERS["database.secret"])
+
+    def test_restore_request_cannot_keep_web_push_or_unknown_integrations(self) -> None:
+        runner = self._runner("testing", ODOO_RESTORE_KEPT_INTEGRATIONS="web_push,res_users_apikeys,not_an_integration")
+
+        with self.assertLogs(odoo_data_workflows._logger, "WARNING") as logs:
+            runner.fingerprint_restored_credentials()
+            runner.neutralize_production_credentials()
+            runner.verify_production_credentials_cleared()
+
+        self.assertIn("not_an_integration, res_users_apikeys, web_push", "\n".join(logs.output))
+        self._assert_production_credentials_cleared()
+        self._assert_table_credentials_cleared()
+        self.assertEqual(self.copy.scalar("SELECT count(*) FROM mail_push_device"), 0)
+
+    def test_read_back_fails_when_a_restored_import_source_payment_mail_or_api_key_survives(self) -> None:
+        runner = self._runner("testing")
+        runner.fingerprint_restored_credentials()
+        runner.neutralize_production_credentials()
+        self.copy.database.execute(
+            "INSERT INTO ir_config_parameter VALUES ('cm_data.db.password', ?)", (PRODUCTION_PARAMETERS["cm_data.db.password"],)
+        )
+        self.copy.database.execute(
+            "UPDATE payment_provider SET state = 'enabled', stripe_secret_key = 'sk_live_production' WHERE id = 1"
+        )
+        self.copy.database.execute(
+            "UPDATE fetchmail_server SET active = true, microsoft_outlook_refresh_token = 'production-outlook-refresh-token'"
+        )
+        self.copy.database.execute("UPDATE ir_mail_server SET google_gmail_refresh_token = 'production-gmail-refresh-token'")
+        self.copy.database.execute("INSERT INTO res_users_apikeys VALUES (9, 7, 'Data access', ?)", (PRODUCTION_API_KEY_HASH,))
+
+        with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError) as raised:
+            runner.verify_production_credentials_cleared()
+
+        message = str(raised.exception)
+        for expected in (
+            "unchanged restored value: cm_data.db.password",
+            "unchanged restored value: payment_provider.stripe_secret_key",
+            "unchanged restored value: res_users_apikeys.key",
+            "unchanged restored value: fetchmail_server.microsoft_outlook_refresh_token",
+            "unchanged restored value: ir_mail_server.google_gmail_refresh_token",
+            "1 payment provider(s) still enabled",
+            "1 incoming mail server(s) still active",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, message)
+        for secret in (
+            PRODUCTION_PARAMETERS["cm_data.db.password"],
+            "sk_live_production",
+            PRODUCTION_API_KEY_HASH,
+            "production-outlook-refresh-token",
+            "production-gmail-refresh-token",
+        ):
+            self.assertNotIn(secret, message)
+
+    def test_read_back_accepts_new_values_set_after_the_clearing(self) -> None:
+        runner = self._runner("testing")
+        runner.fingerprint_restored_credentials()
+        runner.neutralize_production_credentials()
+        self.copy.database.execute("INSERT INTO ir_config_parameter VALUES ('fishbowl.password', 'lane-read-only-password')")
+        self.copy.database.execute("INSERT INTO res_users_apikeys VALUES (9, 7, 'Lane key', '$pbkdf2-sha512$600000$lane-hash')")
+        self.copy.database.execute("UPDATE payment_provider SET stripe_secret_key = 'sk_test_lane' WHERE id = 1")
+
+        runner.verify_production_credentials_cleared()
 
     def test_read_back_fails_when_a_production_shopify_external_id_survives(self) -> None:
         runner = self._runner("testing")
@@ -1179,6 +1353,10 @@ class ProductionCredentialSanitizeTests(unittest.TestCase):
             "ir_cron",
             "external_id",
             "external_system",
+            "payment_provider",
+            "fetchmail_server",
+            "iap_account",
+            "res_users_apikeys",
         ):
             self.copy.database.execute(f"DROP TABLE {table}")
             self.copy.tables.discard(table)
@@ -1239,6 +1417,7 @@ class ProductionCredentialSanitizeTests(unittest.TestCase):
         self.assertEqual(self.copy.scalar("SELECT active FROM ir_cron WHERE id = 1"), 0)
         self.assertEqual(self.copy.active_mail_servers(), [("invalid", None, None)])
         self.assertEqual(self.copy.scalar("SELECT count(*) FROM ir_mail_server WHERE smtp_pass IS NOT NULL"), 0)
+        self._assert_table_credentials_cleared()
 
     def test_restore_that_fails_after_pg_restore_drops_the_production_copy(self) -> None:
         runner = self._runner("testing")
