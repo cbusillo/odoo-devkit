@@ -3540,7 +3540,6 @@ def run_odoo_shell_command(
         "--db_host=database",
         "--db_port=5432",
         f"--db_user={runtime_context.environment.merged_values.get('ODOO_DB_USER', 'odoo')}",
-        f"--db_password={runtime_context.environment.merged_values.get('ODOO_DB_PASSWORD', '')}",
     ]
     compose_command = compose_base_command(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file)
 
@@ -3559,14 +3558,18 @@ def run_odoo_shell_command(
     odoo_shell_exec_command = compose_command + ["exec"]
     if script_text is not None or resolved_log_file is not None:
         odoo_shell_exec_command.append("-T")
-    odoo_shell_exec_command.extend([normalized_service, *odoo_shell_command])
+    # Odoo reads PGPASSWORD natively. Expand the existing container environment
+    # inside the container, so neither Compose nor Odoo receives a secret in argv.
+    odoo_shell_exec_command.extend(
+        [normalized_service, "/bin/sh", "-c", 'export PGPASSWORD="$ODOO_DB_PASSWORD"; exec "$@"', "odoo-shell", *odoo_shell_command]
+    )
 
     if dry_run:
-        command_display = " ".join(odoo_shell_exec_command)
+        command_display = shlex.join(odoo_shell_exec_command)
         if resolved_script_path is not None:
-            command_display = f"{command_display} < {resolved_script_path}"
+            command_display = f"{command_display} < {shlex.quote(str(resolved_script_path))}"
         if resolved_log_file is not None:
-            command_display = f"{command_display} > {resolved_log_file} 2>&1"
+            command_display = f"{command_display} > {shlex.quote(str(resolved_log_file))} 2>&1"
         print(f"$ {command_display}")
         return
 

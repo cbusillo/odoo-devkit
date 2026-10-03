@@ -559,6 +559,9 @@ Notes
   interactively, consume a `--script` file, and optionally tee output into a
   `--log-file`, but it is still a manifest-backed local helper rather than a
   generic remote exec path.
+  It reads the database password from the existing container environment through
+  Odoo's native `PGPASSWORD` input. The password is absent from process arguments
+  and the command shown by `--dry-run`.
 
 ## Ownership Rules
 
