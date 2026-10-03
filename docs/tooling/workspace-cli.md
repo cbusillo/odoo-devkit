@@ -441,7 +441,8 @@ Notes
   provider that reaches a remote service (anything but `none`, `custom` and
   `demo`, including providers in `test` state) and blanks the providers'
   credential fields. It deactivates every incoming mail server and blanks its
-  password, and replaces each IAP account token with a new one, so the copy
+  password and its Gmail or Outlook OAuth tokens (outgoing servers lose their
+  OAuth tokens too), and replaces each IAP account token with a new one, so the copy
   cannot spend production's credits. It deletes every user API key
   (`res_users_apikeys`); GPT users get theirs again after the restore. It
   deletes both web push VAPID keys along with every push device and queued

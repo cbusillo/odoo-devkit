@@ -967,13 +967,15 @@ class _RestoredProductionCopy:
             CREATE TABLE ir_model_data (id INTEGER PRIMARY KEY, module TEXT, name TEXT, model TEXT, res_id INTEGER);
             CREATE TABLE ir_mail_server (
                 name TEXT, smtp_port INTEGER, smtp_host TEXT, smtp_encryption TEXT, active BOOLEAN,
-                smtp_authentication TEXT, smtp_user TEXT, smtp_pass TEXT
+                smtp_authentication TEXT, smtp_user TEXT, smtp_pass TEXT, google_gmail_refresh_token TEXT
             );
             CREATE TABLE payment_provider (
                 id INTEGER PRIMARY KEY, code TEXT NOT NULL, state TEXT NOT NULL, stripe_secret_key TEXT,
                 stripe_publishable_key TEXT, aps_sha_request TEXT, paypal_email_account TEXT, allow_tokenization BOOLEAN
             );
-            CREATE TABLE fetchmail_server (id INTEGER PRIMARY KEY, name TEXT, server TEXT, active BOOLEAN, password TEXT);
+            CREATE TABLE fetchmail_server (
+                id INTEGER PRIMARY KEY, name TEXT, server TEXT, active BOOLEAN, password TEXT, microsoft_outlook_refresh_token TEXT
+            );
             CREATE TABLE iap_account (id INTEGER PRIMARY KEY, service_id INTEGER, account_token TEXT);
             CREATE TABLE res_users_apikeys (id INTEGER PRIMARY KEY, user_id INTEGER, name TEXT, key TEXT);
             ATTACH DATABASE ':memory:' AS information_schema;
@@ -996,7 +998,8 @@ class _RestoredProductionCopy:
         )
         self.database.executemany("INSERT INTO payment_provider VALUES (?, ?, ?, ?, ?, ?, ?, ?)", PAYMENT_PROVIDERS)
         self.database.execute(
-            "INSERT INTO fetchmail_server VALUES (1, 'Support inbox', 'imap.example.test', true, 'production-imap-password')"
+            "INSERT INTO fetchmail_server VALUES "
+            "(1, 'Support inbox', 'imap.example.test', true, 'production-imap-password', 'production-outlook-refresh-token')"
         )
         self.database.execute("INSERT INTO iap_account VALUES (1, 1, 'production-iap-token')")
         self.database.executemany(
@@ -1045,7 +1048,7 @@ class _RestoredProductionCopy:
         self.database.execute("INSERT INTO ir_model_data VALUES (1, 'shopify_sync', 'ir_cron_shopify_sync_dispatch', 'ir.cron', 1)")
         self.database.execute(
             "INSERT INTO ir_mail_server VALUES ('Production', 587, 'smtp.example.test', 'starttls', true, 'login', "
-            "'mailbox@example.test', 'copied-secret')"
+            "'mailbox@example.test', 'copied-secret', 'production-gmail-refresh-token')"
         )
 
     def cursor(self) -> closing:
@@ -1175,7 +1178,11 @@ class ProductionCredentialSanitizeTests(unittest.TestCase):
                 (4, "custom", "enabled", None, None, None, None, False),
             ],
         )
-        self.assertEqual(self.copy.database.execute("SELECT active, password FROM fetchmail_server").fetchall(), [(0, None)])
+        self.assertEqual(
+            self.copy.database.execute("SELECT active, password, microsoft_outlook_refresh_token FROM fetchmail_server").fetchall(),
+            [(0, None, None)],
+        )
+        self.assertEqual(self.copy.scalar("SELECT count(*) FROM ir_mail_server WHERE google_gmail_refresh_token IS NOT NULL"), 0)
         iap_token = self.copy.scalar("SELECT account_token FROM iap_account")
         self.assertTrue(iap_token)
         self.assertNotEqual(iap_token, "production-iap-token")
@@ -1254,8 +1261,8 @@ class ProductionCredentialSanitizeTests(unittest.TestCase):
         self.assertNotIn("printnode.api_key", parameters)
         self.assertEqual(self.copy.payment_providers(), list(PAYMENT_PROVIDERS))
         self.assertEqual(
-            self.copy.database.execute("SELECT active, password FROM fetchmail_server").fetchall(),
-            [(1, "production-imap-password")],
+            self.copy.database.execute("SELECT active, password, microsoft_outlook_refresh_token FROM fetchmail_server").fetchall(),
+            [(1, "production-imap-password", "production-outlook-refresh-token")],
         )
         # User API keys and signing keys are never kept, whatever the request says.
         self.assertEqual(self.copy.scalar("SELECT count(*) FROM res_users_apikeys"), 0)
@@ -1284,7 +1291,10 @@ class ProductionCredentialSanitizeTests(unittest.TestCase):
         self.copy.database.execute(
             "UPDATE payment_provider SET state = 'enabled', stripe_secret_key = 'sk_live_production' WHERE id = 1"
         )
-        self.copy.database.execute("UPDATE fetchmail_server SET active = true")
+        self.copy.database.execute(
+            "UPDATE fetchmail_server SET active = true, microsoft_outlook_refresh_token = 'production-outlook-refresh-token'"
+        )
+        self.copy.database.execute("UPDATE ir_mail_server SET google_gmail_refresh_token = 'production-gmail-refresh-token'")
         self.copy.database.execute("INSERT INTO res_users_apikeys VALUES (9, 7, 'Data access', ?)", (PRODUCTION_API_KEY_HASH,))
 
         with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError) as raised:
@@ -1295,12 +1305,20 @@ class ProductionCredentialSanitizeTests(unittest.TestCase):
             "unchanged restored value: cm_data.db.password",
             "unchanged restored value: payment_provider.stripe_secret_key",
             "unchanged restored value: res_users_apikeys.key",
+            "unchanged restored value: fetchmail_server.microsoft_outlook_refresh_token",
+            "unchanged restored value: ir_mail_server.google_gmail_refresh_token",
             "1 payment provider(s) still enabled",
             "1 incoming mail server(s) still active",
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, message)
-        for secret in (PRODUCTION_PARAMETERS["cm_data.db.password"], "sk_live_production", PRODUCTION_API_KEY_HASH):
+        for secret in (
+            PRODUCTION_PARAMETERS["cm_data.db.password"],
+            "sk_live_production",
+            PRODUCTION_API_KEY_HASH,
+            "production-outlook-refresh-token",
+            "production-gmail-refresh-token",
+        ):
             self.assertNotIn(secret, message)
 
     def test_read_back_accepts_new_values_set_after_the_clearing(self) -> None:

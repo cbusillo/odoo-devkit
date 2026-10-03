@@ -127,8 +127,18 @@ TEXT_COLUMN_TYPES = ("character varying", "text")
 # Rows that authenticate to a remote service: (integration, table, credential column). A None
 # integration is never kept. Odoo stores only a hash in res_users_apikeys.key, but whoever holds the
 # production key authenticates against any copy that kept that hash.
+# Gmail and Outlook mail servers authenticate with these OAuth tokens instead of a password.
+MAIL_SERVER_OAUTH_TOKEN_COLUMNS = (
+    "google_gmail_access_token",
+    "google_gmail_refresh_token",
+    "microsoft_outlook_access_token",
+    "microsoft_outlook_refresh_token",
+)
 TABLE_CREDENTIAL_COLUMNS = (
     (INCOMING_MAIL_INTEGRATION, "fetchmail_server", "password"),
+    *((INCOMING_MAIL_INTEGRATION, "fetchmail_server", column) for column in MAIL_SERVER_OAUTH_TOKEN_COLUMNS),
+    # Outgoing mail is blocked on every non-production instance, so its tokens are never kept.
+    *((None, "ir_mail_server", column) for column in MAIL_SERVER_OAUTH_TOKEN_COLUMNS),
     (IAP_INTEGRATION, "iap_account", "account_token"),
     (None, "res_users_apikeys", "key"),
 )
