@@ -80,11 +80,12 @@ INTEGRATION_CREDENTIAL_PARAMETER_KEYS: dict[str, tuple[str, ...]] = {
         "repairshopr.sync_db.password",
     ),
     "cm_data": ("cm_data.db.host", "cm_data.db.name", "cm_data.db.user", "cm_data.db.password"),
+    "incoming_mail": ("google_gmail_client_secret", "microsoft_outlook_client_secret"),
     # Odoo 19 regenerates both VAPID keys (and drops every push device) when the public key is missing:
     # mail.push.device.get_web_push_vapid_public_key.
     "web_push": ("mail.web_push_vapid_private_key", "mail.web_push_vapid_public_key"),
 }
-# Integrations whose settings live in tables rather than ir_config_parameter.
+# Integrations with settings in tables as well as, or instead of, ir_config_parameter.
 PAYMENT_INTEGRATION = "payment"
 INCOMING_MAIL_INTEGRATION = "incoming_mail"
 IAP_INTEGRATION = "iap"
