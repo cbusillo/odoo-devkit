@@ -115,8 +115,8 @@ those workspaces.
 - Runtime repo ownership remains explicit. When `[repos.runtime]` is present it
   may be path-based or repo-addressable,
   `workspace sync` materializes repo-addressed runtime inputs into
-  `sources/runtime`, and non-local runtime commands fail closed until that
-  checkout exists.
+  `sources/runtime`, and runtime commands fail closed until `workspace sync`
+  has materialized that checkout.
 - Runtime Odoo core is inherited from the image/tooling chain. For IDE analysis,
   `workspace prepare-ide` attaches an explicit, pinned community source checkout
   to the exact tenant project; see the [workspace CLI guide](docs/tooling/workspace-cli.md#workspace-prepare-ide).
@@ -247,7 +247,8 @@ resulting artifact.
 real build context, requires clean git worktrees for the repos it captures,
 pushes the resulting image, resolves the pushed digest, and emits a
 control-plane-compatible artifact manifest JSON file.
-When a repo-owned `artifact-inputs.toml` exists beside `workspace.toml`,
+When the repo-owned artifact inputs file exists (`artifact-inputs.toml`
+beside `workspace.toml` by default, or the path in `[artifacts].inputs_file`),
 runtime and publish treat that file as the repo-owned source-input contract.
 Runtime and publish no longer fall back to `stack.toml` source selector
 fields.

@@ -1,5 +1,4 @@
 schema_version = 1
-plans_directory = "~/.code/plans"
 
 [guidance.agents]
 first_reads = [

@@ -90,6 +90,7 @@ When
   AGENTS.md
   docs/
     README.md
+    session-prompt.md
   workspace.lock.toml
   .generated/
   workspace.local.md  # optional supplemental, untracked, non-secret notes

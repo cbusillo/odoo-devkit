@@ -7,14 +7,17 @@ devkit-local secrets files.
 
 ## Platform Runtime Generation
 
-`platform runtime ...` resolves configuration in this order:
+`platform runtime ...` writes the selected generated runtime env file from:
 
 ```text
-platform/config/base.env safe compose fallbacks
-+ ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON
+ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON
 + selected stack local configuration
 = selected generated runtime env file
 ```
+
+Compose then loads `platform/config/base.env` as fallback defaults, followed by
+that generated file (`PLATFORM_RUNTIME_ENV_FILE`), so generated values override
+`base.env`.
 
 The payload context and instance must exactly match the manifest-selected
 runtime. Missing or mismatched input fails closed.
@@ -33,6 +36,6 @@ repo-local `.env` file.
 - Keep shared/testing/prod values in Launchplane-managed runtime records and
   secrets.
 - Keep `platform/config/base.env` limited to shared fallback defaults.
-- If a canonical value conflicts with `base.env`, tooling fails closed and asks
-  for the duplicate to be aligned or removed.
+- Generated values override `base.env`; remove any `base.env` entry that
+  duplicates a canonical value instead of relying on the override.
 - `ODOO_LIST_DB` must remain `False` for managed stacks.

@@ -15,7 +15,8 @@ Runtime ownership is split by target type:
   belongs in Launchplane. `platform runtime` fails closed for shared/testing/prod
   mutation instead of shelling into a sibling runtime checkout.
 - non-local `platform runtime workflow --workflow init|openupgrade` remains
-  local-only and fail early with a clear `--instance local` requirement.
+  local-only and fails with a clear `--instance local` requirement once the
+  runtime repo resolves.
 - Release actions such as ship, promote, and gate execution belong in
   `launchplane`, not under `platform runtime`.
 
@@ -70,8 +71,8 @@ Purpose
 - When `[repos.shared_addons]` declares `url` + `ref` instead of `path`, clone
   or refresh a managed checkout at `sources/shared-addons`.
 - When `[repos.runtime]` declares `url` + `ref` instead of `path`, clone or
-  refresh a managed checkout at `sources/runtime` for non-local runtime
-  targets.
+  refresh a managed checkout at `sources/runtime`; a `path` is linked there
+  instead.
 - Generate runtime config under `.generated/`.
 - Generate the canonical workspace-root coding-agent surface:
   - `AGENTS.md`
@@ -259,7 +260,9 @@ Purpose
   render output.
 - Report the reserved root `AGENTS.override.md` and mark the cockpit non-current
   when it would replace the canonical generated guide.
-- Give manual cockpit roots a native drift check before or after sync.
+- Give manual cockpit roots a native drift check before or after sync. A
+  completed status check exits 0 even when `is_current` is false; gate on the
+  reported `is_current` value.
 
 ## `workspace clean`
 
@@ -298,7 +301,8 @@ Purpose
 
 Local runtime input
 
-- Before `select`, `inspect`, `build`, `up`, `down`, or a local workflow, set
+- Before any local `platform runtime` command (`select`, `inspect`, `build`,
+  `up`, `down`, `restore`, `logs`, `psql`, `odoo-shell`, or a workflow), set
   `ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON` from an operator-owned shell, password
   manager, or mode-`0600` file outside the repository.
 - The payload must be a JSON object with the exact selected `context`, the exact
@@ -345,12 +349,14 @@ Notes
   install module list. Artifact inputs or base images make addon files
   available, but this install list is what activates those modules in each
   database.
-- When a tenant repo contains `website-bootstrap.toml` beside `workspace.toml`,
+- When a tenant repo contains `website-bootstrap.toml` (at the tenant repo root,
+  or beside `workspace.toml`),
   runtime selection also folds that non-secret website intent into the same
   typed payload. The bootstrap contract can add install modules, provide the
   local canonical URL, identify a homepage page or controller route, and point
-  at a repo-local logo asset. Shared/testing/prod canonical URLs are
-  Launchplane-owned runtime records. Data workflows and startup apply bootstrap
+  at a repo-local logo asset. Keep only the local canonical URL there;
+  testing/prod canonical URLs are Launchplane-owned runtime records, though the
+  file format does not reject other instance keys. Data workflows and startup apply bootstrap
   state idempotently after modules are installed, verify required public website
   identity fields before reporting success, and avoid hard-coded tenant
   defaults. Page-backed bootstrap also binds discovered `website.page` records,
@@ -378,11 +384,13 @@ Notes
 - Non-local `restore`, `workflow bootstrap`, and `workflow update` now fail
   closed with Launchplane handoff guidance. Devkit should not grow arbitrary
   checkout remote mutation flows; add or use a Launchplane service route first.
-- Public and non-local Odoo runtimes fail closed on unsafe startup credentials:
+- Odoo runtimes whose `PLATFORM_INSTANCE` is not `local`, `dev`, or
+  `development` (an empty or unset value included) fail closed on unsafe
+  startup credentials:
   the master password must be present and non-default, and an explicit admin
   password must be configured before the startup wrapper marks the runtime
-  usable. Local developer runtimes may omit the admin password, but previews,
-  testing, and prod must not expose an Odoo database with default credentials.
+  usable. Those three developer instance names may omit the admin password,
+  but previews, testing, and prod must not expose an Odoo database with default credentials.
 - Devkit-managed startup and data workflow Odoo shell subprocesses prepend
   `/volumes/scripts` to `PYTHONPATH` so shipped runtime helpers remain
   importable from generated shell snippets.
@@ -407,16 +415,18 @@ Notes
   database has been dropped, any later failure (a partial `pg_restore`, the
   filestore copy, OpenUpgrade, sanitize, addon install or update, or the
   Launchplane settings apply) drops the restored database, so web never boots
-  an unsanitized production copy. Only failures after the settings apply keep
-  the sanitized database. Filestore capacity is checked again after
+  an unsanitized production copy, as does a failure while blocking outgoing
+  mail right after that apply. Only later failures (the core schema check and
+  GPT user provisioning) keep the sanitized database. Filestore capacity is checked again after
   capture so the dump's space is reflected before replacement begins.
   Capture and validation now finish before
   filestore copying begins, increasing the time web is stopped for large restores.
 - Every upstream restore onto an instance that is not explicitly production
   (`PLATFORM_INSTANCE` `prod` or `production`) clears the production
   integration credentials and signing keys that the copy brought with it.
-  An empty or unknown instance counts as non-production, and `--no-sanitize`
-  does not skip this step. It deletes the Shopify store credentials, the store
+  An empty or unknown instance counts as non-production, and the container
+  workflow's `--no-sanitize` / `NO_SANITIZE` setting (not exposed by
+  `platform runtime restore`) does not skip this step. It deletes the Shopify store credentials, the store
   URL and test-store flags, and the import cursors. It cancels open Shopify
   sync jobs, clears pending export flags, and turns off the Shopify crons. It
   deletes the copy's Shopify external IDs (every `external_id` row under the
@@ -435,8 +445,9 @@ Notes
 - Release/deploy ownership for remote environments stays in
   `launchplane`, even when the same tenant manifest is used to anchor
   local runtime context.
-- The runtime CLI accepts `--instance <name>` for selection and artifact
-  context, but it is not a remote mutation hook. The stable remote lane model is
+- Every runtime subcommand accepts `--instance <name>`, but it is not a remote
+  mutation hook: only `publish` accepts a non-local instance, and every other
+  subcommand requires `--instance local`. The stable remote lane model is
   `testing` plus `prod`; those mutations belong in Launchplane service routes
   and reusable workflows.
 - `platform runtime logs` and `platform runtime psql` are intentionally
