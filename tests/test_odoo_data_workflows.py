@@ -920,6 +920,8 @@ PRODUCTION_PARAMETERS = {
     "cm_data.db.name": "cm_data",
     "cm_data.db.user": "cm-data-sync",
     "cm_data.db.password": "production-cm-data-password",
+    "google_gmail_client_secret": "production-gmail-client-secret",
+    "microsoft_outlook_client_secret": "production-outlook-client-secret",
 }
 IMPORT_SOURCE_PARAMETERS = {
     key: value for key, value in PRODUCTION_PARAMETERS.items() if key.startswith(("fishbowl.", "repairshopr.", "cm_data."))
@@ -1259,6 +1261,9 @@ class ProductionCredentialSanitizeTests(unittest.TestCase):
             with self.subTest(key=key):
                 self.assertNotIn(key, parameters)
         self.assertNotIn("printnode.api_key", parameters)
+        for key in ("google_gmail_client_secret", "microsoft_outlook_client_secret"):
+            with self.subTest(key=key):
+                self.assertEqual(parameters[key], PRODUCTION_PARAMETERS[key])
         self.assertEqual(self.copy.payment_providers(), list(PAYMENT_PROVIDERS))
         self.assertEqual(
             self.copy.database.execute("SELECT active, password, microsoft_outlook_refresh_token FROM fetchmail_server").fetchall(),
@@ -1320,6 +1325,22 @@ class ProductionCredentialSanitizeTests(unittest.TestCase):
             "production-gmail-refresh-token",
         ):
             self.assertNotIn(secret, message)
+
+    def test_read_back_rejects_each_restored_mail_oauth_client_secret(self) -> None:
+        runner = self._runner("testing")
+        runner.fingerprint_restored_credentials()
+        runner.neutralize_production_credentials()
+
+        for key in ("google_gmail_client_secret", "microsoft_outlook_client_secret"):
+            with self.subTest(key=key):
+                self.copy.database.execute("INSERT INTO ir_config_parameter VALUES (?, ?)", (key, PRODUCTION_PARAMETERS[key]))
+
+                with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError) as raised:
+                    runner.verify_production_credentials_cleared()
+
+                self.assertIn(key, str(raised.exception))
+                self.assertNotIn(PRODUCTION_PARAMETERS[key], str(raised.exception))
+                self.copy.database.execute("DELETE FROM ir_config_parameter WHERE key = ?", (key,))
 
     def test_read_back_accepts_new_values_set_after_the_clearing(self) -> None:
         runner = self._runner("testing")
