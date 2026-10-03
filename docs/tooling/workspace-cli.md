@@ -457,8 +457,10 @@ Notes
   provider that reaches a remote service (anything but `none`, `custom` and
   `demo`, including providers in `test` state) and blanks the providers'
   credential fields. It deactivates every incoming mail server and blanks its
-  password and its Gmail or Outlook OAuth tokens (outgoing servers lose their
-  OAuth tokens too), and replaces each IAP account token with a new one, so the copy
+  password and its Gmail or Outlook OAuth tokens. It also deletes the Gmail
+  and Outlook OAuth app client secrets (`google_gmail_client_secret` and
+  `microsoft_outlook_client_secret`). Outgoing servers lose their OAuth tokens
+  too. It replaces each IAP account token with a new one, so the copy
   cannot spend production's credits. It deletes every user API key
   (`res_users_apikeys`); GPT users get theirs again after the restore. It
   deletes both web push VAPID keys along with every push device and queued
@@ -468,7 +470,10 @@ Notes
 - `ODOO_RESTORE_KEPT_INTEGRATIONS` (comma-separated) names integrations whose
   restored settings stay, using the integration names of Launchplane's
   read-back: `shopify`, `printnode`, `fishbowl`, `repairshopr`, `cm_data`,
-  `payment`, `incoming_mail`, `iap`, `mapbox`, `unsplash`, `tenor`.
+  `payment`, `incoming_mail`, `iap`, `mapbox`, `unsplash`, `tenor`. Keeping
+  `incoming_mail` preserves incoming-server settings, passwords and OAuth
+  tokens, along with the Gmail and Outlook OAuth app client secrets. Outgoing
+  server OAuth tokens are cleared regardless of that allowance.
   Launchplane should set it from a lane's `pre_live` and `read_only_source`
   allowances, the two kinds that permit the lane to hold production's own
   values. A `dev_store` integration is not listed: the restored production
