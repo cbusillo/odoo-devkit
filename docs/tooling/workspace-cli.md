@@ -407,6 +407,9 @@ Notes
   A failed stop, operation (including exit code 10), or restart fails the command.
   After a failed operation, web stays stopped for recovery; correct the failure
   and rerun the same local workflow to restart it on success.
+  If the operation completed and only the web restart failed, correct the startup
+  problem and use `platform runtime up` with the same manifest; the data workflow
+  does not need to run again. Interrupting an operation also leaves web stopped.
 - Upstream restores capture the custom-format database dump in a private
   `.<database>-upstream-restore` directory beside the workflow lock file
   (on the mounted data volume by default). Keep that lock directory on persistent

@@ -998,7 +998,10 @@ def run_local_data_workflow(
         )
     except RuntimeCommandError as error:
         raise RuntimeCommandError(f"{error}\nWeb remains stopped. Correct the failure and rerun the same local workflow.") from error
-    run_command(runtime_repo_path=runtime_repo_path, command=up_web_command)
+    except BaseException as error:
+        error.add_note("Web remains stopped. Correct the failure and rerun the same local workflow.")
+        raise
+    restart_web_after_success(runtime_repo_path=runtime_repo_path, command=up_web_command)
 
 
 def load_runtime_context(
@@ -3718,7 +3721,20 @@ def run_with_web_temporarily_stopped(
         operation()
     except RuntimeCommandError as error:
         raise RuntimeCommandError(f"{error}\nWeb remains stopped. Correct the failure and rerun the same local workflow.") from error
-    run_command(runtime_repo_path=runtime_repo_path, command=up_web_command)
+    except BaseException as error:
+        error.add_note("Web remains stopped. Correct the failure and rerun the same local workflow.")
+        raise
+    restart_web_after_success(runtime_repo_path=runtime_repo_path, command=up_web_command)
+
+
+def restart_web_after_success(*, runtime_repo_path: Path, command: list[str]) -> None:
+    try:
+        run_command(runtime_repo_path=runtime_repo_path, command=command)
+    except RuntimeCommandError as error:
+        raise RuntimeCommandError(
+            f"{error}\nOperation completed, but web restart failed. Correct the startup problem and run "
+            "'platform runtime up' with the same manifest. The completed data workflow does not need to be rerun."
+        ) from error
 
 
 def apply_admin_password_if_configured(

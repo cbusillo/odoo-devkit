@@ -2829,6 +2829,8 @@ sources = [
                 manifest = load_workspace_manifest(
                     self._write_manifest(tenant_repo_path=tenant_repo_path, runtime_repo_path=runtime_repo_path)
                 )
+                with contextlib.redirect_stdout(io.StringIO()):
+                    run_native_runtime_select(manifest=manifest)
                 successful_command = self._runtime_data_workflow_side_effect()
 
                 def run_side_effect(
@@ -2864,6 +2866,9 @@ sources = [
                 if failure_stage == "operation":
                     self.assertIn("Web remains stopped", str(failure.exception))
                     self.assertIn("rerun the same local workflow", str(failure.exception))
+                if failure_stage == "restart":
+                    self.assertIn("Operation completed", str(failure.exception))
+                    self.assertIn("platform runtime up", str(failure.exception))
                 commands = [call.args[0] for call in run_mock.call_args_list]
                 if failure_stage == "stop":
                     self.assertFalse(
@@ -2877,11 +2882,13 @@ sources = [
                     self.assertFalse(any("up" in command and command[-1] == "web" for command in commands))
 
     def test_temporarily_stopped_web_checks_stop_operation_and_restart(self) -> None:
-        for failure_stage in (None, "stop", "operation", "restart"):
+        for failure_stage in (None, "stop", "operation", "restart", "interrupt"):
             with self.subTest(stage=failure_stage):
                 operation = mock.Mock()
                 if failure_stage == "operation":
                     operation.side_effect = local_runtime.RuntimeCommandError("password guard refused")
+                elif failure_stage == "interrupt":
+                    operation.side_effect = KeyboardInterrupt()
                 events: list[str] = []
 
                 def run_side_effect(
@@ -2899,12 +2906,18 @@ sources = [
                         local_runtime.run_with_web_temporarily_stopped(
                             runtime_repo_path=Path("."), runtime_env_file=Path("runtime.env"), operation=operation
                         )
+                    elif failure_stage == "interrupt":
+                        with self.assertRaises(KeyboardInterrupt) as interruption:
+                            local_runtime.run_with_web_temporarily_stopped(
+                                runtime_repo_path=Path("."), runtime_env_file=Path("runtime.env"), operation=operation
+                            )
+                        self.assertIn("Web remains stopped", " ".join(interruption.exception.__notes__))
                     else:
                         with self.assertRaises(local_runtime.RuntimeCommandError):
                             local_runtime.run_with_web_temporarily_stopped(
                                 runtime_repo_path=Path("."), runtime_env_file=Path("runtime.env"), operation=operation
                             )
-                self.assertEqual(events, ["stop"] if failure_stage in {"stop", "operation"} else ["stop", "restart"])
+                self.assertEqual(events, ["stop"] if failure_stage in {"stop", "operation", "interrupt"} else ["stop", "restart"])
                 self.assertEqual(operation.call_count, 0 if failure_stage == "stop" else 1)
 
     def test_native_runtime_odoo_shell_executes_script_runner_with_script_and_log_file(self) -> None:
