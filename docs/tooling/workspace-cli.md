@@ -399,9 +399,10 @@ Notes
   retaining a read lock on `ir_module_module` while the child process performs
   schema-changing module upgrades.
 - Startup reports `launchplane_settings_applied=false reason=no_payload` when
-  there are no managed settings in the override payload. A successful managed
-  settings apply reports `launchplane_settings_applied=true` after commit.
-- Local restore, bootstrap, update, and init workflows require a successful
+  there is no override payload, or `reason=no_managed_settings` when the supplied
+  payload has no managed settings. A successful managed settings apply reports
+  `launchplane_settings_applied=true` after commit.
+- Local restore, bootstrap, update, init, and OpenUpgrade workflows require a successful
   web stop before proceeding and restart web only after the operation succeeds.
   A failed stop, operation (including exit code 10), or restart fails the command.
   After a failed operation, web stays stopped for recovery; correct the failure

@@ -887,7 +887,6 @@ def run_openupgrade_workflow(*, manifest: WorkspaceManifest, runtime_repo_path: 
     )
     compose_command = compose_base_command(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file)
     up_script_runner_command = compose_command + ["up", "-d", "script-runner"]
-    stop_web_command = compose_command + ["stop", "web"]
     openupgrade_exec_command = compose_command + [
         "exec",
         "-T",
@@ -895,13 +894,14 @@ def run_openupgrade_workflow(*, manifest: WorkspaceManifest, runtime_repo_path: 
         "python3",
         "/volumes/scripts/run_openupgrade.py",
     ]
-    up_web_command = compose_command + ["up", "-d", "web"]
-    run_command_best_effort(runtime_repo_path=runtime_repo_path, command=stop_web_command)
-    try:
+
+    def run_openupgrade_operation() -> None:
         run_command(runtime_repo_path=runtime_repo_path, command=up_script_runner_command)
         run_command(runtime_repo_path=runtime_repo_path, command=openupgrade_exec_command)
-    finally:
-        run_command_best_effort(runtime_repo_path=runtime_repo_path, command=up_web_command)
+
+    run_with_web_temporarily_stopped(
+        runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file, operation=run_openupgrade_operation
+    )
 
 
 def run_restore_workflow(*, manifest: WorkspaceManifest, runtime_repo_path: Path, no_sanitize: bool = False) -> None:
@@ -990,11 +990,14 @@ def run_local_data_workflow(
     )
 
     run_command(runtime_repo_path=runtime_repo_path, command=stop_web_command)
-    run_command(
-        runtime_repo_path=runtime_repo_path,
-        command=data_workflow_command,
-        environment_overrides=data_workflow_exec_environment,
-    )
+    try:
+        run_command(
+            runtime_repo_path=runtime_repo_path,
+            command=data_workflow_command,
+            environment_overrides=data_workflow_exec_environment,
+        )
+    except RuntimeCommandError as error:
+        raise RuntimeCommandError(f"{error}\nWeb remains stopped. Correct the failure and rerun the same local workflow.") from error
     run_command(runtime_repo_path=runtime_repo_path, command=up_web_command)
 
 
@@ -3711,7 +3714,10 @@ def run_with_web_temporarily_stopped(
     stop_web_command = compose_command + ["stop", "web"]
     up_web_command = compose_command + ["up", "-d", "web"]
     run_command(runtime_repo_path=runtime_repo_path, command=stop_web_command)
-    operation()
+    try:
+        operation()
+    except RuntimeCommandError as error:
+        raise RuntimeCommandError(f"{error}\nWeb remains stopped. Correct the failure and rerun the same local workflow.") from error
     run_command(runtime_repo_path=runtime_repo_path, command=up_web_command)
 
 

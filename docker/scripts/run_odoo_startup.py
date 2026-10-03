@@ -484,8 +484,10 @@ apply_website_bootstrap(env, instance_override_payload)
 env.cr.commit()
 if settings_payload_present:
     print('launchplane_settings_applied=true')
-else:
+elif instance_override_payload is None:
     print('launchplane_settings_applied=false reason=no_payload')
+else:
+    print('launchplane_settings_applied=false reason=no_managed_settings')
 """
     _run_odoo_shell(settings, script, label="environment overrides")
 

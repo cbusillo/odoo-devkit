@@ -2810,9 +2810,17 @@ sources = [
             self.assertTrue(any(command[-2:] == ["stop", "web"] for command in commands))
             self.assertTrue(any(command[-4:] == ["up", "-d", "--remove-orphans", "web"] for command in commands))
 
-    def test_native_runtime_restore_reports_failures_without_restarting_web(self) -> None:
-        for failure_stage, failure_code in (("stop", 2), ("restore", 1), ("restore", 10), ("restart", 3)):
-            with self.subTest(stage=failure_stage, code=failure_code), tempfile.TemporaryDirectory() as temporary_directory:
+    def test_native_runtime_data_workflows_report_failures_without_restarting_web(self) -> None:
+        cases = (
+            (workflow, stage, code)
+            for workflow in ("restore", "openupgrade")
+            for stage, code in (("stop", 2), ("operation", 1), ("operation", 10), ("restart", 3))
+        )
+        for workflow, failure_stage, failure_code in cases:
+            with (
+                self.subTest(workflow=workflow, stage=failure_stage, code=failure_code),
+                tempfile.TemporaryDirectory() as temporary_directory,
+            ):
                 temp_root = Path(temporary_directory)
                 tenant_repo_path = temp_root / "tenant-repo"
                 runtime_repo_path = temp_root / "runtime-repo"
@@ -2833,22 +2841,40 @@ sources = [
                 ) -> mock.Mock:
                     failing = (
                         (failure_stage == "stop" and command[-2:] == ["stop", "web"])
-                        or (failure_stage == "restore" and local_runtime.DATA_WORKFLOW_SCRIPT in command)
-                        or (failure_stage == "restart" and command[-4:] == ["up", "-d", "--remove-orphans", "web"])
+                        or (
+                            failure_stage == "operation"
+                            and any(
+                                script in command
+                                for script in (local_runtime.DATA_WORKFLOW_SCRIPT, "/volumes/scripts/run_openupgrade.py")
+                            )
+                        )
+                        or (failure_stage == "restart" and "up" in command and command[-1] == "web")
                     )
                     return mock.Mock(returncode=failure_code) if failing else successful_command(command, **kwargs)
 
                 with mock.patch("odoo_devkit.local_runtime.subprocess.run", side_effect=run_side_effect) as run_mock:
                     with (
                         contextlib.redirect_stdout(io.StringIO()),
-                        self.assertRaisesRegex(ValueError, f"Command failed \\({failure_code}\\)"),
+                        self.assertRaisesRegex(ValueError, f"Command failed \\({failure_code}\\)") as failure,
                     ):
-                        run_native_runtime_restore(manifest=manifest)
+                        if workflow == "restore":
+                            run_native_runtime_restore(manifest=manifest)
+                        else:
+                            run_native_runtime_workflow(manifest=manifest, workflow=workflow)
+                if failure_stage == "operation":
+                    self.assertIn("Web remains stopped", str(failure.exception))
+                    self.assertIn("rerun the same local workflow", str(failure.exception))
                 commands = [call.args[0] for call in run_mock.call_args_list]
                 if failure_stage == "stop":
-                    self.assertFalse(any(local_runtime.DATA_WORKFLOW_SCRIPT in command for command in commands))
+                    self.assertFalse(
+                        any(
+                            script in command
+                            for command in commands
+                            for script in (local_runtime.DATA_WORKFLOW_SCRIPT, "/volumes/scripts/run_openupgrade.py")
+                        )
+                    )
                 if failure_stage != "restart":
-                    self.assertFalse(any(command[-4:] == ["up", "-d", "--remove-orphans", "web"] for command in commands))
+                    self.assertFalse(any("up" in command and command[-1] == "web" for command in commands))
 
     def test_temporarily_stopped_web_checks_stop_operation_and_restart(self) -> None:
         for failure_stage in (None, "stop", "operation", "restart"):

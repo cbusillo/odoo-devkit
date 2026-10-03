@@ -106,7 +106,8 @@ class OverrideSnippetGuardTests(unittest.TestCase):
                     output = io.StringIO()
                     with patch.dict(os.environ, payload_environment, clear=True), contextlib.redirect_stdout(output):
                         _run_snippet(_startup_snippet(), {"env": env})
-                    self.assertIn("launchplane_settings_applied=false reason=no_payload", output.getvalue())
+                    reason = "no_managed_settings" if payload_environment else "no_payload"
+                    self.assertIn(f"launchplane_settings_applied=false reason={reason}", output.getvalue())
                     self.assertNotIn("launchplane_settings_applied=true", output.getvalue())
                     env.cr.commit.assert_called_once_with()
                     if installed_models:
