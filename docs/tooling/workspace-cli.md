@@ -59,6 +59,10 @@ uv run platform runtime odoo-shell --manifest /path/to/workspace.toml \
 If `--manifest` is omitted, the command looks for `workspace.toml` in the
 current directory.
 
+Optional IDE run configurations use `[[ide.run_configurations]]` tables.
+Omitting them or setting `run_configurations = []` under `[ide]` defines none;
+other value types and non-table entries are rejected when the manifest loads.
+
 Non-local `platform runtime publish` is invoked by Launchplane's reusable
 artifact workflow, which supplies the required runtime-environment payload.
 

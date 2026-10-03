@@ -44,3 +44,28 @@ closure. Retrieve and triage every finding when RED; do not report UNKNOWN as
 clean. If SDK preparation is unavailable in the installed plugin, retain the
 helper's diagnostic and follow the skill's documented setup path rather than
 repeating an unchanged failed assessment.
+
+## Container-only startup diagnostics
+
+Keep inspections enabled for `docker/scripts/`; do not exclude the directory
+or suppress its import and SQL inspections. For a bounded startup assessment,
+select `odoo_devkit/manifest.py`, `docker/scripts/run_odoo_startup.py`, and
+`tests/test_odoo_startup.py` explicitly, plus any other changed Python files.
+
+Two diagnostic categories in `run_odoo_startup.py` are known environment noise
+in the root project's local interpreter:
+
+- `psycopg2` is imported by the container startup wrapper but is not a root
+  project dependency. The selected Odoo base runtime supplies the PostgreSQL
+  driver. Startup unit tests substitute a driver that rejects unexpected
+  connections, so they do not prove container connectivity.
+- `SqlResolveInspection` cannot resolve `ir_module_module` or its `name` and
+  `state` columns without the Odoo database schema. The query reads installed
+  modules from the container's Odoo database; the local IDE has no attached
+  database schema.
+
+Record these findings individually when they appear in a current inspection;
+they may leave the raw verdict RED after actionable Python findings are fixed.
+This triage does not prove a live container or database healthy. New import or
+SQL findings still need investigation; this is not a baseline for all runtime
+script diagnostics. An UNKNOWN run supplies no current finding evidence.

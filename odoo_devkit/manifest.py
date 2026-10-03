@@ -6,6 +6,9 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from odoo_devkit.toml_values import read_optional_string as _read_optional_string
+from odoo_devkit.toml_values import read_required_string as _read_required_string
+
 REPOSITORY_SLUG_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 
@@ -132,9 +135,10 @@ def load_workspace_manifest(manifest_path: Path) -> WorkspaceManifest:
         web_base_url=_read_optional_string(runtime_table, "web_base_url"),
     )
 
-    run_configuration_definitions = tuple(
-        _parse_run_configuration_definition(entry) for entry in ide_table.get("run_configurations", [])
-    )
+    run_configurations = ide_table.get("run_configurations", [])
+    if not isinstance(run_configurations, list):
+        raise ValueError("Expected ide.run_configurations to be an array of tables")
+    run_configuration_definitions = tuple(_parse_run_configuration_definition(entry) for entry in run_configurations)
     ide_definition = IdeDefinition(
         mode=_read_required_string(ide_table, "mode"),
         focus_paths=_read_string_tuple(ide_table, "focus_paths"),
@@ -224,22 +228,6 @@ def _read_optional_table(source: dict[str, object], key: str) -> dict[str, objec
         return {}
     if not isinstance(value, dict):
         raise ValueError(f"Expected [{key}] to be a table when present")
-    return value
-
-
-def _read_required_string(source: dict[str, object], key: str) -> str:
-    value = source.get(key)
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"Expected {key} to be a non-empty string")
-    return value
-
-
-def _read_optional_string(source: dict[str, object], key: str) -> str | None:
-    value = source.get(key)
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise ValueError(f"Expected {key} to be a string when present")
     return value
 
 

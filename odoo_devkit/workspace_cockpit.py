@@ -4,6 +4,9 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from odoo_devkit.toml_values import read_optional_string as _read_optional_string
+from odoo_devkit.toml_values import read_required_string as _read_required_string
+
 
 @dataclass(frozen=True)
 class WorkspaceCockpitRepoDefinition:
@@ -388,22 +391,6 @@ def _default_session_prompt_rule_lines() -> tuple[str, ...]:
 
 def _docs_link_target(path: str) -> str:
     return (Path("..") / Path(path)).as_posix()
-
-
-def _read_required_string(source: dict[str, object], key: str) -> str:
-    value = source.get(key)
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"Expected {key} to be a non-empty string")
-    return value
-
-
-def _read_optional_string(source: dict[str, object], key: str) -> str | None:
-    value = source.get(key)
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise ValueError(f"Expected {key} to be a string when present")
-    return value
 
 
 def _read_optional_table(source: dict[str, object], key: str) -> dict[str, object]:
