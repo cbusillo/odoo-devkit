@@ -453,9 +453,12 @@ Notes
   restored settings stay, using the integration names of Launchplane's
   read-back: `shopify`, `printnode`, `fishbowl`, `repairshopr`, `cm_data`,
   `payment`, `incoming_mail`, `iap`, `mapbox`, `unsplash`, `tenor`.
-  Launchplane sets it from a lane's `pre_live` allowances. Settings under a
-  `dev_store` or `read_only_source` allowance don't need it, because
-  Launchplane applies them after the clearing. Unset keeps nothing. Web push,
+  Launchplane should set it from a lane's `pre_live` and `read_only_source`
+  allowances, the two kinds that permit the lane to hold production's own
+  values. A `dev_store` integration is not listed: the restored production
+  values are cleared and Launchplane applies the development account after
+  the clearing. Unset keeps nothing, so until Launchplane passes it, a
+  restore clears every integration, including allowed import sources. Web push,
   user API keys and `database.secret` are cleared whatever it says, and other
   or unknown names are logged and ignored.
 - The step runs right after `pg_restore`, before any Odoo code, and again after

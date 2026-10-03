@@ -88,7 +88,7 @@ INTEGRATION_CREDENTIAL_PARAMETER_KEYS: dict[str, tuple[str, ...]] = {
 PAYMENT_INTEGRATION = "payment"
 INCOMING_MAIL_INTEGRATION = "incoming_mail"
 IAP_INTEGRATION = "iap"
-# Integrations a restore request may keep (a lane's pre_live allowance). Web push, signing keys and
+# Integrations a restore request may keep (a lane's pre_live or read_only_source allowance). Web push, signing keys and
 # user API keys are never kept: each one lets the copy act as production toward users or clients.
 KEEPABLE_INTEGRATIONS = (frozenset(INTEGRATION_CREDENTIAL_PARAMETER_KEYS) - {"web_push"}) | {
     PAYMENT_INTEGRATION,
@@ -448,7 +448,7 @@ class LocalServerSettings(BaseSettings):
     admin_password: SecretStr | None = Field(None, alias="ODOO_ADMIN_PASSWORD")
     platform_instance: str = Field("", alias="PLATFORM_INSTANCE")
     # Integrations whose restored settings a non-production restore keeps, comma-separated
-    # (Launchplane sets it from the lane's pre_live allowances). Unset clears every integration.
+    # (Launchplane sets it from the lane's pre_live and read_only_source allowances). Unset clears every integration.
     restore_kept_integrations: str | None = Field(None, alias="ODOO_RESTORE_KEPT_INTEGRATIONS")
 
     @field_validator(
