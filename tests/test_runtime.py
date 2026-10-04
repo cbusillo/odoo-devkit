@@ -1469,10 +1469,14 @@ homepage = true
                                 output_file=output_file,
                                 no_cache=True,
                             )
-                            assert isinstance(payload["build_flags"], dict)
-                            assert isinstance(payload["build_provenance"], dict)
-                            assert isinstance(payload["dependency_provenance"], dict)
-                            assert isinstance(payload["image"], dict)
+                            build_flags_payload = payload["build_flags"]
+                            assert isinstance(build_flags_payload, dict)
+                            build_provenance_payload = payload["build_provenance"]
+                            assert isinstance(build_provenance_payload, dict)
+                            dependency_provenance_payload = payload["dependency_provenance"]
+                            assert isinstance(dependency_provenance_payload, dict)
+                            image_payload = payload["image"]
+                            assert isinstance(image_payload, dict)
 
             self.assertTrue(captured_build_contexts)
             self.assertEqual(
@@ -1480,20 +1484,20 @@ homepage = true
                 ["runtime", "devtools"],
             )
             self.assertEqual(payload["schema_version"], 2)
-            self.assertEqual(payload["image"]["repository"], "ghcr.io/example/opw-runtime")
-            self.assertEqual(payload["image"]["digest"], self.artifact_image_digest)
+            self.assertEqual(image_payload["repository"], "ghcr.io/example/opw-runtime")
+            self.assertEqual(image_payload["digest"], self.artifact_image_digest)
             self.assertEqual(payload["enterprise_base_digest"], "sha256:" + "2" * 64)
             self.assertEqual(
-                payload["dependency_provenance"]["target_platforms"],
+                dependency_provenance_payload["target_platforms"],
                 sorted(local_runtime.DEFAULT_ARTIFACT_IMAGE_PLATFORMS),
             )
             self.assertEqual(
-                [base_image["role"] for base_image in payload["build_provenance"]["base_images"]],
+                [base_image["role"] for base_image in build_provenance_payload["base_images"]],
                 ["runtime", "devtools"],
             )
-            self.assertEqual(payload["build_provenance"]["build_tools"][0]["name"], "odoo-devkit")
-            self.assertEqual(payload["build_flags"]["values"]["build_target"], "production")
-            self.assertEqual(payload["image"]["tags"], ["opw-20260416-abcdef"])
+            self.assertEqual(build_provenance_payload["build_tools"][0]["name"], "odoo-devkit")
+            self.assertEqual(build_flags_payload["values"]["build_target"], "production")
+            self.assertEqual(image_payload["tags"], ["opw-20260416-abcdef"])
             self.assertEqual(
                 payload["odoo_install_modules"],
                 ["opw_custom"],
@@ -1580,8 +1584,10 @@ sources = [
                                         output_file=None,
                                         no_cache=False,
                                     )
-                                    assert isinstance(payload["addon_sources"], list)
-                                    assert isinstance(payload["build_flags"], dict)
+                                    addon_sources_payload = payload["addon_sources"]
+                                    assert isinstance(addon_sources_payload, list)
+                                    build_flags_payload = payload["build_flags"]
+                                    assert isinstance(build_flags_payload, dict)
 
             resolve_ref_mock.assert_called_once_with(
                 repository="cbusillo/disable_odoo_online",
@@ -1595,7 +1601,7 @@ sources = [
             )
             self.assertIn(
                 {"repository": "cbusillo/disable_odoo_online", "ref": resolved_ref},
-                payload["addon_sources"],
+                addon_sources_payload,
             )
             self.assertEqual(
                 payload["addon_selectors"],
@@ -1611,7 +1617,7 @@ sources = [
                 payload["odoo_install_modules"],
                 ["launchplane_settings", "disable_odoo_online", "opw_custom"],
             )
-            self.assertNotIn("odoo_addon_repository_selectors", payload["build_flags"]["values"])
+            self.assertNotIn("odoo_addon_repository_selectors", build_flags_payload["values"])
 
     def test_registry_auth_splits_base_image_read_and_artifact_push_tokens(self) -> None:
         environment_values = {
@@ -2232,8 +2238,10 @@ runtime_env = { ODOO_VERSION = "18.0", ODOO_BASE_RUNTIME_IMAGE = "ghcr.io/exampl
                                     output_file=None,
                                     no_cache=False,
                                 )
-                                assert isinstance(payload["addon_sources"], list)
-                                assert isinstance(payload["build_flags"], dict)
+                                addon_sources_payload = payload["addon_sources"]
+                                assert isinstance(addon_sources_payload, list)
+                                build_flags_payload = payload["build_flags"]
+                                assert isinstance(build_flags_payload, dict)
 
             addon_build_arg = next(argument for argument in captured_build_args if argument.startswith("ODOO_ADDON_REPOSITORIES="))
             self.assertEqual(addon_build_arg, f"ODOO_ADDON_REPOSITORIES={exact_ref}")
@@ -2248,14 +2256,14 @@ runtime_env = { ODOO_VERSION = "18.0", ODOO_BASE_RUNTIME_IMAGE = "ghcr.io/exampl
             self.assertFalse(any(argument.startswith("ODOO_PYTHON_SYNC_SKIP_ADDONS=") for argument in captured_build_args))
             self.assertIn(
                 {"repository": "cbusillo/disable_odoo_online", "ref": exact_ref.rsplit("@", 1)[1]},
-                payload["addon_sources"],
+                addon_sources_payload,
             )
             self.assertEqual(
                 payload["odoo_install_modules"],
                 ["launchplane_settings", "disable_odoo_online", "opw_custom"],
             )
-            self.assertEqual(payload["build_flags"]["values"]["odoo_version"], "20.0")
-            self.assertEqual(payload["build_flags"]["addon_skip_flags"], [])
+            self.assertEqual(build_flags_payload["values"]["odoo_version"], "20.0")
+            self.assertEqual(build_flags_payload["addon_skip_flags"], [])
             preflight_command = next(command for command in captured_commands if command[:2] == ["docker", "run"])
             build_command = next(command for command in captured_commands if command[:3] == ["docker", "buildx", "build"])
             self.assertLess(captured_commands.index(preflight_command), captured_commands.index(build_command))
@@ -2538,12 +2546,14 @@ sources = [
                                         no_cache=False,
                                         platforms=("linux/amd64",),
                                     )
-                                    assert isinstance(payload["artifact_id"], str)
-                                    assert isinstance(payload["image"], dict)
+                                    artifact_id_payload = payload["artifact_id"]
+                                    assert isinstance(artifact_id_payload, str)
+                                    image_payload = payload["image"]
+                                    assert isinstance(image_payload, dict)
 
-            self.assertTrue(payload["artifact_id"].startswith("artifact-cm_website-"))
-            self.assertEqual(payload["image"]["repository"], "ghcr.io/example/cm-website-runtime")
-            self.assertEqual(payload["image"]["tags"], ["cm_website-20260606-abcdef"])
+            self.assertTrue(artifact_id_payload.startswith("artifact-cm_website-"))
+            self.assertEqual(image_payload["repository"], "ghcr.io/example/cm-website-runtime")
+            self.assertEqual(image_payload["tags"], ["cm_website-20260606-abcdef"])
             self.assertEqual(
                 payload["odoo_install_modules"],
                 ["launchplane_settings", "disable_odoo_online", "cm_website"],
@@ -2860,7 +2870,11 @@ sources = [
                     return run_native_runtime_workflow(manifest=selected_manifest, workflow=selected_workflow)
 
                 def run_side_effect(
-                    command: list[str], *, should_fail: bool = fail, successful_command: mock.Mock = successful_run, **kwargs: object
+                    command: list[str],
+                    *,
+                    should_fail: bool = fail,
+                    successful_command: Callable[..., mock.Mock] = successful_run,
+                    **kwargs: object,
                 ) -> mock.Mock:
                     if should_fail and local_runtime.DATA_WORKFLOW_SCRIPT in command:
                         return mock.Mock(returncode=1, stdout="", stderr="")
@@ -2929,6 +2943,45 @@ sources = [
         self.assertEqual(values["ODOO_DATA_WORKFLOW_LOCK_FILE"], literal + "/lock")
         self.assertEqual(values["OPENUPGRADE_SCRIPTS_PATH"], str(Path.home() / "scripts"))
         self.assertEqual(values["ENV_OVERRIDE_COPY"], "${ODOO_KEY}")
+
+    def test_data_workflow_rejects_invalid_mount_before_commands_and_runner_failure_before_exec(self) -> None:
+        for ssh_path in ("relative/keys", "${SYNTHETIC_MISSING}/keys", "", "/synthetic/keys"):
+            with self.subTest(ssh_path=ssh_path), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                tenant = root / "tenant"
+                runtime = root / "runtime"
+                tenant.mkdir()
+                self._write_runtime_repo(runtime)
+                manifest = load_workspace_manifest(self._write_manifest(tenant_repo_path=tenant, runtime_repo_path=runtime))
+                values = self._load_environment_from_explicit_payload(
+                    raw_payload="{}", context_name="opw", instance_name="local"
+                ).merged_values
+                values["DATA_WORKFLOW_SSH_DIR"] = ssh_path
+                payload = json.dumps({"context": "opw", "instance": "local", "environment": values})
+                successful_run = self._runtime_data_workflow_side_effect()
+
+                def fail_runner(
+                    command: list[str], *, successful_command: Callable[..., mock.Mock] = successful_run, **kwargs: object
+                ) -> mock.Mock:
+                    if command[-4:] == ["up", "-d", "--remove-orphans", "script-runner"]:
+                        return mock.Mock(returncode=1)
+                    return successful_command(command, **kwargs)
+
+                with (
+                    mock.patch.dict(os.environ, {local_runtime.RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR: payload}),
+                    mock.patch("odoo_devkit.local_runtime.subprocess.run", side_effect=fail_runner) as run_mock,
+                    mock.patch("odoo_devkit.local_runtime.normalize_local_filestore_permissions") as normalize,
+                    self.assertRaises(ValueError),
+                ):
+                    run_native_runtime_workflow(manifest=manifest, workflow="bootstrap")
+                normalize.assert_not_called()
+                commands = [call.args[0] for call in run_mock.call_args_list]
+                if ssh_path == "/synthetic/keys":
+                    self.assertEqual(commands[-1][-4:], ["up", "-d", "--remove-orphans", "script-runner"])
+                else:
+                    self.assertEqual(commands, [])
+                self.assertFalse(any(local_runtime.DATA_WORKFLOW_SCRIPT in command for command in commands))
+                self.assertFalse(any(command[-2:] == ["stop", "web"] for command in commands))
 
     def test_data_workflow_path_cycles_fail_without_values(self) -> None:
         with self.assertRaisesRegex(ValueError, "path references contain a cycle") as error:
