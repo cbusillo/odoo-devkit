@@ -2219,7 +2219,7 @@ with registry.cursor() as cr:
     def update_addons(self, explicit_modules: Sequence[str] | None = None, reason: str | None = None) -> None:
         mods_env = (self.local.update_modules or "").strip()
         desired: list[str]
-        local_module_paths = None
+        local_module_paths: dict[str, Path] | None = None
         if explicit_modules is not None:
             desired = [module_name.strip() for module_name in explicit_modules if module_name.strip()]
             if not desired:
@@ -2229,8 +2229,9 @@ with registry.cursor() as cr:
             if reason:
                 modules_source_label = f"{modules_source_label} ({reason})"
         elif not mods_env or mods_env.upper() == "AUTO":
-            local_module_paths = self._resolve_local_module_paths()
-            local_modules = set(local_module_paths)
+            detected_module_paths = self._resolve_local_module_paths()
+            local_module_paths = detected_module_paths
+            local_modules = set(detected_module_paths)
             if not local_modules:
                 _logger.info("ODOO_UPDATE_MODULES unset/AUTO and no local modules detected; skipping addon update.")
                 return
@@ -2240,7 +2241,7 @@ with registry.cursor() as cr:
                 _logger.info("ODOO_UPDATE_MODULES unset/AUTO and no installed local modules detected; skipping.")
                 return
             mode_label = mods_env.upper() if mods_env else "AUTO"
-            desired_set = self._local_dependency_closure(installed_local_modules, local_module_paths)
+            desired_set = self._local_dependency_closure(installed_local_modules, detected_module_paths)
             missing_dependencies = sorted(name for name in desired_set if name not in installed_modules)
             if missing_dependencies:
                 _logger.info(

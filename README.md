@@ -181,7 +181,8 @@ Current runtime ownership is intentionally narrow and explicit:
   production-store Shopify external IDs and export state. The restore keeps
   only the integrations named in `ODOO_RESTORE_KEPT_INTEGRATIONS`; keeping
   `incoming_mail` also keeps those OAuth app client secrets. A restore that fails
-  before the Launchplane settings apply drops the restored database. See
+  through the Launchplane settings apply or the outgoing-mail block right after it
+  drops the restored database. See
   `docs/tooling/workspace-cli.md` for the full contract.
 - An optional `company_email` in Launchplane's website-bootstrap payload sets
   the selected website company's sender address and verifies it was saved.

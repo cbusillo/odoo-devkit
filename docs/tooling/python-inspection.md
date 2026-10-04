@@ -87,8 +87,8 @@ record its location and reason. These cases are intentional:
   have the same container-driver reason as startup's `psycopg2` diagnostic above.
   Root dependencies and the offline test loader do not supply a real driver.
 - `_path_exists_safely` catches `OSError` and returns `False`. Its final return
-  can be reported as unreachable by the IDE, but Python 3.13 `Path.exists()`
-  raises `OSError` for an overlong path component. Preserve that fallback.
+  can be reported as unreachable by the IDE. With the repository's Python 3.13
+  inspection interpreter, `Path.exists()` raises `OSError` for an overlong path component. Preserve that fallback.
 - `_drop_database_after_failed_restore` deliberately catches `BaseException`
   from the cleanup attempt. It logs a failed drop while allowing the caller to
   propagate the original restore error, including an interruption. Narrowing
@@ -111,7 +111,7 @@ record its location and reason. These cases are intentional:
 The workflow test loader still substitutes PostgreSQL imports before executing
 container scripts. Its `TYPE_CHECKING` import makes the real module visible to
 static analysis without loading a PostgreSQL driver during offline tests.
-Connection mocks return the same fake connection stored on the runner, matching
+Mocks used by connection consumers return the same fake connection stored on the runner, matching
 `connect_to_db()`'s contract. Callback fixtures bind their subtest values with
 `functools.partial`, keeping captures explicit without mutable default arguments.
 These fixtures do not qualify a running Odoo or database.

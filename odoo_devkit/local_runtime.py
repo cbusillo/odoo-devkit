@@ -2440,18 +2440,19 @@ def stage_artifact_build_context(
     elif staged_tenant_shared_path.exists():
         staged_tenant_shared_path.unlink()
 
-    staged_shared_addons_root = None
+    staged_shared_addons_root: Path | None = None
     if shared_addons_repo_path is not None:
         if shared_addons_source is None or shared_addons_source.repo_path != shared_addons_repo_path.resolve():
             raise RuntimeCommandError("Shared addon source snapshot does not match the staged shared addon repository.")
-        staged_shared_addons_root = staged_addons_root / "shared"
+        shared_destination = staged_addons_root / "shared"
         copy_required_path(
             repo_path=shared_addons_source.repo_path,
             source_commit=shared_addons_source.commit,
             source_path=shared_addons_repo_path,
-            destination_path=staged_shared_addons_root,
+            destination_path=shared_destination,
             label="shared addons repository",
         )
+        staged_shared_addons_root = shared_destination
     require_no_embedded_dependency_source_markers(
         roots=(
             (staged_context_root / "runtime", "support/runtime"),
@@ -3589,13 +3590,14 @@ def run_odoo_shell_command(
     ]
     compose_command = compose_base_command(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file)
 
-    resolved_script_path = None
+    resolved_script_path: Path | None = None
     script_text: str | None = None
     if script_path is not None:
-        resolved_script_path = script_path.expanduser().resolve()
-        if not resolved_script_path.exists():
-            raise RuntimeCommandError(f"Odoo shell script not found: {resolved_script_path}")
-        script_text = resolved_script_path.read_text(encoding="utf-8")
+        script_candidate = script_path.expanduser().resolve()
+        if not script_candidate.exists():
+            raise RuntimeCommandError(f"Odoo shell script not found: {script_candidate}")
+        script_text = script_candidate.read_text(encoding="utf-8")
+        resolved_script_path = script_candidate
 
     resolved_log_file: Path | None = None
     if log_file is not None:
