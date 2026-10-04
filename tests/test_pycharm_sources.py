@@ -51,12 +51,15 @@ class OdooSourcesTestCase(unittest.TestCase):
     def git(path: Path, *arguments: str) -> str:
         return subprocess.run(["git", "-C", str(path), *arguments], check=True, capture_output=True, text=True).stdout.strip()
 
-    def prepare(self, *, expected_commit: str | None = None, expected_series: str = "19.0") -> dict[str, object]:
+    def prepare(
+        self, *, expected_commit: str | None = None, expected_series: str = "19.0", path_variables_file: Path | None = None
+    ) -> dict[str, object]:
         return prepare_odoo_sources(
             manifest=load_workspace_manifest(self.manifest_path),
             source_path=self.source,
             expected_commit=expected_commit or self.commit,
             expected_series=expected_series,
+            path_variables_file=path_variables_file,
         )
 
     def test_cli_creates_exact_project_and_repeated_preparation_does_not_rewrite(self) -> None:
@@ -291,6 +294,118 @@ class OdooSourcesTestCase(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Cannot resolve an existing IDE path"):
             self.prepare()
         self.assertEqual(module_path.read_bytes(), original)
+
+    def custom_macro_project(self) -> Path:
+        self.prepare()
+        module_path = self.project / ".idea" / "tenant-dependencies.iml"
+        module = ElementTree.parse(module_path)
+        module.findall("./component/content")[1].set("url", "file://$ODOO_SRC$")
+        module.write(module_path)
+        other_module = self.project / ".idea" / "other.iml"
+        other_module.write_text(
+            '<module type="PYTHON_MODULE"><component name="NewModuleRootManager">'
+            '<content url="file://$OTHER_SRC$" /></component></module>'
+        )
+        modules_path = self.project / ".idea" / "modules.xml"
+        modules = ElementTree.parse(modules_path)
+        ElementTree.SubElement(modules.find("./component/modules"), "module", {"filepath": str(other_module)})
+        modules.write(modules_path)
+        variables_path = self.root / "selected-ide" / "options" / "path.macros.xml"
+        variables_path.parent.mkdir(parents=True)
+        root = ElementTree.Element("application")
+        component = ElementTree.SubElement(root, "component", {"name": "PathMacrosImpl"})
+        for name, value in (("ODOO_SRC", self.source), ("OTHER_SRC", self.root / "other-source")):
+            ElementTree.SubElement(component, "macro", {"name": name, "value": str(value)})
+        ElementTree.ElementTree(root).write(variables_path)
+        return variables_path
+
+    def test_cli_resolves_saved_custom_roots_and_preserves_all_project_and_ide_bytes(self) -> None:
+        variables_path = self.custom_macro_project()
+        before = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in (self.project / ".idea").iterdir()}
+        before[variables_path] = (variables_path.read_bytes(), variables_path.stat().st_mtime_ns)
+        arguments = build_parser().parse_args(
+            [
+                "workspace",
+                "prepare-ide",
+                "--manifest",
+                str(self.manifest_path),
+                "--odoo-source",
+                str(self.source),
+                "--odoo-commit",
+                self.commit,
+                "--odoo-series",
+                "19.0",
+                "--ide-path-variables",
+                str(variables_path),
+            ]
+        )
+        for _ in range(2):
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                arguments.handler(arguments)
+            self.assertFalse(json.loads(output.getvalue())["changed"])
+        self.assertEqual(before, {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in before})
+
+    def test_custom_macro_conflicting_source_fails_without_writes(self) -> None:
+        variables_path = self.custom_macro_project()
+        other_source = self.root / "other-odoo"
+        (other_source / "odoo").mkdir(parents=True)
+        (other_source / "odoo" / "release.py").write_text("version_info = (18, 0)\n")
+        variables = ElementTree.parse(variables_path)
+        variables.find("./component/macro[@name='ODOO_SRC']").set("value", str(other_source))
+        variables.write(variables_path)
+        before = {path: path.read_bytes() for path in (self.project / ".idea").iterdir()}
+        with self.assertRaisesRegex(ValueError, "different Odoo source"):
+            self.prepare(path_variables_file=variables_path)
+        self.assertEqual(before, {path: path.read_bytes() for path in before})
+
+    def test_missing_or_ambiguous_custom_mappings_fail_without_writes(self) -> None:
+        variables_path = self.custom_macro_project()
+        original = variables_path.read_bytes()
+        before = {path: path.read_bytes() for path in (self.project / ".idea").iterdir()}
+        for name, value, message in (
+            ("ODOO_SRC", "relative/path", "absolute path"),
+            ("ODOO_SRC", "$USER_HOME$/odoo", "nested macros"),
+            ("ODOO_SRC", "", "absolute path"),
+            ("PROJECT_DIR", str(self.project), "reserved"),
+            ("ODOO_SRC", str(self.source), "duplicate"),
+            ("", str(self.source), "invalid"),
+        ):
+            with self.subTest(name=name, value=value):
+                variables_path.write_bytes(original)
+                variables = ElementTree.parse(variables_path)
+                component = variables.find("./component")
+                if message in {"absolute path", "nested macros"}:
+                    component.find("macro").set("value", value)
+                else:
+                    ElementTree.SubElement(component, "macro", {"name": name, "value": value})
+                variables.write(variables_path)
+                with self.assertRaisesRegex(ValueError, message):
+                    self.prepare(path_variables_file=variables_path)
+                self.assertEqual(before, {path: path.read_bytes() for path in before})
+        variables_path.write_bytes(original)
+        variables = ElementTree.parse(variables_path)
+        component = variables.find("./component")
+        component.remove(component.find("macro[@name='OTHER_SRC']"))
+        variables.write(variables_path)
+        with self.assertRaisesRegex(ValueError, "Cannot resolve an existing IDE path"):
+            self.prepare(path_variables_file=variables_path)
+        self.assertEqual(before, {path: path.read_bytes() for path in before})
+
+    def test_invalid_path_variable_file_fails_before_creating_project(self) -> None:
+        variables_path = self.root / "path.macros.xml"
+        for content, message in (
+            ("<application>", "Invalid IDE XML"),
+            ('<project><component name="PathMacrosImpl" /></project>', "Expected one"),
+            ('<application><component name="PathMacrosImpl" /><component name="PathMacrosImpl" /></application>', "Expected one"),
+        ):
+            with self.subTest(content=content):
+                variables_path.write_text(content)
+                with self.assertRaisesRegex(ValueError, message):
+                    self.prepare(path_variables_file=variables_path)
+                self.assertFalse((self.project / ".idea").exists())
+        with self.assertRaises(FileNotFoundError):
+            self.prepare(path_variables_file=self.root / "missing.xml")
+        self.assertFalse((self.project / ".idea").exists())
 
     def test_invalid_project_table_fails_without_writing_metadata(self) -> None:
         (self.project / "pyproject.toml").write_text('project = "invalid"\n')

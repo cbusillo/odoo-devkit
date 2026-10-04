@@ -14,7 +14,12 @@ from .runtime_environment import sanitized_subprocess_environment
 
 
 def prepare_odoo_sources(
-    *, manifest: WorkspaceManifest, source_path: Path, expected_commit: str, expected_series: str
+    *,
+    manifest: WorkspaceManifest,
+    source_path: Path,
+    expected_commit: str,
+    expected_series: str,
+    path_variables_file: Path | None = None,
 ) -> dict[str, object]:
     """Prepare local project content roots before opening the exact tenant worktree."""
     project_path = manifest.tenant_repo.resolve_path(manifest_directory=manifest.manifest_directory)
@@ -26,18 +31,19 @@ def prepare_odoo_sources(
     if source_path.is_relative_to(project_path) or project_path.is_relative_to(source_path):
         raise ValueError("Keep the Odoo dependency checkout outside the tenant worktree")
     source_commit, source_series = _verify_source(source_path, expected_commit, expected_series)
+    path_variables = _read_path_variables(path_variables_file)
 
     idea_path = project_path / ".idea"
     if idea_path.is_symlink():
         raise ValueError("IDE preparation cannot follow a symlinked .idea directory")
     modules_path = idea_path / "modules.xml"
-    module_path, module_root, modules_root = _project_module(project_path, modules_path)
+    module_path, module_root, modules_root = _project_module(project_path, modules_path, path_variables)
     manager = module_root.find("./component[@name='NewModuleRootManager']")
     if manager is None:
         raise ValueError(f"Missing NewModuleRootManager in {module_path.name}")
     attached = False
     for content in manager.findall("content"):
-        content_path = _idea_path(content.get("url", ""), project_path, _module_directory(module_path)).resolve()
+        content_path = _idea_path(content.get("url", ""), project_path, _module_directory(module_path), path_variables).resolve()
         if content_path == source_path:
             attached = True
         elif (content_path / "odoo" / "release.py").is_file():
@@ -106,7 +112,9 @@ def _verify_source(source_path: Path, expected_commit: str, expected_series: str
     return commit, series
 
 
-def _project_module(project_path: Path, modules_path: Path) -> tuple[Path, ElementTree.Element, ElementTree.Element | None]:
+def _project_module(
+    project_path: Path, modules_path: Path, path_variables: dict[str, str]
+) -> tuple[Path, ElementTree.Element, ElementTree.Element | None]:
     if modules_path.is_symlink():
         raise ValueError("IDE preparation cannot follow a symlinked modules.xml")
     if not modules_path.exists():
@@ -141,7 +149,9 @@ def _project_module(project_path: Path, modules_path: Path) -> tuple[Path, Eleme
     modules_root = _read_xml(modules_path)
     candidates = []
     for module in modules_root.findall("./component[@name='ProjectModuleManager']/modules/module"):
-        module_path = _idea_path(module.get("filepath") or module.get("fileurl", ""), project_path, modules_path.parent)
+        module_path = _idea_path(
+            module.get("filepath") or module.get("fileurl", ""), project_path, modules_path.parent, path_variables
+        )
         # Foreign projects in a multi-project window remain entirely untouched.
         if not module_path.is_relative_to(project_path) or module_path.suffix != ".iml":
             continue
@@ -149,7 +159,7 @@ def _project_module(project_path: Path, modules_path: Path) -> tuple[Path, Eleme
             raise ValueError("IDE preparation cannot follow a symlinked module")
         module_root = _read_xml(module_path)
         content_paths = [
-            _idea_path(content.get("url", ""), project_path, _module_directory(module_path)).resolve()
+            _idea_path(content.get("url", ""), project_path, _module_directory(module_path), path_variables).resolve()
             for content in module_root.findall("./component[@name='NewModuleRootManager']/content")
         ]
         if module_root.get("type") == "PYTHON_MODULE" and project_path in content_paths:
@@ -167,10 +177,35 @@ def _idea_url(path: Path) -> str:
     return "file://" + path.as_posix()
 
 
-def _idea_path(value: str, project_path: Path, module_directory: Path) -> Path:
+def _read_path_variables(path: Path | None) -> dict[str, str]:
+    if path is None:
+        return {}
+    root = _read_xml(path.expanduser())
+    components = root.findall("./component[@name='PathMacrosImpl']")
+    if root.tag != "application" or len(components) != 1:
+        raise ValueError("Expected one PathMacrosImpl component in the selected IDE's path.macros.xml")
+    variables: dict[str, str] = {}
+    for macro in components[0].findall("macro"):
+        name, value = macro.get("name", ""), macro.get("value", "")
+        if not name or "$" in name or name in {"PROJECT_DIR", "MODULE_DIR", "USER_HOME"} or name in variables:
+            raise ValueError("IDE path variables contain an invalid, reserved, or duplicate name")
+        if not value or "$" in value or not Path(value).is_absolute():
+            raise ValueError(f"IDE path variable {name} must contain an absolute path without nested macros")
+        variables[name] = value
+    return variables
+
+
+def _idea_path(value: str, project_path: Path, module_directory: Path, path_variables: dict[str, str]) -> Path:
     value = value.removeprefix("file://")
-    value = value.replace("$PROJECT_DIR$", str(project_path)).replace("$MODULE_DIR$", str(module_directory))
-    value = value.replace("$USER_HOME$", str(Path.home()))
+    variables = {
+        **path_variables,
+        "PROJECT_DIR": str(project_path),
+        "MODULE_DIR": str(module_directory),
+        "USER_HOME": str(Path.home()),
+    }
+    # Replace once: supplied values cannot introduce another macro or alter
+    # the meaning of the IDE's built-in project/module variables.
+    value = re.sub(r"\$([^$]+)\$", lambda match: variables.get(match[1], match[0]), value)
     if not value or "$" in value or not Path(value).is_absolute():
         raise ValueError("Cannot resolve an existing IDE path; reconcile Project Structure first")
     return Path(os.path.abspath(value))

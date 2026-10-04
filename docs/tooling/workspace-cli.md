@@ -122,8 +122,21 @@ root on the tenant module,
 or symlinked project metadata require local reconciliation first. The generator
 does not edit ignore policy or overwrite another project's configuration.
 Paths may use `$PROJECT_DIR$`, `$MODULE_DIR$`, or `$USER_HOME$`. Custom IDE path
-variables remain unsupported and fail before writing; their resolution is a
-separate setup requirement. Interpreter libraries and other modules' content
+variables are resolved only when `--ide-path-variables /path/to/selected-ide-config/options/path.macros.xml`
+is supplied. Use the configuration directory of the IDE instance that will open
+this exact project (Help > Diagnostic Tools > Special Files and Folders). The
+file is JetBrains' native `application` / `PathMacrosImpl` macro table, saved
+from Settings > Appearance & Behavior > Path Variables. Path variables apply to
+every project in that IDE instance; see [JetBrains' path-variable documentation](https://www.jetbrains.com/help/pycharm/absolute-path-variables.html).
+The command reads this explicit file without discovering global configuration,
+changing IDE settings, or taking definitions from environment variables. Do not
+commit it or its machine-local values. Save variable changes in the selected IDE
+before preparing a closed project. Names must be unique and must not override
+the three built-ins; values must be absolute paths without nested macros.
+Missing definitions (including in unrelated local modules), duplicate definitions,
+malformed tables, and conflicting tenant Odoo sources fail before any metadata
+write. Existing custom macro URLs are preserved, so preparing a saved
+`file://$ODOO_SRC$` root again adds no duplicate. Interpreter libraries and other modules' content
 roots remain outside this command's source-attachment check.
 Repeated preparation with the same source and supported paths is a no-op. JSON output records the
 exact project/module paths, source path, commit, series, and changed files.
