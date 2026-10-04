@@ -1685,7 +1685,15 @@ def parse_env_file(env_file_path: Path) -> dict[str, str]:
             len(environment_value) >= 2 and environment_value[0] == environment_value[-1] and environment_value[0] in {'"', "'"}
         )
         if is_quoted_value:
-            environment_value = environment_value[1:-1]
+            if environment_value.startswith('"'):
+                # Generated double-quoted values use JSON-compatible escapes and
+                # Compose's literal-dollar escape. Decode without interpolation.
+                try:
+                    environment_value = json.loads(environment_value).replace("$$", "$")
+                except json.JSONDecodeError:
+                    environment_value = environment_value[1:-1]
+            else:
+                environment_value = environment_value[1:-1]
         elif " #" in environment_value:
             environment_value = environment_value.split(" #", 1)[0].rstrip()
         parsed_values[environment_key] = environment_value
@@ -3282,7 +3290,16 @@ def repository_spec_declares_selector(repository_spec: str) -> bool:
 
 
 def render_runtime_env(runtime_values: dict[str, str]) -> str:
-    return "\n".join(f"{key}={value}" for key, value in runtime_values.items()) + "\n"
+    lines: list[str] = []
+    for key, value in runtime_values.items():
+        if not ENVIRONMENT_VARIABLE_NAME_PATTERN.fullmatch(key):
+            raise ValueError("Runtime environment contains an invalid variable name")
+        if "\0" in value:
+            raise ValueError("Runtime environment contains a NUL value")
+        if value != value.strip() or any(character in value for character in "\"'\\$#\n\r\t"):
+            value = json.dumps(value, ensure_ascii=False).replace("$", "$$")
+        lines.append(f"{key}={value}")
+    return "\n".join(lines) + "\n"
 
 
 def effective_runtime_source_repositories(
