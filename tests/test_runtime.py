@@ -2810,7 +2810,7 @@ sources = [
             self.assertTrue(any(command[-2:] == ["stop", "web"] for command in commands))
             self.assertTrue(any(command[-4:] == ["up", "-d", "--remove-orphans", "web"] for command in commands))
 
-    def test_native_runtime_data_workflows_forward_literal_passwords(self) -> None:
+    def test_native_runtime_data_workflows_forward_literal_secrets(self) -> None:
         passwords = (
             "synthetic-$ODEV_EXPANSION ${ODEV_EXPANSION} ${ODEV_MISSING:-fallback} $$ #suffix",
             "~/synthetic-password",
@@ -2841,6 +2841,11 @@ sources = [
                     ODOO_DB_PASSWORD=password,
                     ODOO_ADMIN_PASSWORD=password,
                     ODOO_MASTER_PASSWORD=password,
+                    ODOO_KEY=password,
+                    ENV_OVERRIDE_SERVICE_TOKEN=password,
+                    ENV_OVERRIDE_SERVICE_SECRET=password,
+                    ENV_OVERRIDE_COPY="${ODOO_DB_PASSWORD}",
+                    ENV_OVERRIDE_BARE_COPY="$ODOO_KEY",
                     DATA_WORKFLOW_SSH_DIR="${ODEV_PATH_ROOT:-~}/.ssh",
                     DATA_WORKFLOW_SSH_KEY="$ODEV_EXPANSION-key",
                     ODOO_UPSTREAM_FILESTORE_PATH="${DATA_WORKFLOW_SSH_DIR}/filestore",
@@ -2848,17 +2853,19 @@ sources = [
                 payload = json.dumps({"context": "opw", "instance": "local", "environment": environment})
                 successful_run = self._runtime_data_workflow_side_effect()
 
-                def run_workflow(*, workflow: str = workflow, manifest: WorkspaceManifest = manifest) -> int | None:
-                    if workflow == "restore":
-                        return run_native_runtime_restore(manifest=manifest)
-                    return run_native_runtime_workflow(manifest=manifest, workflow=workflow)
+                def run_workflow(
+                    *, selected_workflow: str = workflow, selected_manifest: WorkspaceManifest = manifest
+                ) -> int | None:
+                    if selected_workflow == "restore":
+                        return run_native_runtime_restore(manifest=selected_manifest)
+                    return run_native_runtime_workflow(manifest=selected_manifest, workflow=selected_workflow)
 
                 def run_side_effect(
-                    command: list[str], *, fail: bool = fail, successful_run: mock.Mock = successful_run, **kwargs: object
+                    command: list[str], *, should_fail: bool = fail, successful_command: mock.Mock = successful_run, **kwargs: object
                 ) -> mock.Mock:
-                    if fail and local_runtime.DATA_WORKFLOW_SCRIPT in command:
+                    if should_fail and local_runtime.DATA_WORKFLOW_SCRIPT in command:
                         return mock.Mock(returncode=1, stdout="", stderr="")
-                    return successful_run(command, **kwargs)
+                    return successful_command(command, **kwargs)
 
                 output = io.StringIO()
                 with (
@@ -2867,7 +2874,7 @@ sources = [
                         {
                             local_runtime.RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR: payload,
                             "ODEV_EXPANSION": "expanded",
-                            "ODEV_PATH_ROOT": "~",
+                            "ODEV_PATH_ROOT": str(Path.home()),
                         },
                     ),
                     mock.patch("odoo_devkit.local_runtime.subprocess.run", side_effect=run_side_effect) as run_mock,
@@ -2882,7 +2889,15 @@ sources = [
 
                 workflow_call = next(call for call in run_mock.call_args_list if local_runtime.DATA_WORKFLOW_SCRIPT in call.args[0])
                 forwarded = workflow_call.kwargs["env"]
-                for key in ("ODOO_DB_PASSWORD", "ODOO_ADMIN_PASSWORD"):
+                for key in (
+                    "ODOO_DB_PASSWORD",
+                    "ODOO_ADMIN_PASSWORD",
+                    "ODOO_KEY",
+                    "ENV_OVERRIDE_SERVICE_TOKEN",
+                    "ENV_OVERRIDE_SERVICE_SECRET",
+                    "ENV_OVERRIDE_COPY",
+                    "ENV_OVERRIDE_BARE_COPY",
+                ):
                     self.assertEqual(forwarded[key], environment[key])
                     self.assertIn(
                         ["-e", key], [workflow_call.args[0][index : index + 2] for index in range(len(workflow_call.args[0]))]
@@ -2893,6 +2908,38 @@ sources = [
                 for call in run_mock.call_args_list:
                     self.assertNotIn(password, " ".join(call.args[0]))
                 self.assertNotIn(password, output.getvalue())
+
+    def test_data_workflow_paths_do_not_reexpand_substituted_values(self) -> None:
+        literal = "~/synthetic-$ODEV_EXPANSION ${ODEV_EXPANSION}"
+        with mock.patch.dict(os.environ, {"ODEV_EXPANSION": "changed", "ODEV_EXTERNAL_PATH": literal}):
+            values = local_runtime.resolve_data_workflow_environment(
+                {
+                    "ODOO_KEY": literal,
+                    "ODOO_DB_PASSWORD": literal,
+                    "DATA_WORKFLOW_SSH_DIR": "${ODOO_KEY}/keys",
+                    "DATA_WORKFLOW_SSH_KEY": "${DATA_WORKFLOW_SSH_DIR}/id",
+                    "ODOO_UPSTREAM_FILESTORE_PATH": "$ODOO_DB_PASSWORD/files",
+                    "ODOO_DATA_WORKFLOW_LOCK_FILE": "$ODEV_EXTERNAL_PATH/lock",
+                    "OPENUPGRADE_SCRIPTS_PATH": "${ODEV_ABSENT_PATH:-~}/scripts",
+                    "ENV_OVERRIDE_COPY": "${ODOO_KEY}",
+                }
+            )
+        self.assertEqual(values["DATA_WORKFLOW_SSH_DIR"], literal + "/keys")
+        self.assertEqual(values["DATA_WORKFLOW_SSH_KEY"], literal + "/keys/id")
+        self.assertEqual(values["ODOO_UPSTREAM_FILESTORE_PATH"], literal + "/files")
+        self.assertEqual(values["ODOO_DATA_WORKFLOW_LOCK_FILE"], literal + "/lock")
+        self.assertEqual(values["OPENUPGRADE_SCRIPTS_PATH"], str(Path.home() / "scripts"))
+        self.assertEqual(values["ENV_OVERRIDE_COPY"], "${ODOO_KEY}")
+
+    def test_data_workflow_path_cycles_fail_without_values(self) -> None:
+        with self.assertRaisesRegex(ValueError, "path references contain a cycle") as error:
+            local_runtime.resolve_data_workflow_environment(
+                {
+                    "DATA_WORKFLOW_SSH_DIR": "${DATA_WORKFLOW_SSH_KEY}/synthetic-secret",
+                    "DATA_WORKFLOW_SSH_KEY": "$DATA_WORKFLOW_SSH_DIR",
+                }
+            )
+        self.assertNotIn("synthetic-secret", str(error.exception))
 
     def test_native_runtime_data_workflows_report_failures_without_restarting_web(self) -> None:
         cases = (
