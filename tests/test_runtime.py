@@ -24,7 +24,7 @@ from odoo_devkit.cli import (
     _handle_runtime_restore,
     _handle_runtime_workflow,
 )
-from odoo_devkit.manifest import load_workspace_manifest
+from odoo_devkit.manifest import WorkspaceManifest, load_workspace_manifest
 from odoo_devkit.runtime import (
     resolve_runtime_repo_path,
     run_native_runtime_build,
@@ -2809,6 +2809,90 @@ sources = [
             self.assertNotIn("BOOTSTRAP=1", restore_command)
             self.assertTrue(any(command[-2:] == ["stop", "web"] for command in commands))
             self.assertTrue(any(command[-4:] == ["up", "-d", "--remove-orphans", "web"] for command in commands))
+
+    def test_native_runtime_data_workflows_forward_literal_passwords(self) -> None:
+        passwords = (
+            "synthetic-$ODEV_EXPANSION ${ODEV_EXPANSION} ${ODEV_MISSING:-fallback} $$ #suffix",
+            "~/synthetic-password",
+            "  synthetic-'single' and \"double\" \\backslash  ",
+        )
+        cases = (
+            (workflow, password, fail)
+            for workflow in ("restore", "bootstrap", "update")
+            for password in passwords
+            for fail in (False, True)
+        )
+        for workflow, password, fail in cases:
+            with (
+                self.subTest(workflow=workflow, password=password, fail=fail),
+                tempfile.TemporaryDirectory() as temporary_directory,
+            ):
+                temp_root = Path(temporary_directory)
+                tenant_repo_path = temp_root / "tenant-repo"
+                runtime_repo_path = temp_root / "runtime-repo"
+                tenant_repo_path.mkdir()
+                self._write_runtime_repo(runtime_repo_path)
+                manifest_path = self._write_manifest(tenant_repo_path=tenant_repo_path, runtime_repo_path=runtime_repo_path)
+                manifest = load_workspace_manifest(manifest_path)
+                environment = self._load_environment_from_explicit_payload(
+                    raw_payload="{}", context_name="opw", instance_name="local"
+                ).merged_values
+                environment.update(
+                    ODOO_DB_PASSWORD=password,
+                    ODOO_ADMIN_PASSWORD=password,
+                    ODOO_MASTER_PASSWORD=password,
+                    DATA_WORKFLOW_SSH_DIR="${ODEV_PATH_ROOT:-~}/.ssh",
+                    DATA_WORKFLOW_SSH_KEY="$ODEV_EXPANSION-key",
+                    ODOO_UPSTREAM_FILESTORE_PATH="${DATA_WORKFLOW_SSH_DIR}/filestore",
+                )
+                payload = json.dumps({"context": "opw", "instance": "local", "environment": environment})
+                successful_run = self._runtime_data_workflow_side_effect()
+
+                def run_workflow(*, workflow: str = workflow, manifest: WorkspaceManifest = manifest) -> int | None:
+                    if workflow == "restore":
+                        return run_native_runtime_restore(manifest=manifest)
+                    return run_native_runtime_workflow(manifest=manifest, workflow=workflow)
+
+                def run_side_effect(
+                    command: list[str], *, fail: bool = fail, successful_run: mock.Mock = successful_run, **kwargs: object
+                ) -> mock.Mock:
+                    if fail and local_runtime.DATA_WORKFLOW_SCRIPT in command:
+                        return mock.Mock(returncode=1, stdout="", stderr="")
+                    return successful_run(command, **kwargs)
+
+                output = io.StringIO()
+                with (
+                    mock.patch.dict(
+                        os.environ,
+                        {
+                            local_runtime.RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR: payload,
+                            "ODEV_EXPANSION": "expanded",
+                            "ODEV_PATH_ROOT": "~",
+                        },
+                    ),
+                    mock.patch("odoo_devkit.local_runtime.subprocess.run", side_effect=run_side_effect) as run_mock,
+                    contextlib.redirect_stdout(output),
+                ):
+                    if fail:
+                        with self.assertRaises(ValueError) as error:
+                            run_workflow()
+                        self.assertNotIn(password, str(error.exception))
+                    else:
+                        self.assertEqual(run_workflow(), 0)
+
+                workflow_call = next(call for call in run_mock.call_args_list if local_runtime.DATA_WORKFLOW_SCRIPT in call.args[0])
+                forwarded = workflow_call.kwargs["env"]
+                for key in ("ODOO_DB_PASSWORD", "ODOO_ADMIN_PASSWORD"):
+                    self.assertEqual(forwarded[key], environment[key])
+                    self.assertIn(
+                        ["-e", key], [workflow_call.args[0][index : index + 2] for index in range(len(workflow_call.args[0]))]
+                    )
+                self.assertEqual(forwarded["DATA_WORKFLOW_SSH_DIR"], str(Path.home() / ".ssh"))
+                self.assertEqual(forwarded["DATA_WORKFLOW_SSH_KEY"], "expanded-key")
+                self.assertEqual(forwarded["ODOO_UPSTREAM_FILESTORE_PATH"], str(Path.home() / ".ssh" / "filestore"))
+                for call in run_mock.call_args_list:
+                    self.assertNotIn(password, " ".join(call.args[0]))
+                self.assertNotIn(password, output.getvalue())
 
     def test_native_runtime_data_workflows_report_failures_without_restarting_web(self) -> None:
         cases = (

@@ -390,6 +390,13 @@ Notes
   `ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON`. Leftover devkit-local `.env`,
   `platform/.env`, or `platform/secrets.toml` files are a hard conflict so the
   runtime boundary stays single-source and fail-closed.
+- Local restore, bootstrap, and update forward `_PASSWORD` values literally
+  from that input, including dollar expressions, tilde prefixes, quotes,
+  backslashes, and surrounding spaces. Supply the actual password rather than
+  a variable reference. Existing expansion of non-password settings, such as
+  SSH and upstream filestore paths, is unchanged. Passwords travel through
+  process environment values, keeping them out of command arguments and
+  command-failure diagnostics.
 - Non-local `restore`, `workflow bootstrap`, and `workflow update` now fail
   closed with Launchplane handoff guidance. Devkit should not grow arbitrary
   checkout remote mutation flows; add or use a Launchplane service route first.
