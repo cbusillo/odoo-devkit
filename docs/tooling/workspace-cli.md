@@ -313,6 +313,11 @@ Local runtime input
   selected `instance`, and a non-empty `environment` object containing only
   string keys and values. The checked-in stack declares which environment keys
   are required for the selected command.
+- Generated runtime and Compose env files encode literal values, including dollar
+  signs, comment markers, quotes, backslashes and surrounding whitespace. Values
+  are not shell expressions; do not source these files. Re-run `runtime select`
+  to regenerate an environment file written by an older devkit. Password values
+  remain in the generated files, not command arguments or diagnostic output.
 - This is the only supported runtime-environment input path. Do not put runtime
   values in `workspace.toml`, generated workspace docs, checked-in config,
   `.env`, `platform/.env`, or `platform/secrets.toml`.
