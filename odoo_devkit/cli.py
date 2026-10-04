@@ -52,6 +52,11 @@ def build_parser() -> argparse.ArgumentParser:
     ide_parser.add_argument("--odoo-source", type=Path, required=True, help="Existing clean Odoo community Git checkout")
     ide_parser.add_argument("--odoo-commit", required=True, help="Expected full source commit SHA")
     ide_parser.add_argument("--odoo-series", required=True, help="Expected Odoo series, for example 19.0")
+    ide_parser.add_argument(
+        "--ide-path-variables",
+        type=Path,
+        help="Read custom path variables from the selected IDE's options/path.macros.xml (never modified)",
+    )
     ide_parser.set_defaults(handler=_handle_workspace_prepare_ide)
 
     status_parser = _add_manifest_argument(workspace_subparsers.add_parser("status", help="Report workspace status"))
@@ -272,6 +277,7 @@ def _handle_workspace_prepare_ide(arguments: argparse.Namespace) -> None:
             source_path=arguments.odoo_source,
             expected_commit=arguments.odoo_commit,
             expected_series=arguments.odoo_series,
+            path_variables_file=arguments.ide_path_variables,
         )
     except (ValueError, OSError) as error:
         raise SystemExit(str(error)) from error
