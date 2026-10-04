@@ -1714,7 +1714,7 @@ def parse_env_file(env_file_path: Path) -> dict[str, str]:
     return parsed_values
 
 
-def resolve_data_workflow_environment(raw_values: dict[str, str]) -> dict[str, str]:
+def resolve_data_workflow_environment(raw_values: dict[str, str], *, keys: tuple[str, ...] | None = None) -> dict[str, str]:
     variable_pattern = re.compile(r"\$\{([^}]+)}|\$([A-Za-z_][A-Za-z0-9_]*)")
     resolved_cache: dict[str, str] = {}
 
@@ -1751,7 +1751,7 @@ def resolve_data_workflow_environment(raw_values: dict[str, str]) -> dict[str, s
         resolved_cache[variable_name] = resolved_value
         return resolved_value
 
-    return {environment_key: resolve_value(environment_key, set()) for environment_key in raw_values}
+    return {environment_key: resolve_value(environment_key, set()) for environment_key in (raw_values if keys is None else keys)}
 
 
 def data_workflow_script_environment(environment_values: dict[str, str]) -> dict[str, str]:
@@ -3409,7 +3409,9 @@ def compose_runtime_env_file(runtime_env_file: Path) -> Path:
     compose_env_file = runtime_env_file.with_suffix(".compose.env")
     runtime_env_values = parse_env_file(runtime_env_file)
     if "DATA_WORKFLOW_SSH_DIR" in runtime_env_values:
-        ssh_directory = resolve_data_workflow_environment(runtime_env_values)["DATA_WORKFLOW_SSH_DIR"]
+        ssh_directory = resolve_data_workflow_environment(runtime_env_values, keys=("DATA_WORKFLOW_SSH_DIR",))[
+            "DATA_WORKFLOW_SSH_DIR"
+        ]
         if not Path(ssh_directory).is_absolute():
             raise RuntimeCommandError("DATA_WORKFLOW_SSH_DIR must resolve to an absolute host path before Compose starts.")
         runtime_env_values["DATA_WORKFLOW_SSH_DIR"] = ssh_directory

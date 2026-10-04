@@ -42,6 +42,21 @@ class RuntimeEnvSerializationTests(unittest.TestCase):
                 local_runtime.render_runtime_env(values)
             self.assertNotIn("synthetic-private", str(error.exception))
 
+    def test_compose_resolves_only_the_mount_and_its_dependencies(self) -> None:
+        values = {
+            "DATA_WORKFLOW_SSH_DIR": "${DATA_WORKFLOW_SSH_KEY}/keys",
+            "DATA_WORKFLOW_SSH_KEY": "~/synthetic-$SYNTHETIC_ROOT",
+            "OPENUPGRADE_SCRIPTS_PATH": "$OPENUPGRADE_SCRIPTS_PATH/cycle",
+        }
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {"SYNTHETIC_ROOT": "root"}):
+            runtime_file = Path(directory) / "runtime.env"
+            runtime_file.write_text(local_runtime.render_runtime_env(values), encoding="utf-8")
+            compose_file = local_runtime.compose_runtime_env_file(runtime_file)
+            composed = local_runtime.parse_env_file(compose_file)
+            self.assertEqual(composed["DATA_WORKFLOW_SSH_DIR"], str(Path.home() / "synthetic-root" / "keys"))
+            self.assertEqual(composed["DATA_WORKFLOW_SSH_KEY"], values["DATA_WORKFLOW_SSH_KEY"])
+            self.assertEqual(composed["OPENUPGRADE_SCRIPTS_PATH"], values["OPENUPGRADE_SCRIPTS_PATH"])
+
     def test_real_compose_preserves_interpolation_and_service_env_values(self) -> None:
         docker = shutil.which("docker")
         if docker is None:
@@ -101,7 +116,9 @@ class RuntimeEnvSerializationTests(unittest.TestCase):
                 "${DATA_WORKFLOW_SSH_KEY}/keys",
             )
             for path in paths:
-                with self.subTest(path=path), mock.patch.dict(os.environ, {"SYNTHETIC_SSH_ROOT": str(root)}, clear=True):
+                environment = {key: os.environ[key] for key in ("PATH", "HOME", "DOCKER_CONFIG") if key in os.environ}
+                environment["SYNTHETIC_SSH_ROOT"] = str(root)
+                with self.subTest(path=path), mock.patch.dict(os.environ, environment, clear=True):
                     values = {
                         "DATA_WORKFLOW_SSH_DIR": path,
                         "DATA_WORKFLOW_SSH_KEY": "$SYNTHETIC_SSH_ROOT",
