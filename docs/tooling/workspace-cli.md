@@ -641,7 +641,9 @@ Local admin application and startup preserve surrounding spaces and tabs in
 `ODOO_ADMIN_PASSWORD`. Startup and data-workflow hardening also preserve it
 when checking whether the configured password already matches.
 Blank/omitted admin passwords do not request an update.
-The typed runtime input rejects line separators and NUL bytes.
+Devkit's typed runtime input rejects line separators and NUL bytes. The shared
+image scripts also apply literal nonblank admin passwords in hosted lanes;
+they read environment values directly, outside that typed-input validation.
 
 Odoo 19 trims surrounding whitespace in config-file values. Local Odoo shell
 and initialization commands forward `ODOO_DB_PASSWORD` as `PGPASSWORD` inside
