@@ -828,6 +828,9 @@ def run_init_workflow(*, manifest: WorkspaceManifest, runtime_repo_path: Path) -
         context_name=manifest.runtime.context,
         instance_name=manifest.runtime.instance,
     )
+    # Refresh the private environment before Compose creates/recreates the runner,
+    # so container-side credentials agree with the payload loaded for this init.
+    runtime_env_file = write_runtime_env_file(runtime_context=runtime_context)
     install_modules = ",".join(runtime_context.selection.effective_install_modules)
     addons_path_argument = ",".join(runtime_context.stack.stack_definition.addons_path)
     init_command = [

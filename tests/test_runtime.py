@@ -2960,7 +2960,13 @@ sources = [
                         self.subTest(operation=name, returncode=returncode),
                         mock.patch.object(local_runtime, "load_runtime_context", return_value=context),
                         mock.patch.object(local_runtime, "compose_base_command", return_value=["docker", "compose"]),
-                        mock.patch.object(local_runtime, "compose_up_script_runner"),
+                        mock.patch.object(
+                            local_runtime,
+                            "compose_up_script_runner",
+                            side_effect=lambda **kwargs: self.assertEqual(
+                                local_runtime.parse_env_file(kwargs["runtime_env_file"])["ODOO_ADMIN_PASSWORD"], admin_password
+                            ),
+                        ) as start_runner,
                         mock.patch.object(local_runtime, "apply_admin_password_if_configured")
                         if name == "init"
                         else contextlib.nullcontext(),
@@ -2980,6 +2986,10 @@ sources = [
                                 self.assertNotIn(secret, str(failure.exception))
                         else:
                             operation()
+                        if name == "init":
+                            current_environment = local_runtime.parse_env_file(start_runner.call_args.kwargs["runtime_env_file"])
+                            self.assertEqual(current_environment["ODOO_ADMIN_PASSWORD"], admin_password)
+                            self.assertEqual(current_environment["ODOO_DB_PASSWORD"], password)
                         command = runner.call_args.args[0]
                         input_script = runner.call_args.kwargs.get("input", b"").decode()
                         for secret in (password, admin_password):
