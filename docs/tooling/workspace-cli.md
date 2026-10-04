@@ -410,7 +410,7 @@ Notes
   Dollar expressions, tilde prefixes, quotes, backslashes, and surrounding
   spaces are preserved. Supply actual values; a non-path alias such as
   `ENV_OVERRIDE_COPY=${ODOO_DB_PASSWORD}` stays that literal string.
-  Values travel through the process environment, keeping them out of command
+  Opaque values travel through the process environment, keeping them out of command
   arguments and command-failure diagnostics.
 - Only these local data-workflow path fields expand home prefixes and
   `$NAME`, `${NAME}`, and `${NAME:-default}` references:
@@ -420,10 +420,13 @@ Notes
   References prefer the supplied input,
   then the host environment, then the default for an absent variable.
   References to other path fields resolve recursively; cycles fail with a
-  value-free error. Substituted opaque values are never expanded again.
+  value-free error. Host forwarding never expands substituted values again.
   Unknown references without defaults remain literal. Do not place credentials
   in paths: paths may appear in filesystem commands. This contract covers host
-  forwarding; downstream Odoo password whitespace qualification is separate.
+  forwarding; downstream whitespace and path normalization are separate.
+  `DATA_WORKFLOW_SSH_DIR` also supplies a Compose bind mount before forwarding;
+  use an absolute or direct home-prefixed path for that mount. Variable
+  expressions in this field are not resolved for the mount.
 - Non-local `restore`, `workflow bootstrap`, and `workflow update` now fail
   closed with Launchplane handoff guidance. Devkit should not grow arbitrary
   checkout remote mutation flows; add or use a Launchplane service route first.
