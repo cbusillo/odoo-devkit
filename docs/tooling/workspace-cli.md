@@ -472,9 +472,9 @@ Notes
   An early capture failure leaves target data unchanged. Once the old target
   database has been dropped, any later failure (a partial `pg_restore`, the
   filestore copy, OpenUpgrade, sanitize, addon install or update, or the
-  Launchplane settings apply) drops the restored database, so web never boots
-  an unsanitized production copy, as does a failure while blocking outgoing
-  mail right after that apply. Only later failures (the core schema check and
+  Launchplane settings apply) drops the restored database. A failure while blocking
+  outgoing mail right after that apply also drops it. Web never boots
+  an unsanitized production copy. Only later failures (the core schema check and
   GPT user provisioning) keep the sanitized database. Filestore capacity is checked again after
   capture so the dump's space is reflected before replacement begins.
   Capture and validation now finish before

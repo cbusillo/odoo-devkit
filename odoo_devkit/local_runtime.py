@@ -2096,7 +2096,7 @@ def manifest_build_values(manifest: WorkspaceManifest) -> dict[str, str]:
         "ODOO_BASE_RUNTIME_IMAGE": build.base_runtime_image,
         "ODOO_BASE_DEVTOOLS_IMAGE": build.base_devtools_image,
     }
-    return {key: value for key, value in declared.items() if value}
+    return {key: value for key, value in declared.items() if value is not None and value != ""}
 
 
 def apply_typed_odoo_instance_override_payload(
@@ -2440,7 +2440,7 @@ def stage_artifact_build_context(
     elif staged_tenant_shared_path.exists():
         staged_tenant_shared_path.unlink()
 
-    staged_shared_addons_root: Path | None = None
+    staged_shared_addons_root = None
     if shared_addons_repo_path is not None:
         if shared_addons_source is None or shared_addons_source.repo_path != shared_addons_repo_path.resolve():
             raise RuntimeCommandError("Shared addon source snapshot does not match the staged shared addon repository.")
@@ -3589,7 +3589,7 @@ def run_odoo_shell_command(
     ]
     compose_command = compose_base_command(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file)
 
-    resolved_script_path: Path | None = None
+    resolved_script_path = None
     script_text: str | None = None
     if script_path is not None:
         resolved_script_path = script_path.expanduser().resolve()

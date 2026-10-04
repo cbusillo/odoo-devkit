@@ -11,9 +11,10 @@ import types
 import unittest
 from collections.abc import Iterator, Sequence
 from contextlib import ExitStack, closing, contextmanager
+from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
 from odoo_devkit.local_runtime import load_environment_from_explicit_payload
@@ -49,7 +50,10 @@ def _load_data_workflows_module() -> types.ModuleType:
     return module
 
 
-odoo_data_workflows = _load_data_workflows_module()
+if TYPE_CHECKING:
+    from docker.scripts import run_odoo_data_workflows as odoo_data_workflows
+else:
+    odoo_data_workflows = _load_data_workflows_module()
 
 
 class UpstreamRestoreFailureTests(unittest.TestCase):
@@ -108,6 +112,7 @@ class UpstreamRestoreFailureTests(unittest.TestCase):
                 process.wait.return_value = 0
                 return process
 
+            runner.local.db_conn = MagicMock()
             stack.enter_context(
                 patch.multiple(
                     runner,
@@ -122,7 +127,7 @@ class UpstreamRestoreFailureTests(unittest.TestCase):
                     verify_production_credentials_cleared=MagicMock(),
                     install_addons=MagicMock(),
                     update_addons=MagicMock(),
-                    connect_to_db=MagicMock(),
+                    connect_to_db=MagicMock(return_value=runner.local.db_conn),
                     reconcile_missing_manifest_install_queue=MagicMock(),
                     assert_install_queue_is_resolvable=MagicMock(),
                     apply_environment_overrides=MagicMock(),
@@ -314,7 +319,8 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
         runner.local.db_conn = types.SimpleNamespace(cursor=lambda: closing(database.cursor()), commit=database.commit)
         return runner
 
-    def _run_bootstrap(self, runner: Any) -> None:
+    @staticmethod
+    def _run_bootstrap(runner: Any) -> None:
         with patch.multiple(
             runner,
             _resolve_filestore_owner=MagicMock(return_value=None),
@@ -387,7 +393,7 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
             )
 
     @staticmethod
-    def _local_settings(platform_instance: str = "") -> object:
+    def _local_settings(platform_instance: str = "") -> odoo_data_workflows.LocalServerSettings:
         return odoo_data_workflows.LocalServerSettings(
             PLATFORM_INSTANCE=platform_instance,
             ODOO_DB_HOST="database",
@@ -668,7 +674,7 @@ class DataWorkflowGuardTests(unittest.TestCase):
         run_restore.assert_not_called()
         self.assertEqual(self.lock_path.read_text(encoding="utf-8"), "pid=1\n")
 
-    def _restore_runner(self, **setting_overrides: object) -> tuple[object, MagicMock]:
+    def _restore_runner(self, **setting_overrides: object) -> tuple[Any, MagicMock]:
         environment = {
             **self._LOCAL_ENVIRONMENT,
             "ODOO_DATA_WORKFLOW_LOCK_FILE": str(self.lock_path),
@@ -699,7 +705,7 @@ class DataWorkflowGuardTests(unittest.TestCase):
             "sanitize_database": MagicMock(),
             "install_addons": MagicMock(),
             "update_addons": MagicMock(),
-            "connect_to_db": MagicMock(),
+            "connect_to_db": MagicMock(return_value=runner.local.db_conn),
             "reconcile_missing_manifest_install_queue": MagicMock(),
             "assert_install_queue_is_resolvable": MagicMock(),
             "apply_environment_overrides": MagicMock(),
@@ -780,7 +786,9 @@ class DataWorkflowGuardTests(unittest.TestCase):
                     "verify_production_credentials_cleared",
                     "apply_environment_overrides",
                 ):
-                    getattr(runner, step).side_effect = lambda *_args, _step=step, _calls=calls, **_kwargs: _calls.append(_step)
+                    getattr(runner, step).side_effect = partial(
+                        lambda _calls, _step, *_args, **_kwargs: _calls.append(_step), calls, step
+                    )
 
                 runner.run_restore(do_sanitize=do_sanitize)
 
@@ -839,10 +847,13 @@ class _FakeCronTable:
         self.active_by_name = dict.fromkeys(cron_names, True)
         self.stuck_cron_names = stuck_cron_names
 
-    def call_odoo_sql(self, sql_call: object, call_type: object) -> list[tuple] | None:
+    def call_odoo_sql(self, sql_call: odoo_data_workflows.SqlCall, call_type: odoo_data_workflows.SqlCallType) -> list[tuple] | None:
         if sql_call.model != "ir.cron":
             return []
-        if call_type == odoo_data_workflows.SqlCallType.UPDATE and sql_call.data.key == "active":
+        if call_type == odoo_data_workflows.SqlCallType.UPDATE:
+            assert sql_call.data is not None
+            if sql_call.data.key != "active":
+                return []
             for cron_name in self.active_by_name:
                 if cron_name not in self.stuck_cron_names:
                     self.active_by_name[cron_name] = sql_call.data.value
@@ -857,7 +868,8 @@ class _FakeCronTable:
 
 
 class SanitizeCronTests(unittest.TestCase):
-    def _sanitize(self, cron_table: _FakeCronTable, **setting_overrides: object) -> None:
+    @staticmethod
+    def _sanitize(cron_table: _FakeCronTable, **setting_overrides: object) -> None:
         settings = odoo_data_workflows.LocalServerSettings(
             ODOO_DB_HOST="database",
             ODOO_DB_USER="odoo",
@@ -1111,7 +1123,7 @@ class ProductionCredentialSanitizeTests(unittest.TestCase):
         self.copy = _RestoredProductionCopy()
         self.addCleanup(self.copy.close)
 
-    def _runner(self, platform_instance: str | None = "testing", **extra_environment: object) -> object:
+    def _runner(self, platform_instance: str | None = "testing", **extra_environment: object) -> Any:
         environment: dict[str, object] = {
             "ODOO_DB_HOST": "database",
             "ODOO_DB_USER": "odoo",
@@ -1587,7 +1599,9 @@ class EnsureAdminUserTests(unittest.TestCase):
         runner.local.db_conn.cursor.return_value.__enter__.return_value = cursor
         for name in ("connect_to_db", "_reset_db_connection"):
             patcher = patch.object(runner, name)
-            patcher.start()
+            patched_method = patcher.start()
+            if name == "connect_to_db":
+                patched_method.return_value = runner.local.db_conn
             self.addCleanup(patcher.stop)
         return runner
 

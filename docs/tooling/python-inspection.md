@@ -69,3 +69,49 @@ they may leave the raw verdict RED after actionable Python findings are fixed.
 This triage does not prove a live container or database healthy. New import or
 SQL findings still need investigation; this is not a baseline for all runtime
 script diagnostics. An UNKNOWN run supplies no current finding evidence.
+
+## Runtime and workflow findings
+
+For runtime triage, select `odoo_devkit/local_runtime.py`,
+`tests/test_runtime.py`, `docker/scripts/run_odoo_data_workflows.py`,
+`tests/test_odoo_data_workflows.py`, `docker/scripts/run_odoo_startup.py`, and
+`tests/test_odoo_startup.py`; include the README and workspace CLI guide when
+triaging their prose. Compare with an unchanged checkout of the current default
+branch, and retrieve the complete problem list. A compact assessment may omit
+individual findings even when its count covers the complete native run.
+
+Keep each retained diagnostic visible in the issue's inspection receipt and
+record its location and reason. These cases are intentional:
+
+- The workflow script's `psycopg2`, `sql`, and `connection` import diagnostics
+  have the same container-driver reason as startup's `psycopg2` diagnostic above.
+  Root dependencies and the offline test loader do not supply a real driver.
+- `_path_exists_safely` catches `OSError` and returns `False`. Its final return
+  can be reported as unreachable by the IDE, but Python 3.13 `Path.exists()`
+  raises `OSError` for an overlong path component. Preserve that fallback.
+- `_drop_database_after_failed_restore` deliberately catches `BaseException`
+  from the cleanup attempt. It logs a failed drop while allowing the caller to
+  propagate the original restore error, including an interruption. Narrowing
+  that catch would replace the original error when cleanup is interrupted.
+- Bootstrap and restore commit the cached connection after `sanitize_database`
+  establishes it. A warning on the optional `db_conn` field at those commits
+  does not establish a missing connection on the production path; test fixtures
+  must preserve the connection contract too.
+- `_normalize_path` accepts raw validator input and converts it to a string;
+  `emit_key_value_payload` prints generic scalar values. Their object-to-string
+  warnings describe deliberate conversion boundaries.
+- Tests intentionally import private CLI handlers to exercise their behavior.
+  A protected-member warning is not a reason to expose those handlers publicly.
+- Spellchecking flags product names, executable/environment identifiers, Odoo
+  schema names, synthetic test inputs, and source-reference tokens. Keep those
+  exact values. Grammar findings inside identifiers, command examples, and
+  deliberately malformed fixtures need the same location-specific review;
+  ordinary prose errors should be corrected.
+
+The workflow test loader still substitutes PostgreSQL imports before executing
+container scripts. Its `TYPE_CHECKING` import makes the real module visible to
+static analysis without loading a PostgreSQL driver during offline tests.
+Connection mocks return the same fake connection stored on the runner, matching
+`connect_to_db()`'s contract. Callback fixtures bind their subtest values with
+`functools.partial`, keeping captures explicit without mutable default arguments.
+These fixtures do not qualify a running Odoo or database.

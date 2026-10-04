@@ -172,12 +172,12 @@ Current runtime ownership is intentionally narrow and explicit:
   settings they receive. Production bootstrap does not insert the dummy server,
   so a new production database can use the operator's supplied mail
   configuration.
-- Restores onto a non-production instance also clear the copy's production
-  integration credentials and signing keys (Shopify, PrintNode, Fishbowl,
+- Restores onto a non-production instance clear the copy's production
+  integration credentials and signing keys. This includes Shopify, PrintNode, Fishbowl,
   RepairShopr and cm_data connections, payment providers, incoming mail
   servers and Gmail/Outlook OAuth app client secrets, IAP account tokens,
   map and media tokens, web push keys and
-  devices, user API keys, `database.secret`), and the copy's
+  devices, user API keys, and `database.secret`. The restore also clears the copy's
   production-store Shopify external IDs and export state. The restore keeps
   only the integrations named in `ODOO_RESTORE_KEPT_INTEGRATIONS`; keeping
   `incoming_mail` also keeps those OAuth app client secrets. A restore that fails
