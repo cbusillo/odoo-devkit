@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import sqlite3
 import subprocess
@@ -14,6 +15,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 from unittest.mock import MagicMock, patch
+
+from odoo_devkit.local_runtime import load_environment_from_explicit_payload
 
 
 def _load_data_workflows_module() -> types.ModuleType:
@@ -1571,7 +1574,12 @@ class EnsureAdminUserTests(unittest.TestCase):
             "PLATFORM_INSTANCE": "testing",
         }
         with patch.dict(os.environ, {}, clear=True):
-            settings = odoo_data_workflows.LocalServerSettings(**environment)
+            loaded = load_environment_from_explicit_payload(
+                raw_payload=json.dumps({"context": "probe", "instance": "local", "environment": environment}),
+                context_name="probe",
+                instance_name="local",
+            )
+            settings = odoo_data_workflows.LocalServerSettings(**loaded.merged_values)
         runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
         cursor = MagicMock()
         cursor.fetchone.side_effect = lambda: (2, 3) if "res_users" in cursor.execute.call_args.args[0] else ("admin@localhost",)
@@ -1619,7 +1627,7 @@ class EnsureAdminUserTests(unittest.TestCase):
 
         admin._check_credentials.side_effect = check_credentials
         admin.write.side_effect = stored.update
-        configured_password = "configured-'\"\\-password"
+        configured_password = " \tconfigured-'\"\\-password\t "
 
         self._run_admin_hardening(self._runner(configured_password), environment)
         self._run_admin_hardening(self._runner(configured_password), environment)

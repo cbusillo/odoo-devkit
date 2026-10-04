@@ -486,8 +486,7 @@ class LocalServerSettings(BaseSettings):
     @field_validator("admin_password", mode="before")
     @classmethod
     def _optional_secret(cls, value: object) -> object:
-        value = _blank_to_none(value)
-        if value is None:
+        if value is None or value == "":
             return None
         return value
 
@@ -1786,7 +1785,7 @@ with registry.cursor() as cr:
         set_password = False
         password_plain: str | None = None
         if self.local.admin_password:
-            candidate = self.local.admin_password.get_secret_value().strip()
+            candidate = self.local.admin_password.get_secret_value()
             if candidate:
                 set_password = True
                 password_plain = candidate

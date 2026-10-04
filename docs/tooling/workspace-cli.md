@@ -634,3 +634,16 @@ Notes
 - Generated workspace-root files are a cockpit layer; they are not the
   source-of-truth repo.
 - If a generated file is wrong, change the generator in `odoo-devkit`.
+
+### Literal passwords at local consumers
+
+Local admin application and startup preserve surrounding spaces and tabs in
+`ODOO_ADMIN_PASSWORD`, including when checking whether the configured password
+already matches. Empty/omitted admin passwords do not request an update.
+The typed runtime input rejects line separators and NUL bytes.
+
+Odoo 19 trims surrounding whitespace in config-file values. Local Odoo shell
+and initialization commands forward `ODOO_DB_PASSWORD` as `PGPASSWORD` inside
+the container; Odoo's environment input overrides `db_password` from the
+file and preserves the supplied value. Use the devkit commands for this path;
+loading the generated conf alone is not equivalent.

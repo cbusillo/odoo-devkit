@@ -219,6 +219,13 @@ Current runtime ownership is intentionally narrow and explicit:
   Actual configured password changes still use Odoo's normal write path and
   security notifications. Quotes and backslashes in configured passwords are
   preserved when passed into the Odoo shell.
+  Leading/trailing spaces and tabs in `ODOO_ADMIN_PASSWORD` are also literal:
+  local initialization, data-workflow admin hardening, and startup apply the
+  supplied value unchanged. Empty/omitted values still mean no password update.
+  Odoo's config-file reader trims surrounding whitespace from `db_password`;
+  local Odoo commands use the container's literal `PGPASSWORD` environment input,
+  which takes precedence over that file in Odoo 19. Reading the generated conf
+  alone does not qualify database-password preservation.
   The same holds for a configured `ODOO_ADMIN_LOGIN` checked by the
   default-password policy.
 - A Postgres major-version bump is not a routine dependency refresh on this

@@ -3052,8 +3052,8 @@ sources = [
                 self.assertEqual(operation.call_count, 0 if failure_stage == "stop" else 1)
 
     def test_local_password_commands_forward_container_secrets_without_exposing_them(self) -> None:
-        password = "db 'quotes' \"double\" $variables `commands`\\slashes"
-        admin_password = "admin 'quotes' \"double\" $variables `commands`\\slashes"
+        password = " \tdb 'quotes' \"double\" $variables `commands`\\slashes\t "
+        admin_password = " \tadmin 'quotes' \"double\" $variables `commands`\\slashes\t "
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             tenant = root / "tenant"
@@ -3066,6 +3066,11 @@ sources = [
             context = local_runtime.load_runtime_context(manifest=manifest, runtime_repo_path=runtime)
             environment = dict(context.environment.merged_values)
             environment.update(ODOO_DB_PASSWORD=password, ODOO_ADMIN_PASSWORD=admin_password, ODOO_ADMIN_LOGIN="owner'\\login")
+            environment = local_runtime.load_environment_from_explicit_payload(
+                raw_payload=json.dumps({"context": context.selection.context_name, "instance": "local", "environment": environment}),
+                context_name=context.selection.context_name,
+                instance_name="local",
+            ).merged_values
             context.environment.merged_values.update(environment)
             admin_arguments = dict(
                 runtime_repo_path=runtime,

@@ -128,7 +128,7 @@ def _load_settings(argument_namespace: argparse.Namespace) -> StartupSettings:
         database_password=os.environ.get("ODOO_DB_PASSWORD", ""),
         master_password=master_password,
         admin_login=os.environ.get("ODOO_ADMIN_LOGIN", "").strip() or "admin",
-        admin_password=os.environ.get("ODOO_ADMIN_PASSWORD", "").strip(),
+        admin_password=os.environ.get("ODOO_ADMIN_PASSWORD", ""),
         addons_path=_normalize_comma_list_with_first_item(
             LAUNCHPLANE_ADDONS_PATH,
             os.environ.get("ODOO_ADDONS_PATH", "").strip(),

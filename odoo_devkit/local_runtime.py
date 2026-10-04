@@ -3781,7 +3781,7 @@ def apply_admin_password_if_configured(
     stack_definition: StackDefinition,
     loaded_environment: dict[str, str],
 ) -> None:
-    admin_password = loaded_environment.get("ODOO_ADMIN_PASSWORD", "").strip()
+    admin_password = loaded_environment.get("ODOO_ADMIN_PASSWORD", "")
     if not admin_password:
         return
     configured_admin_login = loaded_environment.get("ODOO_ADMIN_LOGIN", "").strip() or "admin"
@@ -3811,7 +3811,7 @@ def apply_admin_password_if_configured(
         )
         if not admin_user:
             raise ValueError(f"Configured admin user not found: {payload['login']}")
-        admin_user.with_context(no_reset_password=True).sudo().write({'password': os.environ['ODOO_ADMIN_PASSWORD'].strip()})
+        admin_user.with_context(no_reset_password=True).sudo().write({'password': os.environ['ODOO_ADMIN_PASSWORD']})
         print("admin_password_updated=true")
         env.cr.commit()
         """

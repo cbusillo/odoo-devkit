@@ -4,6 +4,7 @@ import argparse
 import configparser
 import importlib.util
 import io
+import json
 import os
 import sys
 import types
@@ -14,6 +15,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
+
+from odoo_devkit.local_runtime import load_environment_from_explicit_payload
 
 if TYPE_CHECKING:
     from docker.scripts import run_odoo_startup as odoo_startup
@@ -376,8 +379,25 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
         return output.getvalue()
 
     def test_admin_hardening_only_writes_when_configured_password_changes(self) -> None:
-        configured_password = "configured-'\"\\-password"
-        settings = self._settings(platform_instance="testing", admin_password=configured_password)
+        configured_password = " \tconfigured-'\"\\-password\t "
+        values = load_environment_from_explicit_payload(
+            raw_payload=json.dumps(
+                {
+                    "context": "probe",
+                    "instance": "local",
+                    "environment": {
+                        "ODOO_DB_NAME": "probe",
+                        "ODOO_MASTER_PASSWORD": "fake-master",
+                        "ODOO_ADMIN_PASSWORD": configured_password,
+                    },
+                }
+            ),
+            context_name="probe",
+            instance_name="local",
+        ).merged_values
+        with patch.dict(os.environ, values, clear=True):
+            settings = odoo_startup._load_settings(argparse.Namespace(config_path="/tmp/generated.conf"))
+        self.assertEqual(settings.admin_password, configured_password)
         environment = MagicMock()
         admin = environment["res.users"].sudo().with_context().search()
         admin.with_user.return_value = admin
