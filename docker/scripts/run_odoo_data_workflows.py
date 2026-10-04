@@ -888,9 +888,10 @@ class OdooDataWorkflowRunner:
             _logger.info("Disabled new connections for database %s", self.local.db_name)
 
     def _reset_db_connection(self) -> None:
-        if self.local.db_conn:
+        database_connection = self.local.db_conn
+        if database_connection:
             with suppress(psycopg2.Error):
-                self.local.db_conn.close()
+                database_connection.close()
             self.local.db_conn = None
 
     def _odoo_runtime_connection_flags(self) -> list[str]:
@@ -968,7 +969,7 @@ class OdooDataWorkflowRunner:
         local_database_filestore_path.mkdir(parents=True, exist_ok=True)
 
     def call_odoo_sql(self, sql_call: SqlCall, call_type: SqlCallType) -> list[tuple] | None:
-        self.connect_to_db()
+        database_connection = self.connect_to_db()
 
         table = sql_call.model.replace(".", "_")
         if call_type == SqlCallType.UPDATE or call_type == SqlCallType.INSERT:
@@ -1017,7 +1018,7 @@ class OdooDataWorkflowRunner:
                 value=sql.Literal(sql_call.where.value),
             )
 
-        with self.local.db_conn.cursor() as cursor:
+        with database_connection.cursor() as cursor:
             cursor.execute(query)
             if call_type == SqlCallType.SELECT:
                 return cursor.fetchall()
@@ -1148,9 +1149,10 @@ class OdooDataWorkflowRunner:
 
     def _credential_values(self, cursor: Any) -> dict[str, frozenset[str]]:
         """Every non-empty credential value this restore clears, by parameter key or table.column."""
-        values: dict[str, frozenset[str]] = {
-            key: frozenset({value}) for key, value in self._credential_parameters(cursor).items() if value
-        }
+        values: dict[str, frozenset[str]] = {}
+        for key, value in self._credential_parameters(cursor).items():
+            if value is not None and value != "":
+                values[key] = frozenset({value})
         for table, column in self._cleared_table_columns(cursor):
             cursor.execute(
                 sql.SQL("SELECT DISTINCT {column} FROM {table} WHERE {column} IS NOT NULL AND {column} <> ''").format(
@@ -1360,8 +1362,8 @@ class OdooDataWorkflowRunner:
 
     # --- Sanity checks ---
     def assert_core_schema_healthy(self) -> None:
-        self.connect_to_db()
-        with self.local.db_conn.cursor() as cursor:
+        database_connection = self.connect_to_db()
+        with database_connection.cursor() as cursor:
             # ir_module_module must exist and have rows
             try:
                 cursor.execute("SELECT COUNT(*) FROM ir_module_module")
@@ -1386,8 +1388,8 @@ class OdooDataWorkflowRunner:
                 raise OdooDatabaseUpdateError("Schema check failed: base.public_user xmlid not found")
 
     def _module_names_with_states(self, states: Sequence[str]) -> list[str]:
-        self.connect_to_db()
-        with self.local.db_conn.cursor() as cursor:
+        database_connection = self.connect_to_db()
+        with database_connection.cursor() as cursor:
             cursor.execute(
                 "SELECT name FROM ir_module_module WHERE state = ANY(%s) ORDER BY name",
                 (list(states),),
@@ -1395,8 +1397,8 @@ class OdooDataWorkflowRunner:
             return [row[0] for row in cursor.fetchall()]
 
     def _module_states_by_name(self) -> dict[str, str]:
-        self.connect_to_db()
-        with self.local.db_conn.cursor() as cursor:
+        database_connection = self.connect_to_db()
+        with database_connection.cursor() as cursor:
             cursor.execute("SELECT name, state FROM ir_module_module")
             return {row[0]: row[1] for row in cursor.fetchall()}
 
@@ -1447,8 +1449,8 @@ class OdooDataWorkflowRunner:
         if not demoted_modules:
             return
 
-        self.connect_to_db()
-        with self.local.db_conn.cursor() as cursor:
+        database_connection = self.connect_to_db()
+        with database_connection.cursor() as cursor:
             cursor.execute(
                 """
                 UPDATE ir_module_module
@@ -1457,7 +1459,7 @@ class OdooDataWorkflowRunner:
                 """,
                 (demoted_modules,),
             )
-        self.local.db_conn.commit()
+        database_connection.commit()
         _logger.info(
             "Demoted missing-manifest install queue modules back to uninstalled based on pre-OpenUpgrade state: %s",
             ", ".join(demoted_modules),
@@ -1618,10 +1620,11 @@ with registry.cursor() as cr:
         if len(raw_key) < API_KEY_INDEX_LENGTH:
             raise OdooDatabaseUpdateError(f"ODOO_KEY must be at least {API_KEY_INDEX_LENGTH} characters to derive an API key index.")
 
+        users: list[dict[str, Any]] = []
         payload = {
             "db": self.local.db_name,
             "api_scope": OdooConfig.API_SCOPE,
-            "users": [],
+            "users": users,
         }
 
         for config in OdooConfig.GPT_SERVICE_USERS:
@@ -1633,7 +1636,7 @@ with registry.cursor() as cr:
                     f"Derived API key for {config.login} must be at least {API_KEY_INDEX_LENGTH} characters to derive an index."
                 )
 
-            payload["users"].append(
+            users.append(
                 {
                     "login": config.login,
                     "name": config.name,
@@ -1773,8 +1776,8 @@ with registry.cursor() as cr:
     def ensure_admin_user(self) -> None:
         """Ensure the admin user has safe credentials."""
         configured_admin_login = (self.local.admin_login or "").strip() or "admin"
-        self.connect_to_db()
-        with self.local.db_conn.cursor() as cursor:
+        database_connection = self.connect_to_db()
+        with database_connection.cursor() as cursor:
             cursor.execute("SELECT id, partner_id FROM res_users WHERE login=%s LIMIT 1", (configured_admin_login,))
             row = cursor.fetchone()
         if not row:
@@ -1793,7 +1796,7 @@ with registry.cursor() as cr:
         set_email = False
         target_email = "admin@localhost"
         if partner_id:
-            with self.local.db_conn.cursor() as cursor:
+            with database_connection.cursor() as cursor:
                 cursor.execute("SELECT email FROM res_partner WHERE id=%s", (partner_id,))
                 email_row = cursor.fetchone()
             current_email = (email_row[0] or "").strip() if email_row else ""
@@ -2142,8 +2145,8 @@ with registry.cursor() as cr:
         return [dependency for dependency in dependencies if isinstance(dependency, str)]
 
     def _installed_modules(self) -> set[str]:
-        self.connect_to_db()
-        with self.local.db_conn.cursor() as cursor:
+        database_connection = self.connect_to_db()
+        with database_connection.cursor() as cursor:
             cursor.execute("select name from ir_module_module where state in ('installed','to upgrade','to install')")
             return {row[0] for row in cursor.fetchall()}
 
@@ -2226,8 +2229,9 @@ with registry.cursor() as cr:
             if reason:
                 modules_source_label = f"{modules_source_label} ({reason})"
         elif not mods_env or mods_env.upper() == "AUTO":
-            local_module_paths = self._resolve_local_module_paths()
-            local_modules = set(local_module_paths)
+            detected_module_paths = self._resolve_local_module_paths()
+            local_module_paths = detected_module_paths
+            local_modules = set(detected_module_paths)
             if not local_modules:
                 _logger.info("ODOO_UPDATE_MODULES unset/AUTO and no local modules detected; skipping addon update.")
                 return
@@ -2237,7 +2241,7 @@ with registry.cursor() as cr:
                 _logger.info("ODOO_UPDATE_MODULES unset/AUTO and no installed local modules detected; skipping.")
                 return
             mode_label = mods_env.upper() if mods_env else "AUTO"
-            desired_set = self._local_dependency_closure(installed_local_modules, local_module_paths)
+            desired_set = self._local_dependency_closure(installed_local_modules, detected_module_paths)
             missing_dependencies = sorted(name for name in desired_set if name not in installed_modules)
             if missing_dependencies:
                 _logger.info(
@@ -2332,10 +2336,10 @@ with registry.cursor() as cr:
             _logger.info("No valid modules from %s found on disk; skipping.", modules_source_label)
             return
 
-        self.connect_to_db()
+        database_connection = self.connect_to_db()
         rows: dict[str, str] = {}
         try:
-            with self.local.db_conn.cursor() as cur:
+            with database_connection.cursor() as cur:
                 cur.execute(
                     "SELECT name, state FROM ir_module_module WHERE name = ANY(%s)",
                     (list(found),),

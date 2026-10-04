@@ -11,6 +11,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from unittest import mock
 
@@ -52,7 +54,7 @@ class RuntimeCommandTests(unittest.TestCase):
         self.environment_patch = mock.patch.dict(os.environ, {local_runtime.RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR: "{}"})
         self.environment_patch.start()
         self.remote_source_commit_patch = mock.patch("odoo_devkit.local_runtime.require_remote_source_commit")
-        self.remote_source_commit_patch.start()
+        self.remote_source_commit_mock = self.remote_source_commit_patch.start()
         self.load_environment_patch = mock.patch(
             "odoo_devkit.local_runtime.load_environment_from_explicit_payload",
             side_effect=self._load_environment_from_explicit_payload,
@@ -495,7 +497,7 @@ attached_paths = ["sources/devkit"]
             source = local_runtime.require_clean_git_source(repo_path=repo_path, label="source-repo")
 
         self.assertEqual(source.repository, "example/source-repo")
-        local_runtime.require_remote_source_commit.assert_called_once_with(
+        self.remote_source_commit_mock.assert_called_once_with(
             repository="example/source-repo",
             commit=source.commit,
             label="source-repo",
@@ -1402,7 +1404,7 @@ homepage = true
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
             tenant_repo_path = self._create_git_repo(temp_root / "tenant-repo")
-            runtime_repo_path = self._create_git_repo(temp_root / "runtime-repo")
+            source_runtime_repo_path = self._create_git_repo(temp_root / "runtime-repo")
             shared_addons_repo_path = self._create_git_repo(temp_root / "shared-addons-repo")
             (tenant_repo_path / "addons" / "opw_custom").mkdir(parents=True, exist_ok=True)
             (tenant_repo_path / "addons" / "opw_custom" / "__manifest__.py").write_text("{}\n", encoding="utf-8")
@@ -1411,16 +1413,16 @@ homepage = true
             (tenant_repo_path / "addons" / "shared" / "tenant_shadow.txt").write_text("ignore me\n", encoding="utf-8")
             subprocess.run(["git", "add", "."], cwd=tenant_repo_path, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "tenant addons"], cwd=tenant_repo_path, check=True, capture_output=True)
-            self._write_runtime_repo(runtime_repo_path)
-            subprocess.run(["git", "add", "."], cwd=runtime_repo_path, check=True, capture_output=True)
-            subprocess.run(["git", "commit", "-m", "runtime files"], cwd=runtime_repo_path, check=True, capture_output=True)
+            self._write_runtime_repo(source_runtime_repo_path)
+            subprocess.run(["git", "add", "."], cwd=source_runtime_repo_path, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "runtime files"], cwd=source_runtime_repo_path, check=True, capture_output=True)
             (shared_addons_repo_path / "shared_module").mkdir(parents=True, exist_ok=True)
             (shared_addons_repo_path / "shared_module" / "__manifest__.py").write_text("{}\n", encoding="utf-8")
             subprocess.run(["git", "add", "."], cwd=shared_addons_repo_path, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "shared addon"], cwd=shared_addons_repo_path, check=True, capture_output=True)
             manifest_path = self._write_manifest(
                 tenant_repo_path=tenant_repo_path,
-                runtime_repo_path=runtime_repo_path,
+                runtime_repo_path=source_runtime_repo_path,
                 shared_addons_repo_path=shared_addons_repo_path,
                 addons_paths=("sources/tenant/addons", "sources/shared-addons"),
                 instance_name="local",
@@ -1467,6 +1469,14 @@ homepage = true
                                 output_file=output_file,
                                 no_cache=True,
                             )
+                            build_flags_payload = payload["build_flags"]
+                            assert isinstance(build_flags_payload, dict)
+                            build_provenance_payload = payload["build_provenance"]
+                            assert isinstance(build_provenance_payload, dict)
+                            dependency_provenance_payload = payload["dependency_provenance"]
+                            assert isinstance(dependency_provenance_payload, dict)
+                            image_payload = payload["image"]
+                            assert isinstance(image_payload, dict)
 
             self.assertTrue(captured_build_contexts)
             self.assertEqual(
@@ -1474,20 +1484,20 @@ homepage = true
                 ["runtime", "devtools"],
             )
             self.assertEqual(payload["schema_version"], 2)
-            self.assertEqual(payload["image"]["repository"], "ghcr.io/example/opw-runtime")
-            self.assertEqual(payload["image"]["digest"], self.artifact_image_digest)
+            self.assertEqual(image_payload["repository"], "ghcr.io/example/opw-runtime")
+            self.assertEqual(image_payload["digest"], self.artifact_image_digest)
             self.assertEqual(payload["enterprise_base_digest"], "sha256:" + "2" * 64)
             self.assertEqual(
-                payload["dependency_provenance"]["target_platforms"],
+                dependency_provenance_payload["target_platforms"],
                 sorted(local_runtime.DEFAULT_ARTIFACT_IMAGE_PLATFORMS),
             )
             self.assertEqual(
-                [base_image["role"] for base_image in payload["build_provenance"]["base_images"]],
+                [base_image["role"] for base_image in build_provenance_payload["base_images"]],
                 ["runtime", "devtools"],
             )
-            self.assertEqual(payload["build_provenance"]["build_tools"][0]["name"], "odoo-devkit")
-            self.assertEqual(payload["build_flags"]["values"]["build_target"], "production")
-            self.assertEqual(payload["image"]["tags"], ["opw-20260416-abcdef"])
+            self.assertEqual(build_provenance_payload["build_tools"][0]["name"], "odoo-devkit")
+            self.assertEqual(build_flags_payload["values"]["build_target"], "production")
+            self.assertEqual(image_payload["tags"], ["opw-20260416-abcdef"])
             self.assertEqual(
                 payload["odoo_install_modules"],
                 ["opw_custom"],
@@ -1504,18 +1514,18 @@ homepage = true
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
             tenant_repo_path = self._create_git_repo(temp_root / "tenant-repo")
-            runtime_repo_path = self._create_git_repo(temp_root / "runtime-repo")
+            source_runtime_repo_path = self._create_git_repo(temp_root / "runtime-repo")
             (tenant_repo_path / "addons" / "opw_custom").mkdir(parents=True, exist_ok=True)
             (tenant_repo_path / "addons" / "opw_custom" / "__manifest__.py").write_text("{}\n", encoding="utf-8")
             self._write_tenant_dependency_workspace(tenant_repo_path, addon_names=("opw_custom",))
             subprocess.run(["git", "add", "."], cwd=tenant_repo_path, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "tenant addons"], cwd=tenant_repo_path, check=True, capture_output=True)
-            self._write_runtime_repo(runtime_repo_path)
-            subprocess.run(["git", "add", "."], cwd=runtime_repo_path, check=True, capture_output=True)
-            subprocess.run(["git", "commit", "-m", "runtime files"], cwd=runtime_repo_path, check=True, capture_output=True)
+            self._write_runtime_repo(source_runtime_repo_path)
+            subprocess.run(["git", "add", "."], cwd=source_runtime_repo_path, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "runtime files"], cwd=source_runtime_repo_path, check=True, capture_output=True)
             manifest_path = self._write_manifest(
                 tenant_repo_path=tenant_repo_path,
-                runtime_repo_path=runtime_repo_path,
+                runtime_repo_path=source_runtime_repo_path,
                 instance_name="testing",
             )
             (tenant_repo_path / "artifact-inputs.toml").write_text(
@@ -1574,6 +1584,10 @@ sources = [
                                         output_file=None,
                                         no_cache=False,
                                     )
+                                    addon_sources_payload = payload["addon_sources"]
+                                    assert isinstance(addon_sources_payload, list)
+                                    build_flags_payload = payload["build_flags"]
+                                    assert isinstance(build_flags_payload, dict)
 
             resolve_ref_mock.assert_called_once_with(
                 repository="cbusillo/disable_odoo_online",
@@ -1587,7 +1601,7 @@ sources = [
             )
             self.assertIn(
                 {"repository": "cbusillo/disable_odoo_online", "ref": resolved_ref},
-                payload["addon_sources"],
+                addon_sources_payload,
             )
             self.assertEqual(
                 payload["addon_selectors"],
@@ -1603,7 +1617,7 @@ sources = [
                 payload["odoo_install_modules"],
                 ["launchplane_settings", "disable_odoo_online", "opw_custom"],
             )
-            self.assertNotIn("odoo_addon_repository_selectors", payload["build_flags"]["values"])
+            self.assertNotIn("odoo_addon_repository_selectors", build_flags_payload["values"])
 
     def test_registry_auth_splits_base_image_read_and_artifact_push_tokens(self) -> None:
         environment_values = {
@@ -1619,7 +1633,9 @@ sources = [
             command = kwargs.get("args") or args[0]
             assert isinstance(command, list)
             if command[:3] == ["docker", "login", "ghcr.io"]:
-                login_inputs.append(str(kwargs.get("input", "")).strip())
+                login_input = kwargs.get("input", "")
+                assert isinstance(login_input, str)
+                login_inputs.append(login_input.strip())
                 return mock.Mock(returncode=0, stdout="", stderr="")
             if command[:3] == ["docker", "buildx", "imagetools"]:
                 return mock.Mock(returncode=0, stdout="", stderr="")
@@ -1701,21 +1717,6 @@ install_modules = ["opw_custom"]
             manifest = load_workspace_manifest(manifest_path)
             self._configure_publish_runtime_payload()
 
-            captured_build_args: list[str] = []
-
-            def fake_run_command(
-                *,
-                runtime_repo_path: Path,
-                command: list[str],
-                environment_overrides: object | None = None,
-                allowed_return_codes: object | None = None,
-            ) -> None:
-                _ = runtime_repo_path, environment_overrides, allowed_return_codes
-                if command[:3] == ["docker", "buildx", "build"]:
-                    self._write_artifact_build_outputs_for_command(command)
-                if "--metadata-file" in command:
-                    captured_build_args.extend(command)
-
             with self.assertRaisesRegex(ValueError, "Legacy addon source keys are no longer supported"):
                 run_native_runtime_publish(
                     manifest=manifest,
@@ -1729,18 +1730,18 @@ install_modules = ["opw_custom"]
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
             tenant_repo_path = self._create_git_repo(temp_root / "tenant-repo")
-            runtime_repo_path = self._create_git_repo(temp_root / "runtime-repo")
+            source_runtime_repo_path = self._create_git_repo(temp_root / "runtime-repo")
             (tenant_repo_path / "addons" / "opw_custom").mkdir(parents=True, exist_ok=True)
             (tenant_repo_path / "addons" / "opw_custom" / "__manifest__.py").write_text("{}\n", encoding="utf-8")
             self._write_tenant_dependency_workspace(tenant_repo_path, addon_names=("opw_custom",))
             subprocess.run(["git", "add", "."], cwd=tenant_repo_path, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "tenant addons"], cwd=tenant_repo_path, check=True, capture_output=True)
-            self._write_runtime_repo(runtime_repo_path)
-            subprocess.run(["git", "add", "."], cwd=runtime_repo_path, check=True, capture_output=True)
-            subprocess.run(["git", "commit", "-m", "runtime files"], cwd=runtime_repo_path, check=True, capture_output=True)
+            self._write_runtime_repo(source_runtime_repo_path)
+            subprocess.run(["git", "add", "."], cwd=source_runtime_repo_path, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "runtime files"], cwd=source_runtime_repo_path, check=True, capture_output=True)
             manifest_path = self._write_manifest(
                 tenant_repo_path=tenant_repo_path,
-                runtime_repo_path=runtime_repo_path,
+                runtime_repo_path=source_runtime_repo_path,
                 instance_name="testing",
             )
             (tenant_repo_path / "artifact-inputs.toml").write_text(
@@ -2162,14 +2163,14 @@ sources = [
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
             tenant_repo_path = self._create_git_repo(temp_root / "tenant-repo")
-            runtime_repo_path = self._create_git_repo(temp_root / "runtime-repo")
+            source_runtime_repo_path = self._create_git_repo(temp_root / "runtime-repo")
             (tenant_repo_path / "addons" / "cm_custom").mkdir(parents=True, exist_ok=True)
             (tenant_repo_path / "addons" / "cm_custom" / "__manifest__.py").write_text("{}\n", encoding="utf-8")
             self._write_tenant_dependency_workspace(tenant_repo_path, addon_names=("cm_custom",))
             subprocess.run(["git", "add", "."], cwd=tenant_repo_path, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "tenant addons"], cwd=tenant_repo_path, check=True, capture_output=True)
-            self._write_runtime_repo(runtime_repo_path)
-            stack_file = runtime_repo_path / "platform" / "stack.toml"
+            self._write_runtime_repo(source_runtime_repo_path)
+            stack_file = source_runtime_repo_path / "platform" / "stack.toml"
             stack_file.write_text(
                 stack_file.read_text(encoding="utf-8").replace(
                     'install_modules = ["opw_custom"]',
@@ -2178,11 +2179,11 @@ runtime_env = { ODOO_VERSION = "18.0", ODOO_BASE_RUNTIME_IMAGE = "ghcr.io/exampl
                 ),
                 encoding="utf-8",
             )
-            subprocess.run(["git", "add", "."], cwd=runtime_repo_path, check=True, capture_output=True)
-            subprocess.run(["git", "commit", "-m", "runtime files"], cwd=runtime_repo_path, check=True, capture_output=True)
+            subprocess.run(["git", "add", "."], cwd=source_runtime_repo_path, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "runtime files"], cwd=source_runtime_repo_path, check=True, capture_output=True)
             manifest_path = self._write_manifest(
                 tenant_repo_path=tenant_repo_path,
-                runtime_repo_path=runtime_repo_path,
+                runtime_repo_path=source_runtime_repo_path,
                 instance_name="testing",
             )
             subprocess.run(["git", "add", "workspace.toml"], cwd=tenant_repo_path, check=True, capture_output=True)
@@ -2194,11 +2195,9 @@ runtime_env = { ODOO_VERSION = "18.0", ODOO_BASE_RUNTIME_IMAGE = "ghcr.io/exampl
                     "ODOO_VERSION": "20.0",
                     "ODOO_BASE_RUNTIME_IMAGE": "ghcr.io/example/runtime:20.0-runtime",
                     "ODOO_BASE_DEVTOOLS_IMAGE": "ghcr.io/example/devtools:20.0-devtools",
-                    "ODOO_ADDON_REPOSITORIES": ("cbusillo/disable_odoo_online@411f6b8e85cac72dc7aa2e2dc5540001043c327d"),
-                    "OPENUPGRADE_ADDON_REPOSITORY": ("OCA/OpenUpgrade@411f6b8e85cac72dc7aa2e2dc5540001043c327d"),
-                    "OPENUPGRADELIB_INSTALL_SPEC": (
-                        "git+https://github.com/OCA/openupgradelib.git@89e649728027a8ab656b3aa4be18f4bd364db417"
-                    ),
+                    "ODOO_ADDON_REPOSITORIES": "cbusillo/disable_odoo_online@411f6b8e85cac72dc7aa2e2dc5540001043c327d",
+                    "OPENUPGRADE_ADDON_REPOSITORY": "OCA/OpenUpgrade@411f6b8e85cac72dc7aa2e2dc5540001043c327d",
+                    "OPENUPGRADELIB_INSTALL_SPEC": "git+https://github.com/OCA/openupgradelib.git@89e649728027a8ab656b3aa4be18f4bd364db417",
                     "ODOO_PYTHON_SYNC_SKIP_ADDONS": "",
                 },
             )
@@ -2239,6 +2238,10 @@ runtime_env = { ODOO_VERSION = "18.0", ODOO_BASE_RUNTIME_IMAGE = "ghcr.io/exampl
                                     output_file=None,
                                     no_cache=False,
                                 )
+                                addon_sources_payload = payload["addon_sources"]
+                                assert isinstance(addon_sources_payload, list)
+                                build_flags_payload = payload["build_flags"]
+                                assert isinstance(build_flags_payload, dict)
 
             addon_build_arg = next(argument for argument in captured_build_args if argument.startswith("ODOO_ADDON_REPOSITORIES="))
             self.assertEqual(addon_build_arg, f"ODOO_ADDON_REPOSITORIES={exact_ref}")
@@ -2253,14 +2256,14 @@ runtime_env = { ODOO_VERSION = "18.0", ODOO_BASE_RUNTIME_IMAGE = "ghcr.io/exampl
             self.assertFalse(any(argument.startswith("ODOO_PYTHON_SYNC_SKIP_ADDONS=") for argument in captured_build_args))
             self.assertIn(
                 {"repository": "cbusillo/disable_odoo_online", "ref": exact_ref.rsplit("@", 1)[1]},
-                payload["addon_sources"],
+                addon_sources_payload,
             )
             self.assertEqual(
                 payload["odoo_install_modules"],
                 ["launchplane_settings", "disable_odoo_online", "opw_custom"],
             )
-            self.assertEqual(payload["build_flags"]["values"]["odoo_version"], "20.0")
-            self.assertEqual(payload["build_flags"]["addon_skip_flags"], [])
+            self.assertEqual(build_flags_payload["values"]["odoo_version"], "20.0")
+            self.assertEqual(build_flags_payload["addon_skip_flags"], [])
             preflight_command = next(command for command in captured_commands if command[:2] == ["docker", "run"])
             build_command = next(command for command in captured_commands if command[:3] == ["docker", "buildx", "build"])
             self.assertLess(captured_commands.index(preflight_command), captured_commands.index(build_command))
@@ -2427,7 +2430,9 @@ base_devtools_image = "ghcr.io/example/manifest:19.0-devtools"
                 manifest_text.replace('name = "runtime-repo"', 'name = "runtime-repo"\nrepository = "example/runtime-repo"'),
                 encoding="utf-8",
             )
-            self.assertEqual(load_workspace_manifest(manifest_path).runtime_repo.repository, "example/runtime-repo")
+            runtime_repo = load_workspace_manifest(manifest_path).runtime_repo
+            assert runtime_repo is not None
+            self.assertEqual(runtime_repo.repository, "example/runtime-repo")
 
             manifest_path.write_text(
                 manifest_text.replace('name = "runtime-repo"', 'name = "runtime-repo"\nrepository = "https://example.invalid/x"'),
@@ -2440,7 +2445,7 @@ base_devtools_image = "ghcr.io/example/manifest:19.0-devtools"
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
             tenant_repo_path = self._create_git_repo(temp_root / "tenant-repo")
-            runtime_repo_path = self._create_git_repo(temp_root / "runtime-repo")
+            source_runtime_repo_path = self._create_git_repo(temp_root / "runtime-repo")
             (tenant_repo_path / "addons" / "cm_website").mkdir(parents=True, exist_ok=True)
             (tenant_repo_path / "addons" / "cm_website" / "__manifest__.py").write_text("{}\n", encoding="utf-8")
             self._write_tenant_dependency_workspace(tenant_repo_path, addon_names=("cm_website",))
@@ -2460,12 +2465,12 @@ name = "Cell Mechanic"
             )
             subprocess.run(["git", "add", "."], cwd=tenant_repo_path, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "tenant website"], cwd=tenant_repo_path, check=True, capture_output=True)
-            self._write_runtime_repo(runtime_repo_path)
-            subprocess.run(["git", "add", "."], cwd=runtime_repo_path, check=True, capture_output=True)
-            subprocess.run(["git", "commit", "-m", "runtime files"], cwd=runtime_repo_path, check=True, capture_output=True)
+            self._write_runtime_repo(source_runtime_repo_path)
+            subprocess.run(["git", "add", "."], cwd=source_runtime_repo_path, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "runtime files"], cwd=source_runtime_repo_path, check=True, capture_output=True)
             manifest_path = self._write_manifest(
                 tenant_repo_path=tenant_repo_path,
-                runtime_repo_path=runtime_repo_path,
+                runtime_repo_path=source_runtime_repo_path,
                 addons_paths=("addons",),
                 context_name="cm_website",
                 database_name="cm_website_testing",
@@ -2541,10 +2546,14 @@ sources = [
                                         no_cache=False,
                                         platforms=("linux/amd64",),
                                     )
+                                    artifact_id_payload = payload["artifact_id"]
+                                    assert isinstance(artifact_id_payload, str)
+                                    image_payload = payload["image"]
+                                    assert isinstance(image_payload, dict)
 
-            self.assertTrue(payload["artifact_id"].startswith("artifact-cm_website-"))
-            self.assertEqual(payload["image"]["repository"], "ghcr.io/example/cm-website-runtime")
-            self.assertEqual(payload["image"]["tags"], ["cm_website-20260606-abcdef"])
+            self.assertTrue(artifact_id_payload.startswith("artifact-cm_website-"))
+            self.assertEqual(image_payload["repository"], "ghcr.io/example/cm-website-runtime")
+            self.assertEqual(image_payload["tags"], ["cm_website-20260606-abcdef"])
             self.assertEqual(
                 payload["odoo_install_modules"],
                 ["launchplane_settings", "disable_odoo_online", "cm_website"],
@@ -2861,7 +2870,11 @@ sources = [
                     return run_native_runtime_workflow(manifest=selected_manifest, workflow=selected_workflow)
 
                 def run_side_effect(
-                    command: list[str], *, should_fail: bool = fail, successful_command: mock.Mock = successful_run, **kwargs: object
+                    command: list[str],
+                    *,
+                    should_fail: bool = fail,
+                    successful_command: Callable[..., mock.Mock] = successful_run,
+                    **kwargs: object,
                 ) -> mock.Mock:
                     if should_fail and local_runtime.DATA_WORKFLOW_SCRIPT in command:
                         return mock.Mock(returncode=1, stdout="", stderr="")
@@ -2948,7 +2961,7 @@ sources = [
                 successful_run = self._runtime_data_workflow_side_effect()
 
                 def fail_runner(
-                    command: list[str], *, successful_command: mock.Mock = successful_run, **kwargs: object
+                    command: list[str], *, successful_command: Callable[..., mock.Mock] = successful_run, **kwargs: object
                 ) -> mock.Mock:
                     if command[-4:] == ["up", "-d", "--remove-orphans", "script-runner"]:
                         return mock.Mock(returncode=1)
@@ -3006,25 +3019,30 @@ sources = [
                 def run_side_effect(
                     command: list[str],
                     *,
-                    failure_stage: str = failure_stage,
-                    failure_code: int = failure_code,
-                    successful_command: mock.Mock = successful_command,
+                    stage_to_fail: str,
+                    error_code: int,
+                    on_success: Callable[..., mock.Mock],
                     **kwargs: object,
                 ) -> mock.Mock:
                     failing = (
-                        (failure_stage == "stop" and command[-2:] == ["stop", "web"])
+                        (stage_to_fail == "stop" and command[-2:] == ["stop", "web"])
                         or (
-                            failure_stage == "operation"
+                            stage_to_fail == "operation"
                             and any(
                                 script in command
                                 for script in (local_runtime.DATA_WORKFLOW_SCRIPT, "/volumes/scripts/run_openupgrade.py")
                             )
                         )
-                        or (failure_stage == "restart" and "up" in command and command[-1] == "web")
+                        or (stage_to_fail == "restart" and "up" in command and command[-1] == "web")
                     )
-                    return mock.Mock(returncode=failure_code) if failing else successful_command(command, **kwargs)
+                    return mock.Mock(returncode=error_code) if failing else on_success(command, **kwargs)
 
-                with mock.patch("odoo_devkit.local_runtime.subprocess.run", side_effect=run_side_effect) as run_mock:
+                with mock.patch(
+                    "odoo_devkit.local_runtime.subprocess.run",
+                    side_effect=partial(
+                        run_side_effect, stage_to_fail=failure_stage, error_code=failure_code, on_success=successful_command
+                    ),
+                ) as run_mock:
                     with (
                         contextlib.redirect_stdout(io.StringIO()),
                         self.assertRaisesRegex(ValueError, f"Command failed \\({failure_code}\\)") as failure,
@@ -3062,15 +3080,18 @@ sources = [
                 events: list[str] = []
 
                 def run_side_effect(
-                    command: list[str], *, failure_stage: str | None = failure_stage, events: list[str] = events, **_kwargs: object
+                    command: list[str], *, stage_to_fail: str | None, recorded_events: list[str], **_kwargs: object
                 ) -> mock.Mock:
                     stage = "stop" if command[-2:] == ["stop", "web"] else "restart"
-                    events.append(stage)
-                    return mock.Mock(returncode=2 if stage == failure_stage else 0)
+                    recorded_events.append(stage)
+                    return mock.Mock(returncode=2 if stage == stage_to_fail else 0)
 
                 with (
                     mock.patch("odoo_devkit.local_runtime.compose_base_command", return_value=["docker", "compose"]),
-                    mock.patch("odoo_devkit.local_runtime.subprocess.run", side_effect=run_side_effect),
+                    mock.patch(
+                        "odoo_devkit.local_runtime.subprocess.run",
+                        side_effect=partial(run_side_effect, stage_to_fail=failure_stage, recorded_events=events),
+                    ),
                 ):
                     if failure_stage is None:
                         local_runtime.run_with_web_temporarily_stopped(
@@ -3785,7 +3806,7 @@ sources = [
             self.assertIn("belongs in Launchplane", str(captured_exit.exception.code))
 
     @staticmethod
-    def _runtime_data_workflow_side_effect() -> mock.Mock:
+    def _runtime_data_workflow_side_effect() -> Callable[..., mock.Mock]:
         def run_side_effect(*args: object, **kwargs: object) -> mock.Mock:
             command = kwargs.get("args") or args[0]
             assert isinstance(command, list)
