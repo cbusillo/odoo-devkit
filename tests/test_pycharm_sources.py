@@ -164,10 +164,15 @@ class OdooSourcesTestCase(unittest.TestCase):
         foreign_module.write_text('<module type="PYTHON_MODULE" />')
         modules_path = self.project / ".idea" / "modules.xml"
         modules = ElementTree.parse(modules_path)
-        ElementTree.SubElement(required_element(modules, "./component/modules"), "module", {"filepath": str(foreign_module)})
+        ElementTree.SubElement(required_element(modules, "./component/modules"), "module", {"filepath": "$OTHER_PROJECT$/main.iml"})
         modules.write(modules_path)
+        variables_path = self.root / "path.macros.xml"
+        variables = ElementTree.Element("application")
+        component = ElementTree.SubElement(variables, "component", {"name": "PathMacrosImpl"})
+        ElementTree.SubElement(component, "macro", {"name": "OTHER_PROJECT", "value": str(foreign)})
+        ElementTree.ElementTree(variables).write(variables_path)
         before = modules_path.read_bytes()
-        self.assertFalse(self.prepare()["changed"])
+        self.assertFalse(self.prepare(path_variables_file=variables_path)["changed"])
         self.assertEqual(modules_path.read_bytes(), before)
         self.assertEqual(foreign_module.read_text(), '<module type="PYTHON_MODULE" />')
 
@@ -314,13 +319,19 @@ class OdooSourcesTestCase(unittest.TestCase):
         )
         modules_path = self.project / ".idea" / "modules.xml"
         modules = ElementTree.parse(modules_path)
-        ElementTree.SubElement(required_element(modules, "./component/modules"), "module", {"filepath": str(other_module)})
+        registered_modules = required_element(modules, "./component/modules")
+        required_element(registered_modules, "module").set("filepath", "$PROJECT_IDE$/tenant-dependencies.iml")
+        ElementTree.SubElement(registered_modules, "module", {"filepath": "$PROJECT_IDE$/other.iml"})
         modules.write(modules_path)
         variables_path = self.root / "selected-ide" / "options" / "path.macros.xml"
         variables_path.parent.mkdir(parents=True)
         root = ElementTree.Element("application")
         component = ElementTree.SubElement(root, "component", {"name": "PathMacrosImpl"})
-        for name, value in (("ODOO_SRC", self.source), ("OTHER_SRC", self.root / "other-source")):
+        for name, value in (
+            ("ODOO_SRC", self.source),
+            ("OTHER_SRC", self.root / "other-source"),
+            ("PROJECT_IDE", self.project / ".idea"),
+        ):
             ElementTree.SubElement(component, "macro", {"name": name, "value": str(value)})
         ElementTree.ElementTree(root).write(variables_path)
         return variables_path
@@ -370,7 +381,7 @@ class OdooSourcesTestCase(unittest.TestCase):
         before = {path: path.read_bytes() for path in (self.project / ".idea").iterdir()}
         for name, value, message in (
             ("ODOO_SRC", "relative/path", "absolute path"),
-            ("ODOO_SRC", "$USER_HOME$/odoo", "nested macros"),
+            ("ODOO_SRC", str(self.root / "$USER_HOME$" / "odoo"), "nested macros"),
             ("ODOO_SRC", "", "absolute path"),
             ("PROJECT_DIR", str(self.project), "reserved"),
             ("ODOO_SRC", str(self.source), "duplicate"),
