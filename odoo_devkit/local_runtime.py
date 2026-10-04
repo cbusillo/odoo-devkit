@@ -1716,6 +1716,10 @@ def resolve_data_workflow_environment(raw_values: dict[str, str]) -> dict[str, s
         return os.environ.get(variable_name, default_value)
 
     def resolve_value(variable_name: str, resolving_names: set[str]) -> str:
+        # Passwords are opaque input, even when they look like shell expressions
+        # or home-relative paths. Only non-password settings may be expanded.
+        if variable_name.endswith("_PASSWORD"):
+            return raw_values.get(variable_name, "")
         cached_value = resolved_cache.get(variable_name)
         if cached_value is not None:
             return cached_value
