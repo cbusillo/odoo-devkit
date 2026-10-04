@@ -486,7 +486,7 @@ class LocalServerSettings(BaseSettings):
     @field_validator("admin_password", mode="before")
     @classmethod
     def _optional_secret(cls, value: object) -> object:
-        if value is None or value == "":
+        if value is None or (isinstance(value, str) and not value.strip()):
             return None
         return value
 

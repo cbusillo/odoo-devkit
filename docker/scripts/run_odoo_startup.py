@@ -160,7 +160,7 @@ def _enforce_public_credential_preflight(settings: StartupSettings) -> None:
         return
     if settings.master_password.strip().lower() in UNSAFE_MASTER_PASSWORDS:
         raise RuntimeError("Insecure configuration: ODOO_MASTER_PASSWORD must not use a default value for public runtimes.")
-    if not settings.admin_password:
+    if not settings.admin_password.strip():
         raise RuntimeError("Insecure configuration: ODOO_ADMIN_PASSWORD must be set for public runtimes.")
 
 
@@ -427,7 +427,7 @@ def _sync_python_dependencies_if_needed(settings: StartupSettings) -> None:
 
 
 def _apply_admin_password_if_configured(settings: StartupSettings) -> None:
-    if not settings.admin_password:
+    if not settings.admin_password.strip():
         return
 
     payload = {

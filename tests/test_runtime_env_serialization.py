@@ -16,7 +16,7 @@ class RuntimeEnvSerializationTests(unittest.TestCase):
         "DOLLARS": "synthetic-$ODK_REVIEW_EXPANSION ${ODK_REVIEW_EXPANSION} $$ #suffix",
         "QUOTES": "synthetic-'single' and \"double\"",
         "BACKSLASHES": "synthetic-\\n\\t\\'\\\"\\\\end\\",
-        "WHITESPACE": "  synthetic value  ",
+        "WHITESPACE": " \tsynthetic value\t ",
         "MULTILINE": "synthetic\nnext\r\tline",
         "UNICODE": "synthetic-café-雪",
         "EMPTY": "",

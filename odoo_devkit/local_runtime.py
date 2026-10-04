@@ -3782,7 +3782,7 @@ def apply_admin_password_if_configured(
     loaded_environment: dict[str, str],
 ) -> None:
     admin_password = loaded_environment.get("ODOO_ADMIN_PASSWORD", "")
-    if not admin_password:
+    if not admin_password.strip():
         return
     configured_admin_login = loaded_environment.get("ODOO_ADMIN_LOGIN", "").strip() or "admin"
     addons_path_argument = ",".join(stack_definition.addons_path)

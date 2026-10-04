@@ -3051,6 +3051,18 @@ sources = [
                 self.assertEqual(events, ["stop"] if failure_stage in {"stop", "operation", "interrupt"} else ["stop", "restart"])
                 self.assertEqual(operation.call_count, 0 if failure_stage == "stop" else 1)
 
+    def test_blank_local_admin_password_does_not_request_an_update(self) -> None:
+        for password in ("", " ", "\t", " \t "):
+            with self.subTest(password=password), mock.patch.object(local_runtime, "compose_exec_with_input") as run_shell:
+                local_runtime.apply_admin_password_if_configured(
+                    runtime_repo_path=Path("unused"),
+                    runtime_env_file=Path("unused"),
+                    runtime_selection=mock.Mock(),
+                    stack_definition=mock.Mock(),
+                    loaded_environment={"ODOO_ADMIN_PASSWORD": password},
+                )
+                run_shell.assert_not_called()
+
     def test_local_password_commands_forward_container_secrets_without_exposing_them(self) -> None:
         password = " \tdb 'quotes' \"double\" $variables `commands`\\slashes\t "
         admin_password = " \tadmin 'quotes' \"double\" $variables `commands`\\slashes\t "
@@ -3118,7 +3130,7 @@ sources = [
                         if returncode:
                             with self.assertRaises(local_runtime.RuntimeCommandError) as failure:
                                 operation()
-                            for secret in (password, admin_password):
+                            for secret in (password, password.strip(), admin_password, admin_password.strip()):
                                 self.assertNotIn(secret, str(failure.exception))
                         else:
                             operation()
@@ -3128,7 +3140,7 @@ sources = [
                             self.assertEqual(current_environment["ODOO_DB_PASSWORD"], password)
                         command = runner.call_args.args[0]
                         input_script = runner.call_args.kwargs.get("input", b"").decode()
-                        for secret in (password, admin_password):
+                        for secret in (password, password.strip(), admin_password, admin_password.strip()):
                             self.assertNotIn(secret, " ".join(command))
                             self.assertNotIn(secret, input_script)
                             self.assertNotIn(secret, output.getvalue())

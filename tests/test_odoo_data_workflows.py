@@ -1638,6 +1638,15 @@ class EnsureAdminUserTests(unittest.TestCase):
         self.assertEqual(admin.write.call_count, 2)
         self.assertEqual(stored["password"], "rotated-password")
 
+    def test_blank_admin_password_does_not_request_an_update(self) -> None:
+        for password in ("", " ", "\t", " \t "):
+            with self.subTest(password=password):
+                runner = self._runner(password)
+                environment = MagicMock()
+                self._run_admin_hardening(runner, environment)
+                environment["res.users"].sudo().search().write.assert_not_called()
+                self.assertIsNone(runner.local.admin_password)
+
     def test_post_deploy_admin_hardening_does_not_write_after_unexpected_credential_check_failure(self) -> None:
         environment = MagicMock()
         admin = environment["res.users"].sudo().search()

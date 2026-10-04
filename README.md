@@ -221,7 +221,7 @@ Current runtime ownership is intentionally narrow and explicit:
   preserved when passed into the Odoo shell.
   Leading/trailing spaces and tabs in `ODOO_ADMIN_PASSWORD` are also literal:
   local initialization, data-workflow admin hardening, and startup apply the
-  supplied value unchanged. Empty/omitted values still mean no password update.
+  supplied value unchanged. Blank/omitted values still mean no password update.
   Odoo's config-file reader trims surrounding whitespace from `db_password`;
   local Odoo commands use the container's literal `PGPASSWORD` environment input,
   which takes precedence over that file in Odoo 19. Reading the generated conf

@@ -175,10 +175,14 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
             odoo_startup._enforce_public_credential_preflight(settings)
 
     def test_public_runtime_requires_configured_admin_password(self) -> None:
-        settings = self._settings(platform_instance="testing")
-
-        with self.assertRaisesRegex(RuntimeError, "ODOO_ADMIN_PASSWORD"):
-            odoo_startup._enforce_public_credential_preflight(settings)
+        for password in ("", " ", "\t", " \t "):
+            with self.subTest(password=password):
+                settings = self._settings(platform_instance="testing", admin_password=password)
+                with self.assertRaisesRegex(RuntimeError, "ODOO_ADMIN_PASSWORD"):
+                    odoo_startup._enforce_public_credential_preflight(settings)
+                with patch.object(odoo_startup, "_run_odoo_shell") as run_shell:
+                    odoo_startup._apply_admin_password_if_configured(settings)
+                run_shell.assert_not_called()
 
     def test_public_runtime_accepts_non_default_configured_credentials(self) -> None:
         settings = self._settings(
