@@ -128,7 +128,7 @@ def _load_settings(argument_namespace: argparse.Namespace) -> StartupSettings:
         database_password=os.environ.get("ODOO_DB_PASSWORD", ""),
         master_password=master_password,
         admin_login=os.environ.get("ODOO_ADMIN_LOGIN", "").strip() or "admin",
-        admin_password=os.environ.get("ODOO_ADMIN_PASSWORD", "").strip(),
+        admin_password=os.environ.get("ODOO_ADMIN_PASSWORD", ""),
         addons_path=_normalize_comma_list_with_first_item(
             LAUNCHPLANE_ADDONS_PATH,
             os.environ.get("ODOO_ADDONS_PATH", "").strip(),
@@ -160,7 +160,7 @@ def _enforce_public_credential_preflight(settings: StartupSettings) -> None:
         return
     if settings.master_password.strip().lower() in UNSAFE_MASTER_PASSWORDS:
         raise RuntimeError("Insecure configuration: ODOO_MASTER_PASSWORD must not use a default value for public runtimes.")
-    if not settings.admin_password:
+    if not settings.admin_password.strip():
         raise RuntimeError("Insecure configuration: ODOO_ADMIN_PASSWORD must be set for public runtimes.")
 
 
@@ -427,7 +427,7 @@ def _sync_python_dependencies_if_needed(settings: StartupSettings) -> None:
 
 
 def _apply_admin_password_if_configured(settings: StartupSettings) -> None:
-    if not settings.admin_password:
+    if not settings.admin_password.strip():
         return
 
     payload = {
@@ -581,7 +581,7 @@ def main() -> None:
     _run_initialization_if_needed(settings)
     _apply_environment_overrides_if_available(settings)
     _apply_admin_password_if_configured(settings)
-    if settings.admin_password or _is_public_runtime(settings):
+    if settings.admin_password.strip() or _is_public_runtime(settings):
         _assert_active_admin_password_is_not_default(settings)
 
     print("[platform-startup] starting Odoo web server", flush=True)

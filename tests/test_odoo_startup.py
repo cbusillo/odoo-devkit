@@ -4,6 +4,7 @@ import argparse
 import configparser
 import importlib.util
 import io
+import json
 import os
 import sys
 import types
@@ -14,6 +15,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
+
+from odoo_devkit.local_runtime import load_environment_from_explicit_payload
 
 if TYPE_CHECKING:
     from docker.scripts import run_odoo_startup as odoo_startup
@@ -172,10 +175,14 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
             odoo_startup._enforce_public_credential_preflight(settings)
 
     def test_public_runtime_requires_configured_admin_password(self) -> None:
-        settings = self._settings(platform_instance="testing")
-
-        with self.assertRaisesRegex(RuntimeError, "ODOO_ADMIN_PASSWORD"):
-            odoo_startup._enforce_public_credential_preflight(settings)
+        for password in ("", " ", "\t", " \t "):
+            with self.subTest(password=password):
+                settings = self._settings(platform_instance="testing", admin_password=password)
+                with self.assertRaisesRegex(RuntimeError, "ODOO_ADMIN_PASSWORD"):
+                    odoo_startup._enforce_public_credential_preflight(settings)
+                with patch.object(odoo_startup, "_run_odoo_shell") as run_shell:
+                    odoo_startup._apply_admin_password_if_configured(settings)
+                run_shell.assert_not_called()
 
     def test_public_runtime_accepts_non_default_configured_credentials(self) -> None:
         settings = self._settings(
@@ -376,8 +383,25 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
         return output.getvalue()
 
     def test_admin_hardening_only_writes_when_configured_password_changes(self) -> None:
-        configured_password = "configured-'\"\\-password"
-        settings = self._settings(platform_instance="testing", admin_password=configured_password)
+        configured_password = " \tconfigured-'\"\\-password\t "
+        values = load_environment_from_explicit_payload(
+            raw_payload=json.dumps(
+                {
+                    "context": "probe",
+                    "instance": "local",
+                    "environment": {
+                        "ODOO_DB_NAME": "probe",
+                        "ODOO_MASTER_PASSWORD": "fake-master",
+                        "ODOO_ADMIN_PASSWORD": configured_password,
+                    },
+                }
+            ),
+            context_name="probe",
+            instance_name="local",
+        ).merged_values
+        with patch.dict(os.environ, values, clear=True):
+            settings = odoo_startup._load_settings(argparse.Namespace(config_path="/tmp/generated.conf"))
+        self.assertEqual(settings.admin_password, configured_password)
         environment = MagicMock()
         admin = environment["res.users"].sudo().with_context().search()
         admin.with_user.return_value = admin
@@ -459,6 +483,7 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
             ("public runtime", self._settings(platform_instance="testing", admin_password="configured-password"), True),
             ("local runtime with configured password", self._settings(admin_password="configured-password"), True),
             ("local runtime without configured password", self._settings(), False),
+            ("local runtime with blank password", self._settings(admin_password=" \t "), False),
         )
         for case_name, settings, expects_policy in cases:
             with self.subTest(case_name):
