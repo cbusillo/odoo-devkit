@@ -483,6 +483,7 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
             ("public runtime", self._settings(platform_instance="testing", admin_password="configured-password"), True),
             ("local runtime with configured password", self._settings(admin_password="configured-password"), True),
             ("local runtime without configured password", self._settings(), False),
+            ("local runtime with blank password", self._settings(admin_password=" \t "), False),
         )
         for case_name, settings, expects_policy in cases:
             with self.subTest(case_name):

@@ -581,7 +581,7 @@ def main() -> None:
     _run_initialization_if_needed(settings)
     _apply_environment_overrides_if_available(settings)
     _apply_admin_password_if_configured(settings)
-    if settings.admin_password or _is_public_runtime(settings):
+    if settings.admin_password.strip() or _is_public_runtime(settings):
         _assert_active_admin_password_is_not_default(settings)
 
     print("[platform-startup] starting Odoo web server", flush=True)
