@@ -828,6 +828,9 @@ def run_init_workflow(*, manifest: WorkspaceManifest, runtime_repo_path: Path) -
         context_name=manifest.runtime.context,
         instance_name=manifest.runtime.instance,
     )
+    # Refresh the private environment before Compose creates/recreates the runner,
+    # so container-side credentials agree with the payload loaded for this init.
+    runtime_env_file = write_runtime_env_file(runtime_context=runtime_context)
     install_modules = ",".join(runtime_context.selection.effective_install_modules)
     addons_path_argument = ",".join(runtime_context.stack.stack_definition.addons_path)
     init_command = [
@@ -841,7 +844,6 @@ def run_init_workflow(*, manifest: WorkspaceManifest, runtime_repo_path: Path) -
         "--db_host=database",
         "--db_port=5432",
         f"--db_user={runtime_context.environment.merged_values.get('ODOO_DB_USER', 'odoo')}",
-        f"--db_password={runtime_context.environment.merged_values.get('ODOO_DB_PASSWORD', '')}",
         "--stop-after-init",
     ]
 
@@ -854,7 +856,7 @@ def run_init_workflow(*, manifest: WorkspaceManifest, runtime_repo_path: Path) -
             runtime_repo_path=runtime_repo_path,
             runtime_env_file=runtime_env_file,
             container_service="script-runner",
-            container_command=init_command,
+            container_command=with_odoo_database_password(init_command),
         )
         apply_admin_password_if_configured(
             runtime_repo_path=runtime_repo_path,
@@ -3481,6 +3483,12 @@ def stream_runtime_logs(
     run_command(runtime_repo_path=runtime_repo_path, command=logs_command)
 
 
+def with_odoo_database_password(command: list[str]) -> list[str]:
+    # Odoo reads PGPASSWORD natively. Expand only inside the container, so
+    # neither Compose nor Odoo receives a secret in argv.
+    return ["/bin/sh", "-c", 'export PGPASSWORD="$ODOO_DB_PASSWORD"; exec "$@"', "odoo-shell", *command]
+
+
 def run_psql_command(
     *,
     manifest: WorkspaceManifest,
@@ -3494,14 +3502,15 @@ def run_psql_command(
         instance_name=manifest.runtime.instance,
     )
     db_user = runtime_context.environment.merged_values.get("ODOO_DB_USER", "odoo").strip() or "odoo"
-    db_password = runtime_context.environment.merged_values.get("ODOO_DB_PASSWORD", "")
     compose_command = compose_base_command(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file)
     psql_command = compose_command + ["exec", "-T"]
-    if db_password:
-        psql_command.extend(["-e", f"PGPASSWORD={db_password}"])
     psql_command.extend(
         [
             "database",
+            "/bin/sh",
+            "-c",
+            'export PGPASSWORD="$POSTGRES_PASSWORD"; exec "$@"',
+            "psql",
             "psql",
             "-h",
             "127.0.0.1",
@@ -3564,11 +3573,7 @@ def run_odoo_shell_command(
     odoo_shell_exec_command = compose_command + ["exec"]
     if script_text is not None or resolved_log_file is not None:
         odoo_shell_exec_command.append("-T")
-    # Odoo reads PGPASSWORD natively. Expand the existing container environment
-    # inside the container, so neither Compose nor Odoo receives a secret in argv.
-    odoo_shell_exec_command.extend(
-        [normalized_service, "/bin/sh", "-c", 'export PGPASSWORD="$ODOO_DB_PASSWORD"; exec "$@"', "odoo-shell", *odoo_shell_command]
-    )
+    odoo_shell_exec_command.extend([normalized_service, *with_odoo_database_password(odoo_shell_command)])
 
     if dry_run:
         command_display = shlex.join(odoo_shell_exec_command)
@@ -3760,30 +3765,31 @@ def apply_admin_password_if_configured(
         "--db_host=database",
         "--db_port=5432",
         f"--db_user={loaded_environment.get('ODOO_DB_USER', 'odoo')}",
-        f"--db_password={loaded_environment.get('ODOO_DB_PASSWORD', '')}",
     ]
-    script_payload = {"password": admin_password, "login": configured_admin_login}
+    script_payload = {"login": configured_admin_login}
     odoo_shell_script = textwrap.dedent(
         """
         import json
 
-        payload = json.loads('__PAYLOAD__')
+        import os
+
+        payload = json.loads(__PAYLOAD__)
         admin_user = env['res.users'].sudo().with_context(active_test=False).search(
             [('login', '=', payload['login'])],
             limit=1,
         )
         if not admin_user:
             raise ValueError(f"Configured admin user not found: {payload['login']}")
-        admin_user.with_context(no_reset_password=True).sudo().write({'password': payload['password']})
+        admin_user.with_context(no_reset_password=True).sudo().write({'password': os.environ['ODOO_ADMIN_PASSWORD'].strip()})
         print("admin_password_updated=true")
         env.cr.commit()
         """
-    ).replace("__PAYLOAD__", json.dumps(script_payload))
+    ).replace("__PAYLOAD__", repr(json.dumps(script_payload)))
     compose_exec_with_input(
         runtime_repo_path=runtime_repo_path,
         runtime_env_file=runtime_env_file,
         container_service="script-runner",
-        container_command=odoo_shell_command,
+        container_command=with_odoo_database_password(odoo_shell_command),
         input_text=odoo_shell_script,
     )
 
@@ -3807,7 +3813,6 @@ def assert_active_admin_password_is_not_default(
         "--db_host=database",
         "--db_port=5432",
         f"--db_user={loaded_environment.get('ODOO_DB_USER', 'odoo')}",
-        f"--db_password={loaded_environment.get('ODOO_DB_PASSWORD', '')}",
     ]
     configured_admin_login = loaded_environment.get("ODOO_ADMIN_LOGIN", "").strip() or "admin"
     login_names_to_check = ["admin"]
@@ -3819,7 +3824,7 @@ def assert_active_admin_password_is_not_default(
         import json
         from odoo.exceptions import AccessDenied
 
-        payload = json.loads('__PAYLOAD__')
+        payload = json.loads(__PAYLOAD__)
 
         for login_name in payload['logins']:
             target_user = env['res.users'].sudo().with_context(active_test=False).search(
@@ -3844,12 +3849,12 @@ def assert_active_admin_password_is_not_default(
 
         print("admin_default_password_active=false")
         """
-    ).replace("__PAYLOAD__", json.dumps(script_payload))
+    ).replace("__PAYLOAD__", repr(json.dumps(script_payload)))
     compose_exec_with_input(
         runtime_repo_path=runtime_repo_path,
         runtime_env_file=runtime_env_file,
         container_service="script-runner",
-        container_command=odoo_shell_command,
+        container_command=with_odoo_database_password(odoo_shell_command),
         input_text=odoo_shell_script,
     )
 

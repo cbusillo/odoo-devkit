@@ -2920,6 +2920,120 @@ sources = [
                 self.assertEqual(events, ["stop"] if failure_stage in {"stop", "operation", "interrupt"} else ["stop", "restart"])
                 self.assertEqual(operation.call_count, 0 if failure_stage == "stop" else 1)
 
+    def test_local_password_commands_forward_container_secrets_without_exposing_them(self) -> None:
+        password = "db 'quotes' \"double\" $variables `commands`\\slashes"
+        admin_password = "admin 'quotes' \"double\" $variables `commands`\\slashes"
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            tenant = root / "tenant"
+            runtime = root / "runtime"
+            tenant.mkdir()
+            self._write_runtime_repo(runtime)
+            manifest = load_workspace_manifest(self._write_manifest(tenant_repo_path=tenant, runtime_repo_path=runtime))
+            with contextlib.redirect_stdout(io.StringIO()):
+                run_native_runtime_select(manifest=manifest)
+            context = local_runtime.load_runtime_context(manifest=manifest, runtime_repo_path=runtime)
+            environment = dict(context.environment.merged_values)
+            environment.update(ODOO_DB_PASSWORD=password, ODOO_ADMIN_PASSWORD=admin_password, ODOO_ADMIN_LOGIN="owner'\\login")
+            context.environment.merged_values.update(environment)
+            admin_arguments = dict(
+                runtime_repo_path=runtime,
+                runtime_env_file=root / "runtime.env",
+                runtime_selection=context.selection,
+                stack_definition=context.stack.stack_definition,
+                loaded_environment=environment,
+            )
+            operations = {
+                "init": lambda: local_runtime.run_init_workflow(manifest=manifest, runtime_repo_path=runtime),
+                "admin": lambda: local_runtime.apply_admin_password_if_configured(**admin_arguments),
+                "policy": lambda: local_runtime.assert_active_admin_password_is_not_default(**admin_arguments),
+                "psql": lambda: local_runtime.run_psql_command(
+                    manifest=manifest,
+                    runtime_repo_path=runtime,
+                    psql_arguments=("-c", "select 'quoted value'", "--set=name=$literal"),
+                ),
+            }
+            real_run = subprocess.run
+            for name, operation in operations.items():
+                for returncode in (0, 1):
+                    with (
+                        self.subTest(operation=name, returncode=returncode),
+                        mock.patch.object(local_runtime, "load_runtime_context", return_value=context),
+                        mock.patch.object(local_runtime, "compose_base_command", return_value=["docker", "compose"]),
+                        mock.patch.object(
+                            local_runtime,
+                            "compose_up_script_runner",
+                            side_effect=lambda **kwargs: self.assertEqual(
+                                local_runtime.parse_env_file(kwargs["runtime_env_file"])["ODOO_ADMIN_PASSWORD"], admin_password
+                            ),
+                        ) as start_runner,
+                        mock.patch.object(local_runtime, "apply_admin_password_if_configured")
+                        if name == "init"
+                        else contextlib.nullcontext(),
+                        mock.patch.object(local_runtime, "assert_active_admin_password_is_not_default")
+                        if name == "init"
+                        else contextlib.nullcontext(),
+                        mock.patch.object(
+                            local_runtime, "run_with_web_temporarily_stopped", side_effect=lambda **kwargs: kwargs["operation"]()
+                        ),
+                        mock.patch.object(local_runtime.subprocess, "run", return_value=mock.Mock(returncode=returncode)) as runner,
+                        contextlib.redirect_stdout(io.StringIO()) as output,
+                    ):
+                        if returncode:
+                            with self.assertRaises(local_runtime.RuntimeCommandError) as failure:
+                                operation()
+                            for secret in (password, admin_password):
+                                self.assertNotIn(secret, str(failure.exception))
+                        else:
+                            operation()
+                        if name == "init":
+                            current_environment = local_runtime.parse_env_file(start_runner.call_args.kwargs["runtime_env_file"])
+                            self.assertEqual(current_environment["ODOO_ADMIN_PASSWORD"], admin_password)
+                            self.assertEqual(current_environment["ODOO_DB_PASSWORD"], password)
+                        command = runner.call_args.args[0]
+                        input_script = runner.call_args.kwargs.get("input", b"").decode()
+                        for secret in (password, admin_password):
+                            self.assertNotIn(secret, " ".join(command))
+                            self.assertNotIn(secret, input_script)
+                            self.assertNotIn(secret, output.getvalue())
+                        self.assertFalse(any(argument.startswith("--db_password") for argument in command))
+                        index = command.index("/bin/sh")
+                        arguments = command[index + 5 :]
+                        probe = command[index : index + 4] + [
+                            sys.executable,
+                            "-c",
+                            "import json, os, sys; print(json.dumps([os.environ['PGPASSWORD'], sys.argv[1:], sys.stdin.read()]))",
+                            *arguments,
+                        ]
+                        container_environment = os.environ.copy()
+                        container_environment.update(ODOO_DB_PASSWORD=password, POSTGRES_PASSWORD=password, PGPASSWORD="stale")
+                        forwarded = real_run(
+                            probe, env=container_environment, input=input_script, capture_output=True, text=True, check=True
+                        )
+                        forwarded_password, forwarded_arguments, forwarded_input = json.loads(forwarded.stdout)
+                        self.assertEqual(forwarded_password, password)
+                        self.assertEqual(forwarded_arguments, arguments)
+                        self.assertEqual(forwarded_input, input_script)
+                        if name == "psql":
+                            self.assertEqual(arguments[-3:], ["-c", "select 'quoted value'", "--set=name=$literal"])
+                        elif name == "init":
+                            self.assertIn("--stop-after-init", arguments)
+                            self.assertIn(context.selection.database_name, arguments)
+                        elif name == "admin":
+                            users = mock.MagicMock()
+                            user = users.sudo.return_value.with_context.return_value.search.return_value
+                            with mock.patch.dict(os.environ, environment):
+                                odoo_env = mock.MagicMock()
+                                odoo_env.__getitem__.return_value = users
+                                exec(input_script, {"env": odoo_env})
+                            user.with_context.return_value.sudo.return_value.write.assert_called_once_with(
+                                {"password": admin_password}
+                            )
+                            self.assertEqual(
+                                users.sudo.return_value.with_context.return_value.search.call_args.args[0],
+                                [("login", "=", environment["ODOO_ADMIN_LOGIN"])],
+                            )
+
     def test_native_runtime_odoo_shell_executes_script_runner_with_script_and_log_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)

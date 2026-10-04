@@ -501,7 +501,9 @@ Notes
 - `platform runtime logs` and `platform runtime psql` are intentionally
   local-only helpers for manifest-backed debugging. They require
   `--instance local` and fail closed for non-local targets instead of falling
-  through to an implicit remote path.
+  through to an implicit remote path. psql reads `POSTGRES_PASSWORD` inside
+  the database container into `PGPASSWORD`, keeping it out of Compose and psql
+  arguments and command-failure diagnostics.
 - `platform runtime down` follows the same local-only rule and gives tenant
   manifests a native way to stop the local compose stack without routing
   through another repo.
@@ -574,7 +576,12 @@ Notes
   generic remote exec path.
   It reads the database password from the existing container environment through
   Odoo's native `PGPASSWORD` input. The password is absent from process arguments
-  and the command shown by `--dry-run`.
+  and the command shown by `--dry-run`. Local init and administrator-password
+  helpers use the same container-side database password forwarding. Init refreshes
+  the private runtime environment from the current payload before Compose
+  starts the script-runner, so password changes do not use stale selected values. Admin
+  password updates read `ODOO_ADMIN_PASSWORD` inside the container; scripts
+  and command-failure diagnostics contain no configured password values.
 
 ## Ownership Rules
 
