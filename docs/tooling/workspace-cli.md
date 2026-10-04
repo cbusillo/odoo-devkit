@@ -416,8 +416,8 @@ Notes
   `$NAME`, `${NAME}`, and `${NAME:-default}` references:
   `DATA_WORKFLOW_SSH_DIR`, `DATA_WORKFLOW_SSH_KEY`, `ODOO_FILESTORE_PATH`,
   `ODOO_UPSTREAM_FILESTORE_PATH`, `ODOO_DATA_WORKFLOW_LOCK_FILE`,
-  `OPENUPGRADE_SCRIPTS_PATH`, `ODOO_ADDONS_PATH`, `LOCAL_ADDONS_DIRS`,
-  `ODOO_DATA_DIR`, and `ODOO_LOGFILE`. References prefer the supplied input,
+  `OPENUPGRADE_SCRIPTS_PATH`, `ODOO_ADDONS_PATH`, and `LOCAL_ADDONS_DIRS`.
+  References prefer the supplied input,
   then the host environment, then the default for an absent variable.
   References to other path fields resolve recursively; cycles fail with a
   value-free error. Substituted opaque values are never expanded again.

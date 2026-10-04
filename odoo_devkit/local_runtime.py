@@ -200,6 +200,20 @@ PLATFORM_RUNTIME_PASSTHROUGH_KEYS = (
     LAUNCHPLANE_WEBSITE_BOOTSTRAP_REQUIRED_ENV_KEY,
 )
 
+DATA_WORKFLOW_EXPANDED_PATH_KEYS = frozenset(
+    {
+        "DATA_WORKFLOW_SSH_DIR",
+        "DATA_WORKFLOW_SSH_KEY",
+        "ODOO_FILESTORE_PATH",
+        "ODOO_UPSTREAM_FILESTORE_PATH",
+        "ODOO_DATA_WORKFLOW_LOCK_FILE",
+        "OPENUPGRADE_SCRIPTS_PATH",
+        "ODOO_ADDONS_PATH",
+        "LOCAL_ADDONS_DIRS",
+    }
+)
+
+
 DATA_WORKFLOW_SCRIPT = "/volumes/scripts/run_odoo_data_workflows.py"
 DATA_WORKFLOW_SCRIPT_ENV_KEYS = {
     "ODOO_DB_HOST",
@@ -1698,22 +1712,6 @@ def parse_env_file(env_file_path: Path) -> dict[str, str]:
             environment_value = environment_value.split(" #", 1)[0].rstrip()
         parsed_values[environment_key] = environment_value
     return parsed_values
-
-
-DATA_WORKFLOW_EXPANDED_PATH_KEYS = frozenset(
-    {
-        "DATA_WORKFLOW_SSH_DIR",
-        "DATA_WORKFLOW_SSH_KEY",
-        "ODOO_FILESTORE_PATH",
-        "ODOO_UPSTREAM_FILESTORE_PATH",
-        "ODOO_DATA_WORKFLOW_LOCK_FILE",
-        "OPENUPGRADE_SCRIPTS_PATH",
-        "ODOO_ADDONS_PATH",
-        "LOCAL_ADDONS_DIRS",
-        "ODOO_DATA_DIR",
-        "ODOO_LOGFILE",
-    }
-)
 
 
 def resolve_data_workflow_environment(raw_values: dict[str, str]) -> dict[str, str]:
