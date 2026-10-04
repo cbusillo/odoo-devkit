@@ -125,6 +125,7 @@ container scripts. Its `TYPE_CHECKING` import makes the real module visible to
 static analysis without loading a PostgreSQL driver during offline tests.
 Mocks used by connection consumers return the same fake connection stored on
 the runner, matching
-`connect_to_db()`'s contract. Callback fixtures bind their subtest values with
-`functools.partial`, keeping captures explicit without mutable default arguments.
+`connect_to_db()`'s contract. The restore-order, web-stop/restart, and
+credential-clearing callbacks bind their subtest values with `functools.partial`,
+keeping those captures explicit without mutable default arguments.
 These fixtures do not qualify a running Odoo or database.
