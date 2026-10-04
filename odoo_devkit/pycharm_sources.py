@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import tomllib
 from pathlib import Path
+from typing import cast
 from xml.etree import ElementTree
 
 from .manifest import WorkspaceManifest
@@ -23,6 +24,9 @@ def prepare_odoo_sources(
 ) -> dict[str, object]:
     """Prepare local project content roots before opening the exact tenant worktree."""
     project_path = manifest.tenant_repo.resolve_path(manifest_directory=manifest.manifest_directory)
+    if project_path is None:
+        raise ValueError("IDE preparation requires a local tenant checkout")
+    project_path = cast(Path, project_path)
     if manifest.ide.mode != "tenant_repo" or project_path != manifest.manifest_directory:
         raise ValueError("IDE preparation requires tenant_repo mode and a manifest in the exact tenant checkout")
     if Path(_git(project_path, "rev-parse", "--show-toplevel")).resolve() != project_path:
@@ -107,9 +111,11 @@ def _verify_source(source_path: Path, expected_commit: str, expected_series: str
         ):
             if isinstance(statement.value, ast.Tuple) and len(statement.value.elts) >= 2:
                 series = ".".join(str(ast.literal_eval(part)) for part in statement.value.elts[:2])
+    if series is None:
+        raise ValueError("Cannot determine the Odoo source series from release metadata")
     if series != expected_series:
         raise ValueError(f"Odoo source series mismatch: expected {expected_series}, found {series}")
-    return commit, series
+    return commit, expected_series
 
 
 def _project_module(
@@ -147,7 +153,7 @@ def _project_module(
         ElementTree.SubElement(modules, "module", {"fileurl": f"file://{relative_path}", "filepath": relative_path})
         return module_path, module_root, modules_root
     modules_root = _read_xml(modules_path)
-    candidates = []
+    candidates: list[tuple[Path, ElementTree.Element]] = []
     for module in modules_root.findall("./component[@name='ProjectModuleManager']/modules/module"):
         module_path = _idea_path(
             module.get("filepath") or module.get("fileurl", ""), project_path, modules_path.parent, path_variables
@@ -197,15 +203,22 @@ def _read_path_variables(path: Path | None) -> dict[str, str]:
 
 def _idea_path(value: str, project_path: Path, module_directory: Path, path_variables: dict[str, str]) -> Path:
     value = value.removeprefix("file://")
-    variables = {
+    variables: dict[str, str] = {
         **path_variables,
         "PROJECT_DIR": str(project_path),
         "MODULE_DIR": str(module_directory),
         "USER_HOME": str(Path.home()),
     }
+
     # Replace once: supplied values cannot introduce another macro or alter
     # the meaning of the IDE's built-in project/module variables.
-    value = re.sub(r"\$([^$]+)\$", lambda match: variables.get(match[1], match[0]), value)
+    def expand_macro(match: re.Match[str]) -> str:
+        name = match.group(1)
+        if name in variables:
+            return variables[name]
+        return match.group(0)
+
+    value = re.sub(r"\$([^$]+)\$", expand_macro, value)
     if not value or "$" in value or not Path(value).is_absolute():
         raise ValueError("Cannot resolve an existing IDE path; reconcile Project Structure first")
     return Path(os.path.abspath(value))

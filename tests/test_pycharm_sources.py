@@ -15,6 +15,12 @@ from odoo_devkit.manifest import load_workspace_manifest
 from odoo_devkit.pycharm_sources import prepare_odoo_sources
 
 
+def required_element(root: ElementTree.ElementTree | ElementTree.Element, path: str) -> ElementTree.Element:
+    element = root.find(path)
+    assert element is not None, path
+    return element
+
+
 class OdooSourcesTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
@@ -97,7 +103,7 @@ class OdooSourcesTestCase(unittest.TestCase):
         self.prepare()
         module_path = self.project / ".idea" / "tenant-dependencies.iml"
         module = ElementTree.parse(module_path)
-        manager = module.find("./component")
+        manager = required_element(module, "./component")
         manager.remove(manager.findall("content")[1])
         ElementTree.SubElement(manager, "orderEntry", {"type": "jdk", "jdkName": "Owner SDK"})
         ElementTree.SubElement(manager, "content", {"url": (self.root / "shared-addons").as_uri()})
@@ -141,7 +147,7 @@ class OdooSourcesTestCase(unittest.TestCase):
         self.prepare()
         module_path = self.project / ".idea" / "tenant-dependencies.iml"
         module = ElementTree.parse(module_path)
-        manager = module.find("./component")
+        manager = required_element(module, "./component")
         manager.remove(manager.findall("content")[1])
         module.write(module_path)
         self.git(self.project, "add", "-f", ".idea/tenant-dependencies.iml")
@@ -158,7 +164,7 @@ class OdooSourcesTestCase(unittest.TestCase):
         foreign_module.write_text('<module type="PYTHON_MODULE" />')
         modules_path = self.project / ".idea" / "modules.xml"
         modules = ElementTree.parse(modules_path)
-        ElementTree.SubElement(modules.find("./component/modules"), "module", {"filepath": str(foreign_module)})
+        ElementTree.SubElement(required_element(modules, "./component/modules"), "module", {"filepath": str(foreign_module)})
         modules.write(modules_path)
         before = modules_path.read_bytes()
         self.assertFalse(self.prepare()["changed"])
@@ -174,7 +180,7 @@ class OdooSourcesTestCase(unittest.TestCase):
         )
         modules_path = self.project / ".idea" / "modules.xml"
         modules = ElementTree.parse(modules_path)
-        ElementTree.SubElement(modules.find("./component/modules"), "module", {"filepath": str(other_module)})
+        ElementTree.SubElement(required_element(modules, "./component/modules"), "module", {"filepath": str(other_module)})
         modules.write(modules_path)
         before = {path: path.read_bytes() for path in modules_path.parent.iterdir()}
         with self.assertRaisesRegex(ValueError, "exactly one"):
@@ -308,7 +314,7 @@ class OdooSourcesTestCase(unittest.TestCase):
         )
         modules_path = self.project / ".idea" / "modules.xml"
         modules = ElementTree.parse(modules_path)
-        ElementTree.SubElement(modules.find("./component/modules"), "module", {"filepath": str(other_module)})
+        ElementTree.SubElement(required_element(modules, "./component/modules"), "module", {"filepath": str(other_module)})
         modules.write(modules_path)
         variables_path = self.root / "selected-ide" / "options" / "path.macros.xml"
         variables_path.parent.mkdir(parents=True)
@@ -351,7 +357,7 @@ class OdooSourcesTestCase(unittest.TestCase):
         (other_source / "odoo").mkdir(parents=True)
         (other_source / "odoo" / "release.py").write_text("version_info = (18, 0)\n")
         variables = ElementTree.parse(variables_path)
-        variables.find("./component/macro[@name='ODOO_SRC']").set("value", str(other_source))
+        required_element(variables, "./component/macro[@name='ODOO_SRC']").set("value", str(other_source))
         variables.write(variables_path)
         before = {path: path.read_bytes() for path in (self.project / ".idea").iterdir()}
         with self.assertRaisesRegex(ValueError, "different Odoo source"):
@@ -373,9 +379,9 @@ class OdooSourcesTestCase(unittest.TestCase):
             with self.subTest(name=name, value=value):
                 variables_path.write_bytes(original)
                 variables = ElementTree.parse(variables_path)
-                component = variables.find("./component")
+                component = required_element(variables, "./component")
                 if message in {"absolute path", "nested macros"}:
-                    component.find("macro").set("value", value)
+                    required_element(component, "macro").set("value", value)
                 else:
                     ElementTree.SubElement(component, "macro", {"name": name, "value": value})
                 variables.write(variables_path)
@@ -384,8 +390,8 @@ class OdooSourcesTestCase(unittest.TestCase):
                 self.assertEqual(before, {path: path.read_bytes() for path in before})
         variables_path.write_bytes(original)
         variables = ElementTree.parse(variables_path)
-        component = variables.find("./component")
-        component.remove(component.find("macro[@name='OTHER_SRC']"))
+        component = required_element(variables, "./component")
+        component.remove(required_element(component, "macro[@name='OTHER_SRC']"))
         variables.write(variables_path)
         with self.assertRaisesRegex(ValueError, "Cannot resolve an existing IDE path"):
             self.prepare(path_variables_file=variables_path)
