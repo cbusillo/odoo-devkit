@@ -2853,15 +2853,19 @@ sources = [
                 payload = json.dumps({"context": "opw", "instance": "local", "environment": environment})
                 successful_run = self._runtime_data_workflow_side_effect()
 
-                def run_workflow() -> int | None:
-                    if workflow == "restore":
-                        return run_native_runtime_restore(manifest=manifest)
-                    return run_native_runtime_workflow(manifest=manifest, workflow=workflow)
+                def run_workflow(
+                    *, selected_workflow: str = workflow, selected_manifest: WorkspaceManifest = manifest
+                ) -> int | None:
+                    if selected_workflow == "restore":
+                        return run_native_runtime_restore(manifest=selected_manifest)
+                    return run_native_runtime_workflow(manifest=selected_manifest, workflow=selected_workflow)
 
-                def run_side_effect(command: list[str], **kwargs: object) -> mock.Mock:
-                    if fail and local_runtime.DATA_WORKFLOW_SCRIPT in command:
+                def run_side_effect(
+                    command: list[str], *, should_fail: bool = fail, successful_command: mock.Mock = successful_run, **kwargs: object
+                ) -> mock.Mock:
+                    if should_fail and local_runtime.DATA_WORKFLOW_SCRIPT in command:
                         return mock.Mock(returncode=1, stdout="", stderr="")
-                    return successful_run(command, **kwargs)
+                    return successful_command(command, **kwargs)
 
                 output = io.StringIO()
                 with (
