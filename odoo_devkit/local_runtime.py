@@ -1700,45 +1700,57 @@ def parse_env_file(env_file_path: Path) -> dict[str, str]:
     return parsed_values
 
 
+DATA_WORKFLOW_EXPANDED_PATH_KEYS = frozenset(
+    {
+        "DATA_WORKFLOW_SSH_DIR",
+        "DATA_WORKFLOW_SSH_KEY",
+        "ODOO_FILESTORE_PATH",
+        "ODOO_UPSTREAM_FILESTORE_PATH",
+        "ODOO_DATA_WORKFLOW_LOCK_FILE",
+        "OPENUPGRADE_SCRIPTS_PATH",
+        "ODOO_ADDONS_PATH",
+        "LOCAL_ADDONS_DIRS",
+        "ODOO_DATA_DIR",
+        "ODOO_LOGFILE",
+    }
+)
+
+
 def resolve_data_workflow_environment(raw_values: dict[str, str]) -> dict[str, str]:
-    variable_pattern = re.compile(r"\$\{([^}]+)}")
+    variable_pattern = re.compile(r"\$\{([^}]+)}|\$([A-Za-z_][A-Za-z0-9_]*)")
     resolved_cache: dict[str, str] = {}
 
-    def resolve_expression(expression: str, resolving_names: set[str]) -> str:
-        variable_name, default_value = expression, ""
-        if ":-" in expression:
-            variable_name, default_value = (part.strip() for part in expression.split(":-", 1))
-        cached_value = resolved_cache.get(variable_name)
-        if cached_value is not None:
-            return cached_value
-        if variable_name in raw_values:
-            return resolve_value(variable_name, resolving_names)
-        return os.environ.get(variable_name, default_value)
+    def resolve_template(template: str, resolving_names: set[str]) -> str:
+        # Expand the template, never the text inserted by a reference. In
+        # particular, dollars and tildes inside opaque input remain literal.
+        template = os.path.expanduser(template)
+
+        def substitute(match: re.Match[str]) -> str:
+            expression = match.group(1) or match.group(2)
+            variable_name, separator, default_value = expression.partition(":-")
+            variable_name = variable_name.strip()
+            if variable_name in raw_values:
+                return resolve_value(variable_name, resolving_names)
+            if variable_name in os.environ:
+                return os.environ[variable_name]
+            if separator:
+                return resolve_template(default_value.strip(), resolving_names)
+            return match.group(0)
+
+        return variable_pattern.sub(substitute, template)
 
     def resolve_value(variable_name: str, resolving_names: set[str]) -> str:
-        # Passwords are opaque input, even when they look like shell expressions
-        # or home-relative paths. Only non-password settings may be expanded.
-        if variable_name.endswith("_PASSWORD"):
-            return raw_values.get(variable_name, "")
-        cached_value = resolved_cache.get(variable_name)
-        if cached_value is not None:
-            return cached_value
+        raw_value = raw_values.get(variable_name, "")
+        if variable_name not in DATA_WORKFLOW_EXPANDED_PATH_KEYS:
+            return raw_value
+        if variable_name in resolved_cache:
+            return resolved_cache[variable_name]
         if variable_name in resolving_names:
-            return raw_values.get(variable_name, "")
-
+            raise RuntimeCommandError("Local data-workflow path references contain a cycle; supply an acyclic path.")
         resolving_names.add(variable_name)
-        resolved_value = raw_values.get(variable_name, "")
-        previous_value: str | None = None
-        while previous_value != resolved_value:
-            previous_value = resolved_value
-            resolved_value = variable_pattern.sub(
-                lambda match: resolve_expression(match.group(1), resolving_names),
-                resolved_value,
-            )
-        resolved_value = os.path.expandvars(resolved_value)
-        resolved_value = os.path.expanduser(resolved_value)
+        resolved_value = resolve_template(raw_value, resolving_names)
+        resolving_names.remove(variable_name)
         resolved_cache[variable_name] = resolved_value
-        resolving_names.discard(variable_name)
         return resolved_value
 
     return {environment_key: resolve_value(environment_key, set()) for environment_key in raw_values}

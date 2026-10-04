@@ -390,13 +390,25 @@ Notes
   `ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON`. Leftover devkit-local `.env`,
   `platform/.env`, or `platform/secrets.toml` files are a hard conflict so the
   runtime boundary stays single-source and fail-closed.
-- Local restore, bootstrap, and update forward `_PASSWORD` values literally
-  from that input, including dollar expressions, tilde prefixes, quotes,
-  backslashes, and surrounding spaces. Supply the actual password rather than
-  a variable reference. Existing expansion of non-password settings, such as
-  SSH and upstream filestore paths, is unchanged. Passwords travel through
-  process environment values, keeping them out of command arguments and
-  command-failure diagnostics.
+- Local restore, bootstrap, and update forward opaque values literally from
+  that input, including passwords, `ODOO_KEY`, and `ENV_OVERRIDE_*` values.
+  Dollar expressions, tilde prefixes, quotes, backslashes, and surrounding
+  spaces are preserved. Supply actual values; a non-path alias such as
+  `ENV_OVERRIDE_COPY=${ODOO_DB_PASSWORD}` stays that literal string.
+  Values travel through the process environment, keeping them out of command
+  arguments and command-failure diagnostics.
+- Only these local data-workflow path fields expand home prefixes and
+  `$NAME`, `${NAME}`, and `${NAME:-default}` references:
+  `DATA_WORKFLOW_SSH_DIR`, `DATA_WORKFLOW_SSH_KEY`, `ODOO_FILESTORE_PATH`,
+  `ODOO_UPSTREAM_FILESTORE_PATH`, `ODOO_DATA_WORKFLOW_LOCK_FILE`,
+  `OPENUPGRADE_SCRIPTS_PATH`, `ODOO_ADDONS_PATH`, `LOCAL_ADDONS_DIRS`,
+  `ODOO_DATA_DIR`, and `ODOO_LOGFILE`. References prefer the supplied input,
+  then the host environment, then the default for an absent variable.
+  References to other path fields resolve recursively; cycles fail with a
+  value-free error. Substituted opaque values are never expanded again.
+  Unknown references without defaults remain literal. Do not place credentials
+  in paths: paths may appear in filesystem commands. This contract covers host
+  forwarding; downstream Odoo password whitespace qualification is separate.
 - Non-local `restore`, `workflow bootstrap`, and `workflow update` now fail
   closed with Launchplane handoff guidance. Devkit should not grow arbitrary
   checkout remote mutation flows; add or use a Launchplane service route first.
