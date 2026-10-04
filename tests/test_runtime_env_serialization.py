@@ -107,6 +107,11 @@ class RuntimeEnvSerializationTests(unittest.TestCase):
         repo = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            runtime_repo = root / "runtime"
+            for relative_path in ("docker-compose.yml", "platform/compose/base.yaml", "platform/config/base.env"):
+                destination = runtime_repo / relative_path
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(repo / relative_path, destination)
             paths = (
                 str(root / "keys with spaces"),
                 "~/.ssh",
@@ -134,7 +139,7 @@ class RuntimeEnvSerializationTests(unittest.TestCase):
                     forwarded = local_runtime.data_workflow_script_environment(
                         local_runtime.resolve_data_workflow_environment(local_runtime.parse_env_file(runtime_file))
                     )
-                    command = local_runtime.compose_base_command(runtime_repo_path=repo, runtime_env_file=runtime_file)
+                    command = local_runtime.compose_base_command(runtime_repo_path=runtime_repo, runtime_env_file=runtime_file)
                     command[0] = docker
                     result = subprocess.run(
                         [*command, "config", "--format", "json"],
