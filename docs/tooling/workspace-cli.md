@@ -424,9 +424,16 @@ Notes
   Unknown references without defaults remain literal. Do not place credentials
   in paths: paths may appear in filesystem commands. This contract covers host
   forwarding; downstream whitespace and path normalization are separate.
-  `DATA_WORKFLOW_SSH_DIR` also supplies a Compose bind mount before forwarding;
-  use an absolute or direct home-prefixed path for that mount. Variable
-  expressions in this field are not resolved for the mount.
+  `DATA_WORKFLOW_SSH_DIR` also supplies the two read-only Compose SSH bind mounts.
+  Devkit resolves it with the same path rules before Compose starts, so home,
+  variable, default, and recursive path references agree with workflow forwarding.
+  It must resolve to an absolute host path; empty or relative paths fail before
+  any Compose command. The original runtime env file and opaque values remain
+  literal. A failed script-runner start stops the workflow before filestore
+  preparation or stopping web; it cannot continue using an older runner.
+  This input check applies to all devkit runtime Compose commands, including
+  build, down, and logs. Correct the supplied SSH directory and rerun runtime
+  select to refresh an existing env file before retrying those commands.
 - Non-local `restore`, `workflow bootstrap`, and `workflow update` now fail
   closed with Launchplane handoff guidance. Devkit should not grow arbitrary
   checkout remote mutation flows; add or use a Launchplane service route first.

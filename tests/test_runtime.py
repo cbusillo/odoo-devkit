@@ -2931,6 +2931,45 @@ sources = [
         self.assertEqual(values["OPENUPGRADE_SCRIPTS_PATH"], str(Path.home() / "scripts"))
         self.assertEqual(values["ENV_OVERRIDE_COPY"], "${ODOO_KEY}")
 
+    def test_data_workflow_rejects_invalid_mount_before_commands_and_runner_failure_before_exec(self) -> None:
+        for ssh_path in ("relative/keys", "${SYNTHETIC_MISSING}/keys", "", "/synthetic/keys"):
+            with self.subTest(ssh_path=ssh_path), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                tenant = root / "tenant"
+                runtime = root / "runtime"
+                tenant.mkdir()
+                self._write_runtime_repo(runtime)
+                manifest = load_workspace_manifest(self._write_manifest(tenant_repo_path=tenant, runtime_repo_path=runtime))
+                values = self._load_environment_from_explicit_payload(
+                    raw_payload="{}", context_name="opw", instance_name="local"
+                ).merged_values
+                values["DATA_WORKFLOW_SSH_DIR"] = ssh_path
+                payload = json.dumps({"context": "opw", "instance": "local", "environment": values})
+                successful_run = self._runtime_data_workflow_side_effect()
+
+                def fail_runner(
+                    command: list[str], *, successful_command: mock.Mock = successful_run, **kwargs: object
+                ) -> mock.Mock:
+                    if command[-4:] == ["up", "-d", "--remove-orphans", "script-runner"]:
+                        return mock.Mock(returncode=1)
+                    return successful_command(command, **kwargs)
+
+                with (
+                    mock.patch.dict(os.environ, {local_runtime.RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR: payload}),
+                    mock.patch("odoo_devkit.local_runtime.subprocess.run", side_effect=fail_runner) as run_mock,
+                    mock.patch("odoo_devkit.local_runtime.normalize_local_filestore_permissions") as normalize,
+                    self.assertRaises(ValueError),
+                ):
+                    run_native_runtime_workflow(manifest=manifest, workflow="bootstrap")
+                normalize.assert_not_called()
+                commands = [call.args[0] for call in run_mock.call_args_list]
+                if ssh_path == "/synthetic/keys":
+                    self.assertEqual(commands[-1][-4:], ["up", "-d", "--remove-orphans", "script-runner"])
+                else:
+                    self.assertEqual(commands, [])
+                self.assertFalse(any(local_runtime.DATA_WORKFLOW_SCRIPT in command for command in commands))
+                self.assertFalse(any(command[-2:] == ["stop", "web"] for command in commands))
+
     def test_data_workflow_path_cycles_fail_without_values(self) -> None:
         with self.assertRaisesRegex(ValueError, "path references contain a cycle") as error:
             local_runtime.resolve_data_workflow_environment(
