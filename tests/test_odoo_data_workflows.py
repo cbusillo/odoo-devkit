@@ -15,7 +15,7 @@ from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from odoo_devkit.local_runtime import load_environment_from_explicit_payload
 
@@ -625,7 +625,7 @@ class DataWorkflowGuardTests(unittest.TestCase):
 
     def _run_main(
         self, arguments: list[str], *, with_upstream: bool, restore_error: Exception | None = None
-    ) -> tuple[odoo_data_workflows.ExitCode, MagicMock, MagicMock]:
+    ) -> tuple[int, MagicMock | AsyncMock, MagicMock | AsyncMock]:
         environment = {**self._LOCAL_ENVIRONMENT, "ODOO_DATA_WORKFLOW_LOCK_FILE": str(self.lock_path)}
         if with_upstream:
             environment.update(self._UPSTREAM_ENVIRONMENT)
@@ -1595,8 +1595,9 @@ class EnsureAdminUserTests(unittest.TestCase):
         runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
         cursor = MagicMock()
         cursor.fetchone.side_effect = lambda: (2, 3) if "res_users" in cursor.execute.call_args.args[0] else ("admin@localhost",)
-        runner.local.db_conn = MagicMock()
-        runner.local.db_conn.cursor.return_value.__enter__.return_value = cursor
+        database_connection = MagicMock()
+        database_connection.cursor.return_value.__enter__.return_value = cursor
+        runner.local.db_conn = database_connection
         for name in ("connect_to_db", "_reset_db_connection"):
             patcher = patch.object(runner, name)
             patched_method = patcher.start()

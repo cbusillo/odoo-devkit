@@ -88,15 +88,27 @@ record its location and reason. These cases are intentional:
   Root dependencies and the offline test loader do not supply a real driver.
 - `_path_exists_safely` catches `OSError` and returns `False`. Its final return
   can be reported as unreachable by the IDE. With the repository's Python 3.13
-  inspection interpreter, `Path.exists()` raises `OSError` for an overlong path component. Preserve that fallback.
+  inspection interpreter, `Path.exists()` raises `OSError` for an overlong path
+  component. Preserve that fallback.
 - `_drop_database_after_failed_restore` deliberately catches `BaseException`
   from the cleanup attempt. It logs a failed drop while allowing the caller to
   propagate the original restore error, including an interruption. Narrowing
   that catch would replace the original error when cleanup is interrupted.
+- Pydantic settings accept raw environment strings before validators turn them
+  into ports, secrets, and paths. Constructor warnings expecting `int`,
+  `SecretStr`, or `Path` for those test inputs do not mean validation failed;
+  keep the raw inputs so the tests exercise conversion.
+- A quoted method name passed to `patch.object` can remain unresolved in the IDE
+  even when it exists on the loaded runtime class. Check the exact method and
+  the test that patches it; dynamic loading is not permission to ignore a
+  missing method. The driver's missing local import also affects references
+  to `odoo_data_workflows.psycopg2` in those tests.
 - Bootstrap and restore commit the cached connection after `sanitize_database`
   establishes it. A warning on the optional `db_conn` field at those commits
   does not establish a missing connection on the production path; test fixtures
-  must preserve the connection contract too.
+  must preserve the connection contract too. The reset path guards its cached
+  connection before closing it; an unresolved local driver can still leave a
+  nullable-connection diagnostic inside that guarded block.
 - `_normalize_path` accepts raw validator input and converts it to a string;
   `emit_key_value_payload` prints generic scalar values. Their object-to-string
   warnings describe deliberate conversion boundaries.
@@ -111,7 +123,8 @@ record its location and reason. These cases are intentional:
 The workflow test loader still substitutes PostgreSQL imports before executing
 container scripts. Its `TYPE_CHECKING` import makes the real module visible to
 static analysis without loading a PostgreSQL driver during offline tests.
-Mocks used by connection consumers return the same fake connection stored on the runner, matching
+Mocks used by connection consumers return the same fake connection stored on
+the runner, matching
 `connect_to_db()`'s contract. Callback fixtures bind their subtest values with
 `functools.partial`, keeping captures explicit without mutable default arguments.
 These fixtures do not qualify a running Odoo or database.
