@@ -987,7 +987,7 @@ def run_local_data_workflow(
     run_command_best_effort(runtime_repo_path=runtime_repo_path, command=database_up_command)
     wait_for_compose_service(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file, service_name="database")
 
-    run_command_best_effort(runtime_repo_path=runtime_repo_path, command=script_runner_up_command)
+    run_command(runtime_repo_path=runtime_repo_path, command=script_runner_up_command)
     wait_for_compose_service(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file, service_name="script-runner")
 
     normalize_local_filestore_permissions(
@@ -3408,6 +3408,11 @@ def compose_base_command(*, runtime_repo_path: Path, runtime_env_file: Path) -> 
 def compose_runtime_env_file(runtime_env_file: Path) -> Path:
     compose_env_file = runtime_env_file.with_suffix(".compose.env")
     runtime_env_values = parse_env_file(runtime_env_file)
+    if "DATA_WORKFLOW_SSH_DIR" in runtime_env_values:
+        ssh_directory = resolve_data_workflow_environment(runtime_env_values)["DATA_WORKFLOW_SSH_DIR"]
+        if not Path(ssh_directory).is_absolute():
+            raise RuntimeCommandError("DATA_WORKFLOW_SSH_DIR must resolve to an absolute host path before Compose starts.")
+        runtime_env_values["DATA_WORKFLOW_SSH_DIR"] = ssh_directory
     runtime_env_values.pop("DOCKER_IMAGE_REFERENCE", None)
     runtime_env_values["PLATFORM_RUNTIME_ENV_FILE"] = str(compose_env_file)
     compose_env_file.write_text(render_runtime_env(runtime_env_values), encoding="utf-8")

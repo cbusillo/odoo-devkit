@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from odoo_devkit import local_runtime
 
@@ -81,6 +82,61 @@ class RuntimeEnvSerializationTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, "Offline Compose interpolation probe failed")
             interpolation_values = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
             self.assertEqual(interpolation_values["DOLLARS"], self.values["DOLLARS"])
+
+    def test_shared_compose_ssh_mount_agrees_with_workflow_forwarding(self) -> None:
+        docker = shutil.which("docker")
+        if docker is None:
+            self.skipTest("Docker CLI unavailable")
+        if subprocess.run([docker, "compose", "version"], capture_output=True, check=False).returncode:
+            self.skipTest("Docker Compose unavailable")
+        repo = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = (
+                str(root / "keys with spaces"),
+                "~/.ssh",
+                "$SYNTHETIC_SSH_ROOT/.ssh",
+                "${SYNTHETIC_SSH_ROOT}/.ssh",
+                "${SYNTHETIC_ABSENT:-~}/.ssh",
+                "${DATA_WORKFLOW_SSH_KEY}/keys",
+            )
+            for path in paths:
+                with self.subTest(path=path), mock.patch.dict(os.environ, {"SYNTHETIC_SSH_ROOT": str(root)}, clear=True):
+                    values = {
+                        "DATA_WORKFLOW_SSH_DIR": path,
+                        "DATA_WORKFLOW_SSH_KEY": "$SYNTHETIC_SSH_ROOT",
+                        "ODOO_DB_NAME": "synthetic",
+                        "ODOO_DB_USER": "synthetic",
+                        "ODOO_DB_PASSWORD": "synthetic-$SYNTHETIC_SSH_ROOT #suffix",
+                        "ODOO_DATA_VOLUME": "synthetic-data",
+                        "ODOO_LOG_VOLUME": "synthetic-logs",
+                        "ODOO_DB_VOLUME": "synthetic-db",
+                    }
+                    runtime_file = root / "runtime.env"
+                    runtime_file.write_text(local_runtime.render_runtime_env(values), encoding="utf-8")
+                    forwarded = local_runtime.data_workflow_script_environment(
+                        local_runtime.resolve_data_workflow_environment(local_runtime.parse_env_file(runtime_file))
+                    )
+                    command = local_runtime.compose_base_command(runtime_repo_path=repo, runtime_env_file=runtime_file)
+                    command[0] = docker
+                    result = subprocess.run(
+                        [*command, "config", "--format", "json"],
+                        env=local_runtime.command_execution_env(),
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    self.assertEqual(result.returncode, 0, "Offline shared Compose config failed")
+                    services = json.loads(result.stdout)["services"]
+                    mounts = [mount for mount in services["script-runner"]["volumes"] if mount["target"].endswith("/.ssh")]
+                    self.assertEqual(len(mounts), 2)
+                    for mount in mounts:
+                        self.assertEqual(mount["type"], "bind")
+                        self.assertTrue(mount["read_only"])
+                        self.assertEqual(mount["source"].replace("$$", "$"), forwarded["DATA_WORKFLOW_SSH_DIR"])
+                    for service in services.values():
+                        self.assertEqual(service["environment"]["ODOO_DB_PASSWORD"].replace("$$", "$"), values["ODOO_DB_PASSWORD"])
+                    self.assertEqual(local_runtime.parse_env_file(runtime_file), values)
 
 
 if __name__ == "__main__":
