@@ -248,7 +248,7 @@ Purpose
   directory.
 - Write `workspace-cockpit.toml` as the source of truth for that root.
 - Keep the repo map and section-level cockpit guidance in that config instead
-  of hand-maintaining root markdown files.
+  of hand-maintaining root Markdown files.
 - Generate `AGENTS.md`, `docs/README.md`, and `docs/session-prompt.md` from
   that config.
 - Point operators to optional `workspace.local.md` for supplemental non-secret
@@ -268,7 +268,7 @@ Purpose
 - Re-render both repo listings and section-level guidance bullets from the
   tracked cockpit config.
 - Preserve local-only notes by linking to `workspace.local.md` instead of
-  copying implementation details into generated markdown.
+  copying implementation details into generated Markdown.
 
 ## `workspace status-cockpit-root`
 
