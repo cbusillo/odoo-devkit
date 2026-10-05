@@ -88,6 +88,10 @@ into the generated workspace root.
 
 ## Repository Work
 
+These rules govern changes to `odoo-devkit` itself. When editing a tenant or
+shared-addon repo, read that repo's `AGENTS.md` and direction for its own
+ownership and landing path.
+
 - Follow the shared [executing loop](https://github.com/cbusillo/codex-skills/blob/HEAD/skills/references/executing-loop.md)
   with `github-plan` for issue ownership and claims and `github` for PRs and
   landing. Work in a linked task worktree, not the primary checkout.
@@ -95,5 +99,6 @@ into the generated workspace root.
   for shared execution-guidance changes, including this file. Record and weigh
   findings under that reference.
 - `.github/github.json` does not enable the Launchplane merge train for this
-  repository. Land authorized changes through a PR with green required checks
-  and a normal merge commit, using the configured automation identity.
+  repository. Land authorized changes through a PR with the required checks and
+  code-scanning protection satisfied and a normal merge commit, using the
+  configured automation identity.

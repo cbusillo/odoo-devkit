@@ -8,8 +8,8 @@ sets priorities and stop boundaries; this repository has no separate direction
 file. For repository work, read [AGENTS.md](AGENTS.md) and the
 [shared docs index](docs/README.md). `AGENTS.md` is the sole agent-instruction
 file format, including tenant overlays and nested addon guides. The operating
-guide routes issue claims, validation, model review, and PR landing through the
-shared skills.
+guide routes issue claims, model review, and PR landing through the shared
+skills, and validation through [`.github/github.json`](.github/github.json).
 
 The current workspace flow:
 
