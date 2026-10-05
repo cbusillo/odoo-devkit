@@ -262,9 +262,9 @@ attached_paths = ["sources/shared-addons", "sources/devkit"]
             self.assertNotIn(str(shared_addons_repo_path), json.dumps(lock))
             self.assertEqual(locked_source["declared_ref"], manifest.shared_addons_repo.ref)
             status_payload = workspace_status(manifest=manifest, devkit_repo_path=devkit_repo_path)
-            shared_source_status = next(
-                source_status for source_status in status_payload["sources"] if source_status["role"] == "shared_addons"
-            )
+            sources = status_payload["sources"]
+            assert isinstance(sources, list)
+            shared_source_status = next(source_status for source_status in sources if source_status["role"] == "shared_addons")
             self.assertEqual(shared_source_status["materialization"], "managed_checkout")
             self.assertFalse(shared_source_status["editable"])
             self.assertTrue(shared_source_status["materialization_current"])
@@ -274,7 +274,9 @@ attached_paths = ["sources/shared-addons", "sources/devkit"]
             self.assertFalse(managed_drift_status["current"])
             self.assertTrue(managed_drift_status["surface_current"])
             self.assertFalse(managed_drift_status["managed_source_baseline_current"])
-            self.assertIn("managed_source_baseline_drift:shared_addons", managed_drift_status["stale_reasons"])
+            managed_stale_reasons = managed_drift_status["stale_reasons"]
+            assert isinstance(managed_stale_reasons, list)
+            self.assertIn("managed_source_baseline_drift:shared_addons", managed_stale_reasons)
             parser = build_parser()
             arguments = parser.parse_args(["workspace", "status", "--manifest", str(manifest_path), "--check"])
             with mock.patch("odoo_devkit.cli._discover_repo_root", return_value=devkit_repo_path):
@@ -290,7 +292,9 @@ attached_paths = ["sources/shared-addons", "sources/devkit"]
             result.lock_file_path.write_text(unsafe_lock_contents, encoding="utf-8")
             unsafe_lock_status = workspace_status(manifest=manifest, devkit_repo_path=devkit_repo_path)
             self.assertFalse(unsafe_lock_status["current"])
-            self.assertIn("lock_source_contract_mismatch:shared_addons", unsafe_lock_status["stale_reasons"])
+            lock_stale_reasons = unsafe_lock_status["stale_reasons"]
+            assert isinstance(lock_stale_reasons, list)
+            self.assertIn("lock_source_contract_mismatch:shared_addons", lock_stale_reasons)
             self.assertNotIn("operator:secret", json.dumps(unsafe_lock_status))
 
     def test_sync_materializes_runtime_repo_from_url_and_ref(self) -> None:
@@ -367,9 +371,9 @@ attached_paths = ["sources/devkit"]
             self.assertIn("declared_url_sha256", locked_source)
             self.assertEqual(locked_source["declared_ref"], manifest.runtime_repo.ref)
             status_payload = workspace_status(manifest=manifest, devkit_repo_path=devkit_repo_path)
-            runtime_source_status = next(
-                source_status for source_status in status_payload["sources"] if source_status["role"] == "runtime"
-            )
+            sources = status_payload["sources"]
+            assert isinstance(sources, list)
+            runtime_source_status = next(source_status for source_status in sources if source_status["role"] == "runtime")
             self.assertEqual(runtime_source_status["materialization"], "managed_checkout")
             self.assertFalse(runtime_source_status["editable"])
             self.assertTrue(runtime_source_status["materialization_current"])
@@ -423,8 +427,12 @@ attached_paths = ["sources/devkit"]
             self.assertTrue(status_payload["current"])
             self.assertTrue(status_payload["surface_current"])
             self.assertTrue(status_payload["materialization_current"])
-            self.assertEqual([source["role"] for source in status_payload["sources"]], ["tenant", "devkit"])
-            self.assertEqual([source["role"] for source in status_payload["edit_roots"]], ["tenant", "devkit"])
+            sources = status_payload["sources"]
+            edit_roots = status_payload["edit_roots"]
+            assert isinstance(sources, list)
+            assert isinstance(edit_roots, list)
+            self.assertEqual([source["role"] for source in sources], ["tenant", "devkit"])
+            self.assertEqual([source["role"] for source in edit_roots], ["tenant", "devkit"])
             self.assertEqual(
                 status_payload["attached_paths"], [str((resolve_workspace_path(manifest) / "sources" / "devkit").resolve())]
             )
@@ -652,18 +660,24 @@ attached_paths = ["sources/devkit"]
             result.workspace_agents_path.write_text("tampered\n", encoding="utf-8")
             stale_surface_status = workspace_status(manifest=manifest, devkit_repo_path=devkit_repo_path)
             self.assertFalse(stale_surface_status["current"])
-            self.assertIn("surface_stale:agents", stale_surface_status["stale_reasons"])
-            agents_status = next(
-                surface_status for surface_status in stale_surface_status["surfaces"] if surface_status["kind"] == "agents"
-            )
+            surface_stale_reasons = stale_surface_status["stale_reasons"]
+            surfaces = stale_surface_status["surfaces"]
+            assert isinstance(surface_stale_reasons, list)
+            assert isinstance(surfaces, list)
+            self.assertIn("surface_stale:agents", surface_stale_reasons)
+            agents_status = next(surface_status for surface_status in surfaces if surface_status["kind"] == "agents")
             self.assertEqual(agents_status["state"], "stale")
 
             sync_workspace(manifest=manifest, devkit_repo_path=devkit_repo_path)
             manifest_path.write_text(manifest_path.read_text(encoding="utf-8") + "# manifest drift\n", encoding="utf-8")
             stale_manifest_status = workspace_status(manifest=manifest, devkit_repo_path=devkit_repo_path)
             self.assertFalse(stale_manifest_status["current"])
-            self.assertFalse(stale_manifest_status["manifest"]["current"])
-            self.assertIn("manifest_changed_since_sync", stale_manifest_status["stale_reasons"])
+            manifest_status = stale_manifest_status["manifest"]
+            manifest_stale_reasons = stale_manifest_status["stale_reasons"]
+            assert isinstance(manifest_status, dict)
+            assert isinstance(manifest_stale_reasons, list)
+            self.assertFalse(manifest_status["current"])
+            self.assertIn("manifest_changed_since_sync", manifest_stale_reasons)
             self.assertTrue(stale_manifest_status["surface_current"])
 
     def test_status_reports_disabled_surfaces_without_missing_state(self) -> None:
@@ -693,8 +707,10 @@ workspace_docs_index = false
             self.assertIsNone(disabled_result.workspace_session_prompt_path)
             self.assertTrue(status_payload["current"])
             self.assertTrue(status_payload["surface_current"])
-            self.assertEqual({surface["state"] for surface in status_payload["surfaces"]}, {"disabled"})
-            self.assertTrue(all(not surface["exists"] for surface in status_payload["surfaces"]))
+            surfaces = status_payload["surfaces"]
+            assert isinstance(surfaces, list)
+            self.assertEqual({surface["state"] for surface in surfaces}, {"disabled"})
+            self.assertTrue(all(not surface["exists"] for surface in surfaces))
 
     def test_status_reports_symlink_drift_and_clean_sync_restores_current_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -711,7 +727,9 @@ workspace_docs_index = false
             drifted_status = workspace_status(manifest=manifest, devkit_repo_path=devkit_repo_path)
             self.assertFalse(drifted_status["current"])
             self.assertFalse(drifted_status["materialization_current"])
-            self.assertIn("source_materialization_mismatch:tenant", drifted_status["stale_reasons"])
+            stale_reasons = drifted_status["stale_reasons"]
+            assert isinstance(stale_reasons, list)
+            self.assertIn("source_materialization_mismatch:tenant", stale_reasons)
 
             clean_workspace(manifest=manifest)
             sync_workspace(manifest=manifest, devkit_repo_path=devkit_repo_path)
@@ -750,17 +768,21 @@ path = "{runtime_repo_path}"
             current_status = workspace_status(manifest=manifest, devkit_repo_path=devkit_repo_path)
 
             self.assertTrue(current_status["current"])
+            current_sources = current_status["sources"]
+            assert isinstance(current_sources, list)
             self.assertEqual(
-                [source["role"] for source in current_status["sources"]],
+                [source["role"] for source in current_sources],
                 ["tenant", "devkit", "shared_addons", "runtime"],
             )
-            self.assertTrue(all(source["editable"] for source in current_status["sources"]))
-            self.assertTrue(all(source["materialization"] == "linked_path" for source in current_status["sources"]))
+            self.assertTrue(all(source["editable"] for source in current_sources))
+            self.assertTrue(all(source["materialization"] == "linked_path" for source in current_sources))
             self.assertEqual((result.workspace_path / "sources" / "runtime").resolve(), runtime_repo_path.resolve())
 
             (tenant_repo_path / "README.md").write_text("changed\n", encoding="utf-8")
             drifted_status = workspace_status(manifest=manifest, devkit_repo_path=devkit_repo_path)
-            tenant_status = next(source for source in drifted_status["sources"] if source["role"] == "tenant")
+            drifted_sources = drifted_status["sources"]
+            assert isinstance(drifted_sources, list)
+            tenant_status = next(source for source in drifted_sources if source["role"] == "tenant")
             self.assertTrue(drifted_status["current"])
             self.assertTrue(drifted_status["surface_current"])
             self.assertFalse(drifted_status["source_baseline_current"])
@@ -787,9 +809,9 @@ path = "{shared_addons_path}"
 
             sync_workspace(manifest=manifest, devkit_repo_path=devkit_repo_path)
             status_payload = workspace_status(manifest=manifest, devkit_repo_path=devkit_repo_path)
-            shared_source_status = next(
-                source_status for source_status in status_payload["sources"] if source_status["role"] == "shared_addons"
-            )
+            sources = status_payload["sources"]
+            assert isinstance(sources, list)
+            shared_source_status = next(source_status for source_status in sources if source_status["role"] == "shared_addons")
 
             self.assertTrue(status_payload["current"])
             self.assertTrue(status_payload["source_baseline_current"])
@@ -811,23 +833,33 @@ path = "{shared_addons_path}"
             (result.workspace_path / "workspace.local.md").write_text("local non-secret note\n", encoding="utf-8")
             local_notes_status = workspace_status(manifest=manifest, devkit_repo_path=devkit_repo_path)
             self.assertTrue(local_notes_status["current"])
-            self.assertTrue(local_notes_status["local_notes"]["exists"])
-            self.assertTrue(local_notes_status["local_notes"]["valid"])
+            local_notes = local_notes_status["local_notes"]
+            assert isinstance(local_notes, dict)
+            self.assertTrue(local_notes["exists"])
+            self.assertTrue(local_notes["valid"])
 
             (result.workspace_path / "workspace.local.md").unlink()
             (result.workspace_path / "workspace.local.md").symlink_to(tenant_repo_path / "README.md")
             invalid_local_notes_status = workspace_status(manifest=manifest, devkit_repo_path=devkit_repo_path)
             self.assertFalse(invalid_local_notes_status["current"])
-            self.assertFalse(invalid_local_notes_status["local_notes"]["valid"])
-            self.assertIn("local_notes_invalid", invalid_local_notes_status["stale_reasons"])
+            invalid_local_notes = invalid_local_notes_status["local_notes"]
+            notes_stale_reasons = invalid_local_notes_status["stale_reasons"]
+            assert isinstance(invalid_local_notes, dict)
+            assert isinstance(notes_stale_reasons, list)
+            self.assertFalse(invalid_local_notes["valid"])
+            self.assertIn("local_notes_invalid", notes_stale_reasons)
             (result.workspace_path / "workspace.local.md").unlink()
 
             (result.workspace_path / "AGENTS.override.md").write_text("replacement\n", encoding="utf-8")
             override_status = workspace_status(manifest=manifest, devkit_repo_path=devkit_repo_path)
             self.assertFalse(override_status["current"])
-            self.assertTrue(override_status["reserved_override"]["exists"])
-            self.assertEqual(override_status["reserved_override"]["semantics"], "full_replacement")
-            self.assertIn("reserved_agents_override_present", override_status["stale_reasons"])
+            reserved_override = override_status["reserved_override"]
+            override_stale_reasons = override_status["stale_reasons"]
+            assert isinstance(reserved_override, dict)
+            assert isinstance(override_stale_reasons, list)
+            self.assertTrue(reserved_override["exists"])
+            self.assertEqual(reserved_override["semantics"], "full_replacement")
+            self.assertIn("reserved_agents_override_present", override_stale_reasons)
 
     def test_cli_workspace_status_check_exits_nonzero_for_stale_guidance(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
