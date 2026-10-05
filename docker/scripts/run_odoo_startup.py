@@ -291,7 +291,6 @@ def _build_odoo_command(
         f"--db_host={settings.database_host}",
         f"--db_port={settings.database_port}",
         f"--db_user={settings.database_user}",
-        f"--db_password={settings.database_password}",
     ]
     if _is_public_runtime(settings):
         command.append(f"--db-filter={_database_filter_pattern(settings.database_name)}")
@@ -321,13 +320,15 @@ def _build_odoo_shell_command(settings: StartupSettings) -> list[str]:
         f"--db_host={settings.database_host}",
         f"--db_port={settings.database_port}",
         f"--db_user={settings.database_user}",
-        f"--db_password={settings.database_password}",
         "--no-http",
     ]
 
 
-def _odoo_shell_environment() -> dict[str, str]:
+def _odoo_environment(settings: StartupSettings) -> dict[str, str]:
     environment = os.environ.copy()
+    # Odoo's native environment option preserves whitespace that its conf reader trims.
+    # Override even an inherited PGPASSWORD so every launch uses these settings.
+    environment["PGPASSWORD"] = settings.database_password
     python_path_parts = [
         part for part in environment.get("PYTHONPATH", "").split(os.pathsep) if part and part != RUNTIME_SCRIPTS_PATH
     ]
@@ -338,7 +339,7 @@ def _odoo_shell_environment() -> dict[str, str]:
 
 def _run_odoo_shell(settings: StartupSettings, script_text: str, *, label: str) -> None:
     print(f"[platform-startup] running {label}", flush=True)
-    subprocess.run(_build_odoo_shell_command(settings), input=script_text.encode(), env=_odoo_shell_environment(), check=True)
+    subprocess.run(_build_odoo_shell_command(settings), input=script_text.encode(), env=_odoo_environment(settings), check=True)
 
 
 def _addon_has_optional_dependency(pyproject_path: Path, extra_name: str) -> bool:
@@ -541,7 +542,7 @@ def _run_initialization_if_needed(settings: StartupSettings) -> None:
         flush=True,
     )
     initialize_command = _build_odoo_command(settings, initialize_modules=missing_modules, stop_after_init=True)
-    subprocess.run(initialize_command, check=True)
+    subprocess.run(initialize_command, env=_odoo_environment(settings), check=True)
 
 
 def _wait_for_data_workflow_lock(settings: StartupSettings) -> None:
@@ -586,7 +587,7 @@ def main() -> None:
 
     print("[platform-startup] starting Odoo web server", flush=True)
     server_command = _build_odoo_command(settings, stop_after_init=False)
-    os.execv(server_command[0], server_command)
+    os.execve(server_command[0], server_command, _odoo_environment(settings))
 
 
 if __name__ == "__main__":
