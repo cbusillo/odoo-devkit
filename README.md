@@ -237,7 +237,8 @@ Current runtime ownership is intentionally narrow and explicit:
   too. For directly supplied admin passwords, image startup and data workflows
   enforce the single-line input and correction contract in the
   [workspace CLI guide](docs/tooling/workspace-cli.md#literal-passwords-at-local-consumers)
-  before touching Odoo state. Odoo's config-file reader trims surrounding whitespace from `db_password`;
+  before touching Odoo state. Odoo's config-file reader trims surrounding
+  whitespace from `db_password`;
   devkit-run local Odoo commands use the container's literal `PGPASSWORD` environment input,
   which takes precedence over that file in Odoo 19. Reading the generated conf
   alone does not qualify database-password preservation.
