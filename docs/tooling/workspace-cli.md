@@ -649,8 +649,15 @@ Local admin application and startup preserve surrounding spaces and tabs in
 when checking whether the configured password already matches.
 Blank/omitted admin passwords do not request an update.
 Devkit's typed runtime input rejects line separators and NUL bytes. The shared
-image scripts also apply literal nonblank admin passwords in hosted lanes;
-they read environment values directly, outside that typed-input validation.
+image startup and data-workflow settings enforce the same single-line contract
+for directly supplied `ODOO_ADMIN_PASSWORD`, before config writes, database
+work, or password application. Rejected input is never trimmed into a different
+password, and errors omit the supplied value. Correct the operator-supplied
+environment value to the intended single-line password and rerun the command
+or restart through the lane's normal control plane. Preserve intentional spaces
+and tabs; remove an accidental trailing newline at the input source. Existing
+passwords stay unchanged when input is rejected. Hosted environment values
+and secret bindings remain Launchplane-owned.
 
 Odoo 19 trims surrounding whitespace in config-file values. Local Odoo shell
 and initialization commands forward `ODOO_DB_PASSWORD` as `PGPASSWORD` inside
