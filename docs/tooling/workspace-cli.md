@@ -444,7 +444,7 @@ Notes
   password must be configured before the startup wrapper marks the runtime
   usable. Those three developer instance names may omit the admin password,
   but previews, testing, and prod must not expose an Odoo database with default credentials.
-- Devkit-managed startup and data workflow Odoo shell subprocesses prepend
+- Devkit-managed startup Odoo launches and data workflow Odoo shell subprocesses prepend
   `/volumes/scripts` to `PYTHONPATH` so shipped runtime helpers remain
   importable from generated shell snippets.
 - Data workflows close their module-state metadata transaction before launching
