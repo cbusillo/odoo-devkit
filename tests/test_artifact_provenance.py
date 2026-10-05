@@ -41,13 +41,19 @@ class ArtifactProvenanceTests(unittest.TestCase):
             )
 
             self.assertEqual(provenance["target_platforms"], ["linux/amd64", "linux/arm64"])
-            self.assertEqual([lock["scope"] for lock in provenance["uv_locks"]], ["support_runtime", "tenant"])
+            uv_locks = provenance["uv_locks"]
+            external_compatibility_inputs = provenance["external_compatibility_inputs"]
+            python_environments = provenance["python_environments"]
+            assert isinstance(uv_locks, list)
+            assert isinstance(external_compatibility_inputs, list)
+            assert isinstance(python_environments, dict)
+            self.assertEqual([lock["scope"] for lock in uv_locks], ["support_runtime", "tenant"])
             self.assertEqual(
-                provenance["external_compatibility_inputs"][0]["source_repository"],
+                external_compatibility_inputs[0]["source_repository"],
                 "example/external-addon",
             )
             self.assertEqual(
-                provenance["python_environments"]["linux/amd64"]["packages"][1]["source"],
+                python_environments["linux/amd64"]["packages"][1]["source"],
                 {
                     "kind": "vcs",
                     "repository": "example/openupgradelib",
