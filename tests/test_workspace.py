@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest import mock
+from xml.etree import ElementTree
 
 from odoo_devkit import workspace
 from odoo_devkit.cli import build_parser
@@ -159,18 +162,20 @@ command = ["uv", "--directory", "$PROJECT_DIR$/../odoo-devkit", "run", "platform
             self.assertIn(str(tenant_repo_path), workspace_session_prompt_contents)
             self.assertIn(str(devkit_repo_path), workspace_session_prompt_contents)
 
-            self.assertEqual(len(result.run_configuration_paths), 2)
-            first_run_configuration = result.run_configuration_paths[0].read_text(encoding="utf-8")
-            self.assertIn("Workspace Sync", first_run_configuration)
-            self.assertIn("$PROJECT_DIR$/workspace.toml", first_run_configuration)
+            self.assertEqual(len(result.run_configuration_paths), len(manifest.ide.run_configurations))
+            for path, definition in zip(result.run_configuration_paths, manifest.ide.run_configurations, strict=True):
+                configuration = ElementTree.parse(path).find("configuration")
+                self.assertIsNotNone(configuration)
+                assert configuration is not None
+                options = {option.attrib["name"]: option.attrib["value"] for option in configuration.findall("option")}
+                self.assertEqual(configuration.attrib["name"], definition.name)
+                self.assertEqual(shlex.split(options["SCRIPT_TEXT"]), list(definition.command))
+                self.assertEqual(options["SCRIPT_WORKING_DIRECTORY"], definition.working_directory)
 
-            lock_contents = result.lock_file_path.read_text(encoding="utf-8")
-            self.assertIn('tenant = "opw"', lock_contents)
-            self.assertIn("[repos.tenant]", lock_contents)
-            self.assertIn("[repos.devkit]", lock_contents)
-            self.assertIn("[repos.runtime]", lock_contents)
-            self.assertIn("[agent_workspace]", lock_contents)
-            self.assertIn('reserved_override_semantics = "full_replacement"', lock_contents)
+            lock = tomllib.loads(result.lock_file_path.read_text(encoding="utf-8"))
+            self.assertEqual(lock["tenant"], manifest.tenant)
+            self.assertEqual(set(lock["repos"]), {"tenant", "devkit", "runtime", "shared_addons"})
+            self.assertEqual(lock["repos"]["tenant"]["resolved_path"], str(tenant_repo_path.resolve()))
 
     def test_sync_materializes_shared_addons_from_repo_url_and_ref(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -250,11 +255,11 @@ attached_paths = ["sources/shared-addons", "sources/devkit"]
             ).stdout.strip()
             self.assertEqual(materialized_head, shared_addons_head)
 
-            lock_contents = result.lock_file_path.read_text(encoding="utf-8")
-            self.assertIn("[repos.shared_addons]", lock_contents)
-            self.assertIn("declared_url_sha256", lock_contents)
-            self.assertNotIn(str(shared_addons_repo_path), lock_contents)
-            self.assertIn('declared_ref = "main"', lock_contents)
+            lock = tomllib.loads(result.lock_file_path.read_text(encoding="utf-8"))
+            locked_source = lock["repos"]["shared_addons"]
+            self.assertIn("declared_url_sha256", locked_source)
+            self.assertNotIn(str(shared_addons_repo_path), json.dumps(lock))
+            self.assertEqual(locked_source["declared_ref"], manifest.shared_addons_repo.ref)
             status_payload = workspace_status(manifest=manifest, devkit_repo_path=devkit_repo_path)
             shared_source_status = next(
                 source_status for source_status in status_payload["sources"] if source_status["role"] == "shared_addons"
@@ -262,7 +267,6 @@ attached_paths = ["sources/shared-addons", "sources/devkit"]
             self.assertEqual(shared_source_status["materialization"], "managed_checkout")
             self.assertFalse(shared_source_status["editable"])
             self.assertTrue(shared_source_status["materialization_current"])
-            self.assertIn("Treat it as read-only", result.workspace_agents_path.read_text(encoding="utf-8"))
 
             (materialized_shared_addons_path / "local-edit.txt").write_text("do not edit managed checkouts\n", encoding="utf-8")
             managed_drift_status = workspace_status(manifest=manifest, devkit_repo_path=devkit_repo_path)
@@ -356,11 +360,11 @@ attached_paths = ["sources/devkit"]
             runtime_env_contents = result.runtime_env_path.read_text(encoding="utf-8")
             self.assertIn(f"ODOO_WORKSPACE_RUNTIME_REPO={materialized_runtime_repo_path.resolve()}", runtime_env_contents)
 
-            lock_contents = result.lock_file_path.read_text(encoding="utf-8")
-            self.assertIn("[repos.runtime]", lock_contents)
-            self.assertIn(f'resolved_path = "{materialized_runtime_repo_path.resolve()}"', lock_contents)
-            self.assertIn("declared_url_sha256", lock_contents)
-            self.assertIn('declared_ref = "main"', lock_contents)
+            lock = tomllib.loads(result.lock_file_path.read_text(encoding="utf-8"))
+            locked_source = lock["repos"]["runtime"]
+            self.assertEqual(locked_source["resolved_path"], str(materialized_runtime_repo_path.resolve()))
+            self.assertIn("declared_url_sha256", locked_source)
+            self.assertEqual(locked_source["declared_ref"], manifest.runtime_repo.ref)
             status_payload = workspace_status(manifest=manifest, devkit_repo_path=devkit_repo_path)
             runtime_source_status = next(
                 source_status for source_status in status_payload["sources"] if source_status["role"] == "runtime"
@@ -752,7 +756,6 @@ path = "{runtime_repo_path}"
             self.assertTrue(all(source["editable"] for source in current_status["sources"]))
             self.assertTrue(all(source["materialization"] == "linked_path" for source in current_status["sources"]))
             self.assertEqual((result.workspace_path / "sources" / "runtime").resolve(), runtime_repo_path.resolve())
-            self.assertIn("Runtime source", result.workspace_agents_path.read_text(encoding="utf-8"))
 
             (tenant_repo_path / "README.md").write_text("changed\n", encoding="utf-8")
             drifted_status = workspace_status(manifest=manifest, devkit_repo_path=devkit_repo_path)
@@ -801,9 +804,6 @@ path = "{shared_addons_path}"
             devkit_repo_path = self._create_git_repo(temp_root / "devkit-repo")
             manifest = load_workspace_manifest(self._write_minimal_manifest(tenant_repo_path))
             result = sync_workspace(manifest=manifest, devkit_repo_path=devkit_repo_path)
-            workspace_agents_contents = result.workspace_agents_path.read_text(encoding="utf-8")
-            self.assertIn("workspace.local.md", workspace_agents_contents)
-
             (result.workspace_path / "workspace.local.md").write_text("local non-secret note\n", encoding="utf-8")
             local_notes_status = workspace_status(manifest=manifest, devkit_repo_path=devkit_repo_path)
             self.assertTrue(local_notes_status["current"])

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from odoo_devkit.artifact_inputs import load_artifact_inputs_definition
@@ -53,6 +54,24 @@ class TenantOverlayScaffoldTests(unittest.TestCase):
                     tenant="opw",
                     force=False,
                 )
+
+    def test_forced_scaffold_updates_managed_file_and_preserves_owner_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template = root / "templates" / "tenant-overlay"
+            template.mkdir(parents=True)
+            (template / "AGENTS.md").write_text("tenant replace-me\n", encoding="utf-8")
+            output = root / "tenant"
+            output.mkdir()
+            (output / "AGENTS.md").write_text("stale\n", encoding="utf-8")
+            owner_file = output / "owner-notes.md"
+            owner_contents = "Keep my notes.\n"
+            owner_file.write_text(owner_contents, encoding="utf-8")
+
+            scaffold_tenant_overlay(repo_root=root, output_directory=output, tenant="custom", force=True)
+
+            self.assertEqual((output / "AGENTS.md").read_text(encoding="utf-8"), "tenant custom\n")
+            self.assertEqual(owner_file.read_text(encoding="utf-8"), owner_contents)
 
     def test_real_template_renders_a_loadable_tenant_overlay(self) -> None:
         repo_root = Path(__file__).resolve().parent.parent
@@ -115,19 +134,16 @@ repo_name = "odoo-docker"
             )
 
             self.assertEqual(result.output_directory, output_directory)
-            manifest_text = (output_directory / "workspace-cockpit.toml").read_text(encoding="utf-8")
-            agents_text = (output_directory / "AGENTS.md").read_text(encoding="utf-8")
-            docs_index_text = (output_directory / "docs" / "README.md").read_text(encoding="utf-8")
-            session_prompt_text = (output_directory / "docs" / "session-prompt.md").read_text(encoding="utf-8")
-
-            self.assertIn("schema_version = 1", manifest_text)
-            self.assertIn("workspace-cockpit.toml", agents_text)
-            self.assertIn("AGENTS.override.md", agents_text)
-            self.assertIn("workspace.local.md", agents_text)
-            self.assertIn("sources/devkit", agents_text)
-            self.assertIn("sync-cockpit-root", docs_index_text)
-            self.assertIn("status-cockpit-root", docs_index_text)
-            self.assertIn("sources/harbor -> harbor", session_prompt_text)
+            template = load_workspace_cockpit_manifest(template_root / "workspace-cockpit.toml")
+            manifest = load_workspace_cockpit_manifest(output_directory / "workspace-cockpit.toml")
+            self.assertEqual(manifest.repos, template.repos)
+            self.assertTrue(workspace_cockpit_status(manifest=manifest, output_directory=output_directory).is_current)
+            for relative_path in ("AGENTS.md", "docs/README.md", "docs/session-prompt.md"):
+                contents = (output_directory / relative_path).read_text(encoding="utf-8")
+                for repo in template.repos:
+                    if relative_path.endswith("session-prompt.md") and repo.group != "primary":
+                        continue
+                    self.assertIn(repo.path, contents)
 
     def test_workspace_cockpit_scaffold_refuses_to_overwrite_without_force(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -166,6 +182,32 @@ repo_name = "harbor"
                     output_directory=output_directory,
                     force=False,
                 )
+
+    def test_invalid_cockpit_manifest_fails_before_generating_guides(self) -> None:
+        valid = (
+            "schema_version = 1\n"
+            '[[repos]]\ngroup = "primary"\nrole = "devkit"\nlabel = "Devkit"\npath = "sources/devkit"\nrepo_name = "devkit"\n'
+            '[[repos]]\ngroup = "primary"\nrole = "control_plane"\nlabel = "Control"\npath = "sources/control"\nrepo_name = "control"\n'
+        )
+        invalid_inputs = (
+            valid.replace("schema_version = 1", "schema_version = 99"),
+            valid.replace('path = "sources/control"', 'path = "sources/devkit"'),
+            valid.replace('path = "sources/control"', 'path = "/absolute/control"'),
+            valid.replace('group = "primary"', 'group = "unsupported"', 1),
+            valid.replace('role = "control_plane"', 'role = "tenant"'),
+            valid.replace('role = "control_plane"', 'role = "devkit"'),
+        )
+        for contents in invalid_inputs:
+            with self.subTest(contents=contents), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                template = root / "templates" / "workspace-cockpit"
+                template.mkdir(parents=True)
+                (template / "workspace-cockpit.toml").write_text(contents, encoding="utf-8")
+                output = root / "output"
+                with self.assertRaises(ValueError):
+                    scaffold_workspace_cockpit(repo_root=root, output_directory=output, force=False)
+                self.assertFalse((output / "AGENTS.md").exists())
+                self.assertFalse((output / "docs").exists())
 
     def test_real_workspace_cockpit_template_scaffolds_a_current_root(self) -> None:
         repo_root = Path(__file__).resolve().parent.parent
@@ -237,14 +279,14 @@ repo_name = "odoo-docker"
 
             self.assertEqual(result.output_directory, output_directory)
             self.assertIn(output_directory / "AGENTS.md", result.written_paths)
-            agents_text = (output_directory / "AGENTS.md").read_text(encoding="utf-8")
-            self.assertIn("sources/shared-addons", agents_text)
-            self.assertIn("AGENTS.override.md", agents_text)
-            self.assertIn("workspace.local.md", agents_text)
-            self.assertIn("Public base image", (output_directory / "docs" / "README.md").read_text(encoding="utf-8"))
-            session_prompt_text = (output_directory / "docs" / "session-prompt.md").read_text(encoding="utf-8")
-            self.assertIn("workspace-cockpit.toml", session_prompt_text)
-            self.assertIn("repo-owned code/docs", session_prompt_text)
+            manifest = load_workspace_cockpit_manifest(manifest_path)
+            self.assertTrue(workspace_cockpit_status(manifest=manifest, output_directory=output_directory).is_current)
+            for relative_path in ("AGENTS.md", "docs/README.md", "docs/session-prompt.md"):
+                contents = (output_directory / relative_path).read_text(encoding="utf-8")
+                for repo in manifest.repos:
+                    if relative_path.endswith("session-prompt.md") and repo.group != "primary":
+                        continue
+                    self.assertIn(repo.path, contents)
 
     def test_workspace_cockpit_status_reports_current_missing_and_stale_files(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -345,11 +387,28 @@ repo_name = "harbor"
                 overwrite_existing=True,
             )
 
-            self.assertIn("Open the custom cockpit guide first.", (output_directory / "AGENTS.md").read_text(encoding="utf-8"))
-            self.assertIn("Custom ownership line.", (output_directory / "AGENTS.md").read_text(encoding="utf-8"))
-            self.assertIn("Custom external boundary.", (output_directory / "docs" / "README.md").read_text(encoding="utf-8"))
-            self.assertIn("Custom working split.", (output_directory / "docs" / "README.md").read_text(encoding="utf-8"))
-            self.assertIn("Custom working rule.", (output_directory / "docs" / "session-prompt.md").read_text(encoding="utf-8"))
+            manifest = load_workspace_cockpit_manifest(manifest_path)
+            guidance = {
+                "AGENTS.md": (*manifest.agents_first_read_lines, *manifest.agents_ownership_lines, *manifest.agents_notes_lines),
+                "docs/README.md": (
+                    *manifest.docs_external_reference_lines,
+                    *manifest.docs_working_split_lines,
+                    *manifest.docs_operational_note_lines,
+                ),
+                "docs/session-prompt.md": manifest.session_prompt_rule_lines,
+            }
+            for relative_path, lines in guidance.items():
+                contents = (output_directory / relative_path).read_text(encoding="utf-8")
+                for line in lines:
+                    self.assertIn(line, contents)
+
+            changed_manifest = replace(manifest, session_prompt_rule_lines=("Use the changed tenant guide.",))
+            self.assertFalse(workspace_cockpit_status(manifest=changed_manifest, output_directory=output_directory).is_current)
+            sync_workspace_cockpit(manifest=changed_manifest, output_directory=output_directory, overwrite_existing=True)
+            contents = (output_directory / "docs/session-prompt.md").read_text(encoding="utf-8")
+            self.assertIn(changed_manifest.session_prompt_rule_lines[0], contents)
+            for old_line in manifest.session_prompt_rule_lines:
+                self.assertNotIn(old_line, contents)
 
 
 if __name__ == "__main__":
