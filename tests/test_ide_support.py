@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import configparser
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -32,13 +33,22 @@ class DevkitIdeSupportTests(unittest.TestCase):
             )
 
             self.assertEqual(written_conf, repo_root / ".platform" / "ide" / "cm.local.odoo.conf")
-            rendered_conf = written_conf.read_text(encoding="utf-8")
-            self.assertIn(
-                f"addons_path = /odoo/addons,/odoo/odoo/addons,{repo_root / 'addons'},/opt/extra_addons,/opt/launchplane/addons,/opt/enterprise",
-                rendered_conf,
+            parser = configparser.ConfigParser(interpolation=None)
+            parser.read(written_conf, encoding="utf-8")
+            options = parser["options"]
+            self.assertEqual(
+                options["addons_path"].split(","),
+                [
+                    "/odoo/addons",
+                    "/odoo/odoo/addons",
+                    str(repo_root / "addons"),
+                    "/opt/extra_addons",
+                    "/opt/launchplane/addons",
+                    "/opt/enterprise",
+                ],
             )
-            self.assertNotIn("/.platform/ide/", rendered_conf)
-            self.assertIn("db_port = 5432", rendered_conf)
+            self.assertEqual(options.getint("db_port"), 5432)
+            self.assertEqual(options["data_dir"], str(repo_root / ".platform" / "state" / "cm-local" / "data"))
             self.assertEqual(written_conf.stat().st_mode & 0o777, 0o600)
 
     def test_write_pycharm_odoo_conf_prefers_explicit_host_addons_paths(self) -> None:
@@ -57,9 +67,9 @@ class DevkitIdeSupportTests(unittest.TestCase):
                 host_addons_paths=("/tmp/tenant/addons", "/tmp/shared-addons"),
             )
 
-            rendered_conf = written_conf.read_text(encoding="utf-8")
-            self.assertIn("addons_path = /tmp/tenant/addons,/tmp/shared-addons", rendered_conf)
-            self.assertNotIn(str(repo_root / "addons"), rendered_conf)
+            parser = configparser.ConfigParser(interpolation=None)
+            parser.read(written_conf, encoding="utf-8")
+            self.assertEqual(parser["options"]["addons_path"].split(","), ["/tmp/tenant/addons", "/tmp/shared-addons"])
 
     def test_write_pycharm_odoo_conf_ignores_chmod_errors(self) -> None:
         with TemporaryDirectory() as temporary_directory_name:
@@ -77,7 +87,9 @@ class DevkitIdeSupportTests(unittest.TestCase):
                     source_environment={"ODOO_DB_USER": "odoo", "ODOO_DB_PASSWORD": "pw"},
                 )
 
-            self.assertEqual(written_conf.read_text(encoding="utf-8").splitlines()[1], "db_name = cm")
+            parser = configparser.ConfigParser(interpolation=None)
+            parser.read(written_conf, encoding="utf-8")
+            self.assertEqual(parser["options"]["db_name"], "cm")
 
 
 if __name__ == "__main__":

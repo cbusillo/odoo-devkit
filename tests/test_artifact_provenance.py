@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -100,6 +101,43 @@ class ArtifactProvenanceTests(unittest.TestCase):
                     expected_platforms=("linux/amd64", "linux/arm64"),
                     expected_uv_locks=tuple(locks),
                 )
+
+    def test_platform_evidence_must_cover_exactly_the_requested_platforms(self) -> None:
+        for fault in ("missing", "duplicate", "unexpected"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                locks = self._locks()
+                self._write_sidecar(evidence_root=root, platform="linux/amd64", locks=locks, external_inputs=self._external_inputs())
+                expected_platforms = ("linux/amd64",)
+                if fault == "missing":
+                    expected_platforms += ("linux/arm64",)
+                elif fault == "duplicate":
+                    duplicate = root / "duplicate" / "dependency-provenance.json"
+                    duplicate.parent.mkdir()
+                    shutil.copyfile(root / "linux_amd64" / "dependency-provenance.json", duplicate)
+                else:
+                    self._write_sidecar(
+                        evidence_root=root, platform="linux/arm64", locks=locks, external_inputs=self._external_inputs()
+                    )
+                with self.assertRaisesRegex(ArtifactProvenanceError, fault + " target platform"):
+                    aggregate_dependency_evidence(
+                        evidence_root=root, expected_platforms=expected_platforms, expected_uv_locks=tuple(locks)
+                    )
+
+    def test_package_count_agrees_with_sidecar_packages(self) -> None:
+        for invalid_count in (0, True):
+            with self.subTest(count=invalid_count), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                locks = self._locks()
+                self._write_sidecar(evidence_root=root, platform="linux/amd64", locks=locks, external_inputs=self._external_inputs())
+                path = root / "linux_amd64" / "dependency-provenance.json"
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                payload["python_environment"]["package_count"] = invalid_count
+                path.write_text(json.dumps(payload), encoding="utf-8")
+                with self.assertRaisesRegex(ArtifactProvenanceError, "package_count"):
+                    aggregate_dependency_evidence(
+                        evidence_root=root, expected_platforms=("linux/amd64",), expected_uv_locks=tuple(locks)
+                    )
 
     def test_repository_identity_rejects_local_and_authenticated_values(self) -> None:
         for value in (
