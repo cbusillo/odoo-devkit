@@ -6,9 +6,15 @@ into the generated workspace root.
 
 ## Start Here
 
+- Read the owner's [overall DIRECTION.md](https://github.com/cbusillo/direction/blob/HEAD/DIRECTION.md)
+  first for priorities, stop boundaries, and retired concepts. This repository
+  has no `DIRECTION.md` of its own.
 - Use [docs/README.md](docs/README.md) as the shared docs index.
 - Read [README.md](README.md) for the current bootstrap scope and command
   surface.
+- Keep agent instructions in `AGENTS.md`, including tenant overlays and nested
+  addon guides. Shared docs and the generated session prompt are references,
+  not separate harness-specific instruction files.
 - Keep the human-facing split clear:
   - PyCharm opens the tenant repo.
   - Codex and Claude Code start from the materialized workspace root.
@@ -79,3 +85,15 @@ into the generated workspace root.
 - For workspace-surface changes, also run a live `workspace sync` against the
   current proof manifest and inspect the generated root files, including
   `docs/session-prompt.md`.
+
+## Repository Work
+
+- Follow the shared [executing loop](https://github.com/cbusillo/codex-skills/blob/HEAD/skills/references/executing-loop.md)
+  with `github-plan` for issue ownership and claims and `github` for PRs and
+  landing. Work in a linked task worktree, not the primary checkout.
+- Use [reviews by another model](https://github.com/cbusillo/codex-skills/blob/HEAD/skills/references/model-review.md)
+  for shared execution-guidance changes, including this file. Record and weigh
+  findings under that reference.
+- `.github/github.json` does not enable the Launchplane merge train for this
+  repository. Land authorized changes through a PR with green required checks
+  and a normal merge commit, using the configured automation identity.
