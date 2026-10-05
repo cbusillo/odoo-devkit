@@ -1,22 +1,6 @@
 {
   "defaultBranch": "main",
   "projectType": "odoo-workspace-devkit",
-  "commands": {
-    "dependencies": {
-      "inspect": {
-        "command": "uv run platform dependencies inspect --manifest <workspace.toml>",
-        "mutates": false
-      },
-      "check": {
-        "command": "uv run platform dependencies check --manifest <workspace.toml>",
-        "mutates": false
-      },
-      "normalize": {
-        "command": "uv run platform dependencies normalize --manifest <workspace.toml> [--output-dir <directory>]",
-        "mutates": true
-      }
-    }
-  },
   "docs": {
     "index": "docs/README.md",
     "overview": "README.md",
@@ -51,13 +35,8 @@
       "workspaceSurface": "uv run platform workspace sync --manifest <proof-workspace.toml>"
     },
     "inspection": {
-      "tool": "jetbrains",
       "ide": "PyCharm",
-      "scopePreference": [
-        "changed_files",
-        "directory",
-        "whole_project"
-      ],
+      "scopePreference": "changed_files",
       "prepare": {
         "python": {
           "version": "3.13",
@@ -92,16 +71,24 @@
     "Dependency Graph",
     "Dependabot Updates"
   ],
-  "requiredStatusChecks": ["test", "runtime-python-lock"],
-  "codeScanningMergeProtection": {
-    "ruleset": "Require code scanning results",
-    "tool": "CodeQL",
-    "alertsThreshold": "errors",
-    "securityAlertsThreshold": "high_or_higher",
-    "dependabotDefaultSetupException": true
+  "prWorkflow": {
+    "mergeMethod": "merge",
+    "requiredStatusChecks": [
+      "test"
+    ],
+    "additionalCiChecks": [
+      "runtime-python-lock"
+    ],
+    "codeScanningMergeProtection": {
+      "ruleset": "Require code scanning results",
+      "tool": "CodeQL",
+      "alertsThreshold": "errors",
+      "securityAlertsThreshold": "high_or_higher"
+    },
+    "codeQualityMergeProtection": {
+      "severity": "errors"
+    }
   },
-  "qaLabels": [],
-  "deployLabels": [],
   "relatedRepos": [
     "disable_odoo_online",
     "odoo-docker",
