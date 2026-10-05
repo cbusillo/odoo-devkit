@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from collections.abc import Callable
 from functools import partial
@@ -991,10 +992,10 @@ sources = [
             self.assertEqual(values["PLATFORM_CONTEXT"], manifest.runtime.context)
             self.assertEqual(values["ODOO_PROJECT_NAME"], "odoo-opw-local")
             self.assertEqual(values["DOCKER_IMAGE"], "odoo-opw-local")
-            inputs = artifact_inputs.load_artifact_inputs_definition(manifest=manifest)
-            assert inputs is not None
+            inputs = tomllib.loads((tenant_repo_path / "artifact-inputs.toml").read_text(encoding="utf-8"))
             self.assertEqual(
-                values["ODOO_ADDON_REPOSITORIES"], ",".join(f"{source.repository}@{source.selector}" for source in inputs.sources)
+                values["ODOO_ADDON_REPOSITORIES"],
+                ",".join(f"{source['repository']}@{source['selector']}" for source in inputs["sources"]),
             )
             self.assertEqual(values["ODOO_PROJECT_ADDONS_HOST_PATH"], str((tenant_repo_path / "addons").resolve()))
             for path in ("/opt/project/addons", "/opt/project/addons/shared", "/opt/launchplane/addons"):
@@ -2104,6 +2105,38 @@ sources = [
                 ("launchplane_settings", "disable_odoo_online", "opw_custom", "website_sale"),
             )
 
+    def test_hosted_selection_refuses_stack_declared_instances_and_values(self) -> None:
+        for instance in ("testing", "prod"):
+            with self.subTest(instance=instance), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                tenant = root / "tenant"
+                runtime = root / "runtime"
+                tenant.mkdir()
+                self._write_runtime_repo(runtime)
+                stack_path = runtime / "platform" / "stack.toml"
+                stack_path.write_text(
+                    stack_path.read_text(encoding="utf-8")
+                    .replace(
+                        'install_modules = ["opw_custom"]',
+                        'install_modules = ["opw_custom"]\nruntime_env = { ODOO_MASTER_PASSWORD = "stack-value" }',
+                    )
+                    .replace(
+                        "[contexts.opw.instances.prod]",
+                        '[contexts.opw.instances.prod]\nproject_name = "stack-owned-prod"\ndatabase = "stack-owned"',
+                    ),
+                    encoding="utf-8",
+                )
+                stack = tomllib.loads(stack_path.read_text(encoding="utf-8"))
+                self.assertIn(instance, stack["contexts"]["opw"]["instances"])
+                manifest = load_workspace_manifest(
+                    self._write_manifest(tenant_repo_path=tenant, runtime_repo_path=runtime, instance_name=instance)
+                )
+                with mock.patch("odoo_devkit.local_runtime.load_stack") as stack_loader:
+                    with self.assertRaisesRegex(ValueError, "requires --instance local"):
+                        run_native_runtime_select(manifest=manifest)
+                stack_loader.assert_not_called()
+                self.assertFalse((runtime / ".platform").exists())
+
     def test_runtime_payload_synthesizes_missing_instance_in_existing_context(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
@@ -2156,10 +2189,15 @@ sources = [
             self._write_runtime_repo(source_runtime_repo_path)
             stack_file = source_runtime_repo_path / "platform" / "stack.toml"
             stack_file.write_text(
-                stack_file.read_text(encoding="utf-8").replace(
+                stack_file.read_text(encoding="utf-8")
+                .replace(
                     'install_modules = ["opw_custom"]',
                     """install_modules = ["opw_custom"]
-runtime_env = { ODOO_VERSION = "18.0", ODOO_BASE_RUNTIME_IMAGE = "ghcr.io/example/runtime:18.0-runtime", ODOO_BASE_DEVTOOLS_IMAGE = "ghcr.io/example/devtools:18.0-devtools", ODOO_ADDON_REPOSITORIES = "example/stale-addon@main", OPENUPGRADE_ADDON_REPOSITORY = "example/stale-openupgrade@main", OPENUPGRADELIB_INSTALL_SPEC = "example-stale-spec", ODOO_PYTHON_SYNC_SKIP_ADDONS = "stale_skip" }""",
+runtime_env = { ODOO_VERSION = "18.0", ODOO_BASE_RUNTIME_IMAGE = "ghcr.io/example/runtime:18.0-runtime", ODOO_BASE_DEVTOOLS_IMAGE = "ghcr.io/example/devtools:18.0-devtools", ODOO_ADDON_REPOSITORIES = "example/stale-addon@main", OPENUPGRADE_ADDON_REPOSITORY = "example/stale-openupgrade@main", OPENUPGRADELIB_INSTALL_SPEC = "example-stale-spec", ODOO_PYTHON_SYNC_SKIP_ADDONS = "stale_skip", ODOO_MASTER_PASSWORD = "stack-private-value" }""",
+                )
+                .replace(
+                    "[contexts.opw.instances.local]",
+                    '[contexts.opw.odoo_overrides.config_parameters]\n"web.base.url" = "https://stack-hosted.invalid"\n\n[contexts.opw.instances.local]',
                 ),
                 encoding="utf-8",
             )
@@ -2188,6 +2226,7 @@ runtime_env = { ODOO_VERSION = "18.0", ODOO_BASE_RUNTIME_IMAGE = "ghcr.io/exampl
 
             captured_build_args: list[str] = []
             captured_commands: list[list[str]] = []
+            captured_environments: list[object] = []
 
             def fake_run_command(
                 *,
@@ -2196,7 +2235,8 @@ runtime_env = { ODOO_VERSION = "18.0", ODOO_BASE_RUNTIME_IMAGE = "ghcr.io/exampl
                 environment_overrides: object | None = None,
                 allowed_return_codes: object | None = None,
             ) -> None:
-                _ = runtime_repo_path, environment_overrides, allowed_return_codes
+                _ = runtime_repo_path, allowed_return_codes
+                captured_environments.append(environment_overrides)
                 captured_commands.append(command)
                 if command[:3] == ["docker", "buildx", "build"]:
                     self._write_artifact_build_outputs_for_command(command)
@@ -2227,6 +2267,14 @@ runtime_env = { ODOO_VERSION = "18.0", ODOO_BASE_RUNTIME_IMAGE = "ghcr.io/exampl
                                 build_flags_payload = payload["build_flags"]
                                 assert isinstance(build_flags_payload, dict)
 
+            for output in (payload, captured_commands, captured_environments):
+                self.assertNotIn("ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64", json.dumps(output))
+                self.assertNotIn("stack-hosted.invalid", json.dumps(output))
+            self.assertNotIn("stack-private-value", json.dumps(payload))
+            self.assertNotIn("stack-private-value", json.dumps(captured_commands))
+            self.assertNotIn("stack-private-value", json.dumps(captured_environments))
+            for build_step in captured_commands:
+                self.assertFalse(any(argument.startswith("ODOO_MASTER_PASSWORD=") for argument in build_step))
             addon_build_arg = next(argument for argument in captured_build_args if argument.startswith("ODOO_ADDON_REPOSITORIES="))
             self.assertEqual(addon_build_arg, f"ODOO_ADDON_REPOSITORIES={exact_ref}")
             expected_build_args = {

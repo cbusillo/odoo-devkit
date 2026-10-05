@@ -583,7 +583,7 @@ class DependencyWorkspaceTests(unittest.TestCase):
             support_pyproject.write_text(
                 support_pyproject.read_text(encoding="utf-8").replace(
                     "dependencies = []",
-                    'dependencies = ["hatchling==1.27.0"]',
+                    f"dependencies = [{json.dumps(missing_requirement)}]",
                 ),
                 encoding="utf-8",
             )

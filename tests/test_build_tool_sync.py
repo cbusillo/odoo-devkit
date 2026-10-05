@@ -68,7 +68,10 @@ class BuildToolSyncTest(unittest.TestCase):
             apply_build_tool_sync(plan)
 
             addon = tomllib.loads((tenant_root / "addons" / "example" / "pyproject.toml").read_text())
-            self.assertEqual(addon["build-system"]["requires"], [f"{name}=={version}" for name, version in plan.catalog.items()])
+            catalog = tomllib.loads((devkit_root / "docker" / "runtime-python" / "pyproject.toml").read_text())["project"][
+                "dependencies"
+            ]
+            self.assertEqual(addon["build-system"]["requires"], [requirement for requirement in catalog if "==" in requirement])
             repositories = tomllib.loads((tenant_root / "workspace.toml").read_text())["repos"]
             self.assertEqual(repositories["devkit"]["ref"], devkit_ref)
             self.assertEqual(repositories["runtime"]["ref"], devkit_ref)
