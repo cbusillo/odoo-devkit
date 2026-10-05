@@ -2105,7 +2105,7 @@ sources = [
                 ("launchplane_settings", "disable_odoo_online", "opw_custom", "website_sale"),
             )
 
-    def test_hosted_selection_refuses_stack_declared_instances_and_values(self) -> None:
+    def test_hosted_selection_fails_before_loading_valid_stack(self) -> None:
         for instance in ("testing", "prod"):
             with self.subTest(instance=instance), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
