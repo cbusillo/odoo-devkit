@@ -3,6 +3,14 @@
 `odoo-devkit` bootstraps tenant-focused Odoo workspaces from a tracked
 `workspace.toml` manifest.
 
+The owner's [overall DIRECTION.md](https://github.com/cbusillo/direction/blob/HEAD/DIRECTION.md)
+sets priorities and stop boundaries; this repository has no separate direction
+file. For repository work, read [AGENTS.md](AGENTS.md) and the
+[shared docs index](docs/README.md). `AGENTS.md` is the sole agent-instruction
+file format, including tenant overlays and nested addon guides. The operating
+guide routes issue claims, model review, and PR landing through the shared
+skills, and validation through [`.github/github.json`](.github/github.json).
+
 The current workspace flow:
 
 - assembles a long-lived but rebuildable workspace under
