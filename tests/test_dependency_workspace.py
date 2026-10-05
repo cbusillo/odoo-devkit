@@ -6,6 +6,7 @@ import io
 import json
 import subprocess
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -320,7 +321,7 @@ class DependencyWorkspaceTests(unittest.TestCase):
             )
 
             def validate_staged_workspace(staged_root: Path, *, python_version: str | None = None) -> bool:
-                self.assertEqual(python_version, "3.13")
+                self.assertEqual(python_version, manifest.workspace.python_version)
                 self.assertTrue((staged_root / "addons" / "tenant_addon" / "pyproject.toml").is_file())
                 self.assertTrue((staged_root / "addons" / "shared" / "shared_addon" / "pyproject.toml").is_file())
                 return True
@@ -570,7 +571,9 @@ class DependencyWorkspaceTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with self.assertRaisesRegex(ValueError, "hatchling==1.27.0"):
+            addon = tomllib.loads((tenant_root / "addons" / "tenant_addon" / "pyproject.toml").read_text(encoding="utf-8"))
+            missing_requirement = addon["build-system"]["requires"][0]
+            with self.assertRaises(ValueError) as failure:
                 require_staged_build_requirements_supplied(
                     support_root=support_root,
                     tenant_root=tenant_root,
@@ -588,6 +591,7 @@ class DependencyWorkspaceTests(unittest.TestCase):
                 support_root=support_root,
                 tenant_root=tenant_root,
             )
+            self.assertIn(missing_requirement, str(failure.exception))
 
     def test_dependency_inspection_checks_devkit_build_requirement_catalog(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory_name:
@@ -682,11 +686,11 @@ class DependencyWorkspaceTests(unittest.TestCase):
             output_directory = temp_root / "normalized"
 
             def lock_is_current(staged_root: Path, *, python_version: str | None = None) -> bool:
-                self.assertEqual(python_version, "3.13")
+                self.assertEqual(python_version, manifest.workspace.python_version)
                 return (staged_root / "uv.lock").read_bytes() == normalized_lock_bytes
 
             def normalize_staged_lock(*, staged_root: Path, python_version: str) -> None:
-                self.assertEqual(python_version, "3.13")
+                self.assertEqual(python_version, manifest.workspace.python_version)
                 self.assertTrue((staged_root / "addons" / "shared" / "shared_addon" / "pyproject.toml").is_file())
                 (staged_root / "uv.lock").write_bytes(normalized_lock_bytes)
 
@@ -698,7 +702,7 @@ class DependencyWorkspaceTests(unittest.TestCase):
                 mock.patch("odoo_devkit.dependency_workspace._uv_lock_is_current", side_effect=lock_is_current),
                 mock.patch("odoo_devkit.dependency_workspace._run_uv_lock", side_effect=normalize_staged_lock),
                 mock.patch("odoo_devkit.dependency_workspace._write_frozen_dependency_export", side_effect=write_export),
-                mock.patch("odoo_devkit.dependency_workspace._uv_version", return_value="uv 0.10.7"),
+                mock.patch("odoo_devkit.dependency_workspace._uv_version", return_value="uv 0.10.7") as version_probe,
             ):
                 result = normalize_dependency_workspace(manifest=manifest, output_directory=output_directory)
 
@@ -709,7 +713,7 @@ class DependencyWorkspaceTests(unittest.TestCase):
                 (output_directory / "tenant-requirements.txt").read_text(encoding="utf-8"),
                 "# frozen tenant dependencies\n",
             )
-            self.assertEqual(result.provenance["tool"]["uv_version"], "uv 0.10.7")
+            self.assertEqual(result.provenance["tool"]["uv_version"], version_probe.return_value)
             self.assertEqual(
                 [repository["role"] for repository in result.provenance["source"]["repositories"]],
                 ["tenant", "shared_addons"],
@@ -757,7 +761,7 @@ class DependencyWorkspaceTests(unittest.TestCase):
             self.assertTrue(first_result.changed)
             self.assertFalse(second_result.changed)
             self.assertTrue(second_result.inspection.publishable)
-            self.assertIn('requires-python = ">=3.13"', first_lock_bytes.decode())
+            self.assertEqual(tomllib.loads(first_lock_bytes.decode())["requires-python"], f">={manifest.workspace.python_version}")
             self.assertEqual((tenant_repo_path / "uv.lock").read_bytes(), first_lock_bytes)
             self.assertEqual((output_directory / "tenant-requirements.txt").read_bytes(), first_export_bytes)
 
@@ -801,7 +805,7 @@ class DependencyWorkspaceTests(unittest.TestCase):
             original_lock_bytes = (tenant_repo_path / "uv.lock").read_bytes()
 
             def normalize_staged_lock(*, staged_root: Path, python_version: str) -> None:
-                self.assertEqual(python_version, "3.13")
+                self.assertEqual(python_version, manifest.workspace.python_version)
                 (staged_root / "uv.lock").write_text("version = 1\nrevision = 2\n", encoding="utf-8")
 
             def write_export(*, staged_root: Path, export_path: Path) -> None:
@@ -840,6 +844,7 @@ class DependencyWorkspaceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory_name:
             staged_root = Path(temporary_directory_name)
             export_path = staged_root / "tenant-requirements.txt"
+            selected_python = "3.14"
 
             def run_uv(
                 command: list[str],
@@ -863,14 +868,14 @@ class DependencyWorkspaceTests(unittest.TestCase):
                 clear=True,
             ):
                 with mock.patch("odoo_devkit.dependency_workspace.subprocess.run", side_effect=run_uv) as run_mock:
-                    dependency_workspace._run_uv_lock(staged_root=staged_root, python_version="3.13")
+                    dependency_workspace._run_uv_lock(staged_root=staged_root, python_version=selected_python)
                     dependency_workspace._write_frozen_dependency_export(
                         staged_root=staged_root,
                         export_path=export_path,
                     )
 
             lock_call, export_call = run_mock.call_args_list
-            self.assertEqual(lock_call.args[0], ["uv", "lock", "--python", "3.13", "--no-config"])
+            self.assertEqual(lock_call.args[0], ["uv", "lock", "--python", selected_python, "--no-config"])
             self.assertEqual(
                 export_call.args[0],
                 [

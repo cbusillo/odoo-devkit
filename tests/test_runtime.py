@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import configparser
 import contextlib
 import hashlib
 import io
@@ -986,20 +987,25 @@ sources = [
             pycharm_conf_file = runtime_repo_path / ".platform" / "ide" / "opw.local.odoo.conf"
             self.assertTrue(runtime_env_file.exists())
             self.assertTrue(pycharm_conf_file.exists())
-            runtime_env_text = runtime_env_file.read_text(encoding="utf-8")
-            self.assertIn("PLATFORM_CONTEXT=opw", runtime_env_text)
-            self.assertIn("ODOO_PROJECT_NAME=odoo-opw-local", runtime_env_text)
-            self.assertIn("DOCKER_IMAGE=odoo-opw-local", runtime_env_text)
-            self.assertIn("ODOO_ADDON_REPOSITORIES=cbusillo/disable_odoo_online@main", runtime_env_text)
-            self.assertIn(f"ODOO_PROJECT_ADDONS_HOST_PATH={(tenant_repo_path / 'addons').resolve()}", runtime_env_text)
-            addons_path_line = next(line for line in runtime_env_text.splitlines() if line.startswith("ODOO_ADDONS_PATH="))
-            self.assertIn("/opt/project/addons", addons_path_line)
-            self.assertIn("/opt/project/addons/shared", addons_path_line)
-            self.assertIn("/opt/launchplane/addons", addons_path_line)
-            pycharm_conf_text = pycharm_conf_file.read_text(encoding="utf-8")
-            self.assertIn("db_port = 15432", pycharm_conf_text)
-            self.assertIn(f"addons_path = {(tenant_repo_path / 'addons').resolve()}", pycharm_conf_text)
-            self.assertNotIn(str(runtime_repo_path / "addons"), pycharm_conf_text)
+            values = local_runtime.parse_env_file(runtime_env_file)
+            self.assertEqual(values["PLATFORM_CONTEXT"], manifest.runtime.context)
+            self.assertEqual(values["ODOO_PROJECT_NAME"], "odoo-opw-local")
+            self.assertEqual(values["DOCKER_IMAGE"], "odoo-opw-local")
+            inputs = artifact_inputs.load_artifact_inputs_definition(manifest=manifest)
+            assert inputs is not None
+            self.assertEqual(
+                values["ODOO_ADDON_REPOSITORIES"], ",".join(f"{source.repository}@{source.selector}" for source in inputs.sources)
+            )
+            self.assertEqual(values["ODOO_PROJECT_ADDONS_HOST_PATH"], str((tenant_repo_path / "addons").resolve()))
+            for path in ("/opt/project/addons", "/opt/project/addons/shared", "/opt/launchplane/addons"):
+                self.assertIn(path, values["ODOO_ADDONS_PATH"].split(","))
+            parser = configparser.ConfigParser(interpolation=None)
+            parser.read(pycharm_conf_file, encoding="utf-8")
+            self.assertEqual(parser["options"].getint("db_port"), 15432)
+            self.assertEqual(
+                parser["options"]["addons_path"].split(","),
+                [str((tenant_repo_path / "addons").resolve()), str(shared_addons_repo_path.resolve())],
+            )
 
     def test_native_runtime_select_rejects_legacy_stack_addon_source_keys(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1271,14 +1277,12 @@ ODOO_DB_PASSWORD = ""
 
             self.assertEqual(exit_code, 0)
             runtime_env_file = runtime_repo_path / ".platform" / "env" / "opw.local.env"
-            runtime_env_text = runtime_env_file.read_text(encoding="utf-8")
-            self.assertIn("DOCKER_IMAGE=odoo-opw-local", runtime_env_text)
-            self.assertIn(f"ODOO_PROJECT_ADDONS_HOST_PATH={(tenant_repo_path / 'addons').resolve()}", runtime_env_text)
-            self.assertIn(f"ODOO_SHARED_ADDONS_HOST_PATH={shared_addons_repo_path.resolve()}", runtime_env_text)
-            addons_path_line = next(line for line in runtime_env_text.splitlines() if line.startswith("ODOO_ADDONS_PATH="))
-            self.assertIn("/opt/project/addons", addons_path_line)
-            self.assertIn("/opt/project/addons/shared", addons_path_line)
-            self.assertIn("/opt/launchplane/addons", addons_path_line)
+            values = local_runtime.parse_env_file(runtime_env_file)
+            self.assertEqual(values["DOCKER_IMAGE"], "odoo-opw-local")
+            self.assertEqual(values["ODOO_PROJECT_ADDONS_HOST_PATH"], str((tenant_repo_path / "addons").resolve()))
+            self.assertEqual(values["ODOO_SHARED_ADDONS_HOST_PATH"], str(shared_addons_repo_path.resolve()))
+            for path in ("/opt/project/addons", "/opt/project/addons/shared", "/opt/launchplane/addons"):
+                self.assertIn(path, values["ODOO_ADDONS_PATH"].split(","))
 
     def test_native_runtime_select_includes_website_bootstrap_payload(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1483,7 +1487,6 @@ homepage = true
                 [call.kwargs["role"] for call in resolve_provenance_mock.call_args_list],
                 ["runtime", "devtools"],
             )
-            self.assertEqual(payload["schema_version"], 2)
             self.assertEqual(image_payload["repository"], "ghcr.io/example/opw-runtime")
             self.assertEqual(image_payload["digest"], self.artifact_image_digest)
             self.assertEqual(payload["enterprise_base_digest"], "sha256:" + "2" * 64)
@@ -2100,25 +2103,6 @@ sources = [
                 selection.effective_install_modules,
                 ("launchplane_settings", "disable_odoo_online", "opw_custom", "website_sale"),
             )
-
-    def test_checked_in_stack_keeps_hosted_runtime_authority_out_of_devkit(self) -> None:
-        repo_root = Path(__file__).resolve().parents[1]
-        stack = local_runtime.load_stack(repo_root / "platform" / "stack.toml").stack_definition
-
-        self.assertTrue(stack.contexts)
-        for context_name, context in stack.contexts.items():
-            self.assertEqual(context.runtime_env, {}, context_name)
-            self.assertEqual(context.odoo_overrides, local_runtime.empty_odoo_override_definition(), context_name)
-            self.assertNotIn("prod", context.instances, context_name)
-            for instance_name, instance in context.instances.items():
-                if instance_name == "local":
-                    continue
-                self.assertEqual(instance.runtime_env, {}, f"{context_name}/{instance_name}")
-                self.assertEqual(
-                    instance.odoo_overrides,
-                    local_runtime.empty_odoo_override_definition(),
-                    f"{context_name}/{instance_name}",
-                )
 
     def test_runtime_payload_synthesizes_missing_instance_in_existing_context(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

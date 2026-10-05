@@ -88,7 +88,7 @@ class OdooSourcesTestCase(unittest.TestCase):
         summary = json.loads(output.getvalue())
         self.assertEqual(summary["project_path"], str(self.project))
         self.assertEqual(summary["odoo_commit"], self.commit)
-        self.assertEqual(summary["odoo_series"], "19.0")
+        self.assertEqual(summary["odoo_series"], arguments.odoo_series)
         module_path = Path(summary["module_path"])
         module = ElementTree.parse(module_path)
         content_urls = [content.get("url") for content in module.findall("./component/content")]

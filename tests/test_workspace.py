@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest import mock
 from xml.etree import ElementTree
 
-from odoo_devkit import workspace
+from odoo_devkit import local_runtime, workspace
 from odoo_devkit.cli import build_parser
 from odoo_devkit.manifest import load_workspace_manifest
 from odoo_devkit.runtime_environment import RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR
@@ -358,8 +358,8 @@ attached_paths = ["sources/devkit"]
             ).stdout.strip()
             self.assertEqual(materialized_head, runtime_head)
 
-            runtime_env_contents = result.runtime_env_path.read_text(encoding="utf-8")
-            self.assertIn(f"ODOO_WORKSPACE_RUNTIME_REPO={materialized_runtime_repo_path.resolve()}", runtime_env_contents)
+            values = local_runtime.parse_env_file(result.runtime_env_path)
+            self.assertEqual(values["ODOO_WORKSPACE_RUNTIME_REPO"], str(materialized_runtime_repo_path.resolve()))
 
             lock = tomllib.loads(result.lock_file_path.read_text(encoding="utf-8"))
             locked_source = lock["repos"]["runtime"]
@@ -468,8 +468,8 @@ attached_paths = ["sources/devkit"]
             manifest = load_workspace_manifest(manifest_path)
             result = sync_workspace(manifest=manifest, devkit_repo_path=devkit_repo_path)
 
-            runtime_env_contents = result.runtime_env_path.read_text(encoding="utf-8")
-            self.assertIn(f"ODOO_WORKSPACE_RUNTIME_REPO={devkit_repo_path.resolve()}", runtime_env_contents)
+            values = local_runtime.parse_env_file(result.runtime_env_path)
+            self.assertEqual(values["ODOO_WORKSPACE_RUNTIME_REPO"], str(devkit_repo_path.resolve()))
 
     def test_clean_removes_workspace_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

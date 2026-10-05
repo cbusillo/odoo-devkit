@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -24,12 +25,17 @@ class BuildToolSyncTest(unittest.TestCase):
 
             self.assertTrue(plan.changed)
             self.assertEqual(3, len(plan.changes))
-            self.assertEqual("1.32.0", plan.catalog["hatchling"])
             rendered_addon = plan.rendered_files[plan.tenant_root / "addons" / "example" / "pyproject.toml"]
-            self.assertIn('requires = ["hatchling==1.32.0", "tenant-builder==2.0.0"]', rendered_addon)
+            catalog = tomllib.loads((devkit_root / "docker" / "runtime-python" / "pyproject.toml").read_text())["project"][
+                "dependencies"
+            ]
+            requirements = tomllib.loads(rendered_addon)["build-system"]["requires"]
+            self.assertEqual(requirements, [requirement for requirement in catalog if "==" in requirement])
             self.assertIn("# preserved", rendered_addon)
             rendered_workspace = plan.rendered_files[plan.tenant_root / "workspace.toml"]
-            self.assertEqual(2, rendered_workspace.count(f'ref = "{devkit_ref}"'))
+            repositories = tomllib.loads(rendered_workspace)["repos"]
+            self.assertEqual(repositories["devkit"]["ref"], devkit_ref)
+            self.assertEqual(repositories["runtime"]["ref"], devkit_ref)
 
     def test_apply_is_atomic_when_validation_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -52,6 +58,7 @@ class BuildToolSyncTest(unittest.TestCase):
     def test_apply_validates_and_writes_all_changes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             tenant_root, devkit_root, devkit_ref = self._write_fixture(Path(temporary_directory))
+            subprocess.run(["uv", "lock", "--offline", "--no-config"], cwd=tenant_root, check=True, capture_output=True, text=True)
             plan = plan_build_tool_sync(
                 tenant_root=tenant_root,
                 devkit_root=devkit_root,
@@ -60,8 +67,11 @@ class BuildToolSyncTest(unittest.TestCase):
 
             apply_build_tool_sync(plan)
 
-            self.assertIn("hatchling==1.32.0", (tenant_root / "addons" / "example" / "pyproject.toml").read_text())
-            self.assertEqual(2, (tenant_root / "workspace.toml").read_text().count(f'ref = "{devkit_ref}"'))
+            addon = tomllib.loads((tenant_root / "addons" / "example" / "pyproject.toml").read_text())
+            self.assertEqual(addon["build-system"]["requires"], [f"{name}=={version}" for name, version in plan.catalog.items()])
+            repositories = tomllib.loads((tenant_root / "workspace.toml").read_text())["repos"]
+            self.assertEqual(repositories["devkit"]["ref"], devkit_ref)
+            self.assertEqual(repositories["runtime"]["ref"], devkit_ref)
 
     def test_apply_reports_incomplete_rollback(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -174,13 +184,6 @@ class BuildToolSyncTest(unittest.TestCase):
             'dependencies = ["hatchling==1.32.0", "tenant-builder==2.0.0", "passlib>=1.7.4"]\n'
         )
         (devkit_root / "docker" / "runtime-python" / "uv.lock").write_text("version = 1\n")
-        subprocess.run(
-            ["uv", "lock", "--offline", "--no-config"],
-            cwd=tenant_root,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
         subprocess.run(["git", "init", "--quiet"], cwd=devkit_root, check=True)
         subprocess.run(["git", "config", "user.name", "Test"], cwd=devkit_root, check=True)
         subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=devkit_root, check=True)
