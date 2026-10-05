@@ -16,6 +16,7 @@ from odoo_devkit.cli import build_parser
 from odoo_devkit.manifest import load_workspace_manifest
 from odoo_devkit.runtime_environment import RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR
 from odoo_devkit.workspace import clean_workspace, resolve_workspace_path, sync_workspace, workspace_status
+from odoo_devkit.workspace_surface import LOCAL_NOTES_PATH, RESERVED_OVERRIDE_PATH
 
 
 class WorkspaceSyncTestCase(unittest.TestCase):
@@ -804,6 +805,9 @@ path = "{shared_addons_path}"
             devkit_repo_path = self._create_git_repo(temp_root / "devkit-repo")
             manifest = load_workspace_manifest(self._write_minimal_manifest(tenant_repo_path))
             result = sync_workspace(manifest=manifest, devkit_repo_path=devkit_repo_path)
+            agents_contents = result.workspace_agents_path.read_text(encoding="utf-8")
+            self.assertIn(LOCAL_NOTES_PATH, agents_contents)
+            self.assertIn(RESERVED_OVERRIDE_PATH, agents_contents)
             (result.workspace_path / "workspace.local.md").write_text("local non-secret note\n", encoding="utf-8")
             local_notes_status = workspace_status(manifest=manifest, devkit_repo_path=devkit_repo_path)
             self.assertTrue(local_notes_status["current"])

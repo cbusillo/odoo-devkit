@@ -115,7 +115,7 @@ group = "primary"
 role = "control_plane"
 label = "Control plane"
 path = "sources/harbor"
-repo_name = "harbor"
+repo_name = "control-project"
 
 [[repos]]
 group = "upstream_image"
@@ -144,6 +144,8 @@ repo_name = "odoo-docker"
                     if relative_path.endswith("session-prompt.md") and repo.group != "primary":
                         continue
                     self.assertIn(repo.path, contents)
+                    if relative_path != "docs/README.md":
+                        self.assertIn(repo.repo_name, contents)
 
     def test_workspace_cockpit_scaffold_refuses_to_overwrite_without_force(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -167,7 +169,7 @@ group = "primary"
 role = "control_plane"
 label = "Control plane"
 path = "sources/harbor"
-repo_name = "harbor"
+repo_name = "control-project"
 """.lstrip(),
                 encoding="utf-8",
             )
@@ -195,8 +197,15 @@ repo_name = "harbor"
             valid.replace('path = "sources/control"', 'path = "/absolute/control"'),
             valid.replace('group = "primary"', 'group = "unsupported"', 1),
             valid.replace('role = "control_plane"', 'role = "tenant"'),
-            valid.replace('role = "control_plane"', 'role = "devkit"'),
+            valid.replace('role = "devkit"', 'role = "tenant"'),
+            valid + '[[repos]]\ngroup = "primary"\nrole = "devkit"\nlabel = "Other"\npath = "sources/other"\nrepo_name = "other"\n',
+            valid
+            + '[[repos]]\ngroup = "primary"\nrole = "control_plane"\nlabel = "Other"\npath = "sources/other"\nrepo_name = "other"\n',
         )
+        with tempfile.TemporaryDirectory() as directory:
+            manifest_path = Path(directory) / "workspace-cockpit.toml"
+            manifest_path.write_text(valid, encoding="utf-8")
+            self.assertEqual(len(load_workspace_cockpit_manifest(manifest_path).repos), 2)
         for contents in invalid_inputs:
             with self.subTest(contents=contents), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
@@ -259,7 +268,7 @@ group = "primary"
 role = "control_plane"
 label = "Control plane"
 path = "sources/harbor"
-repo_name = "harbor"
+repo_name = "control-project"
 
 [[repos]]
 group = "upstream_image"
@@ -287,6 +296,8 @@ repo_name = "odoo-docker"
                     if relative_path.endswith("session-prompt.md") and repo.group != "primary":
                         continue
                     self.assertIn(repo.path, contents)
+                    if relative_path != "docs/README.md":
+                        self.assertIn(repo.repo_name, contents)
 
     def test_workspace_cockpit_status_reports_current_missing_and_stale_files(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -308,7 +319,7 @@ group = "primary"
 role = "control_plane"
 label = "Control plane"
 path = "sources/harbor"
-repo_name = "harbor"
+repo_name = "control-project"
 """.lstrip(),
                 encoding="utf-8",
             )
@@ -376,7 +387,7 @@ group = "primary"
 role = "control_plane"
 label = "Control plane"
 path = "sources/harbor"
-repo_name = "harbor"
+repo_name = "control-project"
 """.lstrip(),
                 encoding="utf-8",
             )
