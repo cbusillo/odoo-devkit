@@ -26,6 +26,11 @@ lanes live in `launchplane`.
   repo shape used by the current workspace model.
 - [tooling/python-inspection.md](tooling/python-inspection.md) for reproducible
   linked-worktree Python inspection preparation.
+- [../.github/github.json](../.github/github.json) for validation commands and
+  repository routing. Its `prWorkflow` records the normal merge method and
+  observed GitHub merge requirements; live branch protection and rulesets
+  remain authoritative. Dependency commands are documented in the workspace
+  CLI guide above.
 
 ## Shared Responsibilities
 
