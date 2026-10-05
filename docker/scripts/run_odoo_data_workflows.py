@@ -22,6 +22,7 @@ from typing import Any
 from unittest.mock import patch
 
 import psycopg2
+from odoo_admin_password import validate_admin_password
 from odoo_website_bootstrap import load_instance_override_payload, require_launchplane_payloads_if_configured
 from passlib.context import CryptContext
 from psycopg2 import sql
@@ -408,7 +409,7 @@ def _dedupe_paths(candidates: Sequence[Path]) -> tuple[Path, ...]:
 
 class LocalServerSettings(BaseSettings):
     # noinspection Pydantic
-    model_config = SettingsConfigDict(case_sensitive=False)
+    model_config = SettingsConfigDict(case_sensitive=False, hide_input_in_errors=True)
     host: str = Field(..., alias="ODOO_DB_HOST")
     port: int = Field(5432, alias="ODOO_DB_PORT")
     db_user: str = Field(..., alias="ODOO_DB_USER")
@@ -486,6 +487,9 @@ class LocalServerSettings(BaseSettings):
     @field_validator("admin_password", mode="before")
     @classmethod
     def _optional_secret(cls, value: object) -> object:
+        password = value.get_secret_value() if isinstance(value, SecretStr) else value
+        if isinstance(password, str):
+            validate_admin_password(password)
         if value is None or (isinstance(value, str) and not value.strip()):
             return None
         return value

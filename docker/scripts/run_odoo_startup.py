@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import psycopg2
+from odoo_admin_password import validate_admin_password
 
 RUNTIME_OPTION_MAP: tuple[tuple[str, str], ...] = (
     ("ODOO_DB_MAXCONN", "db_maxconn"),
@@ -74,6 +75,9 @@ class StartupSettings:
     data_workflow_lock_timeout_seconds: int
     ready_timeout_seconds: int
     poll_interval_seconds: float
+
+    def __post_init__(self) -> None:
+        validate_admin_password(self.admin_password)
 
 
 def _split_modules(raw_modules: str) -> tuple[str, ...]:

@@ -234,7 +234,11 @@ Current runtime ownership is intentionally narrow and explicit:
   local initialization, data-workflow admin hardening, and startup apply the
   supplied value unchanged. Blank/omitted values still mean no password update.
   The shared image scripts apply this nonblank-password rule in hosted lanes
-  too. Odoo's config-file reader trims surrounding whitespace from `db_password`;
+  too. For directly supplied admin passwords, image startup and data workflows
+  enforce the single-line input and correction contract in the
+  [workspace CLI guide](docs/tooling/workspace-cli.md#literal-passwords-at-local-consumers)
+  before touching Odoo state. Odoo's config-file reader trims surrounding
+  whitespace from `db_password`;
   devkit-run local Odoo commands use the container's literal `PGPASSWORD` environment input,
   which takes precedence over that file in Odoo 19. Reading the generated conf
   alone does not qualify database-password preservation.
