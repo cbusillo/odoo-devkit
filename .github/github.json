@@ -87,7 +87,8 @@
     },
     "codeQualityMergeProtection": {
       "severity": "errors"
-    }
+    },
+    "requiresStrictStatusChecks": true
   },
   "relatedRepos": [
     "disable_odoo_online",
@@ -130,7 +131,8 @@
       "ownership boundaries change",
       "workspace manifest contract changes",
       "runtime command behavior changes",
-      "tenant overlay template changes"
+      "tenant overlay template changes",
+      "branch protection or rulesets change"
     ]
   }
 }
