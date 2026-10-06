@@ -1,0 +1,6 @@
+<odoo>
+    <record id="probe" model="ir.config_parameter">
+        <field name="key">devkit.ci.community</field>
+        <field name="value">loaded-from-xml</field>
+    </record>
+</odoo>
