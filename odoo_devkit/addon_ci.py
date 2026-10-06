@@ -34,6 +34,8 @@ class AddonResult(TypedDict, total=False):
     external_sources: list[dict[str, str]]
     image: str
     test_image_id: str
+    base_image_id: str
+    base_image_repo_digests: list[str]
     odoo_version: str
     state: Literal["failed", "passed"]
     failed: int
@@ -204,7 +206,19 @@ def run_tests(
                             external_paths.append(f"/opt/ci-external/{checkout.name}/addons")
                         else:
                             external_paths.append(f"/opt/ci-external/{checkout.name}")
-            build_test_image(image, tenant, context, image_tag)
+            build_image = image
+            if devkit_checks:
+                inspect_image = ["docker", "image", "inspect", image]
+                try:
+                    base_metadata = json.loads(command(inspect_image, capture=True).stdout)[0]
+                except subprocess.CalledProcessError:
+                    command(["docker", "pull", image])
+                    base_metadata = json.loads(command(inspect_image, capture=True).stdout)[0]
+                result["base_image_id"] = base_metadata["Id"]
+                result["base_image_repo_digests"] = base_metadata["RepoDigests"]
+                if result["base_image_repo_digests"]:
+                    build_image = result["base_image_repo_digests"][0]
+            build_test_image(build_image, tenant, context, image_tag)
         result["test_image_id"] = command(
             ["docker", "image", "inspect", image_tag, "--format", "{{.Id}}"], capture=True
         ).stdout.strip()

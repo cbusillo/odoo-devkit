@@ -65,6 +65,8 @@ class TestLiveWorkflows(TransactionCase):
         cls.scratch = tempfile.TemporaryDirectory(prefix="devkit-live-")
         cls.root = Path(cls.scratch.name)
         cls.source = "devkit_ci_source_" + uuid.uuid4().hex[:10]
+        cls.addClassCleanup(cls.scratch.cleanup)
+        cls.addClassCleanup(cls.drop, cls.source)
         cls.environment = {
             "PGHOST": "database",
             "PGUSER": "odoo",
@@ -116,9 +118,19 @@ class TestLiveWorkflows(TransactionCase):
             env={**os.environ, **cls.environment},
         )
         query(cls.source, "INSERT INTO ir_config_parameter (key,value) VALUES ('devkit.ci.origin','source')")
-        cls.source_store = cls.root / "source-store"
-        cls.source_store.mkdir()
-        (cls.source_store / "attachment").write_bytes(b"synthetic attachment bytes\x00\xff")
+        cls.attachment_bytes = b"synthetic attachment bytes\x00\xff"
+        encoded = base64.b64encode(cls.attachment_bytes).decode()
+        run(
+            ["/odoo/odoo-bin", "shell", "--config", str(cls.generated_config), "--database", cls.source, "--no-http"],
+            input=(
+                "attachment = env['ir.attachment'].create({"
+                f"'name': 'devkit-ci-attachment', 'type': 'binary', 'datas': {encoded!r}"
+                "})\nassert attachment.store_fname\nenv.cr.commit()\n"
+            ).encode(),
+            env={**os.environ, **cls.environment},
+        )
+        cls.attachment_name = query(cls.source, "SELECT store_fname FROM ir_attachment WHERE name='devkit-ci-attachment'")[0][0]
+        cls.source_store = Path(cls.environment["ODOO_DATA_DIR"]) / "filestore" / cls.source
         # Replace only SSH transport with local execution. pg_dump, validation,
         # rsync, pg_restore and the full workflow remain the product implementation.
         cls.transport = cls.root / "transport.py"
@@ -130,8 +142,6 @@ args = args[1:]  # discard the synthetic destination host
 command = ' '.join(args).replace('sudo -u odoo ', '')
 os.execv('/bin/bash', ['bash', '-c', command])
 """)
-        cls.addClassCleanup(cls.scratch.cleanup)
-        cls.addClassCleanup(cls.drop, cls.source)
 
     @staticmethod
     def drop(database: str) -> None:
@@ -147,7 +157,7 @@ os.execv('/bin/bash', ['bash', '-c', command])
         environment = {
             **self.environment,
             "ODOO_DB_NAME": name,
-            "ODOO_FILESTORE_PATH": str(self.root / "target-stores"),
+            "ODOO_FILESTORE_PATH": str(Path(self.environment["ODOO_DATA_DIR"]) / "filestore"),
             "ODOO_DATA_WORKFLOW_LOCK_FILE": str(self.root / (name + ".lock")),
             "ODOO_UPSTREAM_HOST": "synthetic-source",
             "ODOO_UPSTREAM_USER": "odoo",
@@ -217,7 +227,7 @@ os.execv('/bin/bash', ['bash', '-c', command])
                 return REAL_RUN(args, **kwargs, capture_output=True)
 
             with (
-                patch.object(startup, "_load_settings", return_value=settings),
+                patch.dict(os.environ, {"ODOO_ADMIN_LOGIN": settings.admin_login}),
                 patch.object(sys, "argv", ["run_odoo_startup.py", "--config", settings.config_path]),
                 patch.object(os, "execve", side_effect=ServerStarted),
                 patch.object(subprocess, "run", side_effect=captured_run),
@@ -274,7 +284,6 @@ os.execv('/bin/bash', ['bash', '-c', command])
             else:
                 settings = self.startup_settings(runner)
                 with (
-                    patch.object(startup, "_load_settings", return_value=settings),
                     patch.object(sys, "argv", ["run_odoo_startup.py", "--config", settings.config_path]),
                     patch.object(os, "execve", side_effect=ServerStarted),
                     self.assertRaises(ServerStarted),
@@ -307,10 +316,18 @@ os.execv('/bin/bash', ['bash', '-c', command])
             [("source",)],
             "Source database did not replace target",
         )
-        store = runner._local_database_filestore_path()
-        self.assertTrue((store / "attachment").is_file(), "Source attachment was not copied")
-        self.assertEqual((store / "attachment").read_bytes(), (self.source_store / "attachment").read_bytes())
+        store = Path(runner.os_env["ODOO_DATA_DIR"]) / "filestore" / runner.local.db_name
+        self.assertTrue((store / self.attachment_name).is_file(), "Source attachment was not copied")
+        self.assertEqual((store / self.attachment_name).read_bytes(), self.attachment_bytes)
         self.assertFalse((store / "stale").exists(), "Stale target attachment survived replacement")
+        run(
+            runner._odoo_shell_command(),
+            input=(
+                "import base64\nattachment = env['ir.attachment'].search([('name', '=', 'devkit-ci-attachment')], limit=1)\n"
+                f"assert attachment and base64.b64decode(attachment.datas) == {self.attachment_bytes!r}\n"
+            ).encode(),
+            env=runner.os_env,
+        )
         self.assert_password(runner)
 
     def test_restore_replaces_database(self) -> None:

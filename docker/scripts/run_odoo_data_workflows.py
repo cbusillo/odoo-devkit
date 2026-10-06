@@ -2638,7 +2638,7 @@ with registry.cursor() as cr:
         _logger.info("Upstream overwrite completed successfully.")
 
     def _prepare_restored_database(self, target_owner: str | None, *, do_sanitize: bool) -> None:
-        """Upgrade and sanitize a restored copy through the settings apply. Callers drop the database on any error."""
+        """Prepare a restored copy through settings apply and admin hardening. Callers drop the database on any error."""
         self.normalize_filestore_permissions(target_owner)
         if self.local.openupgrade_enabled:
             self.snapshot_module_states_before_openupgrade()

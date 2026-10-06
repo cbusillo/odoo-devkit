@@ -77,9 +77,14 @@ The suite creates an Odoo source database containing only synthetic records and
 clones a fresh target for each check. It verifies public startup rejects an
 active `admin`/`admin` before the server exec boundary, unchanged startup
 passwords produce no second write, both startup and data-workflow settings
-payloads apply through the installed addon, bootstrap initializes and hardens
+payloads apply through the installed addon, startup parses real environment
+settings, bootstrap initializes and hardens
 the administrator, and restores replace database and filestore contents, harden
-the administrator and drop a failed partial restore. Synthetic community and
+the administrator and drop a failed partial restore. A synthetic `ir.attachment`
+is created in the source and read back through Odoo after restore, proving that
+the copied filestore is the one Odoo serves. The devkit-check mode records the
+base image ID and repository digests and builds from that resolved digest when
+available; a cached local-only image remains supported. Synthetic community and
 Enterprise repository fixtures prove that AUTO updates reload the community
 addon while leaving the Enterprise addon unchanged.
 
