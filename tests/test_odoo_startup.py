@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 import os
+import subprocess
 import sys
 import types
 import unittest
@@ -426,6 +427,66 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
         environment = run_mock.call_args.kwargs["env"]
         self.assertEqual(environment["PYTHONPATH"], "/volumes/scripts:/opt/custom")
 
+    def test_odoo_launches_forward_literal_database_password_without_secret_arguments(self) -> None:
+        configured_password = " \tfake-'\"\\-$literal#password\t "
+        values = {
+            "ODOO_DB_NAME": "probe",
+            "ODOO_MASTER_PASSWORD": "fake-master",
+            "ODOO_DB_PASSWORD": configured_password,
+            "PGPASSWORD": "stale-inherited-password",
+            "PYTHONPATH": "/opt/custom",
+        }
+        with patch.dict(os.environ, values, clear=True):
+            settings = odoo_startup._load_settings(argparse.Namespace(config_path="unused.conf"))
+
+        recorder = MagicMock()
+        with (
+            patch.dict(os.environ, values, clear=True),
+            patch.object(odoo_startup, "_missing_required_modules", return_value=("base",)),
+            patch.object(odoo_startup.subprocess, "run", recorder.run),
+            redirect_stdout(io.StringIO()),
+        ):
+            odoo_startup._run_initialization_if_needed(settings)
+            odoo_startup._run_odoo_shell(settings, "print('maintenance')", label="maintenance")
+            self._run_main(settings, recorder)
+            self.assertEqual(os.environ, values)
+
+        for launch in (*recorder.run.call_args_list, recorder.execve.call_args):
+            with self.subTest(launch=launch.args[0]):
+                command = launch.args[1] if len(launch.args) == 3 else launch.args[0]
+                environment = launch.args[2] if len(launch.args) == 3 else launch.kwargs["env"]
+                self.assertEqual(environment["PGPASSWORD"], configured_password)
+                self.assertEqual(environment["PYTHONPATH"], "/volumes/scripts:/opt/custom")
+                self.assertFalse(any(argument.startswith("--db_password") for argument in command))
+                self.assertNotIn(configured_password, str(command))
+                self.assertNotIn(configured_password.strip(), str(command))
+                self.assertNotIn(configured_password.strip(), str(subprocess.CalledProcessError(1, command)))
+                completed = subprocess.run(
+                    [sys.executable, "-c", "import os,json; print(json.dumps(os.environ['PGPASSWORD']))"],
+                    env=environment,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                self.assertEqual(json.loads(completed.stdout), configured_password)
+
+    def test_odoo_launches_override_inherited_pgpassword_when_configured_password_is_empty(self) -> None:
+        settings = replace(self._settings(), database_password="")
+        recorder = MagicMock()
+        with (
+            patch.dict(os.environ, {"PGPASSWORD": "stale-password"}, clear=True),
+            patch.object(odoo_startup, "_missing_required_modules", return_value=("base",)),
+            patch.object(odoo_startup.subprocess, "run", recorder.run),
+            redirect_stdout(io.StringIO()),
+        ):
+            odoo_startup._run_initialization_if_needed(settings)
+            odoo_startup._run_odoo_shell(settings, "pass", label="maintenance")
+            self._run_main(settings, recorder)
+
+        for launch in recorder.run.call_args_list:
+            self.assertEqual(launch.kwargs["env"]["PGPASSWORD"], "")
+        self.assertEqual(recorder.execve.call_args.args[2]["PGPASSWORD"], "")
+
     @staticmethod
     def _execute_admin_hardening(settings: StartupSettings, environment: MagicMock) -> str:
         exceptions = types.ModuleType("odoo.exceptions")
@@ -530,7 +591,7 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
             stack.enter_context(patch.object(odoo_startup, "_load_settings", return_value=settings))
             for step_name in self._STARTUP_STEP_NAMES:
                 stack.enter_context(patch.object(odoo_startup, step_name, getattr(recorder, step_name)))
-            stack.enter_context(patch.object(odoo_startup.os, "execv", recorder.execv))
+            stack.enter_context(patch.object(odoo_startup.os, "execve", recorder.execve))
             stack.enter_context(redirect_stdout(io.StringIO()))
             odoo_startup.main()
         return [recorded_call[0] for recorded_call in recorder.mock_calls]
@@ -551,7 +612,7 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
             with self.subTest(case_name):
                 call_names = self._run_main(settings, MagicMock())
 
-                self.assertEqual(call_names[-1], "execv")
+                self.assertEqual(call_names[-1], "execve")
                 self.assertEqual(call_names[0], "_enforce_public_credential_preflight")
                 self.assertRunsBefore(call_names, "_wait_for_data_workflow_lock", "_run_initialization_if_needed")
                 self.assertRunsBefore(call_names, "_run_initialization_if_needed", "_apply_environment_overrides_if_available")
@@ -579,7 +640,7 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Insecure configuration"):
             self._run_main(self._settings(platform_instance="testing", admin_password="configured-password"), recorder)
 
-        recorder.execv.assert_not_called()
+        recorder.execve.assert_not_called()
 
     @staticmethod
     def _execute_default_password_policy(settings: StartupSettings, users: _FakeUsers) -> None:

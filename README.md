@@ -241,7 +241,10 @@ Current runtime ownership is intentionally narrow and explicit:
   whitespace from `db_password`;
   devkit-run local Odoo commands use the container's literal `PGPASSWORD` environment input,
   which takes precedence over that file in Odoo 19. Reading the generated conf
-  alone does not qualify database-password preservation.
+  alone does not qualify database-password preservation. Container startup
+  supplies the configured database password through native `PGPASSWORD` for
+  initialization, maintenance shells, and the server process too, replacing any
+  inherited `PGPASSWORD`. These launches omit the password from process arguments.
 - A Postgres major-version bump is not a routine dependency refresh on this
   surface. Treat it as explicit migration work with a documented upgrade path
   for existing tenant data volumes.
