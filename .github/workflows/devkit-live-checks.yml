@@ -1,0 +1,60 @@
+name: Devkit live Odoo checks
+
+"on":
+  pull_request:
+    paths:
+      - 'docker/**'
+      - 'odoo_devkit/addon_ci.py'
+      - 'tests/live_odoo/**'
+      - '.github/workflows/devkit-live-checks.yml'
+      - 'pyproject.toml'
+      - 'uv.lock'
+  push:
+    branches: [main, 'launchplane/train/**']
+    paths:
+      - 'docker/**'
+      - 'odoo_devkit/addon_ci.py'
+      - 'tests/live_odoo/**'
+      - '.github/workflows/devkit-live-checks.yml'
+      - 'pyproject.toml'
+      - 'uv.lock'
+
+permissions:
+  contents: read
+
+jobs:
+  devkit-live-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Checkout the real settings addon and its test loader
+        uses: actions/checkout@v7
+        with:
+          repository: cbusillo/odoo-shared-addons
+          ref: 5dcf55162eca8cbcc026789e6cb4f0c79f7c8733
+          path: .ci-support
+          sparse-checkout: |
+            launchplane_settings
+            test_support
+      - uses: astral-sh/setup-uv@v7
+      - name: Record settings source
+        run: |
+          mkdir -p ci-evidence
+          git -C .ci-support rev-parse HEAD > ci-evidence/shared-addons-commit.txt
+      - name: Run live checks and planted faults on throwaway databases
+        run: >-
+          uv run --locked python -m odoo_devkit.addon_ci
+          --image ghcr.io/cbusillo/odoo-docker:19.0-devtools
+          --addons-root tests/live_odoo/addons
+          --support-root .ci-support
+          --devkit-checks
+          --output ci-evidence
+          --timeout 750
+      - name: Preserve live-check evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: devkit-live-checks
+          path: ci-evidence
+          if-no-files-found: error

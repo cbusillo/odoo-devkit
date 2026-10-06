@@ -222,12 +222,18 @@ Current runtime ownership is intentionally narrow and explicit:
   tenant database. This preserves boot for tenant databases that renamed or
   removed the default `admin` login while still checking active default admin
   passwords when matching users exist.
-- Startup and post-deploy maintenance verify an existing administrator
+- Startup, bootstrap, restore and post-deploy maintenance verify an existing administrator
   password before writing it. A matching configured password is left
   unchanged, avoiding password-change emails on ordinary restarts and deploys.
   Actual configured password changes still use Odoo's normal write path and
   security notifications. Quotes and backslashes in configured passwords are
   preserved when passed into the Odoo shell.
+  Restore applies this hardening even with `--no-sanitize`, including normalizing
+  the configured administrator's email to a test address. An active
+  `admin`/`admin` account fails restore preparation and drops the restored database,
+  including on a local instance with no configured password; supply a nonblank
+  `ODOO_ADMIN_PASSWORD` to harden that copy. The verified upstream dump remains
+  available for recovery when preparation fails.
   The same holds for a configured `ODOO_ADMIN_LOGIN` checked by the
   default-password policy.
   Leading/trailing spaces and tabs in `ODOO_ADMIN_PASSWORD` are also literal:

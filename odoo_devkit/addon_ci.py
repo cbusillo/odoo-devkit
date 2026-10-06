@@ -33,6 +33,9 @@ class AddonResult(TypedDict, total=False):
     addons: list[str]
     external_sources: list[dict[str, str]]
     image: str
+    test_image_id: str
+    base_image_id: str
+    base_image_repo_digests: list[str]
     odoo_version: str
     state: Literal["failed", "passed"]
     failed: int
@@ -137,7 +140,15 @@ def build_test_image(image: str, tenant: Path | None, context: Path, tag: str) -
 
 
 def run_tests(
-    *, image: str, version: str, addons_root: Path, support_root: Path | None, tenant: Path | None, output: Path, timeout: int
+    *,
+    image: str,
+    version: str,
+    addons_root: Path,
+    support_root: Path | None,
+    tenant: Path | None,
+    output: Path,
+    timeout: int,
+    devkit_checks: bool = False,
 ) -> None:
     owned_addons = discover_addons(addons_root)
     install_addons = list(owned_addons)
@@ -195,7 +206,22 @@ def run_tests(
                             external_paths.append(f"/opt/ci-external/{checkout.name}/addons")
                         else:
                             external_paths.append(f"/opt/ci-external/{checkout.name}")
-            build_test_image(image, tenant, context, image_tag)
+            build_image = image
+            if devkit_checks:
+                inspect_image = ["docker", "image", "inspect", image]
+                try:
+                    base_metadata = json.loads(command(inspect_image, capture=True).stdout)[0]
+                except subprocess.CalledProcessError:
+                    command(["docker", "pull", image])
+                    base_metadata = json.loads(command(inspect_image, capture=True).stdout)[0]
+                result["base_image_id"] = base_metadata["Id"]
+                result["base_image_repo_digests"] = base_metadata["RepoDigests"]
+                if result["base_image_repo_digests"]:
+                    build_image = result["base_image_repo_digests"][0]
+            build_test_image(build_image, tenant, context, image_tag)
+        result["test_image_id"] = command(
+            ["docker", "image", "inspect", image_tag, "--format", "{{.Id}}"], capture=True
+        ).stdout.strip()
         actual_version = command(
             [
                 "docker",
@@ -258,8 +284,16 @@ def run_tests(
         if tenant is not None:
             mounts = ["--volume", f"{tenant}:/opt/project:ro", *mounts]
         if support_root is not None:
-            mounts.extend(["--volume", f"{support_root}:/opt/extra_addons:ro"])
-            python_paths.append("/opt/extra_addons")
+            support_path = "/opt/support-addons" if devkit_checks else "/opt/extra_addons"
+            mounts.extend(["--volume", f"{support_root}:{support_path}:ro"])
+            if support_path not in paths:
+                paths.append(support_path)
+            python_paths.append(support_path)
+        if devkit_checks:
+            mounts.extend(["--volume", f"{ROOT / 'docker/scripts'}:/volumes/scripts:ro"])
+            mounts.extend(["--volume", f"{ROOT / 'tests/live_odoo/extra_addons'}:/opt/extra_addons:ro"])
+            paths.append("/opt/extra_addons/ci_enterprise")
+            python_paths.insert(0, "/volumes/scripts")
         test_command = [
             "docker",
             "run",
@@ -341,6 +375,7 @@ def main() -> None:
     parser.add_argument("--tenant", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--timeout", type=int, default=1800)
+    parser.add_argument("--devkit-checks", action="store_true", help="Mount devkit scripts and synthetic live-check addons")
     arguments = parser.parse_args()
     if arguments.tenant:
         manifest = load_workspace_manifest(arguments.tenant.resolve() / "workspace.toml")
@@ -360,6 +395,7 @@ def main() -> None:
         tenant=arguments.tenant.resolve() if arguments.tenant else None,
         output=arguments.output.resolve(),
         timeout=arguments.timeout,
+        devkit_checks=arguments.devkit_checks,
     )
 
 

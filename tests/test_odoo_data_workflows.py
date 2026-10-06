@@ -133,6 +133,7 @@ class UpstreamRestoreFailureTests(unittest.TestCase):
                     reconcile_missing_manifest_install_queue=MagicMock(),
                     assert_install_queue_is_resolvable=MagicMock(),
                     apply_environment_overrides=MagicMock(),
+                    ensure_admin_user=MagicMock(),
                     assert_core_schema_healthy=MagicMock(),
                     ensure_gpt_users=MagicMock(),
                 )
@@ -729,6 +730,7 @@ class DataWorkflowGuardTests(unittest.TestCase):
             "reconcile_missing_manifest_install_queue": MagicMock(),
             "assert_install_queue_is_resolvable": MagicMock(),
             "apply_environment_overrides": MagicMock(),
+            "ensure_admin_user": MagicMock(),
             "assert_core_schema_healthy": MagicMock(),
             "ensure_gpt_users": MagicMock(),
             "drop_database": MagicMock(),
@@ -738,7 +740,7 @@ class DataWorkflowGuardTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         return runner, restore_steps["drop_database"]
 
-    def test_restore_drops_the_restored_database_when_any_step_before_the_settings_apply_fails(self) -> None:
+    def test_restore_drops_the_restored_database_when_preparation_fails(self) -> None:
         database_error = odoo_data_workflows.psycopg2.Error
         failures = (
             ("credential clearing", {}, "neutralize_production_credentials", database_error),
@@ -751,6 +753,7 @@ class DataWorkflowGuardTests(unittest.TestCase):
             ("addon update", {}, "update_addons", odoo_data_workflows.OdooRestorerError),
             ("install queue", {}, "assert_install_queue_is_resolvable", odoo_data_workflows.OdooDatabaseUpdateError),
             ("environment overrides", {}, "apply_environment_overrides", odoo_data_workflows.OdooDatabaseUpdateError),
+            ("admin hardening", {}, "ensure_admin_user", odoo_data_workflows.OdooRestorerError),
             ("interrupt", {}, "update_addons", KeyboardInterrupt),
         )
         for step_label, setting_overrides, failing_step, error_type in failures:
@@ -1458,6 +1461,7 @@ class ProductionCredentialSanitizeTests(unittest.TestCase):
             reconcile_missing_manifest_install_queue=MagicMock(),
             assert_install_queue_is_resolvable=MagicMock(),
             apply_environment_overrides=MagicMock(side_effect=apply_launchplane_settings),
+            ensure_admin_user=MagicMock(),
             assert_core_schema_healthy=MagicMock(),
             ensure_gpt_users=MagicMock(),
             drop_database=MagicMock(),
