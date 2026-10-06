@@ -26,8 +26,8 @@ from psycopg2 import sql
 
 PASSWORD = "synthetic-'quoted\\password-with-space "
 ADDONS = (
-    startup.LAUNCHPLANE_ADDONS_PATH
-    + ",/opt/support-addons,/opt/extra_addons,/opt/extra_addons/ci_enterprise,/odoo/addons,/odoo/odoo/addons"
+    "/opt/support-addons,/opt/extra_addons,/opt/extra_addons/ci_enterprise,/odoo/addons,/odoo/odoo/addons,"
+    + startup.LAUNCHPLANE_ADDONS_PATH
 )
 CRYPT = CryptContext(["pbkdf2_sha512"])
 REAL_RUN = subprocess.run
@@ -167,15 +167,16 @@ os.execv('/bin/bash', ['bash', '-c', command])
                     runner._reset_db_connection()
                     self.drop(name)
 
-    def guarded(self, check: Callable, fault: Callable, *, empty: bool = False) -> None:
+    def guarded(self, check: Callable, fault: Callable, *, empty: bool = False, fault_message: str = "") -> None:
         with self.target(empty=empty) as runner:
             check(runner)
         with self.target(empty=empty) as runner, fault(runner):
-            with self.assertRaises(AssertionError, msg="Planted fault did not break its live behavior check"):
+            with self.assertRaisesRegex(AssertionError, fault_message, msg="Planted fault did not break its live behavior check"):
                 check(runner)
         print(f"DEVKIT_FAULT_DETECTED {self._testMethodName}", flush=True)
 
-    def password_state(self, runner: workflows.OdooDataWorkflowRunner) -> tuple:
+    @staticmethod
+    def password_state(runner: workflows.OdooDataWorkflowRunner) -> tuple:
         return query(runner.local.db_name, "SELECT password,write_date FROM res_users WHERE login='admin'")[0]
 
     def assert_password(self, runner: workflows.OdooDataWorkflowRunner) -> None:
@@ -245,15 +246,18 @@ os.execv('/bin/bash', ['bash', '-c', command])
 
         original_shell = startup._run_odoo_shell
 
-        def fault(runner: workflows.OdooDataWorkflowRunner) -> Any:
+        def fault(_runner: workflows.OdooDataWorkflowRunner) -> Any:
             def forced_write(settings: startup.StartupSettings, script: str, *, label: str) -> None:
                 # Force the real credential check to deny only the comparison.
-                script = script.replace("'password': payload['password']}", "'password': 'wrong-comparison'}")
+                script = script.replace(
+                    "{'type': 'password', 'password': payload['password']}",
+                    "{'type': 'password', 'password': 'wrong-comparison'}",
+                )
                 original_shell(settings, script, label=label)
 
             return patch.object(startup, "_run_odoo_shell", side_effect=forced_write)
 
-        self.guarded(check, fault)
+        self.guarded(check, fault, fault_message="Restart performed another password write")
 
     def settings_check(self, runner: workflows.OdooDataWorkflowRunner, *, data_workflow: bool) -> None:
         payload = {"config_parameters": [{"key": "devkit.ci.payload", "value": {"source": "literal", "value": "applied"}}]}
@@ -261,11 +265,16 @@ os.execv('/bin/bash', ['bash', '-c', command])
         with patch.dict(os.environ, {"ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64": encoded}):
             runner.os_env["ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64"] = encoded
             if data_workflow:
-                runner.apply_environment_overrides()
+                runner.run_restore()
             else:
                 settings = self.startup_settings(runner)
-                startup._write_runtime_config(settings)
-                startup._apply_environment_overrides_if_available(settings)
+                with (
+                    patch.object(startup, "_load_settings", return_value=settings),
+                    patch.object(sys, "argv", ["run_odoo_startup.py", "--config", settings.config_path]),
+                    patch.object(os, "execve", side_effect=ServerStarted),
+                    self.assertRaises(ServerStarted),
+                ):
+                    startup.main()
         self.assertEqual(
             query(runner.local.db_name, "SELECT value FROM ir_config_parameter WHERE key='devkit.ci.payload'"), [("applied",)]
         )

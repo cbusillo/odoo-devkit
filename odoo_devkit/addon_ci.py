@@ -268,7 +268,8 @@ def run_tests(
         if support_root is not None:
             support_path = "/opt/support-addons" if devkit_checks else "/opt/extra_addons"
             mounts.extend(["--volume", f"{support_root}:{support_path}:ro"])
-            paths.append(support_path)
+            if support_path not in paths:
+                paths.append(support_path)
             python_paths.append(support_path)
         if devkit_checks:
             mounts.extend(["--volume", f"{ROOT / 'docker/scripts'}:/volumes/scripts:ro"])
