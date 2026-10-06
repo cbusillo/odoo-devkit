@@ -33,6 +33,7 @@ class AddonResult(TypedDict, total=False):
     addons: list[str]
     external_sources: list[dict[str, str]]
     image: str
+    test_image_id: str
     odoo_version: str
     state: Literal["failed", "passed"]
     failed: int
@@ -204,6 +205,9 @@ def run_tests(
                         else:
                             external_paths.append(f"/opt/ci-external/{checkout.name}")
             build_test_image(image, tenant, context, image_tag)
+        result["test_image_id"] = command(
+            ["docker", "image", "inspect", image_tag, "--format", "{{.Id}}"], capture=True
+        ).stdout.strip()
         actual_version = command(
             [
                 "docker",

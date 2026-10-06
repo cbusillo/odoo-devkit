@@ -39,7 +39,8 @@ layers, under its existing host cache policy. The runner removes only its own na
 hosted runner supplies an additional cleanup boundary for job cancellation.
 
 `odoo.log` and `result.json` are written to the output directory. The result
-records selected modules, external source commits, image, test count and elapsed
+records selected modules, external source commits, requested image, the actual
+built test image's immutable ID, test count and elapsed
 seconds; the elapsed time is also reported in the Actions job summary. A missing
 summary, zero tests, reported failures/errors, or nonzero Odoo exit fails the job.
 Callers upload the evidence even when the run fails and apply path filters to
@@ -83,7 +84,7 @@ Enterprise repository fixtures prove that AUTO updates reload the community
 addon while leaving the Enterprise addon unchanged.
 
 Each behavior check first passes normally, then runs with a deliberate fault
-in the product path and must fail its assertion. Unexpected setup or Odoo
+in the product path and must fail its specific assertion. Unexpected setup or Odoo
 exceptions do not count as fault detection. `DEVKIT_FAULT_DETECTED` lines in
 `odoo.log` identify the proofs. The runner's normal nonzero exit, failure and
 nonempty-test-summary checks still decide the lane result.

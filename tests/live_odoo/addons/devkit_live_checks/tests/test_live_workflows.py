@@ -167,7 +167,7 @@ os.execv('/bin/bash', ['bash', '-c', command])
                     runner._reset_db_connection()
                     self.drop(name)
 
-    def guarded(self, check: Callable, fault: Callable, *, empty: bool = False, fault_message: str = "") -> None:
+    def guarded(self, check: Callable, fault: Callable, *, fault_message: str, empty: bool = False) -> None:
         with self.target(empty=empty) as runner:
             check(runner)
         with self.target(empty=empty) as runner, fault(runner):
@@ -227,10 +227,15 @@ os.execv('/bin/bash', ['bash', '-c', command])
                 except ServerStarted:
                     started = True
                 except subprocess.CalledProcessError as error:
-                    self.assertIn(b"active password for admin is 'admin'", error.stderr)
+                    if b"active password for admin is 'admin'" not in (error.stderr or b""):
+                        raise
             self.assertFalse(started, "Unsafe admin/admin reached the server exec boundary")
 
-        self.guarded(check, lambda runner: patch.object(startup, "_assert_active_admin_password_is_not_default"))
+        self.guarded(
+            check,
+            lambda runner: patch.object(startup, "_assert_active_admin_password_is_not_default"),
+            fault_message="Unsafe admin/admin reached the server exec boundary",
+        )
 
     def test_startup_password_write_is_idempotent(self) -> None:
         def check(runner: workflows.OdooDataWorkflowRunner) -> None:
@@ -276,25 +281,31 @@ os.execv('/bin/bash', ['bash', '-c', command])
                 ):
                     startup.main()
         self.assertEqual(
-            query(runner.local.db_name, "SELECT value FROM ir_config_parameter WHERE key='devkit.ci.payload'"), [("applied",)]
+            query(runner.local.db_name, "SELECT value FROM ir_config_parameter WHERE key='devkit.ci.payload'"),
+            [("applied",)],
+            "Launchplane settings payload was not applied",
         )
 
     def test_startup_applies_real_launchplane_settings(self) -> None:
         self.guarded(
             lambda runner: self.settings_check(runner, data_workflow=False),
             lambda runner: patch.object(startup, "_apply_environment_overrides_if_available"),
+            fault_message="Launchplane settings payload was not applied",
         )
 
     def test_data_workflow_applies_real_launchplane_settings(self) -> None:
         self.guarded(
             lambda runner: self.settings_check(runner, data_workflow=True),
             lambda runner: patch.object(runner, "apply_environment_overrides"),
+            fault_message="Launchplane settings payload was not applied",
         )
 
     def restore_check(self, runner: workflows.OdooDataWorkflowRunner) -> None:
         runner.run_restore()
         self.assertEqual(
-            query(runner.local.db_name, "SELECT value FROM ir_config_parameter WHERE key='devkit.ci.origin'"), [("source",)]
+            query(runner.local.db_name, "SELECT value FROM ir_config_parameter WHERE key='devkit.ci.origin'"),
+            [("source",)],
+            "Source database did not replace target",
         )
         store = runner._local_database_filestore_path()
         self.assertTrue((store / "attachment").is_file(), "Source attachment was not copied")
@@ -303,16 +314,25 @@ os.execv('/bin/bash', ['bash', '-c', command])
         self.assert_password(runner)
 
     def test_restore_replaces_database(self) -> None:
-        self.guarded(self.restore_check, lambda runner: patch.object(runner, "overwrite_database"))
+        self.guarded(
+            self.restore_check,
+            lambda runner: patch.object(runner, "overwrite_database"),
+            fault_message="Source database did not replace target",
+        )
 
     def test_restore_replaces_filestore(self) -> None:
         self.guarded(
             self.restore_check,
             lambda runner: patch.object(runner, "overwrite_filestore", side_effect=lambda owner: subprocess.Popen(["true"])),
+            fault_message="Source attachment was not copied",
         )
 
     def test_restore_hardens_admin(self) -> None:
-        self.guarded(self.restore_check, lambda runner: patch.object(runner, "ensure_admin_user"))
+        self.guarded(
+            self.restore_check,
+            lambda runner: patch.object(runner, "ensure_admin_user"),
+            fault_message="Configured admin password was not applied",
+        )
 
     def test_failed_restore_drops_partial_database(self) -> None:
         def check(runner: workflows.OdooDataWorkflowRunner) -> None:
@@ -326,7 +346,11 @@ os.execv('/bin/bash', ['bash', '-c', command])
                 "Failed restore database survived rollback",
             )
 
-        self.guarded(check, lambda runner: patch.object(runner, "drop_database"))
+        self.guarded(
+            check,
+            lambda runner: patch.object(runner, "drop_database"),
+            fault_message="Failed restore database survived rollback",
+        )
 
     def test_bootstrap_creates_schema_and_hardens_admin(self) -> None:
         def check(runner: workflows.OdooDataWorkflowRunner) -> None:
@@ -335,7 +359,12 @@ os.execv('/bin/bash', ['bash', '-c', command])
             self.assert_password(runner)
             self.assertFalse((runner._local_database_filestore_path() / "stale").exists())
 
-        self.guarded(check, lambda runner: patch.object(runner, "ensure_admin_user"), empty=True)
+        self.guarded(
+            check,
+            lambda runner: patch.object(runner, "ensure_admin_user"),
+            empty=True,
+            fault_message="Configured admin password was not applied",
+        )
 
     def test_auto_updates_community_and_excludes_enterprise_repository(self) -> None:
         def check(runner: workflows.OdooDataWorkflowRunner) -> None:
@@ -354,4 +383,8 @@ os.execv('/bin/bash', ['bash', '-c', command])
             self.assertEqual(values["devkit.ci.community"], "loaded-from-xml", "AUTO did not upgrade the community addon")
             self.assertEqual(values["devkit.ci.enterprise"], "before-update", "AUTO upgraded an excluded Enterprise repository")
 
-        self.guarded(check, lambda runner: patch.object(runner, "_resolve_excluded_addon_roots", return_value=()))
+        self.guarded(
+            check,
+            lambda runner: patch.object(runner, "_resolve_excluded_addon_roots", return_value=()),
+            fault_message="AUTO upgraded an excluded Enterprise repository",
+        )
