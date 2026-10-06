@@ -40,8 +40,8 @@ jobs:
       - uses: astral-sh/setup-uv@v7
       - name: Record settings source
         run: |
-          mkdir -p .ci-evidence
-          git -C .ci-support rev-parse HEAD > .ci-evidence/shared-addons-commit.txt
+          mkdir -p ci-evidence
+          git -C .ci-support rev-parse HEAD > ci-evidence/shared-addons-commit.txt
       - name: Run live checks and planted faults on throwaway databases
         run: >-
           uv run --locked python -m odoo_devkit.addon_ci
@@ -49,11 +49,12 @@ jobs:
           --addons-root tests/live_odoo/addons
           --support-root .ci-support
           --devkit-checks
-          --output .ci-evidence
+          --output ci-evidence
           --timeout 750
       - name: Preserve live-check evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: devkit-live-checks
-          path: .ci-evidence
+          path: ci-evidence
+          if-no-files-found: error
