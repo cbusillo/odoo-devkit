@@ -11,6 +11,7 @@ import re
 import subprocess
 import tempfile
 import time
+import tomllib
 import uuid
 from pathlib import Path
 from typing import Literal, TypedDict
@@ -96,6 +97,8 @@ def fetch_source(args: list[str], *, capture: bool = False) -> subprocess.Comple
 
 def build_test_image(image: str, tenant: Path | None, context: Path, tag: str) -> None:
     catalogs = [ROOT / "docker" / "runtime-python", ROOT / "docker" / "addon-tests"]
+    python_requirement = tomllib.loads((catalogs[1] / "pyproject.toml").read_text())["project"]["requires-python"]
+    command(["uv", "python", "install", python_requirement])
     if tenant is not None:
         catalogs.append(tenant)
     requirements = []
@@ -119,6 +122,7 @@ def build_test_image(image: str, tenant: Path | None, context: Path, tag: str) -
             ).stdout
         )
     (context / "requirements.txt").write_text("\n".join(requirements), encoding="utf-8")
+    (context / ".dockerignore").write_text("external/**/.git\n", encoding="utf-8")
     (context / "Dockerfile").write_text(
         "ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nUSER root\n"
         "COPY requirements.txt /tmp/addon-ci-requirements.txt\n"
@@ -150,7 +154,7 @@ def run_tests(
     external_paths: list[str] = []
     result["external_sources"] = external_sources
     try:
-        with tempfile.TemporaryDirectory(prefix=token, dir=output) as temporary:
+        with tempfile.TemporaryDirectory(prefix=token, dir=output.parent) as temporary:
             context = Path(temporary)
             external_root = context / "external"
             external_root.mkdir()
@@ -165,7 +169,10 @@ def run_tests(
                         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", source.repository):
                             raise ValueError("Addon CI requires a GitHub owner/repository source")
                         checkout = external_root / source.repository.split("/")[1]
-                        fetch_source(["git", "clone", "--no-checkout", f"https://github.com/{source.repository}.git", str(checkout)])
+                        command(["git", "init", "--quiet", str(checkout)])
+                        command(
+                            ["git", "-C", str(checkout), "remote", "add", "origin", f"https://github.com/{source.repository}.git"]
+                        )
                         fetch_source(
                             [
                                 "git",
@@ -239,6 +246,7 @@ def run_tests(
             ["docker", "exec", database_container, "pg_isready", "-h", "127.0.0.1", "-U", "odoo"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            env=execution_environment(),
         ).returncode:
             if time.monotonic() >= ready_by:
                 raise TimeoutError("Throwaway PostgreSQL did not become ready")

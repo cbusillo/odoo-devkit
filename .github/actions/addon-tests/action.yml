@@ -2,13 +2,13 @@ name: Odoo addon tests
 description: Run owned addon suites against a disposable database with Chromium
 inputs:
   addons-root:
-    description: Checked-out repository's addon directory
+    description: Checked-out repository's addon directory, relative to the workspace
     required: true
   tenant:
-    description: Tenant checkout containing workspace.toml and uv.lock
+    description: Tenant checkout containing workspace.toml and uv.lock, relative to the workspace
     default: ''
   support-root:
-    description: Shared addons checkout, if separate from the owned addons
+    description: Shared addons checkout relative to the workspace, if separate from the owned addons
     default: ''
   image:
     description: Devtools image; omitted for tenants to use workspace.toml

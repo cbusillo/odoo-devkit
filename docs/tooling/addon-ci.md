@@ -32,7 +32,10 @@ Each invocation creates uniquely named Docker resources: an internal network,
 Postgres with temporary database storage, a test container and a test image.
 Addon checkouts are mounted read-only. The containers expose no host ports;
 the test network has no external connectivity and receives no credentials.
-The runner removes only its own named resources in `finally`. GitHub's fresh
+The build context is a temporary sibling of the evidence directory, so a
+cancelled job cannot upload private source as test evidence; Git history is
+excluded from the build context. Docker's normal build cache may retain source
+layers, under its existing host cache policy. The runner removes only its own named resources in `finally`. GitHub's fresh
 hosted runner supplies an additional cleanup boundary for job cancellation.
 
 `odoo.log` and `result.json` are written to the output directory. The result
@@ -53,7 +56,8 @@ uv run python -m odoo_devkit.addon_ci \
 ```
 
 Docker and uv are required. Choose an output directory on Developer-Artifacts
-on Chris-Studio; temporary build contexts stay under that directory. This runner
+on Chris-Studio; temporary build contexts stay beside that directory. The catalog's
+Python requirement is installed before offline lock checks. This runner
 does not use a live runtime, restore any database, or exercise devkit startup
 or restore scripts. Existing browser harnesses can still skip a broken suite;
 their failure propagation is tracked in shared-addons #40 and is separate from
