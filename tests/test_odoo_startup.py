@@ -41,7 +41,10 @@ def _load_startup_module() -> types.ModuleType:
 
     psycopg2_module.connect = _unexpected_connect
 
-    with patch.dict(sys.modules, {"psycopg2": psycopg2_module}):
+    with (
+        patch.dict(sys.modules, {"psycopg2": psycopg2_module}),
+        patch.object(sys, "path", [str(module_path.parent), *sys.path]),
+    ):
         spec.loader.exec_module(module)
     return module
 
@@ -124,6 +127,37 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
         self.assertEqual(settings.platform_instance, "local")
         self.assertEqual(settings.addons_path, "/opt/launchplane/addons,/odoo/addons")
 
+    def test_raw_admin_line_separators_stop_startup_before_any_side_effect(self) -> None:
+        separators = ("\n", "\r", "\r\n", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029")
+        for instance in ("local", "testing", "prod"):
+            for separator in separators:
+                for password in (separator, "fake-admin" + separator, separator + "fake-admin", "fake" + separator + "admin"):
+                    with self.subTest(instance=instance, separator=repr(separator), password=repr(password)), ExitStack() as stack:
+                        stack.enter_context(
+                            patch.dict(
+                                os.environ,
+                                {
+                                    "PLATFORM_INSTANCE": instance,
+                                    "ODOO_DB_NAME": "fixture",
+                                    "ODOO_MASTER_PASSWORD": "fake-master",
+                                    "ODOO_ADMIN_PASSWORD": password,
+                                },
+                                clear=True,
+                            )
+                        )
+                        stack.enter_context(
+                            patch.object(odoo_startup, "_parse_arguments", return_value=argparse.Namespace(config_path="unused"))
+                        )
+                        recorder = MagicMock()
+                        for step in self._STARTUP_STEP_NAMES:
+                            stack.enter_context(patch.object(odoo_startup, step, getattr(recorder, step)))
+                        stack.enter_context(patch.object(odoo_startup.os, "execv", recorder.execv))
+                        with self.assertRaises(ValueError) as caught:
+                            odoo_startup.main()
+                        self.assertNotIn(password, str(caught.exception))
+                        self.assertNotIn("fake-admin", str(caught.exception))
+                        self.assertEqual(recorder.mock_calls, [])
+
     def test_load_settings_preserves_launchplane_addon_path_first(self) -> None:
         environment = {
             "PLATFORM_INSTANCE": "local",
@@ -143,6 +177,34 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
             settings.addons_path,
             "/opt/launchplane/addons,/opt/project/addons,/odoo/addons",
         )
+
+    def test_raw_single_line_admin_password_reaches_the_password_write_literally(self) -> None:
+        for password in (" fake-password ", "\tfake-'\"\\-$password\t", "fake-password"):
+            with (
+                self.subTest(password=password),
+                patch.dict(
+                    os.environ,
+                    {
+                        "ODOO_DB_NAME": "fixture",
+                        "ODOO_MASTER_PASSWORD": "fake-master",
+                        "ODOO_ADMIN_PASSWORD": password,
+                    },
+                    clear=True,
+                ),
+            ):
+                settings = odoo_startup._load_settings(argparse.Namespace(config_path="unused"))
+                environment = MagicMock()
+                admin = environment["res.users"].sudo().with_context().search()
+                admin.with_user.return_value = admin
+                admin._check_credentials.side_effect = PermissionError
+                self._execute_admin_hardening(settings, environment)
+                admin.with_context().sudo().write.assert_called_once_with({"password": password})
+
+    def test_settings_reject_nul_without_disclosing_password(self) -> None:
+        # A real process environment cannot contain NUL, but direct settings must not accept it either.
+        with self.assertRaises(ValueError) as caught:
+            self._settings(admin_password="fake-admin\x00password")
+        self.assertNotIn("fake-admin", str(caught.exception))
 
     @staticmethod
     def test_sync_python_dependencies_runs_for_local_dev_runtime() -> None:

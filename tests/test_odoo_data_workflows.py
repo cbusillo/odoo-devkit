@@ -17,6 +17,8 @@ from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from pydantic import SecretStr, ValidationError
+
 from odoo_devkit.local_runtime import load_environment_from_explicit_payload
 
 
@@ -602,6 +604,24 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
 
 
 class DataWorkflowGuardTests(unittest.TestCase):
+    def test_raw_admin_line_separators_stop_all_workflows_without_leaking_input(self) -> None:
+        separators = ("\n", "\r", "\r\n", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029")
+        for arguments in ([], ["--bootstrap"], ["--update-only"], ["--post-deploy-maintenance"]):
+            for separator in separators:
+                for password in (separator, "fake-admin" + separator, separator + "fake-admin", "fake" + separator + "admin"):
+                    with (
+                        self.subTest(arguments=arguments, separator=repr(separator), password=repr(password)),
+                        patch.dict(os.environ, {**self._LOCAL_ENVIRONMENT, "ODOO_ADMIN_PASSWORD": password}, clear=True),
+                        patch.object(odoo_data_workflows, "OdooDataWorkflowRunner") as runner,
+                        self.assertLogs(odoo_data_workflows._logger, level="ERROR") as logs,
+                    ):
+                        result = odoo_data_workflows.main(arguments)
+                    self.assertEqual(result, odoo_data_workflows.ExitCode.INVALID_ARGS)
+                    runner.assert_not_called()
+                    diagnostic = "\n".join(logs.output)
+                    self.assertNotIn("fake-admin", diagnostic)
+                    self.assertNotIn("fake", diagnostic)
+
     _LOCAL_ENVIRONMENT = {
         "ODOO_DB_HOST": "database",
         "ODOO_DB_USER": "odoo",
@@ -1575,6 +1595,43 @@ class UpdateAddonsModuleDetectionTests(unittest.TestCase):
 
 
 class EnsureAdminUserTests(unittest.TestCase):
+    def test_raw_single_line_admin_password_reaches_the_password_write_literally(self) -> None:
+        for password in (" fake-password ", "\tfake-'\"\\-$password\t", "fake-password"):
+            with (
+                self.subTest(password=password),
+                patch.dict(
+                    os.environ,
+                    {
+                        **DataWorkflowGuardTests._LOCAL_ENVIRONMENT,
+                        "ODOO_ADMIN_PASSWORD": password,
+                    },
+                    clear=True,
+                ),
+            ):
+                settings = odoo_data_workflows.LocalServerSettings()
+                runner = self._runner("fake-fixture")
+                settings.db_conn = runner.local.db_conn
+                runner.local = settings
+                environment = MagicMock()
+                admin = environment["res.users"].sudo().search()
+                admin.with_user.return_value = admin
+                admin._check_credentials.side_effect = PermissionError
+                self._run_admin_hardening(runner, environment)
+                admin.with_context().sudo().write.assert_called_once_with({"password": password})
+
+    def test_direct_secret_inputs_cannot_bypass_validation_or_leak_into_errors(self) -> None:
+        for password in ("fake-admin\n", "fake\u2028admin", "fake-admin\x00password"):
+            for value in (password, SecretStr(password)):
+                with (
+                    self.subTest(password=repr(password), wrapped=isinstance(value, SecretStr)),
+                    patch.dict(os.environ, {}, clear=True),
+                ):
+                    with self.assertRaises(ValidationError) as caught:
+                        odoo_data_workflows.LocalServerSettings(
+                            **DataWorkflowGuardTests._LOCAL_ENVIRONMENT, ODOO_ADMIN_PASSWORD=value
+                        )
+                    self.assertNotIn("fake", str(caught.exception))
+
     def _runner(self, admin_password: str) -> Any:
         environment: dict[str, object] = {
             "ODOO_DB_HOST": "database",
