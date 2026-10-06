@@ -14,7 +14,7 @@ import uuid
 from pathlib import Path
 from typing import Literal, TypedDict
 
-from .artifact_inputs import load_artifact_inputs_definition
+from .artifact_inputs import effective_artifact_input_sources, load_artifact_inputs_definition
 from .manifest import load_workspace_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -74,11 +74,12 @@ def command(args: list[str], *, capture: bool = False, timeout: int = 1800) -> s
 
 
 def build_test_image(image: str, tenant: Path | None, context: Path, tag: str) -> None:
-    catalogs = [ROOT / "docker" / "addon-tests"]
+    catalogs = [ROOT / "docker" / "runtime-python", ROOT / "docker" / "addon-tests"]
     if tenant is not None:
         catalogs.append(tenant)
     requirements = []
     for catalog in catalogs:
+        command(["uv", "lock", "--project", str(catalog), "--check", "--offline", "--no-config"])
         requirements.append(
             command(
                 [
@@ -136,14 +137,28 @@ def run_tests(
                 manifest = load_workspace_manifest(tenant / "workspace.toml")
                 inputs = load_artifact_inputs_definition(manifest=manifest)
                 if inputs:
-                    for source in inputs.sources:
+                    sources = effective_artifact_input_sources(
+                        artifact_inputs_definition=inputs, context_name=manifest.runtime.context, instance_name="local"
+                    )
+                    for source in sources:
                         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", source.repository):
                             raise ValueError("Addon CI requires a GitHub owner/repository source")
                         checkout = external_root / source.repository.split("/")[1]
                         command(["git", "clone", "--no-checkout", f"https://github.com/{source.repository}.git", str(checkout)])
                         command(
-                            ["git", "-C", str(checkout), "checkout", "--detach", source.exact_ref or f"origin/{source.selector}"]
+                            [
+                                "git",
+                                "-C",
+                                str(checkout),
+                                "fetch",
+                                "--depth",
+                                "1",
+                                "origin",
+                                "--",
+                                source.exact_ref or source.selector or "HEAD",
+                            ]
                         )
+                        command(["git", "-C", str(checkout), "checkout", "--detach", "FETCH_HEAD"])
                         source_commit = command(["git", "-C", str(checkout), "rev-parse", "HEAD"], capture=True).stdout.strip()
                         external_sources.append({"repository": source.repository, "commit": source_commit})
                         if (checkout / "__manifest__.py").is_file():
@@ -160,11 +175,16 @@ def run_tests(
                 "--rm",
                 "--network",
                 "none",
+                "--env",
+                "ODOO_BROWSER_BIN=/usr/local/bin/chromium-playwright",
                 "--entrypoint",
                 "/venv/bin/python",
                 image_tag,
                 "-c",
-                "import odoo.release; print(odoo.release.version)",
+                "import odoo.release; import websocket; import subprocess; "
+                "from odoo.tests.common import _find_executable; "
+                "subprocess.run([_find_executable(), '--version'], check=True, capture_output=True); "
+                "print('.'.join(map(str, odoo.release.version_info[:2])))",
             ],
             capture=True,
         ).stdout.strip()
@@ -195,7 +215,7 @@ def run_tests(
         )
         ready_by = time.monotonic() + 60
         while subprocess.run(
-            ["docker", "exec", database_container, "pg_isready", "-U", "odoo"],
+            ["docker", "exec", database_container, "pg_isready", "-h", "127.0.0.1", "-U", "odoo"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         ).returncode:
@@ -298,7 +318,7 @@ def main() -> None:
     if not arguments.image:
         parser.error("--image is required without a tenant manifest")
     if not arguments.odoo_version:
-        first_manifest = next(arguments.addons_root.glob("*/__manifest__.py"))
+        first_manifest = arguments.addons_root / discover_addons(arguments.addons_root)[0] / "__manifest__.py"
         addon_version = ast.literal_eval(first_manifest.read_text())["version"]
         arguments.odoo_version = ".".join(addon_version.split(".")[:2])
     run_tests(

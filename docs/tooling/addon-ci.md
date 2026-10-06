@@ -4,7 +4,8 @@ The `addon-tests` composite action in this repository runs the caller's addon
 suites on a fresh database. Callers pin the action to an exact devkit commit.
 Tenant callers provide their checkout and a shared-addons checkout; the runner
 reads the tenant's devtools image and Odoo version from `workspace.toml` and
-common external addon sources from `artifact-inputs.toml`. Shared-addons callers
+common and context-default external addon sources from `artifact-inputs.toml`
+(local test selection; hosted instance overrides are excluded). Shared-addons callers
 provide the community devtools image and derive the Odoo series from an addon
 manifest.
 
@@ -14,12 +15,16 @@ tenant dependencies without selecting their tests again. Test discovery remains
 Odoo's responsibility. Browser suites use the image's Chromium plus the locked
 CI-only `websocket-client` dependency catalog in `docker/addon-tests`.
 
-The tenant lock is exported with frozen semantics. The test image extends the
+Runtime-support, CI-only and tenant locks are checked offline and exported with
+frozen semantics. The test image extends the
 base Python environment additively, constraining every installed base package
 to its existing version, and checks the final environment. A dependency conflict
 fails the build instead of replacing a base-owned package. External source
 selectors are resolved to commits, recorded in the result, and copied into the
-throwaway test image. No image is published.
+throwaway test image. Branch, tag and exact source references are accepted;
+private sources require a separate supported CI read path and fail without one.
+No image is published. Browser preflight requires Odoo's core executable finder
+to locate Chromium, launch its version check, and import `websocket`.
 
 Each invocation creates uniquely named Docker resources: an internal network,
 Postgres with temporary database storage, a test container and a test image.

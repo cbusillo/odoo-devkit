@@ -19,7 +19,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: astral-sh/setup-uv@v7
+    - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
     - name: Run addon tests
       shell: bash
       env:
@@ -31,6 +31,7 @@ runs:
         ADDON_CI_OUTPUT: ${{ inputs.output }}
       run: |
         set -euo pipefail
+        if [[ "$ADDON_CI_OUTPUT" != /* ]]; then ADDON_CI_OUTPUT="$GITHUB_WORKSPACE/$ADDON_CI_OUTPUT"; fi
         args=(--addons-root "$GITHUB_WORKSPACE/$ADDON_CI_ROOT" --output "$ADDON_CI_OUTPUT")
         if [ -n "$ADDON_CI_TENANT" ]; then args+=(--tenant "$GITHUB_WORKSPACE/$ADDON_CI_TENANT"); fi
         if [ -n "$ADDON_CI_SUPPORT" ]; then args+=(--support-root "$GITHUB_WORKSPACE/$ADDON_CI_SUPPORT"); fi
