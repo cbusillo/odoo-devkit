@@ -2670,6 +2670,7 @@ with registry.cursor() as cr:
         self.verify_production_credentials_cleared()
         self.apply_environment_overrides()
         self.block_outgoing_mail_outside_production()
+        self.ensure_admin_user()
 
 
 if __name__ == "__main__":  # pragma: no cover

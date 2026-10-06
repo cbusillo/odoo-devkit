@@ -137,7 +137,15 @@ def build_test_image(image: str, tenant: Path | None, context: Path, tag: str) -
 
 
 def run_tests(
-    *, image: str, version: str, addons_root: Path, support_root: Path | None, tenant: Path | None, output: Path, timeout: int
+    *,
+    image: str,
+    version: str,
+    addons_root: Path,
+    support_root: Path | None,
+    tenant: Path | None,
+    output: Path,
+    timeout: int,
+    devkit_checks: bool = False,
 ) -> None:
     owned_addons = discover_addons(addons_root)
     install_addons = list(owned_addons)
@@ -258,8 +266,15 @@ def run_tests(
         if tenant is not None:
             mounts = ["--volume", f"{tenant}:/opt/project:ro", *mounts]
         if support_root is not None:
-            mounts.extend(["--volume", f"{support_root}:/opt/extra_addons:ro"])
-            python_paths.append("/opt/extra_addons")
+            support_path = "/opt/support-addons" if devkit_checks else "/opt/extra_addons"
+            mounts.extend(["--volume", f"{support_root}:{support_path}:ro"])
+            paths.append(support_path)
+            python_paths.append(support_path)
+        if devkit_checks:
+            mounts.extend(["--volume", f"{ROOT / 'docker/scripts'}:/volumes/scripts:ro"])
+            mounts.extend(["--volume", f"{ROOT / 'tests/live_odoo/extra_addons'}:/opt/extra_addons:ro"])
+            paths.append("/opt/extra_addons/ci_enterprise")
+            python_paths.insert(0, "/volumes/scripts")
         test_command = [
             "docker",
             "run",
@@ -341,6 +356,7 @@ def main() -> None:
     parser.add_argument("--tenant", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--timeout", type=int, default=1800)
+    parser.add_argument("--devkit-checks", action="store_true", help="Mount devkit scripts and synthetic live-check addons")
     arguments = parser.parse_args()
     if arguments.tenant:
         manifest = load_workspace_manifest(arguments.tenant.resolve() / "workspace.toml")
@@ -360,6 +376,7 @@ def main() -> None:
         tenant=arguments.tenant.resolve() if arguments.tenant else None,
         output=arguments.output.resolve(),
         timeout=arguments.timeout,
+        devkit_checks=arguments.devkit_checks,
     )
 
 
