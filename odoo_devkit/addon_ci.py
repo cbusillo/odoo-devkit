@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import base64
 import json
 import os
 import re
@@ -69,8 +70,28 @@ def test_result(log: str, exit_code: int) -> TestCounts:
     return counts
 
 
+def execution_environment() -> dict[str, str]:
+    return {key: value for key, value in os.environ.items() if key != "ADDON_CI_SOURCE_TOKEN"}
+
+
 def command(args: list[str], *, capture: bool = False, timeout: int = 1800) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(args, check=True, text=True, capture_output=capture, timeout=timeout)
+    return subprocess.run(args, check=True, text=True, capture_output=capture, timeout=timeout, env=execution_environment())
+
+
+def fetch_source(args: list[str], *, capture: bool = False) -> subprocess.CompletedProcess[str]:
+    environment = execution_environment()
+    source_token = os.environ.get("ADDON_CI_SOURCE_TOKEN", "")
+    if source_token:
+        authorization = base64.b64encode(f"x-access-token:{source_token}".encode()).decode()
+        environment.update(
+            {
+                "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader",
+                "GIT_CONFIG_VALUE_0": f"AUTHORIZATION: basic {authorization}",
+            }
+        )
+    # Auth exists only in this Git child's environment, never in argv or checkout config.
+    return subprocess.run(args, check=True, text=True, env=environment, capture_output=capture, timeout=180)
 
 
 def build_test_image(image: str, tenant: Path | None, context: Path, tag: str) -> None:
@@ -144,8 +165,8 @@ def run_tests(
                         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", source.repository):
                             raise ValueError("Addon CI requires a GitHub owner/repository source")
                         checkout = external_root / source.repository.split("/")[1]
-                        command(["git", "clone", "--no-checkout", f"https://github.com/{source.repository}.git", str(checkout)])
-                        command(
+                        fetch_source(["git", "clone", "--no-checkout", f"https://github.com/{source.repository}.git", str(checkout)])
+                        fetch_source(
                             [
                                 "git",
                                 "-C",
@@ -276,7 +297,9 @@ def run_tests(
             str(timeout),
         ]
         with (output / "odoo.log").open("w", encoding="utf-8") as log_file:
-            completed = subprocess.run(test_command, stdout=log_file, stderr=subprocess.STDOUT, text=True, timeout=timeout)
+            completed = subprocess.run(
+                test_command, stdout=log_file, stderr=subprocess.STDOUT, text=True, timeout=timeout, env=execution_environment()
+            )
         log = (output / "odoo.log").read_text(encoding="utf-8")
         print(log)
         result.update(test_result(log, completed.returncode))
@@ -291,7 +314,7 @@ def run_tests(
             ["docker", "network", "rm", token],
             ["docker", "image", "rm", image_tag],
         ):
-            subprocess.run(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+            subprocess.run(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60, env=execution_environment())
         result["seconds"] = round(time.monotonic() - started, 1)
         (output / "result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
         summary = f"Addon CI: {result['state']}, {result.get('tests', 'unknown')} tests, {result['seconds']} seconds\n"

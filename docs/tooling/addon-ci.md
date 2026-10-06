@@ -22,7 +22,9 @@ to its existing version, and checks the final environment. A dependency conflict
 fails the build instead of replacing a base-owned package. External source
 selectors are resolved to commits, recorded in the result, and copied into the
 throwaway test image. Branch, tag and exact source references are accepted;
-private sources require a separate supported CI read path and fail without one.
+private sources use the caller's existing source-read binding through the
+`source-token` input and fail without one. Auth is ephemeral to the Git child;
+it is never written into clone configuration, arguments, images or test containers.
 No image is published. Browser preflight requires Odoo's core executable finder
 to locate Chromium, launch its version check, and import `websocket`.
 

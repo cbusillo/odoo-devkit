@@ -16,6 +16,9 @@ inputs:
   output:
     description: Directory for Odoo logs, result and elapsed time
     required: true
+  source-token:
+    description: Existing repository source-read token for manifest-declared private addons
+    default: ''
 runs:
   using: composite
   steps:
@@ -29,6 +32,7 @@ runs:
         ADDON_CI_SUPPORT: ${{ inputs.support-root }}
         ADDON_CI_IMAGE: ${{ inputs.image }}
         ADDON_CI_OUTPUT: ${{ inputs.output }}
+        ADDON_CI_SOURCE_TOKEN: ${{ inputs.source-token }}
       run: |
         set -euo pipefail
         if [[ "$ADDON_CI_OUTPUT" != /* ]]; then ADDON_CI_OUTPUT="$GITHUB_WORKSPACE/$ADDON_CI_OUTPUT"; fi
