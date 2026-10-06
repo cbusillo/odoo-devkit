@@ -11,7 +11,8 @@
     "buildToolUpgrades": "docs/tooling/build-tool-upgrades.md",
     "commandPatterns": "docs/tooling/command-patterns.md",
     "tenantOverlay": "docs/tooling/tenant-overlay.md",
-    "pythonInspection": "docs/tooling/python-inspection.md"
+    "pythonInspection": "docs/tooling/python-inspection.md",
+    "addonCi": "docs/tooling/addon-ci.md"
   },
   "qualityGate": {
     "setup": {
@@ -19,7 +20,8 @@
     },
     "test": {
       "default": "uv run python -m unittest discover -s tests",
-      "runtimePythonLock": "uv lock --check --offline --no-config --project docker/runtime-python"
+      "runtimePythonLock": "uv lock --check --offline --no-config --project docker/runtime-python",
+      "addonCiLock": "uv lock --check --offline --no-config --project docker/addon-tests"
     },
     "format": {
       "default": "uv run ruff format --check ."

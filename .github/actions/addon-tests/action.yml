@@ -1,0 +1,38 @@
+name: Odoo addon tests
+description: Run owned addon suites against a disposable database with Chromium
+inputs:
+  addons-root:
+    description: Checked-out repository's addon directory
+    required: true
+  tenant:
+    description: Tenant checkout containing workspace.toml and uv.lock
+    default: ''
+  support-root:
+    description: Shared addons checkout, if separate from the owned addons
+    default: ''
+  image:
+    description: Devtools image; omitted for tenants to use workspace.toml
+    default: ''
+  output:
+    description: Directory for Odoo logs, result and elapsed time
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: astral-sh/setup-uv@v7
+    - name: Run addon tests
+      shell: bash
+      env:
+        ADDON_CI_ACTION: ${{ github.action_path }}
+        ADDON_CI_ROOT: ${{ inputs.addons-root }}
+        ADDON_CI_TENANT: ${{ inputs.tenant }}
+        ADDON_CI_SUPPORT: ${{ inputs.support-root }}
+        ADDON_CI_IMAGE: ${{ inputs.image }}
+        ADDON_CI_OUTPUT: ${{ inputs.output }}
+      run: |
+        set -euo pipefail
+        args=(--addons-root "$GITHUB_WORKSPACE/$ADDON_CI_ROOT" --output "$ADDON_CI_OUTPUT")
+        if [ -n "$ADDON_CI_TENANT" ]; then args+=(--tenant "$GITHUB_WORKSPACE/$ADDON_CI_TENANT"); fi
+        if [ -n "$ADDON_CI_SUPPORT" ]; then args+=(--support-root "$GITHUB_WORKSPACE/$ADDON_CI_SUPPORT"); fi
+        if [ -n "$ADDON_CI_IMAGE" ]; then args+=(--image "$ADDON_CI_IMAGE"); fi
+        uv --directory "$ADDON_CI_ACTION/../../.." run --locked python -m odoo_devkit.addon_ci "${args[@]}"
