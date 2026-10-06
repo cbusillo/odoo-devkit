@@ -12,12 +12,37 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
+from typing import Literal, TypedDict
 
 from .artifact_inputs import load_artifact_inputs_definition
 from .manifest import load_workspace_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
-SUMMARY = re.compile(r"(\d+) failed, (\d+) error\(s\) of (\d+) tests")
+SUMMARY = re.compile(r"(\d+) failed, (\d+) error[(]s[)] of (\d+) tests")
+
+
+class TestCounts(TypedDict):
+    failed: int
+    errors: int
+    tests: int
+
+
+class AddonResult(TypedDict, total=False):
+    addons: list[str]
+    external_sources: list[dict[str, str]]
+    image: str
+    odoo_version: str
+    state: Literal["failed", "passed"]
+    failed: int
+    errors: int
+    tests: int
+    seconds: float
+
+
+class TestRunError(ValueError):
+    def __init__(self, message: str, counts: TestCounts) -> None:
+        super().__init__(message)
+        self.counts = counts
 
 
 def discover_addons(root: Path) -> list[str]:
@@ -33,14 +58,15 @@ def discover_addons(root: Path) -> list[str]:
     return addons
 
 
-def test_result(log: str, exit_code: int) -> dict[str, int]:
+def test_result(log: str, exit_code: int) -> TestCounts:
     matches = SUMMARY.findall(log)
     if not matches:
         raise ValueError("Odoo did not report a test summary")
     failed, errors, count = map(int, matches[-1])
+    counts: TestCounts = {"failed": failed, "errors": errors, "tests": count}
     if exit_code or failed or errors or not count:
-        raise ValueError(f"Odoo test run failed: exit={exit_code}, failed={failed}, errors={errors}, tests={count}")
-    return {"failed": failed, "errors": errors, "tests": count}
+        raise TestRunError(f"Odoo test run failed: exit={exit_code}, failed={failed}, errors={errors}, tests={count}", counts)
+    return counts
 
 
 def command(args: list[str], *, capture: bool = False, timeout: int = 1800) -> subprocess.CompletedProcess[str]:
@@ -97,7 +123,7 @@ def run_tests(
     image_tag = f"{token}:test"
     started = time.monotonic()
     output.mkdir(parents=True, exist_ok=True)
-    result: dict[str, object] = {"addons": owned_addons, "image": image, "odoo_version": version, "state": "failed"}
+    result: AddonResult = {"addons": owned_addons, "image": image, "odoo_version": version, "state": "failed"}
     external_sources: list[dict[str, str]] = []
     external_paths: list[str] = []
     result["external_sources"] = external_sources
@@ -172,7 +198,6 @@ def run_tests(
             ["docker", "exec", database_container, "pg_isready", "-U", "odoo"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            check=False,
         ).returncode:
             if time.monotonic() >= ready_by:
                 raise TimeoutError("Throwaway PostgreSQL did not become ready")
@@ -231,13 +256,14 @@ def run_tests(
             str(timeout),
         ]
         with (output / "odoo.log").open("w", encoding="utf-8") as log_file:
-            completed = subprocess.run(
-                test_command, stdout=log_file, stderr=subprocess.STDOUT, text=True, check=False, timeout=timeout
-            )
+            completed = subprocess.run(test_command, stdout=log_file, stderr=subprocess.STDOUT, text=True, timeout=timeout)
         log = (output / "odoo.log").read_text(encoding="utf-8")
         print(log)
         result.update(test_result(log, completed.returncode))
         result["state"] = "passed"
+    except TestRunError as error:
+        result.update(error.counts)
+        raise
     finally:
         # Names are generated for this invocation; never enumerate or prune other Docker resources.
         for args in (
@@ -245,7 +271,7 @@ def run_tests(
             ["docker", "network", "rm", token],
             ["docker", "image", "rm", image_tag],
         ):
-            subprocess.run(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False, timeout=60)
+            subprocess.run(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
         result["seconds"] = round(time.monotonic() - started, 1)
         (output / "result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
         summary = f"Addon CI: {result['state']}, {result.get('tests', 'unknown')} tests, {result['seconds']} seconds\n"
