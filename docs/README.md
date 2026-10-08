@@ -20,6 +20,8 @@ lanes live in `launchplane`.
   runtime and publish source-input contract.
 - [tooling/build-tool-upgrades.md](tooling/build-tool-upgrades.md) for central
   build-tool ownership and atomic tenant pin synchronization.
+- [tooling/consumer-build-checks.md](tooling/consumer-build-checks.md) for
+  tenant-side production builds against a devkit PR commit before Ready.
 - [tooling/command-patterns.md](tooling/command-patterns.md) for concrete
   workspace command examples.
 - [tooling/tenant-overlay.md](tooling/tenant-overlay.md) for the thin tenant

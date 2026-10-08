@@ -11,6 +11,7 @@ from .manifest import WorkspaceManifest, load_workspace_manifest
 from .pycharm_sources import prepare_odoo_sources
 from .runtime import (
     run_native_runtime_build,
+    run_native_runtime_check_artifact,
     run_native_runtime_down,
     run_native_runtime_inspect,
     run_native_runtime_logs,
@@ -170,6 +171,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Target platform for artifact image builds. May be provided more than once; defaults to linux/amd64 and linux/arm64.",
     )
     runtime_publish_parser.set_defaults(handler=_handle_runtime_publish)
+
+    artifact_check_parser = _add_manifest_argument(
+        runtime_subparsers.add_parser("check-artifact", help="Build the production artifact without publishing or deploying")
+    )
+    _add_runtime_instance_override_argument(artifact_check_parser)
+    artifact_check_parser.add_argument("--devkit-commit", required=True)
+    artifact_check_parser.add_argument("--output-file", type=Path)
+    artifact_check_parser.add_argument("--no-cache", action="store_true")
+    artifact_check_parser.add_argument("--platform", action="append", default=None)
+    artifact_check_parser.set_defaults(handler=_handle_runtime_check_artifact)
 
     runtime_down_parser = _add_manifest_argument(
         runtime_subparsers.add_parser("down", help="Stop the local manifest runtime target")
@@ -447,6 +458,20 @@ def _handle_runtime_publish(arguments: argparse.Namespace) -> None:
     print(json.dumps(payload, indent=2, sort_keys=True))
 
 
+def _handle_runtime_check_artifact(arguments: argparse.Namespace) -> None:
+    manifest = _load_runtime_manifest(arguments)
+    payload = _run_runtime_handler(
+        lambda: run_native_runtime_check_artifact(
+            manifest=manifest,
+            devkit_commit=arguments.devkit_commit,
+            output_file=arguments.output_file,
+            no_cache=arguments.no_cache,
+            platforms=tuple(arguments.platform or ()),
+        )
+    )
+    print(json.dumps(payload, indent=2, sort_keys=True))
+
+
 def _handle_runtime_down(arguments: argparse.Namespace) -> None:
     manifest = _load_runtime_manifest(arguments)
     exit_code = _run_runtime_handler(lambda: run_native_runtime_down(manifest=manifest, volumes=arguments.volumes))
@@ -518,6 +543,8 @@ def _load_runtime_manifest(arguments: argparse.Namespace) -> WorkspaceManifest:
     runtime_instance_override = getattr(arguments, "runtime_instance", None)
     if runtime_instance_override is None:
         return manifest
+    if not isinstance(runtime_instance_override, str):
+        raise SystemExit("Runtime instance override must be a string.")
     normalized_runtime_instance = runtime_instance_override.strip().lower()
     if not normalized_runtime_instance:
         raise SystemExit("Runtime instance override must be a non-empty value.")

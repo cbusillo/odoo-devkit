@@ -82,6 +82,8 @@ into the generated workspace root.
 
 - Use [`.github/github.json`](.github/github.json)
   for validation commands and quality gates.
+- Before a devkit PR is Ready, follow the
+  [tenant consumer-build checks](docs/tooling/consumer-build-checks.md).
 - For workspace-surface changes, also run a live `workspace sync` against the
   current proof manifest and inspect the generated root files, including
   `docs/session-prompt.md`.

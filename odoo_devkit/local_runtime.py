@@ -556,6 +556,8 @@ def publish_runtime_artifact(
     output_file: Path | None,
     no_cache: bool,
     platforms: tuple[str, ...] = DEFAULT_ARTIFACT_IMAGE_PLATFORMS,
+    build_only: bool = False,
+    expected_runtime_commit: str | None = None,
 ) -> RuntimeArtifactPublishResult:
     normalized_image_repository = image_repository.strip()
     normalized_image_tag = image_tag.strip()
@@ -608,11 +610,14 @@ def publish_runtime_artifact(
         runtime_repo_path=runtime_repo_path,
         github_token=source_github_token,
     )
+    if expected_runtime_commit is not None and runtime_source.commit != expected_runtime_commit:
+        raise RuntimeCommandError(f"Artifact check requires runtime commit {expected_runtime_commit}; got {runtime_source.commit}.")
     ensure_registry_auth_for_base_images(runtime_values)
-    ensure_registry_auth_for_image_push(
-        environment_values=runtime_values,
-        image_repository=normalized_image_repository,
-    )
+    if not build_only:
+        ensure_registry_auth_for_image_push(
+            environment_values=runtime_values,
+            image_repository=normalized_image_repository,
+        )
 
     base_runtime_image, base_devtools_image = resolve_base_images_for_build(runtime_values)
     runtime_base_provenance = resolve_base_image_provenance(
@@ -691,8 +696,8 @@ def publish_runtime_artifact(
             f"{normalized_image_repository}:{normalized_image_tag}",
             "--metadata-file",
             str(build_metadata_file),
-            "--push",
         ]
+        build_command.extend(["--output", "type=cacheonly"] if build_only else ["--push"])
         if github_token is not None:
             build_command.extend(["--secret", "id=github_token,env=GITHUB_TOKEN"])
         if no_cache:
@@ -705,6 +710,27 @@ def publish_runtime_artifact(
             command=build_command,
             environment_overrides=build_environment,
         )
+        if build_only:
+            require_artifact_git_sources_unchanged((tenant_source, runtime_source, shared_addons_source))
+            require_staged_artifact_context_unchanged(staged_context_root=staged_context_root, staged_context=staged_context)
+            check_payload = {
+                "schema_version": 1,
+                "kind": "artifact_build_check",
+                "source_commit": tenant_source.commit,
+                "runtime_commit": runtime_source.commit,
+                "runtime_repository": runtime_source.repository,
+                "platforms": list(normalized_platforms),
+                "addon_sources": list(artifact_source_entries),
+                "source_selectors": list(artifact_source_selectors),
+                "base_images": [runtime_base_provenance.digest_reference, devtools_base_provenance.digest_reference],
+                "support_lock_sha256": staged_context.support_lock_sha256,
+                "tenant_lock_sha256": staged_context.tenant_lock_sha256,
+            }
+            check_output_file = None if output_file is None else output_file.expanduser().resolve()
+            if check_output_file is not None:
+                check_output_file.parent.mkdir(parents=True, exist_ok=True)
+                check_output_file.write_text(json.dumps(check_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            return RuntimeArtifactPublishResult(manifest_payload=check_payload, output_file=check_output_file)
         artifact_image_digest = resolve_buildx_metadata_image_digest(build_metadata_file)
         require_staged_artifact_context_unchanged(staged_context_root=staged_context_root, staged_context=staged_context)
         evidence_root = staged_context_root / "evidence"

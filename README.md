@@ -53,6 +53,8 @@ uv run platform dependencies check --manifest /path/to/workspace.toml
 uv run platform dependencies normalize --manifest /path/to/workspace.toml
 uv run platform runtime select --manifest /path/to/workspace.toml
 uv run platform runtime build --manifest /path/to/workspace.toml --no-cache
+uv run platform runtime check-artifact --manifest /path/to/workspace.toml \
+  --instance artifact --devkit-commit <40-character-devkit-commit> --platform linux/amd64
 uv run platform runtime up --manifest /path/to/workspace.toml --build
 uv run platform runtime down --manifest /path/to/workspace.toml --volumes
 uv run platform runtime workflow --manifest /path/to/workspace.toml --workflow update
