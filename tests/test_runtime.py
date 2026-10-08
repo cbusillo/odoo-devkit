@@ -14,6 +14,7 @@ import tempfile
 import tomllib
 import unittest
 from collections.abc import Callable
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
 from unittest import mock
@@ -32,6 +33,7 @@ from odoo_devkit.manifest import WorkspaceManifest, load_workspace_manifest
 from odoo_devkit.runtime import (
     resolve_runtime_repo_path,
     run_native_runtime_build,
+    run_native_runtime_check_artifact,
     run_native_runtime_down,
     run_native_runtime_inspect,
     run_native_runtime_logs,
@@ -1404,6 +1406,118 @@ homepage = true
 
             with self.assertRaisesRegex(ValueError, "requires --instance local"):
                 run_native_runtime_build(manifest=manifest, no_cache=False)
+
+    def _prepare_artifact_check(self, temp_root: Path) -> tuple[WorkspaceManifest, str]:
+        tenant_root = self._create_git_repo(temp_root / "tenant-repo")
+        runtime_root = self._create_git_repo(temp_root / "runtime-repo")
+        self._write_tenant_dependency_workspace(tenant_root, addon_names=("opw_custom",))
+        (tenant_root / "addons/opw_custom/__manifest__.py").write_text("{}\n")
+        self._write_runtime_repo(runtime_root)
+        manifest_path = self._write_manifest(tenant_repo_path=tenant_root, runtime_repo_path=runtime_root)
+        for root in (tenant_root, runtime_root):
+            subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "artifact inputs"], cwd=root, check=True, capture_output=True)
+        commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=runtime_root, text=True).strip()
+        self._configure_publish_runtime_payload(instance="local", include_deployment_secrets=False)
+        return load_workspace_manifest(manifest_path), commit
+
+    def test_artifact_check_builds_production_context_without_push_or_published_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temp_root = Path(temporary_directory)
+            manifest, commit = self._prepare_artifact_check(temp_root)
+            assert manifest.runtime_repo is not None
+            runtime_root = manifest.runtime_repo.resolve_path(manifest_directory=manifest.manifest_directory)
+            assert runtime_root is not None
+            manifest = replace(manifest, devkit_repo=manifest.runtime_repo)
+            original_manifest = manifest.manifest_path.read_bytes()
+            output = temp_root / "check.json"
+            commands: list[list[str]] = []
+
+            def execute(*, command: list[str], **_kwargs: object) -> None:
+                commands.append(command)
+                if command[:3] == ["docker", "buildx", "build"]:
+                    context = Path(command[-1])
+                    self.assertTrue((context / "addons/opw_custom/__manifest__.py").is_file())
+                    self.assertTrue((context / "runtime/uv.lock").is_file())
+                    self.assertTrue((context / "project/uv.lock").is_file())
+
+            with (
+                mock.patch("odoo_devkit.runtime.__file__", str(runtime_root / "odoo_devkit/runtime.py")),
+                mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_base_images"),
+                mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_image_push") as push_auth,
+                mock.patch("odoo_devkit.local_runtime.extract_published_dependency_evidence") as published_evidence,
+                mock.patch(
+                    "odoo_devkit.local_runtime.resolve_base_image_provenance",
+                    side_effect=self._resolve_base_image_provenance_fixture,
+                ),
+                mock.patch("odoo_devkit.local_runtime.run_command", side_effect=execute),
+            ):
+                payload = run_native_runtime_check_artifact(
+                    manifest=manifest, devkit_commit=commit, output_file=output, no_cache=False, platforms=("linux/amd64",)
+                )
+            builds = [command for command in commands if command[:3] == ["docker", "buildx", "build"]]
+            self.assertEqual(len(builds), 1)
+            self.assertEqual(builds[0][builds[0].index("--target") + 1], "production")
+            self.assertEqual(builds[0][builds[0].index("--output") + 1], "type=cacheonly")
+            self.assertNotIn("--push", builds[0])
+            push_auth.assert_not_called()
+            published_evidence.assert_not_called()
+            self.assertNotIn("artifact_id", payload)
+            self.assertNotIn("image", payload)
+            self.assertEqual(payload["runtime_commit"], commit)
+            self.assertEqual(json.loads(output.read_text()), payload)
+            self.assertEqual(manifest.manifest_path.read_bytes(), original_manifest)
+
+    def test_artifact_check_rejects_wrong_commit_before_registry_access(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            manifest, commit = self._prepare_artifact_check(Path(temporary_directory))
+            assert manifest.runtime_repo is not None
+            runtime_root = manifest.runtime_repo.resolve_path(manifest_directory=manifest.manifest_directory)
+            assert runtime_root is not None
+            with mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_base_images") as base_auth:
+                with self.assertRaisesRegex(local_runtime.RuntimeCommandError, "requires runtime commit"):
+                    local_runtime.publish_runtime_artifact(
+                        manifest=manifest,
+                        runtime_repo_path=runtime_root,
+                        image_repository="unused",
+                        image_tag="unused",
+                        output_file=None,
+                        no_cache=False,
+                        build_only=True,
+                        expected_runtime_commit=("0" if commit[0] != "0" else "1") + commit[1:],
+                    )
+            base_auth.assert_not_called()
+
+    def test_artifact_check_rejects_stale_tenant_lock_before_build(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            manifest, commit = self._prepare_artifact_check(Path(temporary_directory))
+            assert manifest.runtime_repo is not None
+            runtime_root = manifest.runtime_repo.resolve_path(manifest_directory=manifest.manifest_directory)
+            assert runtime_root is not None
+            project = manifest.manifest_directory / "pyproject.toml"
+            project.write_text(project.read_text().replace("dependencies = []", 'dependencies = ["requests"]'))
+            subprocess.run(["git", "add", "."], cwd=manifest.manifest_directory, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "stale lock"], cwd=manifest.manifest_directory, check=True, capture_output=True)
+            with (
+                mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_base_images"),
+                mock.patch(
+                    "odoo_devkit.local_runtime.resolve_base_image_provenance",
+                    side_effect=self._resolve_base_image_provenance_fixture,
+                ),
+                mock.patch("odoo_devkit.local_runtime.run_command") as execute,
+            ):
+                with self.assertRaises(local_runtime.RuntimeCommandError):
+                    local_runtime.publish_runtime_artifact(
+                        manifest=manifest,
+                        runtime_repo_path=runtime_root,
+                        image_repository="unused",
+                        image_tag="unused",
+                        output_file=None,
+                        no_cache=False,
+                        build_only=True,
+                        expected_runtime_commit=commit,
+                    )
+            execute.assert_not_called()
 
     def test_native_runtime_publish_builds_release_context_and_emits_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

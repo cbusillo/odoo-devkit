@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import re
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from .local_runtime import (
@@ -248,6 +250,46 @@ def run_native_runtime_publish(
     if result.output_file is not None:
         payload["output_file"] = str(result.output_file)
     return payload
+
+
+def run_native_runtime_check_artifact(
+    *,
+    manifest: WorkspaceManifest,
+    devkit_commit: str,
+    output_file: Path | None,
+    no_cache: bool,
+    platforms: tuple[str, ...] = (),
+) -> dict[str, object]:
+    if re.fullmatch(r"[0-9a-f]{40}", devkit_commit) is None:
+        raise ValueError("Artifact check requires an exact lowercase 40-character devkit commit.")
+    devkit_repo = manifest.devkit_repo
+    runtime_repo = manifest.runtime_repo
+    if devkit_repo is None or runtime_repo is None:
+        raise ValueError("Artifact check requires explicit devkit and runtime repositories.")
+    manifest = replace(
+        manifest,
+        devkit_repo=replace(devkit_repo, ref=devkit_commit),
+        runtime_repo=replace(runtime_repo, ref=devkit_commit),
+    )
+    runtime_repo_path = resolve_runtime_repo_path(manifest)
+    devkit_repo_path = devkit_repo.resolve_path(manifest_directory=manifest.manifest_directory)
+    if devkit_repo_path != runtime_repo_path or runtime_repo_path != Path(__file__).resolve().parent.parent:
+        raise ValueError("Artifact check must execute from the manifest's shared devkit/runtime checkout.")
+    try:
+        result = publish_runtime_artifact(
+            manifest=manifest,
+            runtime_repo_path=runtime_repo_path,
+            image_repository="odoo-artifact-check",
+            image_tag=devkit_commit,
+            output_file=output_file,
+            no_cache=no_cache,
+            platforms=platforms or DEFAULT_ARTIFACT_IMAGE_PLATFORMS,
+            build_only=True,
+            expected_runtime_commit=devkit_commit,
+        )
+    except RuntimeCommandError as error:
+        raise ValueError(str(error)) from error
+    return dict(result.manifest_payload)
 
 
 def run_native_runtime_down(*, manifest: WorkspaceManifest, volumes: bool) -> int:
