@@ -18,6 +18,20 @@ semantics are separate. Unexamined base/dependency changes require Launchplane's
 examined-input plan, never a blanket upgrade. Legacy artifacts without complete
 declarations remain conservative.
 
+Each base source carries one `source-inventory.sha256` dependency record: its
+SHA-256 covers sorted-key compact JSON of every inventoried file, ordered by
+path, including content hashes and classifications. The digest binds additions,
+removals and file counts without embedding the framework/Enterprise file list
+in the uploaded manifest. The full resolved module graph and detailed tenant,
+addon, tool and external inputs remain in the declaration. Base changes still
+require the examined-input plan above; the bounded record uses the existing
+Launchplane file schema. Architecture differences retain platform-prefixed
+digest records, which the running-image declaration check verifies as before.
+Detailed inventory paths retain safe components. Names containing spaces or
+other unsupported characters use a `name-<sha256>` component derived from the
+exact original name, preserving the suffix and content hash. This keeps tracked
+IDE run configurations ingestible without omitting their dependency evidence.
+
 Unreadable declared XML or computed menu-icon paths mark the inventory
 incomplete and identify the module/path in the build log. Legacy publication
 continues; targeted execution refuses. Use the standard attribute, text or

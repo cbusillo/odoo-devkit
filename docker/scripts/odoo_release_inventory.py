@@ -6,6 +6,7 @@ import ast
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
@@ -287,6 +288,41 @@ def build_inventory(metadata: dict[str, Any]) -> dict[str, Any]:
             or len(modules) != len(set(modules))
         ):
             raise ValueError("Examined input plan requires its canonical fingerprint and explicit known module names")
+    for source in sources:
+        if source["input_name"] in {"base:runtime", "base:devtools"}:
+            files = sorted(source["files"], key=lambda item: item["path"])
+            if len({item["path"] for item in files}) != len(files):
+                raise ValueError("Duplicate base inventory paths")
+            # Base changes already require Launchplane's examined-input plan.
+            # Bind every file and its classification without publishing the
+            # entire framework/Enterprise tree as individual manifest records.
+            source["files"] = [
+                {
+                    "path": "source-inventory.sha256",
+                    "sha256": hashlib.sha256(json.dumps(files, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+                    "kind": "dependency",
+                    "module": "",
+                    "manifest_database_sha256": "",
+                }
+            ]
+        else:
+            # Git permits spaces and Unicode in names; Launchplane's inventory
+            # paths do not. Keep safe components and suffixes for classification,
+            # and bind each unsupported component to its exact original name.
+            source["files"] = [
+                {
+                    **item,
+                    "path": "/".join(
+                        component
+                        if re.fullmatch(r"[A-Za-z0-9._-]+", component)
+                        else "name-"
+                        + hashlib.sha256(component.encode()).hexdigest()
+                        + (Path(component).suffix if re.fullmatch(r"\.[A-Za-z0-9_-]+", Path(component).suffix) else "")
+                        for component in item["path"].split("/")
+                    ),
+                }
+                for item in source["files"]
+            ]
     return {
         "schema_version": 1,
         "complete": complete,
