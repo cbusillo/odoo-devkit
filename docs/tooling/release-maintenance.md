@@ -18,6 +18,12 @@ semantics are separate. Unexamined base/dependency changes require Launchplane's
 examined-input plan, never a blanket upgrade. Legacy artifacts without complete
 declarations remain conservative.
 
+Unreadable declared XML or computed menu-icon paths mark the inventory
+incomplete and identify the module/path in the build log. Legacy publication
+continues; targeted execution refuses. Use the standard attribute, text or
+literal-expression icon path to make its database resource dependency explicit;
+builds never execute an XML expression to guess it.
+
 For an examined dependency/base/tool change, first build the immutable inputs
 with `runtime check-artifact`. The examination uses Launchplane's pure
 `release_examined_inputs_sha256` on the normalized manifest; that contract owns

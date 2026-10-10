@@ -75,6 +75,8 @@ class ReleaseMaintenanceTests(unittest.TestCase):
             (tenant / "module/data/logo.xml").write_text("<broken")
             self.assertFalse(inventory.build_inventory(metadata)["complete"])
             inventory.inventory([tenant])  # Malformed data does not prevent legacy artifact publication.
+            (tenant / "module/data/logo.xml").write_text('<odoo><field name="web_icon" eval="compute_icon()"/></odoo>')
+            self.assertFalse(inventory.build_inventory(metadata)["complete"])
 
     def test_exposed_graph_and_examined_plan_support_real_dependency_changes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

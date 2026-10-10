@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 
-def xml_database_references(elements: Any) -> list[str]:
+def xml_database_references(elements: Any) -> list[str | None]:
     references = []
     for element in elements:
         if element.get("file"):
@@ -26,7 +26,7 @@ def xml_database_references(elements: Any) -> list[str]:
                     value = ast.literal_eval(element.get("eval"))
                     icon = value if isinstance(value, str) else ""
                 except (ValueError, SyntaxError):
-                    pass
+                    references.append(None)  # Computed resource paths cannot be inferred safely.
         name, separator, path = icon.strip().partition(",")
         if separator:
             references.append(name.strip() + "/" + path.strip())
@@ -86,6 +86,8 @@ def classify_files(
         except ET.ParseError:
             continue  # The assembled-image scan marks this declaration incomplete.
         for reference in references:
+            if reference is None:
+                continue
             module, separator, relative = reference.partition("/")
             if separator and module in roots_by_name:
                 database_files.add(roots_by_name[module] / relative)
@@ -184,6 +186,10 @@ def database_loaded_files(paths: dict[str, Path]) -> tuple[set[Path], bool]:
                 print(f"Incomplete release inventory: {root.name}/{relative} XML is missing or unparsable", file=sys.stderr)
                 continue
             for reference in references:
+                if reference is None:
+                    complete = False
+                    print(f"Incomplete release inventory: {root.name}/{relative} has a computed icon path", file=sys.stderr)
+                    continue
                 name, separator, remainder = reference.partition("/")
                 if separator and name in paths:
                     loaded.add((paths[name] / remainder).resolve())
