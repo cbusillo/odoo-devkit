@@ -1073,7 +1073,11 @@ class OdooDataWorkflowRunner:
             "UPDATE ir_mail_server SET active = false, smtp_user = NULL, smtp_pass = NULL "
             "WHERE name <> 'neutralization - disable emails'"
         )
-        cursor.execute("UPDATE ir_mail_server SET active = true WHERE name = 'neutralization - disable emails'")
+        cursor.execute(
+            "UPDATE ir_mail_server SET active = true, smtp_host = 'invalid', smtp_port = 1025, "
+            "smtp_encryption = 'none', smtp_authentication = 'login', smtp_user = NULL, smtp_pass = NULL "
+            "WHERE name = 'neutralization - disable emails'"
+        )
         if cursor.rowcount == 0:
             cursor.execute(
                 "INSERT INTO ir_mail_server (name, smtp_port, smtp_host, smtp_encryption, active, smtp_authentication) "
@@ -1174,7 +1178,7 @@ class OdooDataWorkflowRunner:
         return values
 
     def fingerprint_restored_credentials(self) -> None:
-        """Record hashes (never values) of the restored credentials so the read-back can prove they changed."""
+        """Record hashes (never values) of the current strip input, including each post-migration/module pass."""
         self._restored_credential_fingerprints = {}
         if self._is_production_instance():
             return
@@ -1723,8 +1727,17 @@ class OdooDataWorkflowRunner:
                         if cursor.fetchone()[0]:
                             raise OdooDatabaseUpdateError("Pre-registry cron fence commit readback failed.")
             _logger.info("Credential boundary committed and verified before registry loading.")
+        except OdooRestorerError:
+            with suppress(psycopg2.Error):
+                conn.rollback()
+            raise
+        except psycopg2.Error as error:
+            with suppress(psycopg2.Error):
+                conn.rollback()
+            raise OdooDatabaseUpdateError("Pre-registry credential transaction failed.") from error
         except BaseException:
-            conn.rollback()
+            with suppress(psycopg2.Error):
+                conn.rollback()
             raise
         finally:
             self._reset_db_connection()
@@ -2802,6 +2815,9 @@ with registry.cursor() as cr:
         if self.local.openupgrade_enabled:
             self.snapshot_module_states_before_openupgrade()
             self.run_openupgrade()
+            # Migrations may reactivate crons or rewrite credentials. Preserve the
+            # requested sanitize policy before the next registry/module process.
+            self.prepare_credentials_before_registry(restored_copy=True, do_sanitize=do_sanitize)
 
         self.install_addons(reason="restore install")
 

@@ -534,13 +534,17 @@ Notes
   Addon override targets unused by the installed settings consumer stay unused.
   Credential parameters use the supported typed `config_parameters` surface;
   new credential-capable adapter behavior must extend the SQL boundary too.
-  Authentik's client identifiers and presentation settings, Shopify's
+  On post-deploy and restore runs, Authentik's client identifiers and presentation settings, Shopify's
   URL/dispatcher bookkeeping and website bootstrap still use their installed
   ORM adapters after the credential transaction. No addon code or Odoo shell is
   used to strip credentials. Callers must keep other workers stopped until
   preparation and maintenance finish; this is not a traffic-switch mechanism.
   Restore reasserts the boundary after module work before running further
   settings/admin hooks, because install data can re-enable integrations.
+  OpenUpgrade also reasserts requested sanitization before addon installation,
+  because migrations can reactivate crons. Update-only stages the credential
+  values and updates modules; it does not activate integrations or complete ORM
+  bookkeeping. Use `--post-deploy-maintenance` for that complete operation.
 - `ODOO_RESTORE_KEPT_INTEGRATIONS` (comma-separated) names integrations whose
   restored settings stay, using the integration names of Launchplane's
   read-back: `shopify`, `printnode`, `fishbowl`, `repairshopr`, `cm_data`,

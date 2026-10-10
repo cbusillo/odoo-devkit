@@ -12,7 +12,6 @@ import types
 import unittest
 from collections.abc import Iterator, Sequence
 from contextlib import ExitStack, closing, contextmanager
-from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Any
@@ -794,36 +793,6 @@ class DataWorkflowGuardTests(unittest.TestCase):
             runner.run_restore()
 
         drop_database.assert_not_called()
-
-    def test_credentials_are_cleared_before_odoo_runs_and_again_before_the_settings_apply(self) -> None:
-        for do_sanitize in (True, False):
-            with self.subTest(do_sanitize=do_sanitize):
-                runner, _drop_database = self._restore_runner(OPENUPGRADE_ENABLED=True, OPENUPGRADE_SKIP_UPDATE_ADDONS=False)
-                calls: list[str] = []
-                for step in (
-                    "overwrite_database",
-                    "prepare_credentials_before_registry",
-                    "run_openupgrade",
-                    "install_addons",
-                    "update_addons",
-                    "apply_environment_overrides",
-                ):
-                    getattr(runner, step).side_effect = partial(
-                        lambda _calls, _step, *_args, **_kwargs: _calls.append(_step), calls, step
-                    )
-
-                runner.run_restore(do_sanitize=do_sanitize)
-
-                expected = [
-                    "overwrite_database",
-                    "prepare_credentials_before_registry",
-                    "run_openupgrade",
-                    "install_addons",
-                    "update_addons",
-                    "prepare_credentials_before_registry",
-                    "apply_environment_overrides",
-                ]
-                self.assertEqual(calls, expected)
 
     def test_successful_restore_keeps_the_database(self) -> None:
         runner, drop_database = self._restore_runner()
@@ -1941,6 +1910,48 @@ class CredentialBoundaryTests(unittest.TestCase):
         with self.assertRaisesRegex(odoo_data_workflows.OdooDatabaseUpdateError, "commit readback failed"):
             self.run_maintenance()
         self.assertEqual(self.hooks, [])
+
+    def test_database_failure_stops_all_hooks_with_workflow_error(self) -> None:
+        conn = self.runner.connect_to_db()
+        error = odoo_data_workflows.psycopg2.Error("inert database failure")
+        with patch.object(conn, "cursor", side_effect=error):
+            with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError) as caught:
+                self.run_maintenance()
+        self.assertIs(caught.exception.__cause__, error)
+        self.assertEqual(self.hooks, [])
+        self.assertIsNone(self.runner.local.db_conn)
+
+    def test_edited_mail_fence_is_restored_before_hooks(self) -> None:
+        self.runner.block_outgoing_mail_outside_production()
+        query = "SELECT smtp_host,smtp_port,smtp_encryption,smtp_authentication,smtp_user,smtp_pass FROM ir_mail_server WHERE active"
+        with sqlite3.connect(self.path) as reader:
+            expected = reader.execute(query).fetchall()
+            reader.execute(
+                "UPDATE ir_mail_server SET smtp_host='inert-wrong-host',smtp_user='inert-user',smtp_pass='inert-pass' WHERE active"
+            )
+        self.runner.prepare_credentials_before_registry()
+        with sqlite3.connect(self.path) as reader:
+            self.assertEqual(reader.execute(query).fetchall(), expected)
+
+    def test_migration_reintroduced_credentials_and_crons_are_fenced_before_install(self) -> None:
+        self.runner.local.openupgrade_enabled = True
+        self.runner.local.openupgrade_skip_update_addons = False
+
+        def migrate() -> None:
+            with sqlite3.connect(self.path) as writer:
+                writer.execute("UPDATE ir_cron SET active=true")
+                writer.execute("INSERT INTO ir_config_parameter (key,value) VALUES ('web_map.token_map_box','inert-migration-key')")
+
+        def sanitize() -> None:
+            self.runner.connect_to_db().database.execute("UPDATE ir_cron SET active=false")
+
+        with (
+            patch.object(self.runner, "snapshot_module_states_before_openupgrade"),
+            patch.object(self.runner, "run_openupgrade", side_effect=migrate),
+            patch.object(self.runner, "sanitize_database", side_effect=sanitize),
+        ):
+            self.run_maintenance(restoring=True)
+        self.assertTrue(self.hooks)
 
 
 if __name__ == "__main__":

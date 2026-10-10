@@ -513,6 +513,38 @@ os.execv('/bin/bash', ['bash', '-c', command])
             fault_message="Unstripped credential reached a blocked outbound sink",
         )
 
+    def test_openupgrade_reasserts_sanitize_before_install_hooks(self) -> None:
+        def check(runner: workflows.OdooDataWorkflowRunner) -> None:
+            runner.local.openupgrade_enabled = True
+            runner.local.openupgrade_skip_update_addons = False
+
+            def migration() -> None:
+                query(runner.local.db_name, "UPDATE ir_cron SET active=true")
+                query(
+                    runner.local.db_name,
+                    "INSERT INTO ir_config_parameter (key,value) VALUES ('web_map.token_map_box','inert-migration-sentinel') "
+                    "ON CONFLICT (key) DO UPDATE SET value=excluded.value",
+                )
+
+            # Exercise the real restore/OpenUpgrade branch with representative
+            # migration SQL, without requiring an unrelated version migration.
+            with patch.object(runner, "run_openupgrade", side_effect=migration):
+                self.credential_boundary_check(runner, restore=True)
+
+        def omit_post_migration_boundary(runner: workflows.OdooDataWorkflowRunner) -> Any:
+            original = runner.prepare_credentials_before_registry
+            calls = 0
+
+            def prepare(**kwargs: Any) -> None:
+                nonlocal calls
+                calls += 1
+                if calls != 2:
+                    original(**kwargs)
+
+            return patch.object(runner, "prepare_credentials_before_registry", side_effect=prepare)
+
+        self.guarded(check, omit_post_migration_boundary, fault_message="Unstripped credential reached a blocked outbound sink")
+
     def test_failed_and_rolled_back_boundary_commit_starts_no_odoo_hook(self) -> None:
         for mode in ("failed", "rolled_back", "production_rolled_back"):
             with self.subTest(mode=mode), self.target() as runner:
