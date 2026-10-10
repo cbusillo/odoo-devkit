@@ -35,9 +35,13 @@ class ReleaseMaintenanceTests(unittest.TestCase):
             (tenant / "module/__manifest__.py").write_text(repr({"depends": ["other"], "data": ("data/logo.xml",)}))
             (shared / "other/__manifest__.py").write_text(repr({"depends": []}))
             (tenant / "module/data/logo.xml").write_text(
-                '<odoo><field name="logo" type="base64" file="other/static/logo.png"/></odoo>'
+                '<odoo><field name="logo" type="base64" file="other/static/logo.png"/>'
+                '<menuitem web_icon="other,static/icon.png"/>'
+                '<field name="web_icon">other,static/alternate.png</field></odoo>'
             )
             (shared / "other/static/logo.png").write_bytes(b"first")
+            (shared / "other/static/icon.png").write_bytes(b"icon")
+            (shared / "other/static/alternate.png").write_bytes(b"alternate")
             metadata = {
                 "sources": [
                     {"input_name": name, "repository": f"fixture/{name}", "commit": "a" * 40, "roots": [str(path)]}
@@ -53,6 +57,19 @@ class ReleaseMaintenanceTests(unittest.TestCase):
             self.assertNotEqual(left["sha256"], right["sha256"])
             self.assertEqual(right["kind"], "database_data")
             self.assertEqual(right["module"], "other")
+            for source in metadata["sources"]:
+                source_root = Path(source["roots"][0])
+                prefix = source_root.as_posix().lstrip("/") + "/"
+                source["files"] = [
+                    {**item, "path": item["path"].removeprefix(prefix)} for item in inventory.inventory([source_root])[0]
+                ]
+            git_paths = inventory.build_inventory(metadata)
+            for name in ("icon.png", "alternate.png"):
+                self.assertEqual(
+                    next(item for item in git_paths["sources"][1]["files"] if item["path"].endswith(name))["kind"], "database_data"
+                )
+            (tenant / "module/data/logo.xml").unlink()
+            self.assertFalse(inventory.build_inventory(metadata)["complete"])
 
     def test_exposed_graph_and_examined_plan_support_real_dependency_changes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

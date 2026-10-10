@@ -13,6 +13,20 @@ from pathlib import Path
 from typing import Any
 
 
+def xml_database_references(elements: Any) -> list[str]:
+    references = []
+    for element in elements:
+        if element.get("file"):
+            references.append(element.get("file"))
+        icon = element.get("web_icon", "")
+        if element.tag == "field" and element.get("name") == "web_icon":
+            icon = element.text or ""
+        name, separator, path = icon.strip().partition(",")
+        if separator:
+            references.append(name.strip() + "/" + path.strip())
+    return references
+
+
 def git_inventory(repository: Path, commit: str, module_name: str = "") -> list[dict[str, Any]]:
     """Hash the exact committed tree, including build files and symlink blobs."""
     tree = subprocess.run(["git", "-C", str(repository), "ls-tree", "-rz", commit], capture_output=True, check=True).stdout
@@ -61,10 +75,11 @@ def classify_files(
     for path in tuple(database_files):
         if path.suffix != ".xml" or path.as_posix() not in content:
             continue
-        for element in ET.fromstring(content[path.as_posix()]).iter():
-            reference = element.get("file", "")
-            if not reference:
-                continue
+        try:
+            references = xml_database_references(ET.fromstring(content[path.as_posix()]).iter())
+        except ET.ParseError:
+            continue  # The assembled-image scan marks this declaration incomplete.
+        for reference in references:
             module, separator, relative = reference.partition("/")
             if separator and module in roots_by_name:
                 database_files.add(roots_by_name[module] / relative)
@@ -145,9 +160,10 @@ def module_graph(roots: list[Path]) -> dict[str, set[str]]:
     }
 
 
-def database_loaded_files(paths: dict[str, Path]) -> set[Path]:
+def database_loaded_files(paths: dict[str, Path]) -> tuple[set[Path], bool]:
     """Include binary attachments loaded through XML across source boundaries."""
     loaded: set[Path] = set()
+    complete = True
     for root in paths.values():
         data = ast.literal_eval((root / "__manifest__.py").read_text())
         for relative in (*data.get("data", ()), *data.get("demo", ())):
@@ -155,17 +171,22 @@ def database_loaded_files(paths: dict[str, Path]) -> set[Path]:
             loaded.add(file.resolve())
             if file.suffix != ".xml":
                 continue
-            for element in ET.parse(file).iter():
-                reference = element.get("file", "")
+            try:
+                references = xml_database_references(ET.parse(file).iter())
+            except (OSError, ET.ParseError):
+                complete = False
+                continue
+            for reference in references:
                 name, separator, remainder = reference.partition("/")
                 if separator and name in paths:
                     loaded.add((paths[name] / remainder).resolve())
-    return loaded
+    return loaded, complete
 
 
 def build_inventory(metadata: dict[str, Any]) -> dict[str, Any]:
     sources = []
     source_roots: dict[str, list[Path]] = {}
+    data_complete = True
     graph: dict[str, set[str]] = {}
     for source in metadata["sources"]:
         roots = [Path(path) for path in source["roots"]]
@@ -206,7 +227,7 @@ def build_inventory(metadata: dict[str, Any]) -> dict[str, Any]:
         roots = [Path(path) for path in metadata["addon_paths"]]
         roots += [Path(path) for path in ("/odoo/addons", "/odoo/odoo/addons") if Path(path) not in roots]
         graph = module_graph(roots)
-        loaded = database_loaded_files(module_paths(roots))
+        loaded, data_complete = database_loaded_files(module_paths(roots))
         for source in sources:
             source["files"] = [
                 {**item, "module": "", "kind": "dependency", "manifest_database_sha256": ""}
@@ -238,7 +259,7 @@ def build_inventory(metadata: dict[str, Any]) -> dict[str, Any]:
                     "files": [item for item in origin["files"] if item["path"].endswith(external["dependency_file_path"])],
                 }
             )
-    complete = all(not dependencies - graph.keys() for dependencies in graph.values())
+    complete = data_complete and all(not dependencies - graph.keys() for dependencies in graph.values())
     examined = metadata.get("examined_input_plan") or {}
     if examined:
         fingerprint = examined.get("examined_inputs_sha256", "")
