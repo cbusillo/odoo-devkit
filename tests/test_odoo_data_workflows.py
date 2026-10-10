@@ -517,6 +517,44 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
         self.assertEqual(result, odoo_data_workflows.ExitCode.BOOTSTRAP_FAILED)
         update_addons.assert_not_called()
 
+    def test_module_work_only_starts_odoo_for_computed_installs_or_updates(self) -> None:
+        for state, update_existing, installs, updates in (
+            ("installed", False, False, False),
+            ("to upgrade", False, False, False),
+            ("uninstalled", False, True, False),
+            (None, False, True, False),
+            ("installed", True, False, True),
+            ("uninstalled", True, True, True),
+        ):
+            with self.subTest(state=state, update_existing=update_existing):
+                runner = odoo_data_workflows.OdooDataWorkflowRunner(self._local_settings(), upstream=None, env_file=None)
+                connection = MagicMock()
+                cursor = connection.cursor.return_value.__enter__.return_value
+                cursor.fetchall.return_value = [("cm_website", state)] if state else []
+                runner.local.db_conn = connection
+                with (
+                    patch.object(runner, "_resolve_addons_paths", return_value=(Path("/addons"),)),
+                    patch.object(runner, "run_command") as run_command,
+                ):
+                    runner._apply_module_updates(
+                        ["cm_website"],
+                        modules_source_label="test",
+                        update_existing=update_existing,
+                        local_module_paths={"cm_website": Path("/addons/cm_website")},
+                    )
+                self.assertIsNone(runner.local.db_conn)
+                connection.close.assert_called_once_with()
+                if installs or updates:
+                    run_command.assert_called_once()
+                    command = run_command.call_args.args[0].split()
+                    self.assertEqual("-i" in command, installs)
+                    self.assertEqual("-u" in command, updates)
+                    for flag, expected in (("-i", installs), ("-u", updates)):
+                        if expected:
+                            self.assertEqual(command[command.index(flag) + 1], "cm_website")
+                else:
+                    run_command.assert_not_called()
+
     def test_module_update_releases_metadata_connection_before_odoo_command(self) -> None:
         runner = odoo_data_workflows.OdooDataWorkflowRunner(self._local_settings(), upstream=None, env_file=None)
         connection = MagicMock()
