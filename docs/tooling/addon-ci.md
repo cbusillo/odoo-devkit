@@ -94,6 +94,14 @@ exceptions do not count as fault detection. `DEVKIT_FAULT_DETECTED` lines in
 `odoo.log` identify the proofs. The runner's normal nonzero exit, failure and
 nonempty-test-summary checks still decide the lane result.
 
+Credential checks exercise real registry, install and XML update hooks with
+inert production and lane sentinels. An independent connection records commit
+and hook order without key values. Outbound sinks refuse before opening a
+socket. A planted late boundary must reach those sinks and fail the behavior
+check; failed and rolled-back commits must start no hook. The restore proof
+keeps its audit outside the disposable target so rollback cannot erase the
+unsafe-hook observation.
+
 The restore test replaces SSH transport with execution inside the throwaway
 container. The production capture, dump validation, rsync, database replacement,
 preparation and rollback code executes with real Postgres and Odoo; this does

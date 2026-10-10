@@ -11,7 +11,7 @@ import sys
 import tempfile
 import uuid
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -38,7 +38,13 @@ class ServerStarted(Exception):
 
 
 def run(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
-    return REAL_RUN(args, check=True, capture_output=True, timeout=180, **kwargs)
+    try:
+        return REAL_RUN(args, check=True, capture_output=True, timeout=180, **kwargs)
+    except subprocess.CalledProcessError as error:
+        # This lane has synthetic data and no credentials; preserve the nested
+        # Odoo failure so a setup problem is distinguishable from a fault proof.
+        print((error.stderr or b"").decode(errors="replace"), flush=True)
+        raise
 
 
 def query(database: str, statement: str, params: tuple = ()) -> list[tuple]:
@@ -303,9 +309,18 @@ os.execv('/bin/bash', ['bash', '-c', command])
         )
 
     def test_data_workflow_applies_real_launchplane_settings(self) -> None:
+        def omit_settings(runner: workflows.OdooDataWorkflowRunner) -> ExitStack:
+            stack = ExitStack()
+            # Parameter application now has an early SQL path and a later ORM
+            # path. Disable both for the existing final-persistence fault; the
+            # separate hook-order checks isolate failure of the early path.
+            stack.enter_context(patch.object(runner, "_pre_registry_parameter_overrides", return_value={}))
+            stack.enter_context(patch.object(runner, "apply_environment_overrides"))
+            return stack
+
         self.guarded(
             lambda runner: self.settings_check(runner, data_workflow=True),
-            lambda runner: patch.object(runner, "apply_environment_overrides"),
+            omit_settings,
             fault_message="Launchplane settings payload was not applied",
         )
 
@@ -405,3 +420,242 @@ os.execv('/bin/bash', ['bash', '-c', command])
             lambda runner: patch.object(runner, "_resolve_excluded_addon_roots", return_value=()),
             fault_message="AUTO upgraded an excluded Enterprise repository",
         )
+
+    def credential_boundary_check(self, runner: workflows.OdooDataWorkflowRunner, *, restore: bool = False) -> None:
+        before = (
+            query(
+                self.source,
+                "SELECT key,value FROM ir_config_parameter WHERE key IN ('printnode.api_key','web_map.token_map_box')",
+            )
+            if restore
+            else []
+        )
+        try:
+            self._credential_boundary_check(runner, restore=restore)
+        finally:
+            if restore:
+                query(self.source, "DELETE FROM ir_config_parameter WHERE key IN ('printnode.api_key','web_map.token_map_box')")
+                for key, value in before:
+                    query(self.source, "INSERT INTO ir_config_parameter (key,value) VALUES (%s,%s)", (key, value))
+
+    def _credential_boundary_check(self, runner: workflows.OdooDataWorkflowRunner, *, restore: bool) -> None:
+        query(
+            "postgres",
+            "CREATE TABLE IF NOT EXISTS devkit_boundary_events (id bigserial PRIMARY KEY, database_name text, event text)",
+        )
+        seed_database = self.source if restore else runner.local.db_name
+        query(
+            seed_database,
+            "INSERT INTO ir_config_parameter (key,value) VALUES ('printnode.api_key','inert-production-sentinel'), "
+            "('web_map.token_map_box','inert-map-sentinel') ON CONFLICT (key) DO UPDATE SET value=excluded.value",
+        )
+        payload = {
+            "config_parameters": [
+                {"key": "printnode.api_key", "value": {"source": "secret_binding", "environment_variable": "DEVKIT_LANE_KEY"}},
+                {"key": "web.base.url", "value": {"source": "literal", "value": "https://fixture.example.test"}},
+            ]
+        }
+        runner.local.install_modules = "ci_boundary_install_probe"
+        runner.local.update_modules = "ci_probe"
+        runner.os_env.update(
+            DEVKIT_BOUNDARY_PROBE="1",
+            DEVKIT_LANE_KEY="inert-lane-sentinel",
+            DEVKIT_EXPECT_STRIP="1" if restore else "",
+            DEVKIT_EXPECT_SANITIZE="1" if restore else "",
+            ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64=base64.b64encode(json.dumps(payload).encode()).decode(),
+        )
+        original = runner.prepare_credentials_before_registry
+
+        def committed(**kwargs: Any) -> None:
+            original(**kwargs)
+            query(
+                "postgres",
+                "INSERT INTO devkit_boundary_events (database_name,event) VALUES (%s,'commit')",
+                (runner.local.db_name,),
+            )
+
+        failure = None
+        with patch.object(runner, "prepare_credentials_before_registry", side_effect=committed):
+            try:
+                if restore:
+                    runner.run_restore()
+                else:
+                    runner.run_post_deploy_maintenance()
+            except workflows.OdooRestorerError as error:
+                failure = error
+        events = [
+            row[0]
+            for row in query(
+                "postgres", "SELECT event FROM devkit_boundary_events WHERE database_name=%s ORDER BY id", (runner.local.db_name,)
+            )
+        ]
+        self.assertFalse(
+            any(event.startswith("blocked_") for event in events), "Unstripped credential reached a blocked outbound sink"
+        )
+        if failure:
+            raise failure
+        self.assertTrue(events and events[0] == "commit", "Credential-capable hook ran before commit")
+        for hook in ("register_hook", "pre_init_hook", "post_init_hook", "update_hook"):
+            self.assertIn(hook, events, f"Real {hook} was not exercised")
+        print("DEVKIT_BOUNDARY_ORDER " + json.dumps({"path": "restore" if restore else "post_deploy", "events": events}), flush=True)
+
+    @staticmethod
+    @contextmanager
+    def late_boundary_fault(runner: workflows.OdooDataWorkflowRunner) -> Iterator[None]:
+        prepare = runner.prepare_credentials_before_registry
+        install = runner.install_addons
+        deferred: dict[str, Any] = {}
+
+        def defer(**kwargs: Any) -> None:
+            deferred.update(kwargs)
+
+        def install_before_boundary(**kwargs: Any) -> None:
+            install(**kwargs)
+            prepare(**deferred)
+
+        # Reproduce the original ordering defect: registry/install hooks execute
+        # before the real stripping transaction, rather than deleting the strip.
+        with (
+            patch.object(runner, "prepare_credentials_before_registry", side_effect=defer),
+            patch.object(runner, "install_addons", side_effect=install_before_boundary),
+        ):
+            yield
+
+    def test_post_deploy_credentials_commit_before_real_hooks(self) -> None:
+        self.guarded(
+            self.credential_boundary_check,
+            self.late_boundary_fault,
+            fault_message="Unstripped credential reached a blocked outbound sink",
+        )
+
+    def test_restore_credentials_commit_before_real_hooks(self) -> None:
+        self.guarded(
+            lambda runner: self.credential_boundary_check(runner, restore=True),
+            self.late_boundary_fault,
+            fault_message="Unstripped credential reached a blocked outbound sink",
+        )
+
+    def test_openupgrade_reasserts_sanitize_before_install_hooks(self) -> None:
+        def check(runner: workflows.OdooDataWorkflowRunner) -> None:
+            runner.local.openupgrade_enabled = True
+            runner.local.openupgrade_skip_update_addons = False
+
+            def migration() -> None:
+                query(runner.local.db_name, "UPDATE ir_cron SET active=true")
+                query(
+                    runner.local.db_name,
+                    "INSERT INTO ir_config_parameter (key,value) VALUES ('web_map.token_map_box','inert-migration-sentinel') "
+                    "ON CONFLICT (key) DO UPDATE SET value=excluded.value",
+                )
+
+            # Exercise the real restore/OpenUpgrade branch with representative
+            # migration SQL, without requiring an unrelated version migration.
+            with patch.object(runner, "run_openupgrade", side_effect=migration):
+                self.credential_boundary_check(runner, restore=True)
+
+        def omit_post_migration_boundary(runner: workflows.OdooDataWorkflowRunner) -> Any:
+            original = runner.prepare_credentials_before_registry
+            calls = 0
+
+            def prepare(**kwargs: Any) -> None:
+                nonlocal calls
+                calls += 1
+                if calls != 2:
+                    original(**kwargs)
+
+            return patch.object(runner, "prepare_credentials_before_registry", side_effect=prepare)
+
+        self.guarded(check, omit_post_migration_boundary, fault_message="Unstripped credential reached a blocked outbound sink")
+
+    def test_production_alias_preserves_credentials_in_the_real_settings_consumer(self) -> None:
+        def check(runner: workflows.OdooDataWorkflowRunner) -> None:
+            query(
+                runner.local.db_name,
+                "INSERT INTO ir_config_parameter (key,value) VALUES ('shopify.api_token','inert-production-key')",
+            )
+            settings = runner.local.model_copy(update={"platform_instance": " production ", "db_conn": None})
+            production = workflows.OdooDataWorkflowRunner(settings, None, None)
+            try:
+                production.apply_environment_overrides()
+                self.assertEqual(
+                    query(runner.local.db_name, "SELECT value FROM ir_config_parameter WHERE key='shopify.api_token'"),
+                    [("inert-production-key",)],
+                    "Production alias was treated as a non-production lane",
+                )
+            finally:
+                production._reset_db_connection()
+
+        original = workflows.OdooDataWorkflowRunner.__init__
+
+        def omit_lane_normalization(_runner: workflows.OdooDataWorkflowRunner) -> Any:
+            def initialize(instance: workflows.OdooDataWorkflowRunner, *args: Any, **kwargs: Any) -> None:
+                original(instance, *args, **kwargs)
+                instance.os_env["PLATFORM_INSTANCE"] = instance.local.platform_instance
+
+            return patch.object(workflows.OdooDataWorkflowRunner, "__init__", new=initialize)
+
+        self.guarded(check, omit_lane_normalization, fault_message="Production alias was treated as a non-production lane")
+
+    def test_module_crons_are_disabled_before_followup_registry_hooks(self) -> None:
+        def check(runner: workflows.OdooDataWorkflowRunner) -> None:
+            update = runner.update_addons
+
+            def update_with_cron_data(**kwargs: Any) -> None:
+                update(**kwargs)
+                # Representative module data committed by the update process.
+                query(runner.local.db_name, "UPDATE ir_cron SET active=true")
+
+            with patch.object(runner, "update_addons", side_effect=update_with_cron_data):
+                self.credential_boundary_check(runner, restore=True)
+
+        def omit_final_sanitize(runner: workflows.OdooDataWorkflowRunner) -> Any:
+            prepare = runner.prepare_credentials_before_registry
+            calls = 0
+
+            def boundary(**kwargs: Any) -> None:
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    kwargs["do_sanitize"] = False
+                prepare(**kwargs)
+
+            return patch.object(runner, "prepare_credentials_before_registry", side_effect=boundary)
+
+        self.guarded(check, omit_final_sanitize, fault_message="Unstripped credential reached a blocked outbound sink")
+
+    def test_failed_and_rolled_back_boundary_commit_starts_no_odoo_hook(self) -> None:
+        for mode in ("failed", "rolled_back", "production_rolled_back"):
+            with self.subTest(mode=mode), self.target() as runner:
+                query(
+                    "postgres",
+                    "CREATE TABLE IF NOT EXISTS devkit_boundary_events (id bigserial PRIMARY KEY, database_name text, event text)",
+                )
+                connection = runner.connect_to_db()
+
+                class BrokenCommit:
+                    def __init__(self, wrapped: Any, failure_mode: str) -> None:
+                        self.wrapped = wrapped
+                        self.failure_mode = failure_mode
+
+                    def __getattr__(self, name: str) -> Any:
+                        return getattr(self.wrapped, name)
+
+                    def commit(self) -> None:
+                        self.wrapped.rollback()
+                        if self.failure_mode == "failed":
+                            raise workflows.OdooDatabaseUpdateError("planted commit failure")
+
+                runner.local.db_conn = BrokenCommit(connection, mode)
+                if mode == "production_rolled_back":
+                    runner.local.platform_instance = "prod"
+                runner.os_env.update(DEVKIT_BOUNDARY_PROBE="1", DEVKIT_LANE_KEY="inert-lane-sentinel")
+                query(
+                    runner.local.db_name,
+                    "INSERT INTO ir_config_parameter (key,value) VALUES ('printnode.api_key','inert-production-sentinel') ON CONFLICT (key) DO UPDATE SET value=excluded.value",
+                )
+                with self.assertRaises(workflows.OdooDatabaseUpdateError):
+                    runner.run_post_deploy_maintenance()
+                self.assertEqual(
+                    query("postgres", "SELECT event FROM devkit_boundary_events WHERE database_name=%s", (runner.local.db_name,)), []
+                )
+                print(f"DEVKIT_FAULT_DETECTED boundary_commit_{mode}", flush=True)

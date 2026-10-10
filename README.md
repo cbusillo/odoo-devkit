@@ -164,6 +164,10 @@ Current runtime ownership is intentionally narrow and explicit:
 
 ## Runtime Contract Notes
 
+- Post-deploy maintenance, update-only runs and restored copies use a committed
+  SQL credential boundary before the first Odoo registry or module hook. See
+  [the data-workflow contract](docs/tooling/workspace-cli.md) for managed
+  overrides, lane handling and failure behavior.
 - The startup wrapper maps explicitly supplied `ODOO_SMTP_SERVER`,
   `ODOO_SMTP_PORT`, `ODOO_SMTP_USER`, `ODOO_SMTP_PASSWORD`, `ODOO_SMTP_SSL`,
   `ODOO_EMAIL_FROM`, and `ODOO_FROM_FILTER` to Odoo's native mail options.
