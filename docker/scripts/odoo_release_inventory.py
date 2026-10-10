@@ -108,6 +108,20 @@ def inventory(
     return classify_files(content, aliases)
 
 
+def module_graph(roots: list[Path]) -> dict[str, set[str]]:
+    """Match Odoo's exposed addon namespaces and first-path precedence."""
+    graph: dict[str, set[str]] = {}
+    for root in roots:
+        for manifest in sorted(root.glob("*/__manifest__.py")):
+            name = manifest.parent.name
+            if name in graph:
+                continue
+            data = ast.literal_eval(manifest.read_text())
+            if data.get("installable", True):
+                graph[name] = set(data.get("depends", []))
+    return graph
+
+
 def build_inventory(metadata: dict[str, Any]) -> dict[str, Any]:
     sources = []
     graph: dict[str, set[str]] = {}
@@ -126,17 +140,36 @@ def build_inventory(metadata: dict[str, Any]) -> dict[str, Any]:
         roots += [Path(path) for path in source.get("optional_roots", []) if Path(path).is_dir()]
         if any(not root.is_dir() for root in roots):
             raise ValueError("Missing release source root")
-        files, modules = inventory(roots, [Path(path) for path in source.get("exclude", [])], source.get("root_module", ""))
+        files, modules = (
+            ([], {})
+            if "addon_paths" in metadata and ("files" in source or source.get("files_from"))
+            else inventory(roots, [Path(path) for path in source.get("exclude", [])], source.get("root_module", ""))
+        )
         source_files = source.get("files", files)
         if source.get("files_from"):
             source_files = json.loads(Path(source["files_from"]).read_text())
         if source["input_name"] == "base:devtools":
             source_files = [{**item, "module": "", "kind": "dependency"} for item in source_files]
+        if source["input_name"] == "tenant":
+            source_files = [item for item in source_files if not item["path"].startswith("addons/shared/")]
         sources.append({k: source[k] for k in ("input_name", "repository", "commit")} | {"files": source_files})
-        for name, dependencies in modules.items():
+        for name, dependencies in ({} if "addon_paths" in metadata else modules).items():
             if name in graph and graph[name] != dependencies:
                 raise ValueError("Conflicting release module graph")
             graph[name] = dependencies
+    if len({source["input_name"] for source in sources}) != len(sources):
+        raise ValueError("Duplicate release source input names")
+    if "addon_paths" in metadata:
+        roots = [Path(path) for path in metadata["addon_paths"]]
+        roots += [Path(path) for path in ("/odoo/addons", "/odoo/odoo/addons") if Path(path) not in roots]
+        graph = module_graph(roots)
+        for source in sources:
+            source["files"] = [
+                {**item, "module": "", "kind": "dependency", "manifest_database_sha256": ""}
+                if item.get("module") and item["module"] not in graph
+                else item
+                for item in source["files"]
+            ]
     dependency_evidence = metadata.get("dependency_evidence")
     if dependency_evidence:
         for external in json.loads(Path(dependency_evidence).read_text())["external_compatibility_inputs"]:
@@ -150,22 +183,42 @@ def build_inventory(metadata: dict[str, Any]) -> dict[str, Any]:
                 {
                     **origin,
                     "input_name": f"external:{repository}:{external['dependency_file_path']}",
+                    "files": [item for item in origin["files"] if item["path"].endswith(external["dependency_file_path"])],
                 }
             )
     complete = all(not dependencies - graph.keys() for dependencies in graph.values())
+    examined = metadata.get("examined_input_plan") or {}
+    if examined:
+        fingerprint = examined.get("examined_inputs_sha256", "")
+        modules = examined.get("database_update_modules")
+        if (
+            set(examined) != {"examined_inputs_sha256", "database_update_modules"}
+            or not isinstance(fingerprint, str)
+            or len(fingerprint) != 64
+            or any(char not in "0123456789abcdef" for char in fingerprint)
+            or not isinstance(modules, list)
+            or any(not isinstance(name, str) or name not in graph for name in modules)
+            or len(modules) != len(set(modules))
+        ):
+            raise ValueError("Examined input plan requires its canonical fingerprint and explicit known module names")
     return {
         "schema_version": 1,
         "complete": complete,
         "read_write_compatible": True,
         "sources": sources,
         "modules": [{"name": name, "depends": sorted(dependencies)} for name, dependencies in sorted(graph.items())],
-        "examined_inputs_sha256": "",
-        "database_update_modules": None,
+        "examined_inputs_sha256": examined.get("examined_inputs_sha256", ""),
+        "database_update_modules": examined.get("database_update_modules"),
     }
 
 
-if __name__ == "__main__" and sys.argv[1] == "--base":
-    roots = [Path(path) for path in ("/odoo", "/usr/local/bin", "/opt/launchplane/addons", "/opt/enterprise") if Path(path).is_dir()]
+if __name__ == "__main__" and sys.argv[1] in {"--base", "--base-tools"}:
+    paths = (
+        ("/usr/local/bin",)
+        if sys.argv[1] == "--base-tools"
+        else ("/odoo", "/usr/local/bin", "/opt/launchplane/addons", "/opt/enterprise")
+    )
+    roots = [Path(path) for path in paths if Path(path).is_dir()]
     Path(sys.argv[2]).write_text(json.dumps(inventory(roots)[0], sort_keys=True))
 elif __name__ == "__main__" and sys.argv[1] == "--git":
     print(json.dumps(git_inventory(Path(sys.argv[2]), sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else ""), sort_keys=True))

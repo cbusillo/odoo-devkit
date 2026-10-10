@@ -18,6 +18,21 @@ semantics are separate. Unexamined base/dependency changes require Launchplane's
 examined-input plan, never a blanket upgrade. Legacy artifacts without complete
 declarations remain conservative.
 
+For an examined dependency/base/tool change, first build the immutable inputs
+with `runtime check-artifact`. The examination uses Launchplane's pure
+`release_examined_inputs_sha256` on the normalized manifest; that contract owns
+the fingerprint, so the build does not invent a second algorithm. Provide an
+external JSON file containing only `examined_inputs_sha256` and
+`database_update_modules` (an explicit array, including `[]` when examination
+found no database work). Rebuild the same committed inputs using
+`runtime check-artifact --examined-input-plan <file>` or
+`runtime publish --examined-input-plan <file>`. Keep the file outside tracked
+source trees to avoid changing its own fingerprint. The declaration is baked
+into the image and published manifest; Launchplane verifies its fingerprint
+against the actual complete inputs. Its contract requires a matching examined
+fingerprint on the production baseline too. Stale evidence refuses execution.
+This workflow needs no Launchplane connection, credentials or deployment.
+
 The orchestrator sets `ODOO_RELEASE_MODULE_PLAN_FILE` and `ODOO_RELEASE_IMAGE`
 (the running candidate's exact `repository@sha256:digest`). The JSON file has
 three fields: `database`, `release` (the stored `ReleaseDatabaseCompatibility`
@@ -25,6 +40,11 @@ record), and `candidate_manifest` (normalized verified `ArtifactIdentityManifest
 JSON including defaults). The release hashes that normalized representation,
 rather than the earlier producer JSON. Inputs contain provenance and module
 plans, never secret values.
+
+The single-registry runner supports the repository's Odoo 19 image API. Artifact
+and runtime graph resolution use exposed addon paths and Odoo's first-path
+precedence. The receipt includes Odoo's own `updated_modules` evidence; module
+metadata timestamps alone are not proof of an upgrade.
 
 Include `production_manifest` for manifest changes so assets-only differences
 can be distinguished from changed database semantics. The consumer also checks

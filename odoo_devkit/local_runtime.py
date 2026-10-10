@@ -28,6 +28,7 @@ from .artifact_provenance import (
     ArtifactProvenanceError,
     aggregate_dependency_evidence,
     aggregate_release_inventories,
+    load_examined_input_plan,
     normalize_git_commit,
     normalize_repository_identity,
 )
@@ -560,7 +561,12 @@ def publish_runtime_artifact(
     platforms: tuple[str, ...] = DEFAULT_ARTIFACT_IMAGE_PLATFORMS,
     build_only: bool = False,
     expected_runtime_commit: str | None = None,
+    examined_input_plan: Path | None = None,
 ) -> RuntimeArtifactPublishResult:
+    try:
+        examined_plan = load_examined_input_plan(examined_input_plan) if examined_input_plan else None
+    except (OSError, ArtifactProvenanceError) as error:
+        raise RuntimeCommandError(f"Invalid examined input plan: {error}") from error
     normalized_image_repository = image_repository.strip()
     normalized_image_tag = image_tag.strip()
     if not normalized_image_repository:
@@ -733,6 +739,8 @@ def publish_runtime_artifact(
                 {
                     "sources": inventory_sources,
                     "dependency_evidence": "/opt/launchplane/evidence/dependency-provenance.json",
+                    "addon_paths": runtime_values["ODOO_ADDONS_PATH"].split(","),
+                    "examined_input_plan": examined_plan,
                 }
             )
         )

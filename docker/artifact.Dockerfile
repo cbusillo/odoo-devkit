@@ -67,7 +67,7 @@ RUN mkdir -p /volumes /opt/project \
     && rm -rf /opt/project/tools \
     && ln -s /volumes/tools /opt/project/tools
 
-RUN /venv/bin/python /volumes/scripts/odoo_release_inventory.py --base /opt/launchplane/evidence/base-devtools-inventory.json
+RUN /venv/bin/python /volumes/scripts/odoo_release_inventory.py --base-tools /opt/launchplane/evidence/base-devtools-inventory.json
 
 FROM base-runtime AS production
 ARG TARGETPLATFORM

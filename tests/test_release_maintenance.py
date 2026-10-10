@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from odoo_devkit.artifact_provenance import ArtifactProvenanceError, aggregate_release_inventories
+from odoo_devkit.artifact_provenance import ArtifactProvenanceError, aggregate_release_inventories, load_examined_input_plan
 
 
 def load(name: str) -> Any:
@@ -26,6 +26,34 @@ inventory = load("odoo_release_inventory")
 
 
 class ReleaseMaintenanceTests(unittest.TestCase):
+    def test_exposed_graph_and_examined_plan_support_real_dependency_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for path, depends in (("tenant/module", []), ("shared/module", ["missing"]), ("tenant/docs/example", ["missing"])):
+                addon = root / path
+                addon.mkdir(parents=True)
+                (addon / "__manifest__.py").write_text(repr({"depends": depends}))
+            metadata = {
+                "sources": [
+                    {"input_name": "tenant", "repository": "fixture/tenant", "commit": "a" * 40, "roots": [str(root / "tenant")]}
+                ],
+                "addon_paths": [str(root / "tenant"), str(root / "shared")],
+                "examined_input_plan": {"examined_inputs_sha256": "b" * 64, "database_update_modules": ["module"]},
+            }
+            declaration = inventory.build_inventory(metadata)
+            self.assertTrue(declaration["complete"])
+            self.assertEqual(declaration["modules"], [{"name": "module", "depends": []}])
+            self.assertEqual(declaration["database_update_modules"], ["module"])
+            file = root / "examined.json"
+            file.write_text(json.dumps(metadata["examined_input_plan"]))
+            self.assertEqual(load_examined_input_plan(file), metadata["examined_input_plan"])
+            metadata["examined_input_plan"]["database_update_modules"] = ["missing"]
+            with self.assertRaises(ValueError):
+                inventory.build_inventory(metadata)
+            file.write_text(json.dumps({**metadata["examined_input_plan"], "token": "inert"}))
+            with self.assertRaises(ArtifactProvenanceError):
+                load_examined_input_plan(file)
+
     def test_platform_native_inputs_are_retained_and_graph_disagreement_refuses(self) -> None:
         platforms = ("linux/amd64", "linux/arm64")
         with tempfile.TemporaryDirectory() as directory:

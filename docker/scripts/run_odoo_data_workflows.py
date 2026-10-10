@@ -2151,20 +2151,12 @@ with registry.cursor() as cr:
         _logger.info("Post-deploy maintenance completed successfully.")
 
     def release_module_graph(self) -> dict[str, set[str]]:
-        graph: dict[str, set[str]] = {}
-        for root in self._resolve_addons_paths():
-            if not root.is_dir():
-                continue
-            for manifest in sorted(root.glob("*/__manifest__.py")):
-                if manifest.parent.name in graph:
-                    continue  # Odoo uses the first addon path with this name.
-                try:
-                    data = ast.literal_eval(manifest.read_text())
-                    if data.get("installable", True):
-                        graph[manifest.parent.name] = names(data.get("depends", []))
-                except (OSError, SyntaxError, ValueError, AttributeError) as error:
-                    raise OdooDatabaseUpdateError("Cannot resolve candidate addon graph.") from error
-        return graph
+        from odoo_release_inventory import module_graph
+
+        try:
+            return module_graph(self._resolve_addons_paths())
+        except (OSError, SyntaxError, ValueError, AttributeError) as error:
+            raise OdooDatabaseUpdateError("Cannot resolve candidate addon graph.") from error
 
     def run_planned_post_deploy_maintenance(self, plan_file: Path) -> None:
         started = time.monotonic()
@@ -2191,7 +2183,7 @@ with registry.cursor() as cr:
                 graph=self.release_module_graph(),
             )
             resolved["update_witnesses"] = self.module_update_witnesses(resolved["update_modules"])
-        except (OSError, ValueError, KeyError, TypeError) as error:
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
             raise OdooDatabaseUpdateError("Invalid or incomplete release module plan.") from error
         finally:
             self._reset_db_connection()
@@ -2225,9 +2217,9 @@ with registry.cursor() as cr:
                 "from odoo.modules.registry import Registry\n"
                 "from run_odoo_data_workflows import LocalServerSettings, InProcessMaintenanceRunner\n"
                 f"runner = InProcessMaintenanceRunner(LocalServerSettings(**json.loads({json.dumps(settings)!r})), None, None)\n"
-                f"Registry.new({self.local.db_name!r}, update_module={bool(resolved['install_modules'] or resolved['update_modules'])!r}, "
+                f"registry = Registry.new({self.local.db_name!r}, update_module={bool(resolved['install_modules'] or resolved['update_modules'])!r}, "
                 f"install_modules={resolved['install_modules']!r}, upgrade_modules={resolved['update_modules']!r})\n"
-                f"runner.finish_planned_maintenance(json.loads({json.dumps(resolved)!r}))\n"
+                f"runner.finish_planned_maintenance(json.loads({json.dumps(resolved)!r}), registry.updated_modules)\n"
                 f"Path({str(receipt)!r}).write_text(json.dumps(runner.maintenance_receipt))\n"
             )
             try:
@@ -2960,7 +2952,7 @@ class InProcessMaintenanceRunner(OdooDataWorkflowRunner):
         _logger.info("Using the maintenance registry for %s", label)
         exec(compile(script, f"<maintenance: {label}>", "exec"), {})
 
-    def finish_planned_maintenance(self, resolved: dict[str, Any]) -> None:
+    def finish_planned_maintenance(self, resolved: dict[str, Any], updated_modules: list[str]) -> None:
         self.reconcile_missing_manifest_install_queue()
         self.assert_install_queue_is_resolvable()
         self.apply_environment_overrides()
@@ -2976,10 +2968,7 @@ class InProcessMaintenanceRunner(OdooDataWorkflowRunner):
             if any(state in {"to install", "to upgrade", "to remove"} for state in states.values()):
                 raise OdooDatabaseUpdateError("Release left pending module work.")
             witnesses = self.module_update_witnesses(resolved["update_modules"])
-            if any(
-                not witnesses.get(name) or witnesses[name] == resolved["update_witnesses"].get(name)
-                for name in resolved["update_modules"]
-            ):
+            if set(resolved["update_modules"]) - set(updated_modules):
                 raise OdooDatabaseUpdateError("Release update readback found skipped module work.")
             self.maintenance_receipt = {
                 **resolved,
@@ -2990,6 +2979,7 @@ class InProcessMaintenanceRunner(OdooDataWorkflowRunner):
                 ),
                 "module_states": {name: states[name] for name in sorted(expected)},
                 "update_witnesses": witnesses,
+                "updated_by_odoo": sorted(updated_modules),
             }
         finally:
             self._reset_db_connection()

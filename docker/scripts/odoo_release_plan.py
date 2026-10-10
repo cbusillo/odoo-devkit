@@ -157,11 +157,16 @@ def verify_image_declaration(actual: dict[str, Any], expected: dict[str, Any], *
         if (present["repository"], present["commit"]) != (source["repository"], source["commit"]):
             raise ValueError("Running image source identity differs from the release artifact")
 
-        def files(items: list[dict[str, Any]], *, select: bool = False) -> dict[str, dict[str, Any]]:
+        def files(
+            items: list[dict[str, Any]],
+            *,
+            select: bool = False,
+            raw_paths: frozenset[str] = frozenset(file["path"] for file in present["files"]),
+        ) -> dict[str, dict[str, Any]]:
             result = {}
             for item in items:
                 path = item["path"]
-                if select and path.startswith("platforms/"):
+                if select and path.startswith("platforms/") and path not in raw_paths:
                     if not path.startswith(prefix):
                         continue
                     path = path.removeprefix(prefix)
