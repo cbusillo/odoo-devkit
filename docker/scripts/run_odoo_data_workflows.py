@@ -2167,11 +2167,14 @@ with registry.cursor() as cr:
             Path(output).write_text(json.dumps({"state": "running", "run_id": run_id}) + "\n")
         try:
             payload = load_plan(plan_file)
-            declaration_file = Path(
-                self.os_env.get("ODOO_RELEASE_DECLARATION_FILE", "/opt/launchplane/evidence/release-compatibility.json")
+            declaration_file = getattr(
+                self, "release_declaration_file", Path("/opt/launchplane/evidence/release-compatibility.json")
             )
             machine = os.uname().machine
             platform = "linux/" + {"x86_64": "amd64", "aarch64": "arm64", "arm64": "arm64"}.get(machine, machine)
+            dependency_file = declaration_file.parent / "dependency-provenance.json"
+            if dependency_file.is_file():
+                platform = load_plan(dependency_file)["target_platform"]
             verify_image_declaration(
                 load_plan(declaration_file), payload["candidate_manifest"]["release_compatibility"], platform=platform
             )

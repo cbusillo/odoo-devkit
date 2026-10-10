@@ -71,11 +71,11 @@ RUN /venv/bin/python /volumes/scripts/odoo_release_inventory.py --base-tools /op
 
 FROM base-runtime AS production
 ARG TARGETPLATFORM
-COPY /release-inventory-inputs.json /opt/launchplane/evidence/release-inventory-inputs.json
 COPY --from=base-devtools /opt/launchplane/evidence/base-devtools-inventory.json /opt/launchplane/evidence/base-devtools-inventory.json
 WORKDIR /opt/project
 RUN --mount=type=cache,target=/home/ubuntu/.cache/uv,uid=1000,gid=1000,sharing=locked \
 	TARGETPLATFORM="${TARGETPLATFORM}" ODOO_PYTHON_SYNC_SKIP_ADDONS="${ODOO_PYTHON_SYNC_SKIP_ADDONS}" /usr/local/bin/odoo-python-sync.sh prod
+COPY /release-inventory-inputs.json /opt/launchplane/evidence/release-inventory-inputs.json
 RUN /venv/bin/python /volumes/scripts/odoo_release_inventory.py \
     /opt/launchplane/evidence/release-inventory-inputs.json /opt/launchplane/evidence/release-compatibility.json \
     && rm /opt/launchplane/evidence/release-inventory-inputs.json

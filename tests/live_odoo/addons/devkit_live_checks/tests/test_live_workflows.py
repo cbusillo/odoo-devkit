@@ -96,7 +96,7 @@ class TestLiveWorkflows(TransactionCase):
         }
         declaration_file = self.root / (runner.local.db_name + "-image-declaration.json")
         declaration_file.write_text(json.dumps(candidate["release_compatibility"]))
-        runner.os_env["ODOO_RELEASE_DECLARATION_FILE"] = str(declaration_file)
+        runner.release_declaration_file = declaration_file
         return {
             "database": runner.local.db_name,
             "candidate_manifest": candidate,
@@ -172,7 +172,15 @@ class TestLiveWorkflows(TransactionCase):
         print("DEVKIT_MAINTENANCE_TIMING " + json.dumps(timings), flush=True)
 
     def test_planned_missing_change_and_failed_update_never_pass_readback(self) -> None:
-        for fault in ("missing_change", "update_failure", "readback_failure", "late_boundary", "old_image", "skipped_update"):
+        for fault in (
+            "missing_change",
+            "update_failure",
+            "readback_failure",
+            "late_boundary",
+            "old_image",
+            "skipped_update",
+            "declaration_override",
+        ):
             with self.target() as runner:
                 query(
                     "postgres",
@@ -180,11 +188,14 @@ class TestLiveWorkflows(TransactionCase):
                 )
                 payload = self.planned_payload(runner)
                 if fault == "old_image":
-                    actual = json.loads(Path(runner.os_env["ODOO_RELEASE_DECLARATION_FILE"]).read_text())
+                    actual = json.loads(runner.release_declaration_file.read_text())
                     actual["sources"][0]["commit"] = "b" * 40
-                    Path(runner.os_env["ODOO_RELEASE_DECLARATION_FILE"]).write_text(json.dumps(actual))
+                    runner.release_declaration_file.write_text(json.dumps(actual))
                 if fault == "missing_change":
                     payload["release"]["update_modules"] = []
+                if fault == "declaration_override":
+                    runner.os_env["ODOO_RELEASE_DECLARATION_FILE"] = str(runner.release_declaration_file)
+                    del runner.release_declaration_file
                 if fault == "update_failure":
                     runner.os_env["DEVKIT_FORCE_UPDATE_FAILURE"] = "1"
                 if fault == "readback_failure":

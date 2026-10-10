@@ -262,9 +262,12 @@ class ReleaseMaintenanceTests(unittest.TestCase):
             manifest = module / "__manifest__.py"
             manifest.write_text(repr({"depends": [], "data": ["view.xml"], "assets": {"web.assets_frontend": ["a.js"]}}))
             (module / "static" / "a.js").write_text("old")
+            (module / "static" / "view.xml").write_text("<odoo/>")
+            manifest.write_text(repr({"depends": [], "data": ["static/view.xml"], "assets": {"web.assets_frontend": ["a.js"]}}))
             first, graph = inventory.inventory([root])
             self.assertEqual(graph, {"addon": set()})
-            manifest.write_text(repr({"depends": [], "data": ["view.xml"], "assets": {"web.assets_frontend": ["b.js"]}}))
+            self.assertEqual(next(item for item in first if item["path"].endswith("static/view.xml"))["kind"], "database_data")
+            manifest.write_text(repr({"depends": [], "data": ["static/view.xml"], "assets": {"web.assets_frontend": ["b.js"]}}))
             second, _ = inventory.inventory([root])
             left = next(item for item in first if item["kind"] == "manifest_assets")
             right = next(item for item in second if item["kind"] == "manifest_assets")

@@ -45,6 +45,7 @@ def classify_files(
 ) -> tuple[list[dict[str, Any]], dict[str, set[str]]]:
     modules: dict[str, set[str]] = {}
     module_roots = {}
+    database_files: set[Path] = set()
     for raw_path, value in content.items():
         path = Path(raw_path)
         if path.name != "__manifest__.py" or "tests" in path.parts:
@@ -54,6 +55,7 @@ def classify_files(
             name = (module_aliases or {}).get(path.parent, path.parent.name)
             modules[name] = set(data.get("depends", []))
             module_roots[path.parent] = name
+            database_files.update(path.parent / item for item in data.get("data", []) + data.get("demo", []))
     files = []
     for raw_path, value in sorted(content.items()):
         path = Path(raw_path)
@@ -65,6 +67,8 @@ def classify_files(
                 json.dumps({k: v for k, v in data.items() if k != "assets"}, sort_keys=True).encode()
             ).hexdigest()
             kind = "manifest_assets"
+        elif path in database_files and module:
+            kind = "database_data"
         elif "static" in path.parts and module:
             kind = "static"
         elif path.suffix in {".md", ".rst", ".adoc"} or {"doc", "docs", ".github", "tests"} & set(path.parts):

@@ -50,14 +50,14 @@ Include `production_manifest` for manifest changes so assets-only differences
 can be distinguished from changed database semantics. The consumer also checks
 the declaration baked into its running image. Its default path is
 `/opt/launchplane/evidence/release-compatibility.json`;
-`ODOO_RELEASE_DECLARATION_FILE` supports an explicitly mounted declaration for
-isolated fixtures. This complements the orchestrator's exact runtime image
+Environment payloads cannot override that path. Isolated Python fixtures inject
+the runner's declaration-file attribute. This complements the orchestrator's exact runtime image
 verification; matching module names alone are insufficient.
 
 The consumer verifies database/artifact/image/hash identities and the complete
 image graph. Required installs are reconciled with installed modules; updates
 expand only through installed reverse dependents. Pending work, missing
-installed addons, omitted changes or incomplete plans refuse execution. A
+installed addons, listed changes omitted from the module plan or incomplete plans refuse execution. A
 compatible release missing a required module refuses rather than performing
 hidden DB work during overlap.
 
@@ -67,7 +67,7 @@ updating registry with the resolved install/update flags, then reuses it for
 existing settings, website, mail fencing, admin/schema/policy and service-user
 checks. Odoo shell's ordinary implicit registry does not apply update flags,
 so the explicit startup is required. Required module-state and pending-work
-readback and changed module-update timestamps must pass before a receipt is
+readback and Odoo's updated-module evidence must pass before a receipt is
 emitted, so an already-installed state cannot hide skipped updates. This does not unset `noupdate`,
 force editor data, switch traffic, start web or resume writers.
 
