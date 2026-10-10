@@ -516,6 +516,27 @@ Notes
   push; Odoo generates new VAPID keys on demand. It regenerates
   `database.secret`. `database.uuid` is kept: it identifies the database,
   authenticates nothing, and Odoo's own neutralize keeps it too.
+- Before post-deploy maintenance, update-only work or any restored-copy Odoo
+  process (including OpenUpgrade), the runner commits a SQL-only preparation
+  transaction. It reuses the credential-clearing rules below, applies managed
+  `config_parameters` and Shopify credential values from the existing typed
+  payload, and fences non-production outgoing mail and configured crons.
+  Requested restore sanitization is in this transaction too, before registry
+  loading rather than after OpenUpgrade. An independent database connection
+  checks that the stripping, overrides and fences committed; a failed or
+  rolled-back commit stops all later Odoo processes. Explicit production lanes
+  preserve their integration credentials except for supplied managed overrides.
+  Non-production retained-integration exceptions keep their existing scope.
+  Unknown addon override targets fail before registry loading: credential
+  parameters use the supported typed `config_parameters` surface; a new
+  table-backed credential target needs a SQL adapter before it can run.
+  Authentik's client identifiers and presentation settings, Shopify's
+  URL/dispatcher bookkeeping and website bootstrap still use their installed
+  ORM adapters after the credential transaction. No addon code or Odoo shell is
+  used to strip credentials. Callers must keep other workers stopped until
+  preparation and maintenance finish; this is not a traffic-switch mechanism.
+  Restore reasserts the boundary after module work before running further
+  settings/admin hooks, because install data can re-enable integrations.
 - `ODOO_RESTORE_KEPT_INTEGRATIONS` (comma-separated) names integrations whose
   restored settings stay, using the integration names of Launchplane's
   read-back: `shopify`, `printnode`, `fishbowl`, `repairshopr`, `cm_data`,

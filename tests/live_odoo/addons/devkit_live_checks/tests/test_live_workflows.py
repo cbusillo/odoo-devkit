@@ -38,7 +38,13 @@ class ServerStarted(Exception):
 
 
 def run(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
-    return REAL_RUN(args, check=True, capture_output=True, timeout=180, **kwargs)
+    try:
+        return REAL_RUN(args, check=True, capture_output=True, timeout=180, **kwargs)
+    except subprocess.CalledProcessError as error:
+        # This lane has synthetic data and no credentials; preserve the nested
+        # Odoo failure so a setup problem is distinguishable from a fault proof.
+        print((error.stderr or b"").decode(errors="replace"), flush=True)
+        raise
 
 
 def query(database: str, statement: str, params: tuple = ()) -> list[tuple]:
@@ -405,3 +411,111 @@ os.execv('/bin/bash', ['bash', '-c', command])
             lambda runner: patch.object(runner, "_resolve_excluded_addon_roots", return_value=()),
             fault_message="AUTO upgraded an excluded Enterprise repository",
         )
+
+    def credential_boundary_check(self, runner: workflows.OdooDataWorkflowRunner, *, restore: bool = False) -> None:
+        query(
+            "postgres",
+            "CREATE TABLE IF NOT EXISTS devkit_boundary_events (id bigserial PRIMARY KEY, database_name text, event text)",
+        )
+        seed_database = self.source if restore else runner.local.db_name
+        query(
+            seed_database,
+            "INSERT INTO ir_config_parameter (key,value) VALUES ('printnode.api_key','inert-production-sentinel'), "
+            "('web_map.token_map_box','inert-map-sentinel') ON CONFLICT (key) DO UPDATE SET value=excluded.value",
+        )
+        payload = {
+            "config_parameters": [
+                {"key": "printnode.api_key", "value": {"source": "secret_binding", "environment_variable": "DEVKIT_LANE_KEY"}},
+                {"key": "web.base.url", "value": {"source": "literal", "value": "https://fixture.example.test"}},
+            ]
+        }
+        runner.local.install_modules = "ci_boundary_install_probe"
+        runner.local.update_modules = "ci_probe"
+        runner.os_env.update(
+            DEVKIT_BOUNDARY_PROBE="1",
+            DEVKIT_LANE_KEY="inert-lane-sentinel",
+            ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64=base64.b64encode(json.dumps(payload).encode()).decode(),
+        )
+        original = runner.prepare_credentials_before_registry
+
+        def committed(**kwargs: Any) -> None:
+            original(**kwargs)
+            query(
+                "postgres",
+                "INSERT INTO devkit_boundary_events (database_name,event) VALUES (%s,'commit')",
+                (runner.local.db_name,),
+            )
+
+        failure = None
+        with patch.object(runner, "prepare_credentials_before_registry", side_effect=committed):
+            try:
+                if restore:
+                    runner.run_restore()
+                else:
+                    runner.run_post_deploy_maintenance()
+            except workflows.OdooRestorerError as error:
+                failure = error
+        events = [
+            row[0]
+            for row in query(
+                "postgres", "SELECT event FROM devkit_boundary_events WHERE database_name=%s ORDER BY id", (runner.local.db_name,)
+            )
+        ]
+        self.assertFalse(
+            any(event.startswith("blocked_") for event in events), "Unstripped credential reached a blocked outbound sink"
+        )
+        if failure:
+            raise failure
+        self.assertTrue(events and events[0] == "commit", "Credential-capable hook ran before commit")
+        for hook in ("register_hook", "pre_init_hook", "post_init_hook", "update_hook"):
+            self.assertIn(hook, events, f"Real {hook} was not exercised")
+        print("DEVKIT_BOUNDARY_ORDER " + json.dumps({"path": "restore" if restore else "post_deploy", "events": events}), flush=True)
+
+    def test_post_deploy_credentials_commit_before_real_hooks(self) -> None:
+        self.guarded(
+            self.credential_boundary_check,
+            lambda runner: patch.object(runner, "prepare_credentials_before_registry"),
+            fault_message="Unstripped credential reached a blocked outbound sink",
+        )
+
+    def test_restore_credentials_commit_before_real_hooks(self) -> None:
+        self.guarded(
+            lambda runner: self.credential_boundary_check(runner, restore=True),
+            lambda runner: patch.object(runner, "prepare_credentials_before_registry"),
+            fault_message="Unstripped credential reached a blocked outbound sink",
+        )
+
+    def test_failed_and_rolled_back_boundary_commit_starts_no_odoo_hook(self) -> None:
+        for mode in ("failed", "rolled_back"):
+            with self.subTest(mode=mode), self.target() as runner:
+                query(
+                    "postgres",
+                    "CREATE TABLE IF NOT EXISTS devkit_boundary_events (id bigserial PRIMARY KEY, database_name text, event text)",
+                )
+                connection = runner.connect_to_db()
+
+                class BrokenCommit:
+                    def __init__(self, wrapped: Any, failure_mode: str) -> None:
+                        self.wrapped = wrapped
+                        self.failure_mode = failure_mode
+
+                    def __getattr__(self, name: str) -> Any:
+                        return getattr(self.wrapped, name)
+
+                    def commit(self) -> None:
+                        self.wrapped.rollback()
+                        if self.failure_mode == "failed":
+                            raise workflows.OdooDatabaseUpdateError("planted commit failure")
+
+                runner.local.db_conn = BrokenCommit(connection, mode)
+                runner.os_env.update(DEVKIT_BOUNDARY_PROBE="1", DEVKIT_LANE_KEY="inert-lane-sentinel")
+                query(
+                    runner.local.db_name,
+                    "INSERT INTO ir_config_parameter (key,value) VALUES ('printnode.api_key','inert-production-sentinel') ON CONFLICT (key) DO UPDATE SET value=excluded.value",
+                )
+                with self.assertRaises(workflows.OdooDatabaseUpdateError):
+                    runner.run_post_deploy_maintenance()
+                self.assertEqual(
+                    query("postgres", "SELECT event FROM devkit_boundary_events WHERE database_name=%s", (runner.local.db_name,)), []
+                )
+                print(f"DEVKIT_FAULT_DETECTED boundary_commit_{mode}", flush=True)

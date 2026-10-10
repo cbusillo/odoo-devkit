@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import importlib.util
 import json
 import os
@@ -118,6 +119,7 @@ class UpstreamRestoreFailureTests(unittest.TestCase):
             stack.enter_context(
                 patch.multiple(
                     runner,
+                    prepare_credentials_before_registry=MagicMock(),
                     _assert_filestore_capacity=MagicMock(),
                     _resolve_filestore_owner=MagicMock(return_value=None),
                     overwrite_filestore=overwrite_filestore,
@@ -424,6 +426,7 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
         runner = odoo_data_workflows.OdooDataWorkflowRunner(self._local_settings(), upstream=None, env_file=None)
 
         with (
+            patch.object(runner, "prepare_credentials_before_registry", side_effect=lambda: calls.append("credential_boundary")),
             patch.object(runner, "install_addons", side_effect=lambda **_kwargs: calls.append("install_addons")),
             patch.object(runner, "update_addons", side_effect=lambda **_kwargs: calls.append("update_addons")),
             patch.object(runner, "connect_to_db", side_effect=lambda: calls.append("connect_to_db")),
@@ -461,6 +464,7 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
         self.assertEqual(
             calls,
             [
+                "credential_boundary",
                 "install_addons",
                 "update_addons",
                 "connect_to_db",
@@ -712,6 +716,7 @@ class DataWorkflowGuardTests(unittest.TestCase):
             path.write_bytes(b"fixture archive")
 
         restore_steps = {
+            "prepare_credentials_before_registry": MagicMock(),
             "_assert_filestore_capacity": MagicMock(),
             "capture_upstream_database": MagicMock(side_effect=capture_archive),
             "_resolve_filestore_owner": MagicMock(return_value=None),
@@ -743,12 +748,9 @@ class DataWorkflowGuardTests(unittest.TestCase):
     def test_restore_drops_the_restored_database_when_preparation_fails(self) -> None:
         database_error = odoo_data_workflows.psycopg2.Error
         failures = (
-            ("credential clearing", {}, "neutralize_production_credentials", database_error),
-            ("credential read-back", {}, "verify_production_credentials_cleared", odoo_data_workflows.OdooDatabaseUpdateError),
+            ("credential boundary", {}, "prepare_credentials_before_registry", odoo_data_workflows.OdooDatabaseUpdateError),
             ("filestore permissions", {}, "normalize_filestore_permissions", PermissionError),
             ("OpenUpgrade", {"OPENUPGRADE_ENABLED": True}, "run_openupgrade", odoo_data_workflows.OdooRestorerError),
-            ("sanitize", {}, "sanitize_database", odoo_data_workflows.OdooDatabaseUpdateError),
-            ("sanitize database error", {}, "sanitize_database", database_error),
             ("addon install", {}, "install_addons", odoo_data_workflows.OdooRestorerError),
             ("addon update", {}, "update_addons", odoo_data_workflows.OdooRestorerError),
             ("install queue", {}, "assert_install_queue_is_resolvable", odoo_data_workflows.OdooDatabaseUpdateError),
@@ -800,13 +802,10 @@ class DataWorkflowGuardTests(unittest.TestCase):
                 calls: list[str] = []
                 for step in (
                     "overwrite_database",
-                    "fingerprint_restored_credentials",
-                    "neutralize_production_credentials",
+                    "prepare_credentials_before_registry",
                     "run_openupgrade",
-                    "sanitize_database",
                     "install_addons",
                     "update_addons",
-                    "verify_production_credentials_cleared",
                     "apply_environment_overrides",
                 ):
                     getattr(runner, step).side_effect = partial(
@@ -817,14 +816,11 @@ class DataWorkflowGuardTests(unittest.TestCase):
 
                 expected = [
                     "overwrite_database",
-                    "fingerprint_restored_credentials",
-                    "neutralize_production_credentials",
+                    "prepare_credentials_before_registry",
                     "run_openupgrade",
-                    *(["sanitize_database"] if do_sanitize else []),
                     "install_addons",
                     "update_addons",
-                    "neutralize_production_credentials",
-                    "verify_production_credentials_cleared",
+                    "prepare_credentials_before_registry",
                     "apply_environment_overrides",
                 ]
                 self.assertEqual(calls, expected)
@@ -985,8 +981,8 @@ PRODUCTION_API_KEY_HASH = "$pbkdf2-sha512$600000$production-api-key-hash"
 class _RestoredProductionCopy:
     """A SQLite stand-in for the tables sanitize touches, seeded like a restored production database."""
 
-    def __init__(self) -> None:
-        self.database = sqlite3.connect(":memory:")
+    def __init__(self, path: str = ":memory:") -> None:
+        self.database = sqlite3.connect(path)
         self.database.executescript(
             """
             CREATE TABLE ir_config_parameter (key TEXT PRIMARY KEY, value TEXT);
@@ -1096,6 +1092,9 @@ class _RestoredProductionCopy:
 
     def commit(self) -> None:
         self.database.commit()
+
+    def rollback(self) -> None:
+        self.database.rollback()
 
     def close(self) -> None:
         self.database.close()
@@ -1451,6 +1450,8 @@ class ProductionCredentialSanitizeTests(unittest.TestCase):
         filestore_process.wait.return_value = 0
         with patch.multiple(
             runner,
+            _reset_db_connection=MagicMock(),
+            _connect_with_retry=MagicMock(return_value=_BoundaryConnection(self.copy.database)),
             _resolve_filestore_owner=MagicMock(return_value=None),
             overwrite_filestore=MagicMock(return_value=filestore_process),
             overwrite_database=MagicMock(),
@@ -1486,6 +1487,8 @@ class ProductionCredentialSanitizeTests(unittest.TestCase):
         dropped: list[bool] = []
         with patch.multiple(
             runner,
+            _reset_db_connection=MagicMock(),
+            _connect_with_retry=MagicMock(return_value=_BoundaryConnection(self.copy.database)),
             _resolve_filestore_owner=MagicMock(return_value=None),
             overwrite_filestore=MagicMock(return_value=filestore_process),
             overwrite_database=MagicMock(),
@@ -1733,6 +1736,167 @@ class EnsureAdminUserTests(unittest.TestCase):
             self._run_admin_hardening(self._runner("configured-password"), environment)
 
         admin.with_context.assert_not_called()
+
+
+class _BoundaryConnection:
+    """Psycopg-style connection around SQLite; independent readers see committed state."""
+
+    def __init__(self, database: sqlite3.Connection) -> None:
+        self.database = database
+
+    def __enter__(self) -> _BoundaryConnection:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        pass
+
+    def cursor(self) -> closing:
+        return closing(_ParamstyleCursor(self.database.cursor()))
+
+    def commit(self) -> None:
+        self.database.commit()
+
+    def rollback(self) -> None:
+        self.database.rollback()
+
+    def close(self) -> None:
+        self.database.close()
+
+
+class CredentialBoundaryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.scratch = TemporaryDirectory()
+        self.addCleanup(self.scratch.cleanup)
+        self.path = str(Path(self.scratch.name) / "copy.db")
+        seed = _RestoredProductionCopy(self.path)
+        seed.commit()
+        self.metadata = seed.database.execute("SELECT * FROM information_schema.columns").fetchall()
+        self.tables = seed.tables
+        seed.close()
+        self.events: list[str] = []
+        self.hooks: list[str] = []
+        self.connections: list[_BoundaryConnection] = []
+        self.addCleanup(lambda: [conn.close() for conn in self.connections])
+        with patch.dict(os.environ, {}, clear=True):
+            settings = odoo_data_workflows.LocalServerSettings(
+                ODOO_DB_HOST="isolated",
+                ODOO_DB_USER="fixture",
+                ODOO_DB_PASSWORD="inert",
+                ODOO_DB_NAME="fixture",
+                ODOO_FILESTORE_PATH=self.scratch.name,
+                PLATFORM_INSTANCE="testing",
+            )
+            self.runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, None, None)
+        self.payload = {
+            "config_parameters": [
+                {"key": "printnode.api_key", "value": {"source": "secret_binding", "environment_variable": "LANE_KEY"}},
+                {"key": "web.base.url", "value": {"source": "literal", "value": "https://fixture.example.test"}},
+            ]
+        }
+        self.runner.os_env.update(
+            LANE_KEY="inert-lane-sentinel",
+            ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64=base64.b64encode(json.dumps(self.payload).encode()).decode(),
+        )
+        patcher = patch.object(self.runner, "_connect_with_retry", side_effect=self.connection)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def connection(self, _name: str) -> _BoundaryConnection:
+        database = sqlite3.connect(self.path)
+        database.create_function("to_regclass", 1, lambda name: name if name in self.tables else None)
+        database.executescript(
+            "ATTACH DATABASE ':memory:' AS information_schema; "
+            "CREATE TABLE information_schema.columns (table_name TEXT, column_name TEXT, is_nullable TEXT, data_type TEXT);"
+        )
+        database.executemany("INSERT INTO information_schema.columns VALUES (?, ?, ?, ?)", self.metadata)
+        database.commit()
+        conn = _BoundaryConnection(database)
+        self.connections.append(conn)
+        real_commit = conn.commit
+
+        def commit() -> None:
+            real_commit()
+            self.events.append("commit")
+
+        conn.commit = commit
+        return conn
+
+    def hook(self, name: str) -> None:
+        self.hooks.append(name)
+        with sqlite3.connect(self.path) as reader:
+            parameters = dict(reader.execute("SELECT key,value FROM ir_config_parameter"))
+            self.assertEqual(parameters.get("printnode.api_key"), "inert-lane-sentinel", "hook ran before override commit")
+            self.assertNotIn("web_map.token_map_box", parameters, "hook ran before strip commit")
+            self.assertEqual(reader.execute("SELECT count(*) FROM ir_cron WHERE active").fetchone()[0], 0)
+            self.assertEqual(reader.execute("SELECT smtp_host FROM ir_mail_server WHERE active").fetchall(), [("invalid",)])
+            self.assertEqual(reader.execute("SELECT count(*) FROM fetchmail_server WHERE active").fetchone()[0], 0)
+        self.events.append(name)
+
+    def run_maintenance(self) -> None:
+        with ExitStack() as stack:
+            for method in (
+                "install_addons",
+                "update_addons",
+                "apply_environment_overrides",
+                "ensure_admin_user",
+                "ensure_gpt_users",
+            ):
+                stack.enter_context(
+                    patch.object(self.runner, method, side_effect=lambda *args, _name=method, **kwargs: self.hook(_name))
+                )
+            for method in (
+                "reconcile_missing_manifest_install_queue",
+                "assert_install_queue_is_resolvable",
+                "assert_core_schema_healthy",
+            ):
+                stack.enter_context(patch.object(self.runner, method))
+            self.runner.run_post_deploy_maintenance()
+
+    def test_maintenance_hooks_read_the_committed_strip_and_overrides(self) -> None:
+        self.run_maintenance()
+        self.assertTrue(self.hooks)
+        self.assertLess(self.events.index("commit"), self.events.index(self.hooks[0]))
+
+    def test_late_strip_fault_breaks_first_hook_check(self) -> None:
+        with patch.object(self.runner, "prepare_credentials_before_registry"):
+            with self.assertRaisesRegex(AssertionError, "hook ran before override commit"):
+                self.run_maintenance()
+
+    def test_failed_or_rolled_back_commit_prevents_all_hooks(self) -> None:
+        for mode in ("failed", "rolled_back"):
+            with self.subTest(mode=mode):
+                conn = self.connection("fixture")
+                self.runner.local.db_conn = conn
+
+                def broken_commit(_conn: _BoundaryConnection = conn, _mode: str = mode) -> None:
+                    _conn.rollback()
+                    if _mode == "failed":
+                        raise odoo_data_workflows.OdooDatabaseUpdateError("planted commit failure")
+
+                conn.commit = broken_commit
+                with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
+                    self.run_maintenance()
+                self.assertEqual(self.hooks, [])
+
+    def test_production_keeps_credentials_except_explicit_managed_override(self) -> None:
+        self.runner.local.platform_instance = "prod"
+        self.runner.prepare_credentials_before_registry()
+        with sqlite3.connect(self.path) as reader:
+            parameters = dict(reader.execute("SELECT key,value FROM ir_config_parameter"))
+            self.assertEqual(parameters["web_map.token_map_box"], PRODUCTION_PARAMETERS["web_map.token_map_box"])
+            self.assertEqual(parameters["printnode.api_key"], "inert-lane-sentinel")
+            self.assertGreater(reader.execute("SELECT count(*) FROM ir_cron WHERE active").fetchone()[0], 0)
+            self.assertEqual(
+                reader.execute("SELECT smtp_host FROM ir_mail_server WHERE active").fetchall(), [("smtp.example.test",)]
+            )
+
+    def test_retained_integrations_keep_existing_allowed_credentials(self) -> None:
+        self.runner.local.restore_kept_integrations = "mapbox"
+        self.runner.prepare_credentials_before_registry()
+        with sqlite3.connect(self.path) as reader:
+            parameters = dict(reader.execute("SELECT key,value FROM ir_config_parameter"))
+            self.assertEqual(parameters["web_map.token_map_box"], PRODUCTION_PARAMETERS["web_map.token_map_box"])
+            self.assertNotIn("unsplash.access_key", parameters)
 
 
 if __name__ == "__main__":
