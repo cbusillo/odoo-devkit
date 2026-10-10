@@ -518,18 +518,22 @@ Notes
   authenticates nothing, and Odoo's own neutralize keeps it too.
 - Before post-deploy maintenance, update-only work or any restored-copy Odoo
   process (including OpenUpgrade), the runner commits a SQL-only preparation
-  transaction. It reuses the credential-clearing rules below, applies managed
+  transaction. Restored copies reuse the credential-clearing rules below;
+  ordinary maintenance preserves lane-owned integration IDs, API keys, signing
+  keys and push devices. The transaction applies managed
   `config_parameters` and Shopify credential values from the existing typed
-  payload, and fences non-production outgoing mail and configured crons.
+  payload and fences non-production outgoing mail. Crons are disabled only
+  when requested restore sanitization calls for it, preserving `--no-sanitize`.
   Requested restore sanitization is in this transaction too, before registry
   loading rather than after OpenUpgrade. An independent database connection
   checks that the stripping, overrides and fences committed; a failed or
-  rolled-back commit stops all later Odoo processes. Explicit production lanes
+  rolled-back commit stops all later Odoo processes. A fresh transaction witness
+  also proves a commit when all settings were already correct. Explicit production lanes
   preserve their integration credentials except for supplied managed overrides.
   Non-production retained-integration exceptions keep their existing scope.
-  Unknown addon override targets fail before registry loading: credential
-  parameters use the supported typed `config_parameters` surface; a new
-  table-backed credential target needs a SQL adapter before it can run.
+  Addon override targets unused by the installed settings consumer stay unused.
+  Credential parameters use the supported typed `config_parameters` surface;
+  new credential-capable adapter behavior must extend the SQL boundary too.
   Authentik's client identifiers and presentation settings, Shopify's
   URL/dispatcher bookkeeping and website bootstrap still use their installed
   ORM adapters after the credential transaction. No addon code or Odoo shell is

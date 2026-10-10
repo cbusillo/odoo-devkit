@@ -3,7 +3,7 @@
 import os
 
 import psycopg2
-from odoo import models
+from odoo import api, models
 
 
 def observe_boundary(database: str, hook: str) -> None:
@@ -18,8 +18,8 @@ def observe_boundary(database: str, hook: str) -> None:
         mail_hosts = [row[0] for row in cursor.fetchall()]
         safe = (
             parameters.get("printnode.api_key") == os.environ["DEVKIT_LANE_KEY"]
-            and "web_map.token_map_box" not in parameters
-            and active_crons == 0
+            and (not os.environ.get("DEVKIT_EXPECT_STRIP") or "web_map.token_map_box" not in parameters)
+            and (not os.environ.get("DEVKIT_EXPECT_SANITIZE") or active_crons == 0)
             and mail_hosts == ["invalid"]
         )
         # A stale credential would reach these outbound sinks. They record only the
@@ -41,5 +41,6 @@ class CredentialProbe(models.AbstractModel):
         super()._register_hook()
         observe_boundary(self.env.cr.dbname, "register_hook")
 
+    @api.model
     def check_update_boundary(self) -> None:
         observe_boundary(self.env.cr.dbname, "update_hook")

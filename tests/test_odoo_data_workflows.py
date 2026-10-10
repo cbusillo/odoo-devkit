@@ -1741,8 +1741,9 @@ class EnsureAdminUserTests(unittest.TestCase):
 class _BoundaryConnection:
     """Psycopg-style connection around SQLite; independent readers see committed state."""
 
-    def __init__(self, database: sqlite3.Connection) -> None:
+    def __init__(self, database: sqlite3.Connection, *, owns_connection: bool = False) -> None:
         self.database = database
+        self.owns_connection = owns_connection
 
     def __enter__(self) -> _BoundaryConnection:
         return self
@@ -1760,7 +1761,8 @@ class _BoundaryConnection:
         self.database.rollback()
 
     def close(self) -> None:
-        self.database.close()
+        if self.owns_connection:
+            self.database.close()
 
 
 class CredentialBoundaryTests(unittest.TestCase):
@@ -1810,7 +1812,7 @@ class CredentialBoundaryTests(unittest.TestCase):
         )
         database.executemany("INSERT INTO information_schema.columns VALUES (?, ?, ?, ?)", self.metadata)
         database.commit()
-        conn = _BoundaryConnection(database)
+        conn = _BoundaryConnection(database, owns_connection=True)
         self.connections.append(conn)
         real_commit = conn.commit
 
@@ -1826,13 +1828,15 @@ class CredentialBoundaryTests(unittest.TestCase):
         with sqlite3.connect(self.path) as reader:
             parameters = dict(reader.execute("SELECT key,value FROM ir_config_parameter"))
             self.assertEqual(parameters.get("printnode.api_key"), "inert-lane-sentinel", "hook ran before override commit")
-            self.assertNotIn("web_map.token_map_box", parameters, "hook ran before strip commit")
-            self.assertEqual(reader.execute("SELECT count(*) FROM ir_cron WHERE active").fetchone()[0], 0)
             self.assertEqual(reader.execute("SELECT smtp_host FROM ir_mail_server WHERE active").fetchall(), [("invalid",)])
-            self.assertEqual(reader.execute("SELECT count(*) FROM fetchmail_server WHERE active").fetchone()[0], 0)
+            if self.restoring:
+                self.assertNotIn("web_map.token_map_box", parameters, "hook ran before strip commit")
+                self.assertEqual(reader.execute("SELECT count(*) FROM ir_cron WHERE active").fetchone()[0], 0)
+                self.assertEqual(reader.execute("SELECT count(*) FROM fetchmail_server WHERE active").fetchone()[0], 0)
         self.events.append(name)
 
-    def run_maintenance(self) -> None:
+    def run_maintenance(self, *, restoring: bool = False) -> None:
+        self.restoring = restoring
         with ExitStack() as stack:
             for method in (
                 "install_addons",
@@ -1850,10 +1854,40 @@ class CredentialBoundaryTests(unittest.TestCase):
                 "assert_core_schema_healthy",
             ):
                 stack.enter_context(patch.object(self.runner, method))
-            self.runner.run_post_deploy_maintenance()
+            if restoring:
+                for method in ("overwrite_database", "normalize_filestore_permissions"):
+                    stack.enter_context(patch.object(self.runner, method))
+                stack.enter_context(patch.object(self.runner, "_resolve_filestore_owner", return_value=None))
+                process = MagicMock()
+                process.wait.return_value = 0
+                stack.enter_context(patch.object(self.runner, "overwrite_filestore", return_value=process))
+                stack.enter_context(patch.object(self.runner, "drop_database"))
+                self.runner._restore_from_verified_dump(Path("/inert.dump"), do_sanitize=True)
+            else:
+                self.runner.run_post_deploy_maintenance()
 
-    def test_maintenance_hooks_read_the_committed_strip_and_overrides(self) -> None:
+    def test_maintenance_hooks_read_committed_overrides_and_preserve_lane_state(self) -> None:
+        with sqlite3.connect(self.path) as reader:
+            before = reader.execute("SELECT * FROM external_id").fetchall()
+            keys = reader.execute("SELECT * FROM res_users_apikeys").fetchall()
+            secret = reader.execute("SELECT value FROM ir_config_parameter WHERE key='database.secret'").fetchone()
         self.run_maintenance()
+        self.assertTrue(self.hooks)
+        self.assertLess(self.events.index("commit"), self.events.index(self.hooks[0]))
+        with sqlite3.connect(self.path) as reader:
+            self.assertEqual(reader.execute("SELECT * FROM external_id").fetchall(), before)
+            self.assertEqual(reader.execute("SELECT * FROM res_users_apikeys").fetchall(), keys)
+            self.assertEqual(reader.execute("SELECT value FROM ir_config_parameter WHERE key='database.secret'").fetchone(), secret)
+            self.assertGreater(reader.execute("SELECT count(*) FROM ir_cron WHERE active").fetchone()[0], 0)
+
+    def test_restore_hooks_read_committed_strip_and_sanitization(self) -> None:
+        # The SQL formatter is a unit-loader stub; real sanitization is exercised
+        # by the Postgres/Odoo lane. Use direct SQL for its cron/base-url updates.
+        def sanitize() -> None:
+            self.runner.connect_to_db().database.execute("UPDATE ir_cron SET active=false")
+
+        with patch.object(self.runner, "sanitize_database", side_effect=sanitize):
+            self.run_maintenance(restoring=True)
         self.assertTrue(self.hooks)
         self.assertLess(self.events.index("commit"), self.events.index(self.hooks[0]))
 
@@ -1892,11 +1926,21 @@ class CredentialBoundaryTests(unittest.TestCase):
 
     def test_retained_integrations_keep_existing_allowed_credentials(self) -> None:
         self.runner.local.restore_kept_integrations = "mapbox"
-        self.runner.prepare_credentials_before_registry()
+        self.runner.prepare_credentials_before_registry(restored_copy=True)
         with sqlite3.connect(self.path) as reader:
             parameters = dict(reader.execute("SELECT key,value FROM ir_config_parameter"))
             self.assertEqual(parameters["web_map.token_map_box"], PRODUCTION_PARAMETERS["web_map.token_map_box"])
             self.assertNotIn("unsplash.access_key", parameters)
+
+    def test_production_rollback_fails_even_when_all_credentials_already_match(self) -> None:
+        self.runner.local.platform_instance = "prod"
+        self.runner.os_env.pop("ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64")
+        conn = self.connection("fixture")
+        self.runner.local.db_conn = conn
+        conn.commit = conn.rollback
+        with self.assertRaisesRegex(odoo_data_workflows.OdooDatabaseUpdateError, "commit readback failed"):
+            self.run_maintenance()
+        self.assertEqual(self.hooks, [])
 
 
 if __name__ == "__main__":

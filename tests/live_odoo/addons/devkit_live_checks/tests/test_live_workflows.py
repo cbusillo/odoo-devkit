@@ -11,7 +11,7 @@ import sys
 import tempfile
 import uuid
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -309,9 +309,18 @@ os.execv('/bin/bash', ['bash', '-c', command])
         )
 
     def test_data_workflow_applies_real_launchplane_settings(self) -> None:
+        def omit_settings(runner: workflows.OdooDataWorkflowRunner) -> ExitStack:
+            stack = ExitStack()
+            # Parameter application now has an early SQL path and a later ORM
+            # path. Disable both for the existing final-persistence fault; the
+            # separate hook-order checks isolate failure of the early path.
+            stack.enter_context(patch.object(runner, "_pre_registry_parameter_overrides", return_value={}))
+            stack.enter_context(patch.object(runner, "apply_environment_overrides"))
+            return stack
+
         self.guarded(
             lambda runner: self.settings_check(runner, data_workflow=True),
-            lambda runner: patch.object(runner, "apply_environment_overrides"),
+            omit_settings,
             fault_message="Launchplane settings payload was not applied",
         )
 
@@ -413,6 +422,23 @@ os.execv('/bin/bash', ['bash', '-c', command])
         )
 
     def credential_boundary_check(self, runner: workflows.OdooDataWorkflowRunner, *, restore: bool = False) -> None:
+        before = (
+            query(
+                self.source,
+                "SELECT key,value FROM ir_config_parameter WHERE key IN ('printnode.api_key','web_map.token_map_box')",
+            )
+            if restore
+            else []
+        )
+        try:
+            self._credential_boundary_check(runner, restore=restore)
+        finally:
+            if restore:
+                query(self.source, "DELETE FROM ir_config_parameter WHERE key IN ('printnode.api_key','web_map.token_map_box')")
+                for key, value in before:
+                    query(self.source, "INSERT INTO ir_config_parameter (key,value) VALUES (%s,%s)", (key, value))
+
+    def _credential_boundary_check(self, runner: workflows.OdooDataWorkflowRunner, *, restore: bool) -> None:
         query(
             "postgres",
             "CREATE TABLE IF NOT EXISTS devkit_boundary_events (id bigserial PRIMARY KEY, database_name text, event text)",
@@ -434,6 +460,8 @@ os.execv('/bin/bash', ['bash', '-c', command])
         runner.os_env.update(
             DEVKIT_BOUNDARY_PROBE="1",
             DEVKIT_LANE_KEY="inert-lane-sentinel",
+            DEVKIT_EXPECT_STRIP="1" if restore else "",
+            DEVKIT_EXPECT_SANITIZE="1" if restore else "",
             ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64=base64.b64encode(json.dumps(payload).encode()).decode(),
         )
         original = runner.prepare_credentials_before_registry
@@ -486,7 +514,7 @@ os.execv('/bin/bash', ['bash', '-c', command])
         )
 
     def test_failed_and_rolled_back_boundary_commit_starts_no_odoo_hook(self) -> None:
-        for mode in ("failed", "rolled_back"):
+        for mode in ("failed", "rolled_back", "production_rolled_back"):
             with self.subTest(mode=mode), self.target() as runner:
                 query(
                     "postgres",
@@ -508,6 +536,8 @@ os.execv('/bin/bash', ['bash', '-c', command])
                             raise workflows.OdooDatabaseUpdateError("planted commit failure")
 
                 runner.local.db_conn = BrokenCommit(connection, mode)
+                if mode == "production_rolled_back":
+                    runner.local.platform_instance = "prod"
                 runner.os_env.update(DEVKIT_BOUNDARY_PROBE="1", DEVKIT_LANE_KEY="inert-lane-sentinel")
                 query(
                     runner.local.db_name,
