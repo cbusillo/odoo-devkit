@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
@@ -21,6 +22,7 @@ import run_odoo_data_workflows as workflows
 import run_odoo_startup as startup
 from odoo.tests import tagged
 from odoo.tests.common import TransactionCase
+from odoo_release_plan import digest
 from passlib.context import CryptContext
 from psycopg2 import sql
 
@@ -65,6 +67,118 @@ def database_command(statement: sql.Composed) -> None:
 
 @tagged("post_install", "-at_install")
 class TestLiveWorkflows(TransactionCase):
+    def planned_payload(self, runner: workflows.OdooDataWorkflowRunner) -> dict[str, Any]:
+        graph = runner.release_module_graph()
+        image = "fixture/image@sha256:" + "a" * 64
+        candidate = {
+            "artifact_id": "isolated-candidate",
+            "image": {"repository": "fixture/image", "digest": "sha256:" + "a" * 64},
+            "odoo_install_modules": ["ci_boundary_install_probe"],
+            "release_compatibility": {
+                "complete": True,
+                "modules": [{"name": name, "depends": sorted(deps)} for name, deps in graph.items()],
+            },
+        }
+        return {
+            "database": runner.local.db_name,
+            "candidate_manifest": candidate,
+            "release": {
+                "candidate_artifact_id": candidate["artifact_id"],
+                "candidate_image": image,
+                "candidate_manifest_sha256": digest(candidate),
+                "module_plan_complete": True,
+                "classification": "database_changing",
+                "install_modules": ["ci_boundary_install_probe"],
+                "update_modules": ["ci_probe"],
+                "changed_modules": ["ci_probe"],
+                "changes": [{"module": "ci_probe", "kind": "database_data"}],
+            },
+        }
+
+    def test_planned_maintenance_single_registry_and_full_run_timing(self) -> None:
+        timings = {}
+        for mode in ("baseline", "planned"):
+            with self.target() as runner:
+                if mode == "planned":
+                    payload = self.planned_payload(runner)
+                    plan_file = self.root / (runner.local.db_name + "-plan.json")
+                    plan_file.write_text(json.dumps(payload))
+                    runner.os_env.update(
+                        ODOO_RELEASE_MODULE_PLAN_FILE=str(plan_file), ODOO_RELEASE_IMAGE=payload["release"]["candidate_image"]
+                    )
+                logs = []
+
+                def observed(*args: Any, _logs: list[str] = logs, **kwargs: Any) -> Any:
+                    kwargs["capture_output"] = True
+                    try:
+                        result = REAL_RUN(*args, **kwargs)
+                    except subprocess.CalledProcessError as error:
+                        print((error.stderr or b"").decode(), flush=True)
+                        raise
+                    _logs.append((result.stdout or b"").decode() + (result.stderr or b"").decode())
+                    return result
+
+                started = time.monotonic()
+                with patch.object(workflows.subprocess, "run", side_effect=observed):
+                    self.credential_boundary_check(runner)
+                timings[mode] = {
+                    "seconds": time.monotonic() - started,
+                    "registry_loads": sum(log.count("Registry loaded in") for log in logs),
+                }
+                if mode == "planned":
+                    self.assertEqual(timings[mode]["registry_loads"], 1, "Planned maintenance loaded multiple registries")
+                    self.assertEqual(runner.maintenance_receipt["update_modules"], ["ci_probe"])
+                    self.assertEqual(runner.maintenance_receipt["install_modules"], ["ci_boundary_install_probe"])
+                    self.assert_password(runner)
+                    self.assertEqual(
+                        query(runner.local.db_name, "SELECT value FROM ir_config_parameter WHERE key='web.base.url'")[0][0],
+                        "https://fixture.example.test",
+                    )
+        self.assertGreater(timings["baseline"]["registry_loads"], timings["planned"]["registry_loads"])
+        print("DEVKIT_MAINTENANCE_TIMING " + json.dumps(timings), flush=True)
+
+    def test_planned_missing_change_and_failed_update_never_pass_readback(self) -> None:
+        for fault in ("missing_change", "update_failure", "readback_failure", "late_boundary"):
+            with self.target() as runner:
+                payload = self.planned_payload(runner)
+                if fault == "missing_change":
+                    payload["release"]["update_modules"] = []
+                if fault == "update_failure":
+                    runner.os_env["DEVKIT_BOUNDARY_PROBE"] = "1"
+                    runner.os_env["DEVKIT_LANE_KEY"] = "inert-lane-sentinel"
+                    # The module's blocked sink refuses stale credentials at its real hook.
+                    query(
+                        runner.local.db_name,
+                        "INSERT INTO ir_config_parameter (key,value) VALUES ('printnode.api_key','inert-source-sentinel') ON CONFLICT (key) DO UPDATE SET value=excluded.value",
+                    )
+                if fault == "readback_failure":
+                    payload["release"]["update_modules"] = ["ci_probe"]
+                plan_file = self.root / (runner.local.db_name + "-plan.json")
+                plan_file.write_text(json.dumps(payload))
+                runner.os_env.update(
+                    ODOO_RELEASE_MODULE_PLAN_FILE=str(plan_file), ODOO_RELEASE_IMAGE=payload["release"]["candidate_image"]
+                )
+                with ExitStack() as stack:
+                    if fault == "late_boundary":
+                        stack.enter_context(patch.object(runner, "prepare_credentials_before_registry"))
+                        runner.os_env["DEVKIT_BOUNDARY_PROBE"] = "1"
+                    if fault == "readback_failure":
+
+                        def failed_readback(*args: Any, **kwargs: Any) -> Any:
+                            script = kwargs.get("input", b"")
+                            if b"finish_planned_maintenance" in script:
+                                kwargs["input"] = script.replace(
+                                    b"runner.finish_planned_maintenance",
+                                    b"runner._module_states_by_name = lambda: {}\nrunner.finish_planned_maintenance",
+                                )
+                            return REAL_RUN(*args, **kwargs)
+
+                        stack.enter_context(patch.object(workflows.subprocess, "run", side_effect=failed_readback))
+                    with self.assertRaises(workflows.OdooRestorerError):
+                        runner.run_post_deploy_maintenance()
+                self.assertFalse(hasattr(runner, "maintenance_receipt"))
+                print("DEVKIT_FAULT_DETECTED planned_" + fault, flush=True)
+
     @classmethod
     def setUpClass(cls) -> None:
         super().setUpClass()

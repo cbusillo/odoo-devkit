@@ -8,6 +8,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import textwrap
 import time
@@ -657,6 +658,75 @@ def publish_runtime_artifact(
             runtime_source=runtime_source,
             shared_addons_source=shared_addons_source,
         )
+        inventory_sources: list[dict[str, object]] = [
+            {
+                "input_name": "tenant",
+                "repository": tenant_source.repository,
+                "commit": tenant_source.commit,
+                "roots": ["/opt/project"],
+                "exclude": ["/opt/project/addons/shared"],
+            },
+            {
+                "input_name": "tool:odoo-devkit",
+                "repository": runtime_source.repository,
+                "commit": runtime_source.commit,
+                "roots": ["/opt/runtime", "/volumes/scripts", "/volumes/config"],
+            },
+        ]
+        for base in (runtime_base_provenance, devtools_base_provenance):
+            inventory_sources.append(
+                {
+                    "input_name": f"base:{base.role}",
+                    "repository": base.source_repository,
+                    "commit": base.source_ref,
+                    "roots": ["/odoo", "/opt/launchplane/addons"] if base.role == "runtime" else ["/usr/local/bin"],
+                    "optional_roots": ["/opt/enterprise"] if base.role == "runtime" else [],
+                    "files_from": f"/opt/launchplane/evidence/base-{base.role}-inventory.json",
+                }
+            )
+        for source in artifact_source_entries:
+            root = (
+                "/opt/project/addons/shared"
+                if shared_addons_source is not None and source["repository"] == shared_addons_source.repository
+                else f"/opt/extra_addons/{source['repository'].rsplit('/', 1)[-1]}"
+            )
+            inventory_sources.append(
+                {
+                    "input_name": f"addon:{source['repository']}",
+                    "repository": source["repository"],
+                    "commit": source["ref"],
+                    "roots": [root],
+                }
+            )
+        for snapshot, input_name in (
+            (tenant_source, "tenant"),
+            (runtime_source, "tool:odoo-devkit"),
+            (shared_addons_source, f"addon:{shared_addons_source.repository}" if shared_addons_source else ""),
+        ):
+            if snapshot is not None:
+                inventory_command = subprocess.run(
+                    [
+                        sys.executable,
+                        str(runtime_repo_path / "docker/scripts/odoo_release_inventory.py"),
+                        "--git",
+                        str(snapshot.repo_path),
+                        snapshot.commit,
+                    ],
+                    capture_output=True,
+                    check=True,
+                )
+                next(source for source in inventory_sources if source["input_name"] == input_name)["files"] = json.loads(
+                    inventory_command.stdout
+                )
+        # This file is build input only; published declarations contain no host paths.
+        (staged_context_root / "release-inventory-inputs.json").write_text(
+            json.dumps(
+                {
+                    "sources": inventory_sources,
+                    "dependency_evidence": "/opt/launchplane/evidence/dependency-provenance.json",
+                }
+            )
+        )
         require_artifact_git_sources_unchanged((tenant_source, runtime_source, shared_addons_source))
         require_staged_artifact_context_unchanged(staged_context_root=staged_context_root, staged_context=staged_context)
         try:
@@ -765,6 +835,9 @@ def publish_runtime_artifact(
             )
         except ArtifactProvenanceError as error:
             raise RuntimeCommandError(str(error)) from error
+        release_inventories = [json.loads(path.read_text()) for path in sorted(evidence_root.rglob("release-compatibility.json"))]
+        if not release_inventories or any(item != release_inventories[0] for item in release_inventories[1:]):
+            raise RuntimeCommandError("Release source inventory is missing or differs across artifact platforms.")
         require_staged_artifact_context_unchanged(staged_context_root=staged_context_root, staged_context=staged_context)
 
     manifest_payload = build_runtime_artifact_manifest_payload(
@@ -784,6 +857,7 @@ def publish_runtime_artifact(
         devtools_base_provenance=devtools_base_provenance,
         dependency_provenance=dependency_provenance,
         odoo_version=runtime_values.get("ODOO_VERSION", ""),
+        release_compatibility=release_inventories[0],
     )
 
     normalized_output_file = None if output_file is None else output_file.expanduser().resolve()
@@ -3245,14 +3319,13 @@ def build_runtime_artifact_manifest_payload(
     devtools_base_provenance: BaseImageProvenance,
     dependency_provenance: dict[str, object],
     odoo_version: str,
+    release_compatibility: dict[str, object] | None = None,
 ) -> dict[str, object]:
     artifact_id = f"artifact-{context_name}-{image_digest.removeprefix('sha256:')[:16]}"
     build_flag_values = {
         "build_target": "production",
-        "image_tag": image_tag,
         "odoo_version": odoo_version,
         "runtime_repo": runtime_repo_name,
-        "runtime_repo_commit": runtime_repo_commit,
     }
     normalized_selectors: list[dict[str, str]] = []
     for selector_entry in source_selector_entries:
@@ -3266,7 +3339,7 @@ def build_runtime_artifact_manifest_payload(
             )
         except (ArtifactProvenanceError, KeyError) as error:
             raise RuntimeCommandError("Artifact source selector evidence is invalid.") from error
-    return {
+    payload: dict[str, object] = {
         "schema_version": 2,
         "artifact_id": artifact_id,
         "source_commit": source_commit,
@@ -3300,6 +3373,9 @@ def build_runtime_artifact_manifest_payload(
             "tags": [image_tag],
         },
     }
+    if release_compatibility is not None:
+        payload["release_compatibility"] = release_compatibility
+    return payload
 
 
 def parse_csv_values(raw_value: str) -> tuple[str, ...]:

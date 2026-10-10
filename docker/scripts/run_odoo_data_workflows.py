@@ -10,6 +10,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import textwrap
 import time
 import uuid
@@ -23,6 +24,7 @@ from unittest.mock import patch
 
 import psycopg2
 from odoo_admin_password import validate_admin_password
+from odoo_release_plan import load_plan, names, resolve_plan
 from odoo_website_bootstrap import load_instance_override_payload, require_launchplane_payloads_if_configured
 from passlib.context import CryptContext
 from psycopg2 import sql
@@ -2130,6 +2132,10 @@ with registry.cursor() as cr:
 
     def run_post_deploy_maintenance(self) -> None:
         _logger.info("Starting post-deploy maintenance for database '%s'", self.local.db_name)
+        plan_file = self.os_env.get("ODOO_RELEASE_MODULE_PLAN_FILE", "")
+        if plan_file:
+            self.run_planned_post_deploy_maintenance(Path(plan_file))
+            return
         self.prepare_credentials_before_registry()
         self.install_addons(reason="post-deploy install")
         self.update_addons(reason="post-deploy upgrade")
@@ -2143,6 +2149,89 @@ with registry.cursor() as cr:
         self.assert_core_schema_healthy()
         self.ensure_gpt_users()
         _logger.info("Post-deploy maintenance completed successfully.")
+
+    def release_module_graph(self) -> dict[str, set[str]]:
+        graph: dict[str, set[str]] = {}
+        for root in self._resolve_addons_paths():
+            if not root.is_dir():
+                continue
+            for manifest in sorted(root.glob("*/__manifest__.py")):
+                if manifest.parent.name in graph:
+                    continue  # Odoo uses the first addon path with this name.
+                try:
+                    data = ast.literal_eval(manifest.read_text())
+                    if data.get("installable", True):
+                        graph[manifest.parent.name] = names(data.get("depends", []))
+                except (OSError, SyntaxError, ValueError, AttributeError) as error:
+                    raise OdooDatabaseUpdateError("Cannot resolve candidate addon graph.") from error
+        return graph
+
+    def run_planned_post_deploy_maintenance(self, plan_file: Path) -> None:
+        started = time.monotonic()
+        run_id = uuid.uuid4().hex
+        output = self.os_env.get("ODOO_RELEASE_MAINTENANCE_RECEIPT_FILE", "")
+        if output:
+            # A failed repeat must never leave yesterday's passing receipt.
+            Path(output).write_text(json.dumps({"state": "running", "run_id": run_id}) + "\n")
+        try:
+            payload = load_plan(plan_file)
+            resolved = resolve_plan(
+                payload,
+                database=self.local.db_name,
+                image=self.os_env.get("ODOO_RELEASE_IMAGE", ""),
+                states=self._module_states_by_name(),
+                graph=self.release_module_graph(),
+            )
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise OdooDatabaseUpdateError("Invalid or incomplete release module plan.") from error
+        finally:
+            self._reset_db_connection()
+        resolved["run_id"] = run_id
+        # This is the existing SQL-only, committed/read-back credential guard.
+        # No Odoo import, shell or module process may precede it.
+        self.prepare_credentials_before_registry()
+        self._ensure_odoo_shell_preflight()
+        command = self._odoo_shell_command()
+        database_flag = command.index("-d")
+        del command[database_flag : database_flag + 2]
+        # Odoo shell's implicit Registry(db) ignores -i/-u. Start without a
+        # database, then explicitly construct the updating registry exactly once.
+        command.append("--database=")
+        command += ["--max-cron-threads=0"]
+        if resolved["install_modules"]:
+            command += ["-i", ",".join(resolved["install_modules"])]
+        if resolved["update_modules"]:
+            command += ["-u", ",".join(resolved["update_modules"])]
+        settings = self.local.model_dump(mode="json", by_alias=True, exclude={"db_conn"})
+        for field_name, field in type(self.local).model_fields.items():
+            value = getattr(self.local, field_name)
+            if isinstance(value, SecretStr):
+                settings[field.alias or field_name] = value.get_secret_value()
+        with tempfile.TemporaryDirectory(prefix="odoo-maintenance-") as directory:
+            receipt = Path(directory) / "receipt.json"
+            script = (
+                "import json\nfrom pathlib import Path\n"
+                "from odoo.modules.registry import Registry\n"
+                "from run_odoo_data_workflows import LocalServerSettings, InProcessMaintenanceRunner\n"
+                f"runner = InProcessMaintenanceRunner(LocalServerSettings(**json.loads({json.dumps(settings)!r})), None, None)\n"
+                f"Registry.new({self.local.db_name!r}, update_module={bool(resolved['install_modules'] or resolved['update_modules'])!r})\n"
+                f"runner.finish_planned_maintenance(json.loads({json.dumps(resolved)!r}))\n"
+                f"Path({str(receipt)!r}).write_text(json.dumps(runner.maintenance_receipt))\n"
+            )
+            try:
+                subprocess.run(command, input=script.encode(), env=self.os_env, check=True)
+                result = json.loads(receipt.read_text())
+                if result.get("plan_sha256") != resolved["plan_sha256"] or result.get("state") != "passed":
+                    raise ValueError("Maintenance readback did not match the release plan")
+            except (subprocess.CalledProcessError, OSError, ValueError) as error:
+                raise OdooDatabaseUpdateError("Planned maintenance failed; no passing readback.") from error
+            finally:
+                self._reset_db_connection()
+        result["seconds"] = time.monotonic() - started
+        self.maintenance_receipt = result
+        if output:
+            Path(output).write_text(json.dumps(result, sort_keys=True) + "\n")
+        _logger.info("Release maintenance readback: %s", json.dumps(result, sort_keys=True))
 
     def compute_update_module_list(self) -> list[str]:
         """Return sorted addon names discovered from local addon directories."""
@@ -2841,6 +2930,45 @@ with registry.cursor() as cr:
         self.apply_environment_overrides()
         self.block_outgoing_mail_outside_production()
         self.ensure_admin_user()
+
+
+class InProcessMaintenanceRunner(OdooDataWorkflowRunner):
+    """Runs existing settings/admin/service-user scripts in the shell registry.
+
+    Only the planned parent starts this after the committed credential boundary
+    and the shell's install/update startup. Never used by restore/bootstrap.
+    """
+
+    def _run_odoo_shell(self, script: str, label: str) -> None:
+        _logger.info("Using the maintenance registry for %s", label)
+        exec(compile(script, f"<maintenance: {label}>", "exec"), {})
+
+    def finish_planned_maintenance(self, resolved: dict[str, Any]) -> None:
+        self.reconcile_missing_manifest_install_queue()
+        self.assert_install_queue_is_resolvable()
+        self.apply_environment_overrides()
+        self.block_outgoing_mail_outside_production()
+        self.ensure_admin_user()
+        self.assert_core_schema_healthy()
+        self.ensure_gpt_users()
+        try:
+            states = self._module_states_by_name()
+            expected = set(resolved["install_modules"]) | set(resolved["update_modules"])
+            if any(states.get(name) != "installed" for name in expected):
+                raise OdooDatabaseUpdateError("Release module readback failed.")
+            if any(state in {"to install", "to upgrade", "to remove"} for state in states.values()):
+                raise OdooDatabaseUpdateError("Release left pending module work.")
+            self.maintenance_receipt = {
+                **resolved,
+                "state": "passed",
+                "odoo_processes": 1,
+                "installed_by_odoo": sorted(
+                    name for name, state in states.items() if state == "installed" and name not in resolved["already_installed"]
+                ),
+                "module_states": {name: states[name] for name in sorted(expected)},
+            }
+        finally:
+            self._reset_db_connection()
 
 
 if __name__ == "__main__":  # pragma: no cover
