@@ -14,7 +14,7 @@ import textwrap
 import time
 import uuid
 from collections.abc import Sequence
-from contextlib import suppress
+from contextlib import closing, suppress
 from dataclasses import dataclass
 from enum import Enum, IntEnum
 from pathlib import Path
@@ -58,6 +58,7 @@ class ExitCode(IntEnum):
 
 
 RUNTIME_SCRIPTS_PATH = "/volumes/scripts"
+BOUNDARY_COMMIT_PARAMETER = "odoo_devkit.credential_boundary_commit"
 
 # Production credentials a restored copy must not keep on a non-production instance.
 # This block is the single list for every tenant; extend it here, not per tenant.
@@ -251,6 +252,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         lock_acquired = True
         if update_only:
             workflow_runner.require_environment_override_payloads_if_configured()
+            workflow_runner.prepare_credentials_before_registry()
             workflow_runner.update_addons(reason="post-deploy upgrade")
             _logger.info("Addon update completed successfully.")
             return ExitCode.SUCCESS
@@ -516,6 +518,10 @@ class OdooDataWorkflowRunner:
         self.upstream = upstream
         self.env_file = env_file
         self.os_env = os.environ.copy()
+        # The typed lane is authoritative even when settings came from an env file.
+        # The settings addon uses the canonical prod name rather than devkit's alias.
+        instance = self.local.platform_instance.strip().lower()
+        self.os_env["PLATFORM_INSTANCE"] = "prod" if instance in PRODUCTION_INSTANCE_NAMES else instance
         self.os_env["PGPASSWORD"] = self.local.db_password.get_secret_value()
         _prepend_pythonpath(self.os_env, RUNTIME_SCRIPTS_PATH)
         if self.local.data_workflow_ssh_dir:
@@ -1067,7 +1073,11 @@ class OdooDataWorkflowRunner:
             "UPDATE ir_mail_server SET active = false, smtp_user = NULL, smtp_pass = NULL "
             "WHERE name <> 'neutralization - disable emails'"
         )
-        cursor.execute("UPDATE ir_mail_server SET active = true WHERE name = 'neutralization - disable emails'")
+        cursor.execute(
+            "UPDATE ir_mail_server SET active = true, smtp_host = 'invalid', smtp_port = 1025, "
+            "smtp_encryption = 'none', smtp_authentication = 'login', smtp_user = NULL, smtp_pass = NULL "
+            "WHERE name = 'neutralization - disable emails'"
+        )
         if cursor.rowcount == 0:
             cursor.execute(
                 "INSERT INTO ir_mail_server (name, smtp_port, smtp_host, smtp_encryption, active, smtp_authentication) "
@@ -1168,7 +1178,7 @@ class OdooDataWorkflowRunner:
         return values
 
     def fingerprint_restored_credentials(self) -> None:
-        """Record hashes (never values) of the restored credentials so the read-back can prove they changed."""
+        """Record hashes (never values) of the current strip input, including each post-migration/module pass."""
         self._restored_credential_fingerprints = {}
         if self._is_production_instance():
             return
@@ -1178,7 +1188,7 @@ class OdooDataWorkflowRunner:
             label: frozenset(_credential_fingerprint(value) for value in found) for label, found in values.items()
         }
 
-    def neutralize_production_credentials(self) -> None:
+    def neutralize_production_credentials(self, *, commit: bool = True) -> None:
         """Remove what ties a restored production copy to live integrations, devices, clients and signed tokens.
 
         Runs on every restore onto a non-production instance, independent of --no-sanitize, and is safe
@@ -1212,7 +1222,8 @@ class OdooDataWorkflowRunner:
                 cursor.execute("UPDATE fetchmail_server SET active = FALSE WHERE active")
             for table, column in self._cleared_table_columns(cursor):
                 self._clear_credential_column(cursor, table, column)
-        connection_.commit()
+        if commit:
+            connection_.commit()
         _logger.info("Cleared production integration credentials and regenerated signing keys on the restored copy.")
 
     def _disable_payment_providers(self, cursor: Any) -> None:
@@ -1293,12 +1304,14 @@ class OdooDataWorkflowRunner:
         cursor.execute(f"SELECT count(*) FROM external_id WHERE {external_id_filter}", (SHOPIFY_EXTERNAL_SYSTEM_CODE,))
         return cursor.fetchone()[0]
 
-    def verify_production_credentials_cleared(self) -> None:
+    def verify_production_credentials_cleared(
+        self, *, database_connection: Any = None, managed_parameter_keys: frozenset[str] = frozenset()
+    ) -> None:
         """Fail the restore when any restored credential value, push subscription or live connection survived sanitize."""
         if self._is_production_instance():
             return
         kept = self._kept_integrations()
-        with self.connect_to_db().cursor() as cursor:
+        with (database_connection or self.connect_to_db()).cursor() as cursor:
             values = self._credential_values(cursor)
             push_devices = 0
             if self._table_exists(cursor, "mail_push_device"):
@@ -1313,6 +1326,7 @@ class OdooDataWorkflowRunner:
         unchanged = sorted(
             label
             for label, found in values.items()
+            if label not in managed_parameter_keys
             if any(_credential_fingerprint(value) in self._restored_credential_fingerprints.get(label, ()) for value in found)
         )
         problems = [f"unchanged restored value: {label}" for label in unchanged]
@@ -1568,6 +1582,165 @@ class OdooDataWorkflowRunner:
             )
         except subprocess.CalledProcessError as error:
             raise OdooRestorerError(f"Failed to execute Odoo shell for {label}.") from error
+
+    def _pre_registry_parameter_overrides(self) -> dict[str, str | None]:
+        """Resolve managed parameter credentials without importing Odoo or loading an addon."""
+        try:
+            with patch.dict(os.environ, self.os_env, clear=True):
+                payload = load_instance_override_payload()
+                require_launchplane_payloads_if_configured(payload)
+        except RuntimeError as error:
+            raise OdooDatabaseUpdateError("Failed Launchplane payload requirement check before registry loading.") from error
+        if payload is None:
+            return {}
+
+        def items(name: str) -> list[dict[str, object]]:
+            values = payload.get(name)
+            if values is None:
+                return []
+            if not isinstance(values, list) or any(not isinstance(value, dict) for value in values):
+                raise OdooDatabaseUpdateError(f"Invalid managed override list: {name}.")
+            return values
+
+        def value(item: dict[str, object]) -> str:
+            descriptor = item.get("value")
+            if not isinstance(descriptor, dict):
+                raise OdooDatabaseUpdateError("Invalid managed override value descriptor.")
+            source = str(descriptor.get("source") or "").strip()
+            if source == "secret_binding":
+                name = str(descriptor.get("environment_variable") or "").strip()
+                if not name or name not in self.os_env:
+                    raise OdooDatabaseUpdateError("Missing managed override environment binding.")
+                return self.os_env[name]
+            if source != "literal" or "value" not in descriptor:
+                raise OdooDatabaseUpdateError("Invalid managed override value source.")
+            raw = descriptor["value"]
+            if isinstance(raw, bool):
+                return "True" if raw else "False"
+            normalized = str(raw).strip()
+            if normalized.lower() in {"", "0", "false", "no", "off"}:
+                return "False"
+            if normalized.lower() in {"1", "true", "yes", "on"}:
+                return "True"
+            return normalized
+
+        parameters: dict[str, str | None] = {}
+        for item in items("config_parameters"):
+            key = str(item.get("key") or "").strip().lower()
+            if not key:
+                raise OdooDatabaseUpdateError("Managed parameter override requires a key.")
+            parameters[key] = value(item)
+
+        # Shopify's managed credentials live in ir_config_parameter. Its ORM adapter still
+        # owns URLs/dispatcher state after startup; stage its credential values before hooks.
+        shopify: dict[str, str] = {}
+        for item in items("addon_settings"):
+            addon = str(item.get("addon") or "").strip().lower()
+            if addon not in {"shopify", "authentik", "authentik_sso"}:
+                # The installed settings consumer ignores these targets too. Do
+                # not turn previously unused payload entries into a deploy gate.
+                continue
+            setting = str(item.get("setting") or "").strip().lower()
+            if not setting:
+                raise OdooDatabaseUpdateError("Managed addon override requires a setting.")
+            if addon == "shopify":
+                shopify[setting] = value(item)
+            else:
+                # These are OAuth client identifiers, endpoint URLs and presentation
+                # settings, not authentication secrets. Validate their bindings now;
+                # the installed Authentik adapter still owns provider/group creation.
+                value(item)
+        if shopify:
+            action = shopify.get("action", "").strip().lower()
+            if action == "clear":
+                for key in ("shop_url_key", "api_token", "webhook_key", "api_version", "test_store", "shop_url", "store_url"):
+                    parameters[f"shopify.{key}"] = None
+            if action == "apply":
+                for setting in ("shop_url_key", "api_token", "webhook_key", "api_version"):
+                    resolved = shopify.get(setting, "").strip()
+                    if not resolved:
+                        raise OdooDatabaseUpdateError("Managed Shopify apply is missing required settings.")
+                    parameters[f"shopify.{setting}"] = resolved
+                parameters["shopify.test_store"] = (
+                    "True" if shopify.get("test_store", "").lower() in {"true", "1", "yes", "on"} else "False"
+                )
+                parameters["shopify.shop_url"] = None
+                parameters["shopify.store_url"] = None
+            elif action != "clear":
+                raise OdooDatabaseUpdateError("Managed Shopify settings require apply or clear action.")
+        return parameters
+
+    def prepare_credentials_before_registry(self, *, restored_copy: bool = False, do_sanitize: bool = False) -> None:
+        """Commit the SQL-only credential boundary before starting any Odoo process.
+
+        Callers must keep other workers stopped. This transaction does not acquire a
+        registry: even an Odoo shell would run _register_hook before its input script.
+        """
+        conn = self.connect_to_db()
+        try:
+            parameters = self._pre_registry_parameter_overrides()
+            if restored_copy:
+                self.fingerprint_restored_credentials()
+                self.neutralize_production_credentials(commit=False)
+            if do_sanitize:
+                self.sanitize_database()
+            if restored_copy:
+                self.verify_production_credentials_cleared()
+            # A transaction witness detects rollback even when every required value
+            # was already correct, including production's preservation/no-op path.
+            parameters[BOUNDARY_COMMIT_PARAMETER] = str(uuid.uuid4())
+            with conn.cursor() as cursor:
+                for key, value in parameters.items():
+                    if value is None:
+                        cursor.execute("DELETE FROM ir_config_parameter WHERE key = %s", (key,))
+                    else:
+                        cursor.execute(
+                            "INSERT INTO ir_config_parameter (key, value) VALUES (%s, %s) "
+                            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+                            (key, value),
+                        )
+                if not self._is_production_instance():
+                    self._block_outgoing_mail(cursor)
+            conn.commit()
+            # A separate connection must see the committed values. A rollback/no-op
+            # commit must not allow the first hook to start with the old credentials.
+            with closing(self._connect_with_retry(self.local.db_name)) as observer, observer.cursor() as cursor:
+                # The expected managed values may legitimately replace stripped
+                # credentials, so check the strip against the old fingerprints.
+                if restored_copy:
+                    self.verify_production_credentials_cleared(
+                        database_connection=observer, managed_parameter_keys=frozenset(parameters)
+                    )
+                for key, expected in parameters.items():
+                    cursor.execute("SELECT value FROM ir_config_parameter WHERE key = %s", (key,))
+                    if cursor.fetchone() != (None if expected is None else (expected,)):
+                        raise OdooDatabaseUpdateError("Pre-registry override commit readback failed.")
+                if not self._is_production_instance():
+                    cursor.execute("SELECT count(*) FROM ir_mail_server WHERE active AND smtp_host = 'invalid'")
+                    if not cursor.fetchone()[0]:
+                        raise OdooDatabaseUpdateError("Pre-registry outgoing mail fence commit readback failed.")
+                    cursor.execute("SELECT count(*) FROM ir_mail_server WHERE active AND smtp_host <> 'invalid'")
+                    if cursor.fetchone()[0]:
+                        raise OdooDatabaseUpdateError("Pre-registry outgoing mail fence commit readback failed.")
+                    if do_sanitize and self.local.disable_cron:
+                        cursor.execute("SELECT count(*) FROM ir_cron WHERE active")
+                        if cursor.fetchone()[0]:
+                            raise OdooDatabaseUpdateError("Pre-registry cron fence commit readback failed.")
+            _logger.info("Credential boundary committed and verified before registry loading.")
+        except OdooRestorerError:
+            with suppress(psycopg2.Error):
+                conn.rollback()
+            raise
+        except psycopg2.Error as error:
+            with suppress(psycopg2.Error):
+                conn.rollback()
+            raise OdooDatabaseUpdateError("Pre-registry credential transaction failed.") from error
+        except BaseException:
+            with suppress(psycopg2.Error):
+                conn.rollback()
+            raise
+        finally:
+            self._reset_db_connection()
 
     def apply_environment_overrides(self) -> None:
         payload = {
@@ -1957,6 +2130,7 @@ with registry.cursor() as cr:
 
     def run_post_deploy_maintenance(self) -> None:
         _logger.info("Starting post-deploy maintenance for database '%s'", self.local.db_name)
+        self.prepare_credentials_before_registry()
         self.install_addons(reason="post-deploy install")
         self.update_addons(reason="post-deploy upgrade")
         self.connect_to_db()
@@ -2614,9 +2788,7 @@ with registry.cursor() as cr:
             database_restored = True
             _logger.info("Database overwrite completed.")
             # Clear credentials before any Odoo code (OpenUpgrade, install hooks) runs against the copy.
-            self.fingerprint_restored_credentials()
-            self.neutralize_production_credentials()
-            self.block_outgoing_mail_outside_production()
+            self.prepare_credentials_before_registry(restored_copy=True, do_sanitize=do_sanitize)
             filestore_waited = True
             filestore_returncode = filestore_process.wait()
             if filestore_returncode != 0:
@@ -2643,10 +2815,9 @@ with registry.cursor() as cr:
         if self.local.openupgrade_enabled:
             self.snapshot_module_states_before_openupgrade()
             self.run_openupgrade()
-
-        if do_sanitize:
-            self.sanitize_database()
-            self.local.db_conn.commit()
+            # Migrations may reactivate crons or rewrite credentials. Preserve the
+            # requested sanitize policy before the next registry/module process.
+            self.prepare_credentials_before_registry(restored_copy=True, do_sanitize=do_sanitize)
 
         self.install_addons(reason="restore install")
 
@@ -2666,8 +2837,7 @@ with registry.cursor() as cr:
 
         # Install hooks and data can re-enable integration crons, so clear again, prove it, and only then
         # let Launchplane apply this instance's own settings (which the clearing must not overwrite).
-        self.neutralize_production_credentials()
-        self.verify_production_credentials_cleared()
+        self.prepare_credentials_before_registry(restored_copy=True, do_sanitize=do_sanitize)
         self.apply_environment_overrides()
         self.block_outgoing_mail_outside_production()
         self.ensure_admin_user()

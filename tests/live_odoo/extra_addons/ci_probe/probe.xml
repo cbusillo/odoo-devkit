@@ -1,4 +1,5 @@
 <odoo>
+    <function model="ci.credential.probe" name="check_update_boundary"/>
     <record id="probe" model="ir.config_parameter">
         <field name="key">devkit.ci.community</field>
         <field name="value">loaded-from-xml</field>

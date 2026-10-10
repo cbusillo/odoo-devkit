@@ -516,6 +516,38 @@ Notes
   push; Odoo generates new VAPID keys on demand. It regenerates
   `database.secret`. `database.uuid` is kept: it identifies the database,
   authenticates nothing, and Odoo's own neutralize keeps it too.
+- Before post-deploy maintenance, update-only work or any restored-copy Odoo
+  process (including OpenUpgrade), the runner commits a SQL-only preparation
+  transaction. Restored copies reuse the credential-clearing rules below;
+  ordinary maintenance preserves lane-owned integration IDs, API keys, signing
+  keys and push devices. The transaction applies managed
+  `config_parameters` and Shopify credential values from the existing typed
+  payload and fences non-production outgoing mail. Crons are disabled only
+  when requested restore sanitization calls for it, preserving `--no-sanitize`.
+  Requested restore sanitization is in this transaction too, before registry
+  loading rather than after OpenUpgrade. An independent database connection
+  checks that the stripping, overrides and fences committed; a failed or
+  rolled-back commit stops all later Odoo processes. A fresh transaction witness
+  also proves a commit when all settings were already correct. Explicit production lanes
+  preserve their integration credentials except for supplied managed overrides.
+  Both production aliases are exported to the installed settings addon as its
+  canonical production lane, so a `production` lane does not get non-production
+  Shopify clearing. The non-secret commit witness is visible in System Parameters.
+  Non-production retained-integration exceptions keep their existing scope.
+  Addon override targets unused by the installed settings consumer stay unused.
+  Credential parameters use the supported typed `config_parameters` surface;
+  new credential-capable adapter behavior must extend the SQL boundary too.
+  On post-deploy and restore runs, Authentik's client identifiers and presentation settings, Shopify's
+  URL/dispatcher bookkeeping and website bootstrap still use their installed
+  ORM adapters after the credential transaction. No addon code or Odoo shell is
+  used to strip credentials. Callers must keep other workers stopped until
+  preparation and maintenance finish; this is not a traffic-switch mechanism.
+  Restore reasserts the boundary after module work before running further
+  settings/admin hooks, because install data can re-enable integrations.
+  OpenUpgrade also reasserts requested sanitization before addon installation,
+  because migrations can reactivate crons. Update-only stages the credential
+  values and updates modules; it does not activate integrations or complete ORM
+  bookkeeping. Use `--post-deploy-maintenance` for that complete operation.
 - `ODOO_RESTORE_KEPT_INTEGRATIONS` (comma-separated) names integrations whose
   restored settings stay, using the integration names of Launchplane's
   read-back: `shopify`, `printnode`, `fishbowl`, `repairshopr`, `cm_data`,
