@@ -9,9 +9,9 @@ import os
 import re
 import subprocess
 import sys
-from xml.etree import ElementTree
 from pathlib import Path
 from typing import Any
+from xml.etree import ElementTree
 
 
 def xml_database_references(elements: Any) -> list[str | None]:
