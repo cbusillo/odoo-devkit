@@ -499,17 +499,39 @@ os.execv('/bin/bash', ['bash', '-c', command])
             self.assertIn(hook, events, f"Real {hook} was not exercised")
         print("DEVKIT_BOUNDARY_ORDER " + json.dumps({"path": "restore" if restore else "post_deploy", "events": events}), flush=True)
 
+    @staticmethod
+    @contextmanager
+    def late_boundary_fault(runner: workflows.OdooDataWorkflowRunner) -> Iterator[None]:
+        prepare = runner.prepare_credentials_before_registry
+        install = runner.install_addons
+        deferred: dict[str, Any] = {}
+
+        def defer(**kwargs: Any) -> None:
+            deferred.update(kwargs)
+
+        def install_before_boundary(**kwargs: Any) -> None:
+            install(**kwargs)
+            prepare(**deferred)
+
+        # Reproduce the original ordering defect: registry/install hooks execute
+        # before the real stripping transaction, rather than deleting the strip.
+        with (
+            patch.object(runner, "prepare_credentials_before_registry", side_effect=defer),
+            patch.object(runner, "install_addons", side_effect=install_before_boundary),
+        ):
+            yield
+
     def test_post_deploy_credentials_commit_before_real_hooks(self) -> None:
         self.guarded(
             self.credential_boundary_check,
-            lambda runner: patch.object(runner, "prepare_credentials_before_registry"),
+            self.late_boundary_fault,
             fault_message="Unstripped credential reached a blocked outbound sink",
         )
 
     def test_restore_credentials_commit_before_real_hooks(self) -> None:
         self.guarded(
             lambda runner: self.credential_boundary_check(runner, restore=True),
-            lambda runner: patch.object(runner, "prepare_credentials_before_registry"),
+            self.late_boundary_fault,
             fault_message="Unstripped credential reached a blocked outbound sink",
         )
 

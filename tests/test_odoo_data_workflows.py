@@ -1804,9 +1804,12 @@ class CredentialBoundaryTests(unittest.TestCase):
                 self.assertEqual(reader.execute("SELECT count(*) FROM fetchmail_server WHERE active").fetchone()[0], 0)
         self.events.append(name)
 
-    def run_maintenance(self, *, restoring: bool = False) -> None:
+    def run_maintenance(self, *, restoring: bool = False, late_boundary: bool = False) -> None:
         self.restoring = restoring
+        prepare = self.runner.prepare_credentials_before_registry
         with ExitStack() as stack:
+            if late_boundary:
+                stack.enter_context(patch.object(self.runner, "prepare_credentials_before_registry"))
             for method in (
                 "install_addons",
                 "update_addons",
@@ -1814,9 +1817,13 @@ class CredentialBoundaryTests(unittest.TestCase):
                 "ensure_admin_user",
                 "ensure_gpt_users",
             ):
-                stack.enter_context(
-                    patch.object(self.runner, method, side_effect=lambda *args, _name=method, **kwargs: self.hook(_name))
-                )
+
+                def command(*args: Any, _name: str = method, **kwargs: Any) -> None:
+                    self.hook(_name)
+                    if late_boundary and _name == "install_addons":
+                        prepare()
+
+                stack.enter_context(patch.object(self.runner, method, side_effect=command))
             for method in (
                 "reconcile_missing_manifest_install_queue",
                 "assert_install_queue_is_resolvable",
@@ -1861,9 +1868,8 @@ class CredentialBoundaryTests(unittest.TestCase):
         self.assertLess(self.events.index("commit"), self.events.index(self.hooks[0]))
 
     def test_late_strip_fault_breaks_first_hook_check(self) -> None:
-        with patch.object(self.runner, "prepare_credentials_before_registry"):
-            with self.assertRaisesRegex(AssertionError, "hook ran before override commit"):
-                self.run_maintenance()
+        with self.assertRaisesRegex(AssertionError, "hook ran before override commit"):
+            self.run_maintenance(late_boundary=True)
 
     def test_failed_or_rolled_back_commit_prevents_all_hooks(self) -> None:
         for mode in ("failed", "rolled_back"):
