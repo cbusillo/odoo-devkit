@@ -10,8 +10,9 @@ evidence and include it in the schema-2 manifest. Tenant, shared-addon and devki
 inventories hash exact committed trees, including build configuration and symlink
 blobs. Base inventories cover framework, Enterprise and runtime helper inputs
 from the digest-bound images. Fetched addons and the resolved module graph come
-from the assembled image. Platform disagreement or a missing source refuses
-publication; missing graph dependencies mark declarations incomplete. Addon
+from the assembled image. Source identity or module-graph disagreement across
+platforms refuses publication; missing graph dependencies mark declarations
+incomplete. Native base tools retain platform-specific hashes. Addon
 Python is conservatively database-changing; static files and manifest asset
 semantics are separate. Unexamined base/dependency changes require Launchplane's
 examined-input plan, never a blanket upgrade. Legacy artifacts without complete
@@ -24,6 +25,14 @@ record), and `candidate_manifest` (normalized verified `ArtifactIdentityManifest
 JSON including defaults). The release hashes that normalized representation,
 rather than the earlier producer JSON. Inputs contain provenance and module
 plans, never secret values.
+
+Include `production_manifest` for manifest changes so assets-only differences
+can be distinguished from changed database semantics. The consumer also checks
+the declaration baked into its running image. Its default path is
+`/opt/launchplane/evidence/release-compatibility.json`;
+`ODOO_RELEASE_DECLARATION_FILE` supports an explicitly mounted declaration for
+isolated fixtures. This complements the orchestrator's exact runtime image
+verification; matching module names alone are insufficient.
 
 The consumer verifies database/artifact/image/hash identities and the complete
 image graph. Required installs are reconciled with installed modules; updates
@@ -38,7 +47,8 @@ updating registry with the resolved install/update flags, then reuses it for
 existing settings, website, mail fencing, admin/schema/policy and service-user
 checks. Odoo shell's ordinary implicit registry does not apply update flags,
 so the explicit startup is required. Required module-state and pending-work
-readback must pass before a receipt is emitted. This does not unset `noupdate`,
+readback and changed module-update timestamps must pass before a receipt is
+emitted, so an already-installed state cannot hide skipped updates. This does not unset `noupdate`,
 force editor data, switch traffic, start web or resume writers.
 
 `ODOO_RELEASE_MAINTENANCE_RECEIPT_FILE` optionally records plan/candidate
@@ -52,3 +62,8 @@ Without a plan file, existing restore/bootstrap and legacy post-deploy callers
 retain their behavior. New zero-downtime orchestration must supply a complete
 plan and must not treat absence/refusal as an empty update list. Launchplane's
 cutover issue owns adoption.
+
+Artifact-specific tags and devkit commits remain in `image.tags` and
+`build_provenance.build_tools`; they are not repeated as generic build flags.
+The support lock remains compatible with the current digest-bound base image;
+consumer builds check its resolver constraints before source inventory work.

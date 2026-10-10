@@ -56,6 +56,30 @@ def resolve_plan(
         for change in release["changes"]
         if change["kind"] in {"database_data", "model", "migration", "dependency"} and change.get("module")
     }
+    allowed_kinds = {"static", "code", "manifest_assets", "database_data", "model", "migration", "dependency", "docs_ci"}
+    for change in release["changes"]:
+        if change["kind"] not in allowed_kinds:
+            raise ValueError("Release plan contains unexamined changes")
+        if change["kind"] == "manifest_assets":
+            production = payload.get("production_manifest")
+            if not isinstance(production, dict) or digest(production) != release.get("production_manifest_sha256"):
+                raise ValueError("Manifest changes require the exact production declaration")
+
+            def manifest_semantics(manifest: dict[str, Any], current_change: dict[str, Any] = change) -> str | None:
+                for source in manifest["release_compatibility"]["sources"]:
+                    if source["input_name"] == current_change["input_name"]:
+                        for file in source["files"]:
+                            if file["path"] == current_change["path"]:
+                                return file.get("manifest_database_sha256")
+                return None
+
+            before, after = manifest_semantics(production), manifest_semantics(candidate)
+            if not before or not after or before != after:
+                roots.add(change["module"])
+        if change["kind"] == "dependency" and not change.get("module"):
+            roots |= names(declaration.get("database_update_modules"))
+    if not roots <= graph.keys():
+        raise ValueError("Release plan has unresolved database roots")
     if any(change.get("module") and change["module"] not in changed for change in release["changes"]):
         raise ValueError("Release plan omits changed modules")
     if roots - (updates | installs):
@@ -73,7 +97,7 @@ def resolve_plan(
         raise ValueError("Required installs are missing from the image")
     # Optional installed addons are database state, not artifact requirements.
     # Odoo updates their reverse dependents too; capture that effect explicitly.
-    actual_updates = updates & installed
+    actual_updates = (updates | (installs & roots)) & installed
     while True:
         while True:
             expanded = required | {dep for name in required for dep in graph[name]}
@@ -106,3 +130,48 @@ def load_plan(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("Release plan must be an object")
     return payload
+
+
+def verify_image_declaration(actual: dict[str, Any], expected: dict[str, Any], *, platform: str) -> None:
+    """Bind execution to the declaration baked into this container's image."""
+    for field, default in (
+        ("schema_version", 1),
+        ("complete", False),
+        ("read_write_compatible", False),
+        ("modules", []),
+        ("examined_inputs_sha256", ""),
+        ("database_update_modules", None),
+    ):
+        left, right = actual.get(field, default), expected.get(field, default)
+        if field == "modules":
+            left, right = sorted(left, key=lambda item: item["name"]), sorted(right, key=lambda item: item["name"])
+        if left != right:
+            raise ValueError("Running image declaration does not match the release artifact")
+    current = {source["input_name"]: source for source in actual.get("sources", [])}
+    candidate = {source["input_name"]: source for source in expected.get("sources", [])}
+    if current.keys() != candidate.keys():
+        raise ValueError("Running image source inventory differs from the release artifact")
+    prefix = f"platforms/{platform.replace('/', '_')}/"
+    for input_name, source in candidate.items():
+        present = current[input_name]
+        if (present["repository"], present["commit"]) != (source["repository"], source["commit"]):
+            raise ValueError("Running image source identity differs from the release artifact")
+
+        def files(items: list[dict[str, Any]], *, select: bool = False) -> dict[str, dict[str, Any]]:
+            result = {}
+            for item in items:
+                path = item["path"]
+                if select and path.startswith("platforms/"):
+                    if not path.startswith(prefix):
+                        continue
+                    path = path.removeprefix(prefix)
+                result[path] = {
+                    **item,
+                    "path": path,
+                    "module": item.get("module", ""),
+                    "manifest_database_sha256": item.get("manifest_database_sha256", ""),
+                }
+            return result
+
+        if files(present["files"]) != files(source["files"], select=True):
+            raise ValueError("Running image file inventory differs from the release artifact")

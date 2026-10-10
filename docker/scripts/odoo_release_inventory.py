@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 
-def git_inventory(repository: Path, commit: str) -> list[dict[str, Any]]:
+def git_inventory(repository: Path, commit: str, module_name: str = "") -> list[dict[str, Any]]:
     """Hash the exact committed tree, including build files and symlink blobs."""
     tree = subprocess.run(["git", "-C", str(repository), "ls-tree", "-rz", commit], capture_output=True, check=True).stdout
     entries = []
@@ -37,10 +37,12 @@ def git_inventory(repository: Path, commit: str) -> list[dict[str, Any]]:
         size = int(blobs[offset:end].split()[-1])
         content[path] = blobs[end + 1 : end + 1 + size]
         offset = end + size + 2
-    return classify_files(content)[0]
+    return classify_files(content, {Path("."): module_name or repository.name})[0]
 
 
-def classify_files(content: dict[str, bytes]) -> tuple[list[dict[str, Any]], dict[str, set[str]]]:
+def classify_files(
+    content: dict[str, bytes], module_aliases: dict[Path, str] | None = None
+) -> tuple[list[dict[str, Any]], dict[str, set[str]]]:
     modules: dict[str, set[str]] = {}
     module_roots = {}
     for raw_path, value in content.items():
@@ -49,12 +51,13 @@ def classify_files(content: dict[str, bytes]) -> tuple[list[dict[str, Any]], dic
             continue
         data = ast.literal_eval(value.decode())
         if data.get("installable", True):
-            modules[path.parent.name] = set(data.get("depends", []))
-            module_roots[path.parent] = path.parent.name
+            name = (module_aliases or {}).get(path.parent, path.parent.name)
+            modules[name] = set(data.get("depends", []))
+            module_roots[path.parent] = name
     files = []
     for raw_path, value in sorted(content.items()):
         path = Path(raw_path)
-        module = next((name for root, name in module_roots.items() if path.is_relative_to(root)), "")
+        module = next((module_roots[parent] for parent in path.parents if parent in module_roots), "")
         semantic = ""
         if path.name == "__manifest__.py" and module:
             data = ast.literal_eval(value.decode())
@@ -82,7 +85,9 @@ def classify_files(content: dict[str, bytes]) -> tuple[list[dict[str, Any]], dic
     return files, modules
 
 
-def inventory(roots: list[Path], exclude: list[Path] | None = None) -> tuple[list[dict[str, Any]], dict[str, set[str]]]:
+def inventory(
+    roots: list[Path], exclude: list[Path] | None = None, root_module: str = ""
+) -> tuple[list[dict[str, Any]], dict[str, set[str]]]:
     content = {}
     for root in roots:
         for path in sorted(root.rglob("*")):
@@ -99,7 +104,8 @@ def inventory(roots: list[Path], exclude: list[Path] | None = None) -> tuple[lis
             else:
                 continue
             content[root.as_posix().lstrip("/") + "/" + path.relative_to(root).as_posix()] = value
-    return classify_files(content)
+    aliases = {Path(root.as_posix().lstrip("/")): root_module for root in roots} if root_module else {}
+    return classify_files(content, aliases)
 
 
 def build_inventory(metadata: dict[str, Any]) -> dict[str, Any]:
@@ -107,10 +113,20 @@ def build_inventory(metadata: dict[str, Any]) -> dict[str, Any]:
     graph: dict[str, set[str]] = {}
     for source in metadata["sources"]:
         roots = [Path(path) for path in source["roots"]]
+        if source.get("checkout_root"):
+            expected = f"{source['repository']}@{source['commit']}"
+            matches = [
+                Path(str(marker).removesuffix(".odoo-source"))
+                for marker in Path(source["checkout_root"]).glob("*.odoo-source")
+                if marker.read_text().strip() == expected
+            ]
+            if len(matches) != 1:
+                raise ValueError("Missing or ambiguous exact fetched addon checkout")
+            roots += matches
         roots += [Path(path) for path in source.get("optional_roots", []) if Path(path).is_dir()]
         if any(not root.is_dir() for root in roots):
             raise ValueError("Missing release source root")
-        files, modules = inventory(roots, [Path(path) for path in source.get("exclude", [])])
+        files, modules = inventory(roots, [Path(path) for path in source.get("exclude", [])], source.get("root_module", ""))
         source_files = source.get("files", files)
         if source.get("files_from"):
             source_files = json.loads(Path(source["files_from"]).read_text())
@@ -152,6 +168,6 @@ if __name__ == "__main__" and sys.argv[1] == "--base":
     roots = [Path(path) for path in ("/odoo", "/usr/local/bin", "/opt/launchplane/addons", "/opt/enterprise") if Path(path).is_dir()]
     Path(sys.argv[2]).write_text(json.dumps(inventory(roots)[0], sort_keys=True))
 elif __name__ == "__main__" and sys.argv[1] == "--git":
-    print(json.dumps(git_inventory(Path(sys.argv[2]), sys.argv[3]), sort_keys=True))
+    print(json.dumps(git_inventory(Path(sys.argv[2]), sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else ""), sort_keys=True))
 elif __name__ == "__main__":
     Path(sys.argv[2]).write_text(json.dumps(build_inventory(json.loads(Path(sys.argv[1]).read_text())), sort_keys=True))

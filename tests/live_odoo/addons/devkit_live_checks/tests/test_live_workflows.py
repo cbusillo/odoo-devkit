@@ -77,8 +77,26 @@ class TestLiveWorkflows(TransactionCase):
             "release_compatibility": {
                 "complete": True,
                 "modules": [{"name": name, "depends": sorted(deps)} for name, deps in graph.items()],
+                "sources": [
+                    {
+                        "input_name": "addon:fixture/ci_probe",
+                        "repository": "fixture/ci_probe",
+                        "commit": "a" * 40,
+                        "files": [
+                            {
+                                "path": "probe.xml",
+                                "sha256": digest(Path("/opt/extra_addons/ci_probe/probe.xml").read_text()),
+                                "kind": "database_data",
+                                "module": "ci_probe",
+                            }
+                        ],
+                    }
+                ],
             },
         }
+        declaration_file = self.root / (runner.local.db_name + "-image-declaration.json")
+        declaration_file.write_text(json.dumps(candidate["release_compatibility"]))
+        runner.os_env["ODOO_RELEASE_DECLARATION_FILE"] = str(declaration_file)
         return {
             "database": runner.local.db_name,
             "candidate_manifest": candidate,
@@ -137,7 +155,7 @@ class TestLiveWorkflows(TransactionCase):
                     self.assertEqual(runner.maintenance_receipt["install_modules"], ["ci_boundary_install_probe"])
                     self.assert_password(runner)
                     parameters = dict(
-                        query(runner.local.db_name, "SELECT key,value FROM ir_config_parameter WHERE key LIKE 'devkit.ci.%'")
+                        query(runner.local.db_name, "SELECT key,value FROM ir_config_parameter WHERE key LIKE %s", ("devkit.ci.%",))
                     )
                     self.assertEqual(parameters["devkit.ci.editor"], "editor-owned")
                     self.assertEqual(parameters["devkit.ci.dependent"], "dependent-updated")
@@ -154,13 +172,17 @@ class TestLiveWorkflows(TransactionCase):
         print("DEVKIT_MAINTENANCE_TIMING " + json.dumps(timings), flush=True)
 
     def test_planned_missing_change_and_failed_update_never_pass_readback(self) -> None:
-        for fault in ("missing_change", "update_failure", "readback_failure", "late_boundary"):
+        for fault in ("missing_change", "update_failure", "readback_failure", "late_boundary", "old_image", "skipped_update"):
             with self.target() as runner:
                 query(
                     "postgres",
                     "CREATE TABLE IF NOT EXISTS devkit_boundary_events (id bigserial PRIMARY KEY, database_name text, event text)",
                 )
                 payload = self.planned_payload(runner)
+                if fault == "old_image":
+                    actual = json.loads(Path(runner.os_env["ODOO_RELEASE_DECLARATION_FILE"]).read_text())
+                    actual["sources"][0]["commit"] = "b" * 40
+                    Path(runner.os_env["ODOO_RELEASE_DECLARATION_FILE"]).write_text(json.dumps(actual))
                 if fault == "missing_change":
                     payload["release"]["update_modules"] = []
                 if fault == "update_failure":
@@ -189,6 +211,17 @@ class TestLiveWorkflows(TransactionCase):
                             return REAL_RUN(*args, **kwargs)
 
                         stack.enter_context(patch.object(workflows.subprocess, "run", side_effect=failed_readback))
+                    if fault == "skipped_update":
+
+                        def skipped_update(*args: Any, **kwargs: Any) -> Any:
+                            script = kwargs.get("input", b"")
+                            if b"Registry.new" in script:
+                                kwargs["input"] = script.replace(
+                                    b"upgrade_modules=['ci_dependent_probe', 'ci_probe']", b"upgrade_modules=[]"
+                                )
+                            return REAL_RUN(*args, **kwargs)
+
+                        stack.enter_context(patch.object(workflows.subprocess, "run", side_effect=skipped_update))
                     with self.assertRaises(workflows.OdooRestorerError):
                         runner.run_post_deploy_maintenance()
                 self.assertFalse(hasattr(runner, "maintenance_receipt"))

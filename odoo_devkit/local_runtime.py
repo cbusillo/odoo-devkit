@@ -27,6 +27,7 @@ from .artifact_inputs import (
 from .artifact_provenance import (
     ArtifactProvenanceError,
     aggregate_dependency_evidence,
+    aggregate_release_inventories,
     normalize_git_commit,
     normalize_repository_identity,
 )
@@ -688,14 +689,16 @@ def publish_runtime_artifact(
             root = (
                 "/opt/project/addons/shared"
                 if shared_addons_source is not None and source["repository"] == shared_addons_source.repository
-                else f"/opt/extra_addons/{source['repository'].rsplit('/', 1)[-1]}"
+                else ""
             )
             inventory_sources.append(
                 {
                     "input_name": f"addon:{source['repository']}",
                     "repository": source["repository"],
                     "commit": source["ref"],
-                    "roots": [root],
+                    "roots": [root] if root else [],
+                    "checkout_root": "" if root else "/opt/extra_addons/_checkouts",
+                    "root_module": source["repository"].rsplit("/", 1)[-1],
                 }
             )
         for snapshot, input_name in (
@@ -704,17 +707,23 @@ def publish_runtime_artifact(
             (shared_addons_source, f"addon:{shared_addons_source.repository}" if shared_addons_source else ""),
         ):
             if snapshot is not None:
-                inventory_command = subprocess.run(
-                    [
-                        sys.executable,
-                        str(runtime_repo_path / "docker/scripts/odoo_release_inventory.py"),
-                        "--git",
-                        str(snapshot.repo_path),
-                        snapshot.commit,
-                    ],
-                    capture_output=True,
-                    check=True,
-                )
+                try:
+                    inventory_command = subprocess.run(
+                        [
+                            sys.executable,
+                            str(runtime_repo_path / "docker/scripts/odoo_release_inventory.py"),
+                            "--git",
+                            str(snapshot.repo_path),
+                            snapshot.commit,
+                            snapshot.repository.rsplit("/", 1)[-1],
+                        ],
+                        capture_output=True,
+                        check=True,
+                    )
+                except subprocess.CalledProcessError as error:
+                    cause = (error.stderr or b"").decode(errors="replace").splitlines()
+                    detail = cause[-1][:500] if cause else f"exit {error.returncode}"
+                    raise RuntimeCommandError(f"Exact source inventory failed for {snapshot.label}: {detail}") from error
                 next(source for source in inventory_sources if source["input_name"] == input_name)["files"] = json.loads(
                     inventory_command.stdout
                 )
@@ -835,9 +844,10 @@ def publish_runtime_artifact(
             )
         except ArtifactProvenanceError as error:
             raise RuntimeCommandError(str(error)) from error
-        release_inventories = [json.loads(path.read_text()) for path in sorted(evidence_root.rglob("release-compatibility.json"))]
-        if not release_inventories or any(item != release_inventories[0] for item in release_inventories[1:]):
-            raise RuntimeCommandError("Release source inventory is missing or differs across artifact platforms.")
+        try:
+            release_inventory = aggregate_release_inventories(evidence_root=evidence_root, expected_platforms=normalized_platforms)
+        except ArtifactProvenanceError as error:
+            raise RuntimeCommandError(str(error)) from error
         require_staged_artifact_context_unchanged(staged_context_root=staged_context_root, staged_context=staged_context)
 
     manifest_payload = build_runtime_artifact_manifest_payload(
@@ -857,7 +867,7 @@ def publish_runtime_artifact(
         devtools_base_provenance=devtools_base_provenance,
         dependency_provenance=dependency_provenance,
         odoo_version=runtime_values.get("ODOO_VERSION", ""),
-        release_compatibility=release_inventories[0],
+        release_compatibility=release_inventory,
     )
 
     normalized_output_file = None if output_file is None else output_file.expanduser().resolve()

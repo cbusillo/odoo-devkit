@@ -152,6 +152,59 @@ def normalize_repository_identity(value: str) -> str:
     return urlunsplit((parsed.scheme, authority, f"/{path}", "", ""))
 
 
+def aggregate_release_inventories(*, evidence_root: Path, expected_platforms: tuple[str, ...]) -> dict[str, object]:
+    """Retain all platform bytes while requiring one image module graph.
+
+    Native base tools legitimately differ by architecture. Their inventories
+    remain complete, with platform-prefixed paths, rather than being omitted or
+    mistaken for conflicting provenance.
+    """
+    inventories: dict[str, dict[str, object]] = {}
+    for dependency_file in sorted(evidence_root.rglob("dependency-provenance.json")):
+        platform = _required_string(_load_json_object(dependency_file), "target_platform")
+        declaration = _load_json_object(dependency_file.parent / "release-compatibility.json")
+        if platform in inventories or platform not in expected_platforms:
+            raise ArtifactProvenanceError("Unexpected or duplicate release inventory platform")
+        inventories[platform] = declaration
+    if set(inventories) != set(expected_platforms):
+        raise ArtifactProvenanceError("Missing release inventory platform")
+    first = inventories[sorted(inventories)[0]]
+    for declaration in inventories.values():
+        if {key: value for key, value in declaration.items() if key != "sources"} != {
+            key: value for key, value in first.items() if key != "sources"
+        }:
+            raise ArtifactProvenanceError("Release module graph differs across artifact platforms")
+    source_maps = {
+        platform: {source["input_name"]: source for source in declaration["sources"]}
+        for platform, declaration in inventories.items()
+    }
+    if any(
+        len(mapping) != len(inventories[platform]["sources"]) or mapping.keys() != source_maps[sorted(inventories)[0]].keys()
+        for platform, mapping in source_maps.items()
+    ):
+        raise ArtifactProvenanceError("Release source set differs across artifact platforms")
+    sources = []
+    for input_name, first_source in sorted(source_maps[sorted(inventories)[0]].items()):
+        variants = {platform: mapping[input_name] for platform, mapping in source_maps.items()}
+        if any(
+            (source["repository"], source["commit"]) != (first_source["repository"], first_source["commit"])
+            for source in variants.values()
+        ):
+            raise ArtifactProvenanceError("Release source identity differs across artifact platforms")
+        identical = all(source["files"] == first_source["files"] for source in variants.values())
+        files = (
+            first_source["files"]
+            if identical
+            else [
+                {**file, "path": f"platforms/{platform.replace('/', '_')}/{file['path']}"}
+                for platform, source in sorted(variants.items())
+                for file in source["files"]
+            ]
+        )
+        sources.append({**first_source, "files": files})
+    return {**first, "sources": sources}
+
+
 def _normalize_repository_path(value: str, *, label: str) -> str:
     normalized = f"/{value.strip('/')}"
     if _REPOSITORY_URL_PATH_PATTERN.fullmatch(normalized) is None:

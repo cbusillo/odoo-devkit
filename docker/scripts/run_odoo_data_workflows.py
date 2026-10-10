@@ -24,7 +24,7 @@ from unittest.mock import patch
 
 import psycopg2
 from odoo_admin_password import validate_admin_password
-from odoo_release_plan import load_plan, names, resolve_plan
+from odoo_release_plan import load_plan, names, resolve_plan, verify_image_declaration
 from odoo_website_bootstrap import load_instance_override_payload, require_launchplane_payloads_if_configured
 from passlib.context import CryptContext
 from psycopg2 import sql
@@ -2175,6 +2175,14 @@ with registry.cursor() as cr:
             Path(output).write_text(json.dumps({"state": "running", "run_id": run_id}) + "\n")
         try:
             payload = load_plan(plan_file)
+            declaration_file = Path(
+                self.os_env.get("ODOO_RELEASE_DECLARATION_FILE", "/opt/launchplane/evidence/release-compatibility.json")
+            )
+            machine = os.uname().machine
+            platform = "linux/" + {"x86_64": "amd64", "aarch64": "arm64", "arm64": "arm64"}.get(machine, machine)
+            verify_image_declaration(
+                load_plan(declaration_file), payload["candidate_manifest"]["release_compatibility"], platform=platform
+            )
             resolved = resolve_plan(
                 payload,
                 database=self.local.db_name,
@@ -2182,6 +2190,7 @@ with registry.cursor() as cr:
                 states=self._module_states_by_name(),
                 graph=self.release_module_graph(),
             )
+            resolved["update_witnesses"] = self.module_update_witnesses(resolved["update_modules"])
         except (OSError, ValueError, KeyError, TypeError) as error:
             raise OdooDatabaseUpdateError("Invalid or incomplete release module plan.") from error
         finally:
@@ -2198,6 +2207,8 @@ with registry.cursor() as cr:
         # database, then explicitly construct the updating registry exactly once.
         command.append("--database=")
         command += ["--max-cron-threads=0"]
+        if self.local.openupgrade_enabled:
+            command += ["--load", "base,web,openupgrade_framework"]
         if resolved["install_modules"]:
             command += ["-i", ",".join(resolved["install_modules"])]
         if resolved["update_modules"]:
@@ -2233,6 +2244,11 @@ with registry.cursor() as cr:
         if output:
             Path(output).write_text(json.dumps(result, sort_keys=True) + "\n")
         _logger.info("Release maintenance readback: %s", json.dumps(result, sort_keys=True))
+
+    def module_update_witnesses(self, modules: list[str]) -> dict[str, str]:
+        with self.connect_to_db().cursor() as cursor:
+            cursor.execute("SELECT name,write_date FROM ir_module_module WHERE name = ANY(%s)", (modules,))
+            return {name: value.isoformat() if value else "" for name, value in cursor.fetchall()}
 
     def compute_update_module_list(self) -> list[str]:
         """Return sorted addon names discovered from local addon directories."""
@@ -2959,6 +2975,12 @@ class InProcessMaintenanceRunner(OdooDataWorkflowRunner):
                 raise OdooDatabaseUpdateError("Release module readback failed.")
             if any(state in {"to install", "to upgrade", "to remove"} for state in states.values()):
                 raise OdooDatabaseUpdateError("Release left pending module work.")
+            witnesses = self.module_update_witnesses(resolved["update_modules"])
+            if any(
+                not witnesses.get(name) or witnesses[name] == resolved["update_witnesses"].get(name)
+                for name in resolved["update_modules"]
+            ):
+                raise OdooDatabaseUpdateError("Release update readback found skipped module work.")
             self.maintenance_receipt = {
                 **resolved,
                 "state": "passed",
@@ -2967,6 +2989,7 @@ class InProcessMaintenanceRunner(OdooDataWorkflowRunner):
                     name for name, state in states.items() if state == "installed" and name not in resolved["already_installed"]
                 ),
                 "module_states": {name: states[name] for name in sorted(expected)},
+                "update_witnesses": witnesses,
             }
         finally:
             self._reset_db_connection()

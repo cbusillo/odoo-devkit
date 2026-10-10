@@ -21,8 +21,10 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN --mount=type=secret,id=github_token \
     rm -rf /opt/extra_addons \
     && mkdir -p /opt/extra_addons \
+    && repositories="${ODOO_ADDON_REPOSITORIES}" \
+    && if [[ -n "${OPENUPGRADE_ADDON_REPOSITORY}" ]]; then repositories="${repositories:+${repositories},}${OPENUPGRADE_ADDON_REPOSITORY}"; fi \
     && GITHUB_TOKEN="$(cat /run/secrets/github_token 2>/dev/null || true)" \
-       ODOO_ADDON_REPOSITORIES="${ODOO_ADDON_REPOSITORIES}" \
+       ODOO_ADDON_REPOSITORIES="${repositories}" \
        /usr/local/bin/odoo-fetch-addons.sh
 
 FROM ${ODOO_BASE_RUNTIME_IMAGE} AS base-runtime
