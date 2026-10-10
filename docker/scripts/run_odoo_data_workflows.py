@@ -2837,7 +2837,7 @@ with registry.cursor() as cr:
 
         # Install hooks and data can re-enable integration crons, so clear again, prove it, and only then
         # let Launchplane apply this instance's own settings (which the clearing must not overwrite).
-        self.prepare_credentials_before_registry(restored_copy=True)
+        self.prepare_credentials_before_registry(restored_copy=True, do_sanitize=do_sanitize)
         self.apply_environment_overrides()
         self.block_outgoing_mail_outside_production()
         self.ensure_admin_user()

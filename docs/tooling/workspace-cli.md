@@ -530,6 +530,9 @@ Notes
   rolled-back commit stops all later Odoo processes. A fresh transaction witness
   also proves a commit when all settings were already correct. Explicit production lanes
   preserve their integration credentials except for supplied managed overrides.
+  Both production aliases are exported to the installed settings addon as its
+  canonical production lane, so a `production` lane does not get non-production
+  Shopify clearing. The non-secret commit witness is visible in System Parameters.
   Non-production retained-integration exceptions keep their existing scope.
   Addon override targets unused by the installed settings consumer stay unused.
   Credential parameters use the supported typed `config_parameters` surface;

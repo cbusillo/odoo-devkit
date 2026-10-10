@@ -545,6 +545,62 @@ os.execv('/bin/bash', ['bash', '-c', command])
 
         self.guarded(check, omit_post_migration_boundary, fault_message="Unstripped credential reached a blocked outbound sink")
 
+    def test_production_alias_preserves_credentials_in_the_real_settings_consumer(self) -> None:
+        def check(runner: workflows.OdooDataWorkflowRunner) -> None:
+            query(
+                runner.local.db_name,
+                "INSERT INTO ir_config_parameter (key,value) VALUES ('shopify.api_token','inert-production-key')",
+            )
+            settings = runner.local.model_copy(update={"platform_instance": " production ", "db_conn": None})
+            production = workflows.OdooDataWorkflowRunner(settings, None, None)
+            try:
+                production.apply_environment_overrides()
+                self.assertEqual(
+                    query(runner.local.db_name, "SELECT value FROM ir_config_parameter WHERE key='shopify.api_token'"),
+                    [("inert-production-key",)],
+                    "Production alias was treated as a non-production lane",
+                )
+            finally:
+                production._reset_db_connection()
+
+        original = workflows.OdooDataWorkflowRunner.__init__
+
+        def omit_lane_normalization(_runner: workflows.OdooDataWorkflowRunner) -> Any:
+            def initialize(instance: workflows.OdooDataWorkflowRunner, *args: Any, **kwargs: Any) -> None:
+                original(instance, *args, **kwargs)
+                instance.os_env["PLATFORM_INSTANCE"] = instance.local.platform_instance
+
+            return patch.object(workflows.OdooDataWorkflowRunner, "__init__", new=initialize)
+
+        self.guarded(check, omit_lane_normalization, fault_message="Production alias was treated as a non-production lane")
+
+    def test_module_crons_are_disabled_before_followup_registry_hooks(self) -> None:
+        def check(runner: workflows.OdooDataWorkflowRunner) -> None:
+            update = runner.update_addons
+
+            def update_with_cron_data(**kwargs: Any) -> None:
+                update(**kwargs)
+                # Representative module data committed by the update process.
+                query(runner.local.db_name, "UPDATE ir_cron SET active=true")
+
+            with patch.object(runner, "update_addons", side_effect=update_with_cron_data):
+                self.credential_boundary_check(runner, restore=True)
+
+        def omit_final_sanitize(runner: workflows.OdooDataWorkflowRunner) -> Any:
+            prepare = runner.prepare_credentials_before_registry
+            calls = 0
+
+            def boundary(**kwargs: Any) -> None:
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    kwargs["do_sanitize"] = False
+                prepare(**kwargs)
+
+            return patch.object(runner, "prepare_credentials_before_registry", side_effect=boundary)
+
+        self.guarded(check, omit_final_sanitize, fault_message="Unstripped credential reached a blocked outbound sink")
+
     def test_failed_and_rolled_back_boundary_commit_starts_no_odoo_hook(self) -> None:
         for mode in ("failed", "rolled_back", "production_rolled_back"):
             with self.subTest(mode=mode), self.target() as runner:
