@@ -37,11 +37,13 @@ class ReleaseMaintenanceTests(unittest.TestCase):
             (tenant / "module/data/logo.xml").write_text(
                 '<odoo><field name="logo" type="base64" file="other/static/logo.png"/>'
                 '<menuitem web_icon="other,static/icon.png"/>'
-                '<field name="web_icon">other,static/alternate.png</field></odoo>'
+                '<field name="web_icon">other,static/alternate.png</field>'
+                '<field name="web_icon" eval="\'other,static/evaluated.png\'"/></odoo>'
             )
             (shared / "other/static/logo.png").write_bytes(b"first")
             (shared / "other/static/icon.png").write_bytes(b"icon")
             (shared / "other/static/alternate.png").write_bytes(b"alternate")
+            (shared / "other/static/evaluated.png").write_bytes(b"evaluated")
             metadata = {
                 "sources": [
                     {"input_name": name, "repository": f"fixture/{name}", "commit": "a" * 40, "roots": [str(path)]}
@@ -64,12 +66,15 @@ class ReleaseMaintenanceTests(unittest.TestCase):
                     {**item, "path": item["path"].removeprefix(prefix)} for item in inventory.inventory([source_root])[0]
                 ]
             git_paths = inventory.build_inventory(metadata)
-            for name in ("icon.png", "alternate.png"):
+            for name in ("icon.png", "alternate.png", "evaluated.png"):
                 self.assertEqual(
                     next(item for item in git_paths["sources"][1]["files"] if item["path"].endswith(name))["kind"], "database_data"
                 )
             (tenant / "module/data/logo.xml").unlink()
             self.assertFalse(inventory.build_inventory(metadata)["complete"])
+            (tenant / "module/data/logo.xml").write_text("<broken")
+            self.assertFalse(inventory.build_inventory(metadata)["complete"])
+            inventory.inventory([tenant])  # Malformed data does not prevent legacy artifact publication.
 
     def test_exposed_graph_and_examined_plan_support_real_dependency_changes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

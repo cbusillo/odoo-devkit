@@ -21,6 +21,12 @@ def xml_database_references(elements: Any) -> list[str]:
         icon = element.get("web_icon", "")
         if element.tag == "field" and element.get("name") == "web_icon":
             icon = element.text or ""
+            if element.get("eval"):
+                try:
+                    value = ast.literal_eval(element.get("eval"))
+                    icon = value if isinstance(value, str) else ""
+                except (ValueError, SyntaxError):
+                    pass
         name, separator, path = icon.strip().partition(",")
         if separator:
             references.append(name.strip() + "/" + path.strip())
@@ -175,6 +181,7 @@ def database_loaded_files(paths: dict[str, Path]) -> tuple[set[Path], bool]:
                 references = xml_database_references(ET.parse(file).iter())
             except (OSError, ET.ParseError):
                 complete = False
+                print(f"Incomplete release inventory: {root.name}/{relative} XML is missing or unparsable", file=sys.stderr)
                 continue
             for reference in references:
                 name, separator, remainder = reference.partition("/")
