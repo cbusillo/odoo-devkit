@@ -21,8 +21,10 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN --mount=type=secret,id=github_token \
     rm -rf /opt/extra_addons \
     && mkdir -p /opt/extra_addons \
+    && repositories="${ODOO_ADDON_REPOSITORIES}" \
+    && if [[ -n "${OPENUPGRADE_ADDON_REPOSITORY}" ]]; then repositories="${repositories:+${repositories},}${OPENUPGRADE_ADDON_REPOSITORY}"; fi \
     && GITHUB_TOKEN="$(cat /run/secrets/github_token 2>/dev/null || true)" \
-       ODOO_ADDON_REPOSITORIES="${ODOO_ADDON_REPOSITORIES}" \
+       ODOO_ADDON_REPOSITORIES="${repositories}" \
        /usr/local/bin/odoo-fetch-addons.sh
 
 FROM ${ODOO_BASE_RUNTIME_IMAGE} AS base-runtime
@@ -42,6 +44,8 @@ RUN mkdir -p /volumes /opt/project \
     && rm -f /volumes/pyproject.toml /volumes/uv.lock \
     && ln -s /opt/project/pyproject.toml /volumes/pyproject.toml \
     && ln -s /opt/project/uv.lock /volumes/uv.lock
+
+RUN /venv/bin/python /volumes/scripts/odoo_release_inventory.py --base /opt/launchplane/evidence/base-runtime-inventory.json
 
 FROM ${ODOO_BASE_DEVTOOLS_IMAGE} AS base-devtools
 ARG ODOO_ADDON_REPOSITORIES
@@ -63,11 +67,18 @@ RUN mkdir -p /volumes /opt/project \
     && rm -rf /opt/project/tools \
     && ln -s /volumes/tools /opt/project/tools
 
+RUN /venv/bin/python /volumes/scripts/odoo_release_inventory.py --base-tools /opt/launchplane/evidence/base-devtools-inventory.json
+
 FROM base-runtime AS production
 ARG TARGETPLATFORM
+COPY --from=base-devtools /opt/launchplane/evidence/base-devtools-inventory.json /opt/launchplane/evidence/base-devtools-inventory.json
 WORKDIR /opt/project
 RUN --mount=type=cache,target=/home/ubuntu/.cache/uv,uid=1000,gid=1000,sharing=locked \
 	TARGETPLATFORM="${TARGETPLATFORM}" ODOO_PYTHON_SYNC_SKIP_ADDONS="${ODOO_PYTHON_SYNC_SKIP_ADDONS}" /usr/local/bin/odoo-python-sync.sh prod
+COPY /release-inventory-inputs.json /opt/launchplane/evidence/release-inventory-inputs.json
+RUN /venv/bin/python /volumes/scripts/odoo_release_inventory.py \
+    /opt/launchplane/evidence/release-inventory-inputs.json /opt/launchplane/evidence/release-compatibility.json \
+    && rm /opt/launchplane/evidence/release-inventory-inputs.json
 WORKDIR /
 USER ubuntu
 

@@ -164,6 +164,7 @@ def build_parser() -> argparse.ArgumentParser:
     runtime_publish_parser.add_argument("--image-tag", required=True)
     runtime_publish_parser.add_argument("--output-file", type=Path, default=None)
     runtime_publish_parser.add_argument("--no-cache", action="store_true")
+    runtime_publish_parser.add_argument("--examined-input-plan", type=Path)
     runtime_publish_parser.add_argument(
         "--platform",
         action="append",
@@ -179,6 +180,7 @@ def build_parser() -> argparse.ArgumentParser:
     artifact_check_parser.add_argument("--devkit-commit", required=True)
     artifact_check_parser.add_argument("--output-file", type=Path)
     artifact_check_parser.add_argument("--no-cache", action="store_true")
+    artifact_check_parser.add_argument("--examined-input-plan", type=Path)
     artifact_check_parser.add_argument("--platform", action="append", default=None)
     artifact_check_parser.set_defaults(handler=_handle_runtime_check_artifact)
 
@@ -453,6 +455,7 @@ def _handle_runtime_publish(arguments: argparse.Namespace) -> None:
             output_file=arguments.output_file,
             no_cache=arguments.no_cache,
             platforms=tuple(arguments.platform or ()),
+            examined_input_plan=arguments.examined_input_plan,
         )
     )
     print(json.dumps(payload, indent=2, sort_keys=True))
@@ -464,6 +467,7 @@ def _handle_runtime_check_artifact(arguments: argparse.Namespace) -> None:
         lambda: run_native_runtime_check_artifact(
             manifest=manifest,
             devkit_commit=arguments.devkit_commit,
+            examined_input_plan=arguments.examined_input_plan,
             output_file=arguments.output_file,
             no_cache=arguments.no_cache,
             platforms=tuple(arguments.platform or ()),

@@ -25,6 +25,23 @@ class ArtifactProvenanceError(ValueError):
     pass
 
 
+def load_examined_input_plan(path: Path) -> dict[str, object]:
+    """Accept provenance and module names only, before staging any build input."""
+    payload = _load_json_object(path)
+    modules = payload.get("database_update_modules")
+    fingerprint = payload.get("examined_inputs_sha256")
+    if (
+        set(payload) != {"examined_inputs_sha256", "database_update_modules"}
+        or not isinstance(fingerprint, str)
+        or _SHA256_PATTERN.fullmatch(fingerprint) is None
+        or not isinstance(modules, list)
+        or any(not isinstance(name, str) or re.fullmatch(r"[A-Za-z0-9_]+", name) is None for name in modules)
+        or len(modules) != len(set(modules))
+    ):
+        raise ArtifactProvenanceError("Examined input plan requires a canonical fingerprint and an explicit module array")
+    return payload
+
+
 def aggregate_dependency_evidence(
     *,
     evidence_root: Path,
@@ -150,6 +167,62 @@ def normalize_repository_identity(value: str) -> str:
     if port is not None:
         authority += f":{port}"
     return urlunsplit((parsed.scheme, authority, f"/{path}", "", ""))
+
+
+def aggregate_release_inventories(*, evidence_root: Path, expected_platforms: tuple[str, ...]) -> dict[str, object]:
+    """Retain all platform bytes while requiring one image module graph.
+
+    Native base tools legitimately differ by architecture. Their inventories
+    remain complete, with platform-prefixed paths, rather than being omitted or
+    mistaken for conflicting provenance.
+    """
+    inventories: dict[str, dict[str, object]] = {}
+    for dependency_file in sorted(evidence_root.rglob("dependency-provenance.json")):
+        platform = _required_string(_load_json_object(dependency_file), "target_platform")
+        declaration = _load_json_object(dependency_file.parent / "release-compatibility.json")
+        if platform in inventories or platform not in expected_platforms:
+            raise ArtifactProvenanceError("Unexpected or duplicate release inventory platform")
+        inventories[platform] = declaration
+    if set(inventories) != set(expected_platforms):
+        raise ArtifactProvenanceError("Missing release inventory platform")
+    first = inventories[sorted(inventories)[0]]
+    for declaration in inventories.values():
+        if {key: value for key, value in declaration.items() if key != "sources"} != {
+            key: value for key, value in first.items() if key != "sources"
+        }:
+            raise ArtifactProvenanceError("Release module graph differs across artifact platforms")
+    source_maps = {
+        platform: {source["input_name"]: source for source in declaration["sources"]}
+        for platform, declaration in inventories.items()
+    }
+    if any(
+        len(mapping) != len(inventories[platform]["sources"]) or mapping.keys() != source_maps[sorted(inventories)[0]].keys()
+        for platform, mapping in source_maps.items()
+    ):
+        raise ArtifactProvenanceError("Release source set differs across artifact platforms")
+    sources = []
+    for input_name, first_source in sorted(source_maps[sorted(inventories)[0]].items()):
+        variants = {platform: mapping[input_name] for platform, mapping in source_maps.items()}
+        if any(
+            (source["repository"], source["commit"]) != (first_source["repository"], first_source["commit"])
+            for source in variants.values()
+        ):
+            raise ArtifactProvenanceError("Release source identity differs across artifact platforms")
+        file_maps = {platform: {file["path"]: file for file in source["files"]} for platform, source in variants.items()}
+        files = []
+        for path in sorted(set().union(*(mapping.keys() for mapping in file_maps.values()))):
+            items = {platform: mapping.get(path) for platform, mapping in file_maps.items()}
+            first_file = next(iter(items.values()))
+            if first_file is not None and all(file == first_file for file in items.values()):
+                files.append(first_file)
+            else:
+                files.extend(
+                    {**file, "path": f"platforms/{platform.replace('/', '_')}/{path}"}
+                    for platform, file in sorted(items.items())
+                    if file is not None
+                )
+        sources.append({**first_source, "files": files})
+    return {**first, "sources": sources}
 
 
 def _normalize_repository_path(value: str, *, label: str) -> str:

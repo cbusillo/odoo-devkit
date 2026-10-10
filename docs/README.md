@@ -22,6 +22,8 @@ lanes live in `launchplane`.
   build-tool ownership and atomic tenant pin synchronization.
 - [tooling/consumer-build-checks.md](tooling/consumer-build-checks.md) for
   tenant-side production builds against a devkit PR commit before Ready.
+- [tooling/release-maintenance.md](tooling/release-maintenance.md) for artifact
+  declarations and targeted maintenance after the committed credential boundary.
 - [tooling/command-patterns.md](tooling/command-patterns.md) for concrete
   workspace command examples.
 - [tooling/tenant-overlay.md](tooling/tenant-overlay.md) for the thin tenant

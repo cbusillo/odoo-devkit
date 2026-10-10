@@ -142,6 +142,17 @@ class RuntimeCommandTests(unittest.TestCase):
         for platform in command[command.index("--platform") + 1].split(","):
             output_directory = evidence_root / platform.replace("/", "_")
             output_directory.mkdir(parents=True, exist_ok=True)
+            (output_directory / "release-compatibility.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "complete": False,
+                        "read_write_compatible": False,
+                        "sources": [],
+                        "modules": [],
+                    }
+                )
+            )
             (output_directory / "dependency-provenance.json").write_text(
                 json.dumps(
                     {
@@ -4067,6 +4078,9 @@ attached_paths = ["sources/devkit"]
         (runtime_repo_path / "platform" / "compose").mkdir(parents=True, exist_ok=True)
         (runtime_repo_path / "platform" / "config").mkdir(parents=True, exist_ok=True)
         (runtime_repo_path / "docker" / "runtime-python").mkdir(parents=True, exist_ok=True)
+        (runtime_repo_path / "docker" / "scripts").mkdir(parents=True, exist_ok=True)
+        inventory_source = Path(__file__).resolve().parents[1] / "docker/scripts/odoo_release_inventory.py"
+        (runtime_repo_path / "docker/scripts/odoo_release_inventory.py").write_bytes(inventory_source.read_bytes())
         (runtime_repo_path / "addons" / "shared").mkdir(parents=True, exist_ok=True)
         (runtime_repo_path / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
         (runtime_repo_path / "platform" / "compose" / "base.yaml").write_text("services: {}\n", encoding="utf-8")

@@ -1,0 +1,6 @@
+<odoo>
+    <record id="probe" model="ir.config_parameter">
+        <field name="key">devkit.ci.dependent</field>
+        <field name="value">dependent-updated</field>
+    </record>
+</odoo>

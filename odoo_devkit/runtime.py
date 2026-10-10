@@ -232,6 +232,7 @@ def run_native_runtime_publish(
     output_file: Path | None,
     no_cache: bool,
     platforms: tuple[str, ...] = (),
+    examined_input_plan: Path | None = None,
 ) -> dict[str, object]:
     runtime_repo_path = resolve_runtime_repo_path(manifest)
     try:
@@ -243,6 +244,7 @@ def run_native_runtime_publish(
             output_file=output_file,
             no_cache=no_cache,
             platforms=platforms or DEFAULT_ARTIFACT_IMAGE_PLATFORMS,
+            examined_input_plan=examined_input_plan,
         )
     except RuntimeCommandError as error:
         raise ValueError(str(error)) from error
@@ -259,6 +261,7 @@ def run_native_runtime_check_artifact(
     output_file: Path | None,
     no_cache: bool,
     platforms: tuple[str, ...] = (),
+    examined_input_plan: Path | None = None,
 ) -> dict[str, object]:
     if re.fullmatch(r"[0-9a-f]{40}", devkit_commit) is None:
         raise ValueError("Artifact check requires an exact lowercase 40-character devkit commit.")
@@ -280,6 +283,7 @@ def run_native_runtime_check_artifact(
             manifest=manifest,
             runtime_repo_path=runtime_repo_path,
             image_repository="odoo-artifact-check",
+            examined_input_plan=examined_input_plan,
             image_tag=devkit_commit,
             output_file=output_file,
             no_cache=no_cache,

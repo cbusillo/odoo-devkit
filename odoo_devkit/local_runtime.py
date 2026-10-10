@@ -8,6 +8,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import textwrap
 import time
@@ -26,6 +27,8 @@ from .artifact_inputs import (
 from .artifact_provenance import (
     ArtifactProvenanceError,
     aggregate_dependency_evidence,
+    aggregate_release_inventories,
+    load_examined_input_plan,
     normalize_git_commit,
     normalize_repository_identity,
 )
@@ -558,7 +561,12 @@ def publish_runtime_artifact(
     platforms: tuple[str, ...] = DEFAULT_ARTIFACT_IMAGE_PLATFORMS,
     build_only: bool = False,
     expected_runtime_commit: str | None = None,
+    examined_input_plan: Path | None = None,
 ) -> RuntimeArtifactPublishResult:
+    try:
+        examined_plan = load_examined_input_plan(examined_input_plan) if examined_input_plan else None
+    except (OSError, ArtifactProvenanceError) as error:
+        raise RuntimeCommandError(f"Invalid examined input plan: {error}") from error
     normalized_image_repository = image_repository.strip()
     normalized_image_tag = image_tag.strip()
     if not normalized_image_repository:
@@ -656,6 +664,85 @@ def publish_runtime_artifact(
             tenant_source=tenant_source,
             runtime_source=runtime_source,
             shared_addons_source=shared_addons_source,
+        )
+        inventory_sources: list[dict[str, object]] = [
+            {
+                "input_name": "tenant",
+                "repository": tenant_source.repository,
+                "commit": tenant_source.commit,
+                "roots": ["/opt/project"],
+                "exclude": ["/opt/project/addons/shared"],
+            },
+            {
+                "input_name": "tool:odoo-devkit",
+                "repository": runtime_source.repository,
+                "commit": runtime_source.commit,
+                "roots": ["/opt/runtime", "/volumes/scripts", "/volumes/config"],
+            },
+        ]
+        for base in (runtime_base_provenance, devtools_base_provenance):
+            inventory_sources.append(
+                {
+                    "input_name": f"base:{base.role}",
+                    "repository": base.source_repository,
+                    "commit": base.source_ref,
+                    "roots": ["/odoo", "/opt/launchplane/addons"] if base.role == "runtime" else ["/usr/local/bin"],
+                    "optional_roots": ["/opt/enterprise"] if base.role == "runtime" else [],
+                    "files_from": f"/opt/launchplane/evidence/base-{base.role}-inventory.json",
+                }
+            )
+        for source in artifact_source_entries:
+            root = (
+                "/opt/project/addons/shared"
+                if shared_addons_source is not None and source["repository"] == shared_addons_source.repository
+                else ""
+            )
+            inventory_sources.append(
+                {
+                    "input_name": f"addon:{source['repository']}",
+                    "repository": source["repository"],
+                    "commit": source["ref"],
+                    "roots": [root] if root else [],
+                    "checkout_root": "" if root else "/opt/extra_addons/_checkouts",
+                    "root_module": source["repository"].rsplit("/", 1)[-1],
+                }
+            )
+        for snapshot, input_name in (
+            (tenant_source, "tenant"),
+            (runtime_source, "tool:odoo-devkit"),
+            (shared_addons_source, f"addon:{shared_addons_source.repository}" if shared_addons_source else ""),
+        ):
+            if snapshot is not None:
+                try:
+                    inventory_command = subprocess.run(
+                        [
+                            sys.executable,
+                            str(runtime_repo_path / "docker/scripts/odoo_release_inventory.py"),
+                            "--git",
+                            str(snapshot.repo_path),
+                            snapshot.commit,
+                            snapshot.repository.rsplit("/", 1)[-1],
+                        ],
+                        capture_output=True,
+                        check=True,
+                    )
+                except subprocess.CalledProcessError as error:
+                    cause = (error.stderr or b"").decode(errors="replace").splitlines()
+                    detail = cause[-1][:500] if cause else f"exit {error.returncode}"
+                    raise RuntimeCommandError(f"Exact source inventory failed for {snapshot.label}: {detail}") from error
+                next(source for source in inventory_sources if source["input_name"] == input_name)["files"] = json.loads(
+                    inventory_command.stdout
+                )
+        # This file is build input only; published declarations contain no host paths.
+        (staged_context_root / "release-inventory-inputs.json").write_text(
+            json.dumps(
+                {
+                    "sources": inventory_sources,
+                    "dependency_evidence": "/opt/launchplane/evidence/dependency-provenance.json",
+                    "addon_paths": runtime_values["ODOO_ADDONS_PATH"].split(","),
+                    "examined_input_plan": examined_plan,
+                }
+            )
         )
         require_artifact_git_sources_unchanged((tenant_source, runtime_source, shared_addons_source))
         require_staged_artifact_context_unchanged(staged_context_root=staged_context_root, staged_context=staged_context)
@@ -765,6 +852,10 @@ def publish_runtime_artifact(
             )
         except ArtifactProvenanceError as error:
             raise RuntimeCommandError(str(error)) from error
+        try:
+            release_inventory = aggregate_release_inventories(evidence_root=evidence_root, expected_platforms=normalized_platforms)
+        except ArtifactProvenanceError as error:
+            raise RuntimeCommandError(str(error)) from error
         require_staged_artifact_context_unchanged(staged_context_root=staged_context_root, staged_context=staged_context)
 
     manifest_payload = build_runtime_artifact_manifest_payload(
@@ -784,6 +875,7 @@ def publish_runtime_artifact(
         devtools_base_provenance=devtools_base_provenance,
         dependency_provenance=dependency_provenance,
         odoo_version=runtime_values.get("ODOO_VERSION", ""),
+        release_compatibility=release_inventory,
     )
 
     normalized_output_file = None if output_file is None else output_file.expanduser().resolve()
@@ -3245,14 +3337,13 @@ def build_runtime_artifact_manifest_payload(
     devtools_base_provenance: BaseImageProvenance,
     dependency_provenance: dict[str, object],
     odoo_version: str,
+    release_compatibility: dict[str, object] | None = None,
 ) -> dict[str, object]:
     artifact_id = f"artifact-{context_name}-{image_digest.removeprefix('sha256:')[:16]}"
     build_flag_values = {
         "build_target": "production",
-        "image_tag": image_tag,
         "odoo_version": odoo_version,
         "runtime_repo": runtime_repo_name,
-        "runtime_repo_commit": runtime_repo_commit,
     }
     normalized_selectors: list[dict[str, str]] = []
     for selector_entry in source_selector_entries:
@@ -3266,7 +3357,7 @@ def build_runtime_artifact_manifest_payload(
             )
         except (ArtifactProvenanceError, KeyError) as error:
             raise RuntimeCommandError("Artifact source selector evidence is invalid.") from error
-    return {
+    payload: dict[str, object] = {
         "schema_version": 2,
         "artifact_id": artifact_id,
         "source_commit": source_commit,
@@ -3300,6 +3391,9 @@ def build_runtime_artifact_manifest_payload(
             "tags": [image_tag],
         },
     }
+    if release_compatibility is not None:
+        payload["release_compatibility"] = release_compatibility
+    return payload
 
 
 def parse_csv_values(raw_value: str) -> tuple[str, ...]:
