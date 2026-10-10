@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from odoo_devkit.artifact_provenance import ArtifactProvenanceError, aggregate_release_inventories, load_examined_input_plan
+from odoo_devkit.local_runtime import BaseImageProvenance, build_runtime_artifact_manifest_payload
 
 
 def load(name: str) -> Any:
@@ -26,6 +27,135 @@ inventory = load("odoo_release_inventory")
 
 
 class ReleaseMaintenanceTests(unittest.TestCase):
+    def test_enterprise_tenant_manifest_has_margin_below_ingestion_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            enterprise, tenant = root / "enterprise", root / "tenant"
+            for index in range(1500):
+                module = enterprise / f"module_{index}"
+                module.mkdir(parents=True)
+                (module / "__manifest__.py").write_text(repr({"depends": []}))
+            (tenant / "website/static").mkdir(parents=True)
+            (tenant / "website/__manifest__.py").write_text(repr({"depends": ["module_0"]}))
+            (tenant / "website/static/site.css").write_text("body { color: blue; }")
+            (tenant / "website/models.py").write_text("# website model")
+            (tenant / ".run").mkdir()
+            (tenant / ".run/Workspace Status.run.xml").write_text("<configuration/>")
+            base_files = [
+                {
+                    "path": f"opt/enterprise/module_{index % 1500}/views/view_{index}.xml",
+                    "sha256": hashlib.sha256(str(index).encode()).hexdigest(),
+                    "kind": "database_data",
+                    "module": f"module_{index % 1500}",
+                    "manifest_database_sha256": "",
+                }
+                for index in range(90000)
+            ]
+            base_inventory = root / "base-inventory.json"
+            base_inventory.write_text(json.dumps(base_files))
+            metadata = {
+                "sources": [
+                    {
+                        "input_name": "base:runtime",
+                        "repository": "fixture/enterprise-base",
+                        "commit": "a" * 40,
+                        "roots": [str(enterprise)],
+                        "files_from": str(base_inventory),
+                    },
+                    {"input_name": "tenant", "repository": "fixture/tenant", "commit": "b" * 40, "roots": [str(tenant)]},
+                ]
+            }
+            declaration = inventory.build_inventory(metadata)
+            output = root / "linux_amd64"
+            output.mkdir()
+            (output / "dependency-provenance.json").write_text(json.dumps({"target_platform": "linux/amd64"}))
+            (output / "release-compatibility.json").write_text(json.dumps(declaration))
+            merged: dict[str, Any] = aggregate_release_inventories(evidence_root=root, expected_platforms=("linux/amd64",))
+            base_images = [
+                BaseImageProvenance(
+                    role=role,
+                    repository=f"ghcr.io/fixture/{role}",
+                    digest="sha256:" + "a" * 64,
+                    digest_reference=f"ghcr.io/fixture/{role}@sha256:" + "a" * 64,
+                    tags=(),
+                    source_repository="fixture/enterprise-base",
+                    source_ref="a" * 40,
+                )
+                for role in ("runtime", "devtools")
+            ]
+            manifest = build_runtime_artifact_manifest_payload(
+                context_name="website",
+                source_commit="b" * 40,
+                runtime_repo_name="odoo-devkit",
+                runtime_repo_commit="c" * 40,
+                runtime_repo_repository="fixture/devkit",
+                artifact_source_entries=(),
+                source_selector_entries=(),
+                odoo_install_modules=("website",),
+                addon_skip_flags=(),
+                image_repository="ghcr.io/fixture/website",
+                image_tag="candidate",
+                image_digest="sha256:" + "b" * 64,
+                runtime_base_provenance=base_images[0],
+                devtools_base_provenance=base_images[1],
+                dependency_provenance={},
+                odoo_version="19.0",
+                release_compatibility=merged,
+            )
+            # Ingestion permits 2 MiB unpacked; reserve at least 75% for the
+            # remaining dependency/build evidence and future tenant growth.
+            self.assertLess(len(json.dumps(manifest, indent=2, sort_keys=True).encode()), 2 * 1024 * 1024 // 4)
+            self.assertTrue(merged["complete"])
+            self.assertEqual(len(merged["modules"]), 1501)
+            tenant_source = next(source for source in merged["sources"] if source["input_name"] == "tenant")
+            self.assertEqual({file["kind"] for file in tenant_source["files"]}, {"manifest_assets", "static", "model", "dependency"})
+            run_config = next(file for file in tenant_source["files"] if "/.run/" in file["path"])
+            self.assertNotIn(" ", run_config["path"])
+            self.assertEqual(run_config["sha256"], hashlib.sha256(b"<configuration/>").hexdigest())
+            plan.verify_image_declaration(declaration, merged, platform="linux/amd64")
+
+    def test_base_digest_binds_all_files_and_platforms(self) -> None:
+        source = {
+            "input_name": "base:runtime",
+            "repository": "fixture/base",
+            "commit": "a" * 40,
+            "roots": [],
+            "files": [
+                {"path": path, "sha256": hashlib.sha256(path.encode()).hexdigest(), "kind": "dependency", "module": ""}
+                for path in ("odoo/models.py", "usr/local/bin/uv")
+            ],
+        }
+        original = inventory.build_inventory({"sources": [source]})
+        for field, value in (("path", "renamed.py"), ("sha256", "b" * 64), ("kind", "unknown"), ("module", "base")):
+            changed = copy.deepcopy(source)
+            changed["files"][0][field] = value
+            with self.subTest(field=field):
+                self.assertNotEqual(original, inventory.build_inventory({"sources": [changed]}))
+        reordered = copy.deepcopy(source)
+        reordered["files"].reverse()
+        self.assertEqual(original, inventory.build_inventory({"sources": [reordered]}))
+        removed = copy.deepcopy(source)
+        removed["files"].pop()
+        self.assertNotEqual(original, inventory.build_inventory({"sources": [removed]}))
+        duplicate = copy.deepcopy(source)
+        duplicate["files"].append(duplicate["files"][0])
+        with self.assertRaises(ValueError):
+            inventory.build_inventory({"sources": [duplicate]})
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            declarations = {}
+            for platform, entry in (("linux/amd64", source), ("linux/arm64", removed)):
+                declarations[platform] = inventory.build_inventory({"sources": [entry]})
+                output = root / platform.replace("/", "_")
+                output.mkdir()
+                (output / "dependency-provenance.json").write_text(json.dumps({"target_platform": platform}))
+                (output / "release-compatibility.json").write_text(json.dumps(declarations[platform]))
+            merged = aggregate_release_inventories(evidence_root=root, expected_platforms=tuple(declarations))
+            for platform, declaration in declarations.items():
+                plan.verify_image_declaration(declaration, merged, platform=platform)
+            with self.assertRaises(ValueError):
+                plan.verify_image_declaration(declarations["linux/amd64"], merged, platform="linux/arm64")
+
     def test_xml_binary_references_across_sources_require_database_work(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -137,7 +267,7 @@ class ReleaseMaintenanceTests(unittest.TestCase):
                     ],
                 }
                 (output / "release-compatibility.json").write_text(json.dumps(declarations[platform]))
-            merged = aggregate_release_inventories(evidence_root=root, expected_platforms=platforms)
+            merged: dict[str, Any] = aggregate_release_inventories(evidence_root=root, expected_platforms=platforms)
             files = merged["sources"][0]["files"]
             self.assertEqual(
                 {file["sha256"] for file in files}, {hashlib.sha256(platform.encode()).hexdigest() for platform in platforms}
@@ -161,7 +291,7 @@ class ReleaseMaintenanceTests(unittest.TestCase):
             "new": "uninstalled",
         }
         self.image = "fixture/image@sha256:" + "a" * 64
-        self.candidate = {
+        self.candidate: dict[str, Any] = {
             "artifact_id": "candidate",
             "image": {"repository": "fixture/image", "digest": "sha256:" + "a" * 64},
             "odoo_install_modules": ["new"],
@@ -170,7 +300,7 @@ class ReleaseMaintenanceTests(unittest.TestCase):
                 "modules": [{"name": name, "depends": sorted(deps)} for name, deps in self.graph.items()],
             },
         }
-        self.payload = {
+        self.payload: dict[str, Any] = {
             "database": "fixture",
             "candidate_manifest": self.candidate,
             "release": {
