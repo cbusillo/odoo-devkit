@@ -2630,6 +2630,9 @@ with registry.cursor() as cr:
 
         to_install = [name for name in found if name not in rows or rows.get(name) in ("uninstalled", "to remove")]
         to_update = list(found) if update_existing else []
+        if not to_install and not to_update:
+            _logger.info("No addon installs or updates required for %s; skipping Odoo startup.", modules_source_label)
+            return
 
         odoo_bin = "/odoo/odoo-bin"
         if not Path(odoo_bin).exists():
