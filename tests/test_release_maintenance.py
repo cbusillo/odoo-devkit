@@ -26,6 +26,34 @@ inventory = load("odoo_release_inventory")
 
 
 class ReleaseMaintenanceTests(unittest.TestCase):
+    def test_xml_binary_references_across_sources_require_database_work(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tenant, shared = root / "tenant", root / "shared"
+            (tenant / "module/data").mkdir(parents=True)
+            (shared / "other/static").mkdir(parents=True)
+            (tenant / "module/__manifest__.py").write_text(repr({"depends": ["other"], "data": ("data/logo.xml",)}))
+            (shared / "other/__manifest__.py").write_text(repr({"depends": []}))
+            (tenant / "module/data/logo.xml").write_text(
+                '<odoo><field name="logo" type="base64" file="other/static/logo.png"/></odoo>'
+            )
+            (shared / "other/static/logo.png").write_bytes(b"first")
+            metadata = {
+                "sources": [
+                    {"input_name": name, "repository": f"fixture/{name}", "commit": "a" * 40, "roots": [str(path)]}
+                    for name, path in (("tenant", tenant), ("shared", shared))
+                ],
+                "addon_paths": [str(tenant), str(shared)],
+            }
+            before = inventory.build_inventory(metadata)
+            (shared / "other/static/logo.png").write_bytes(b"second")
+            after = inventory.build_inventory(metadata)
+            left = next(item for item in before["sources"][1]["files"] if item["path"].endswith("logo.png"))
+            right = next(item for item in after["sources"][1]["files"] if item["path"].endswith("logo.png"))
+            self.assertNotEqual(left["sha256"], right["sha256"])
+            self.assertEqual(right["kind"], "database_data")
+            self.assertEqual(right["module"], "other")
+
     def test_exposed_graph_and_examined_plan_support_real_dependency_changes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

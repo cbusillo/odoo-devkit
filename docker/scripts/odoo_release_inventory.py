@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
@@ -55,7 +56,18 @@ def classify_files(
             name = (module_aliases or {}).get(path.parent, path.parent.name)
             modules[name] = set(data.get("depends", []))
             module_roots[path.parent] = name
-            database_files.update(path.parent / item for item in data.get("data", []) + data.get("demo", []))
+            database_files.update(path.parent / item for item in (*data.get("data", ()), *data.get("demo", ())))
+    roots_by_name = {name: root for root, name in module_roots.items()}
+    for path in tuple(database_files):
+        if path.suffix != ".xml" or path.as_posix() not in content:
+            continue
+        for element in ET.fromstring(content[path.as_posix()]).iter():
+            reference = element.get("file", "")
+            if not reference:
+                continue
+            module, separator, relative = reference.partition("/")
+            if separator and module in roots_by_name:
+                database_files.add(roots_by_name[module] / relative)
     files = []
     for raw_path, value in sorted(content.items()):
         path = Path(raw_path)
@@ -112,22 +124,48 @@ def inventory(
     return classify_files(content, aliases)
 
 
-def module_graph(roots: list[Path]) -> dict[str, set[str]]:
+def module_paths(roots: list[Path]) -> dict[str, Path]:
     """Match Odoo's exposed addon namespaces and first-path precedence."""
-    graph: dict[str, set[str]] = {}
+    paths: dict[str, Path] = {}
     for root in roots:
         for manifest in sorted(root.glob("*/__manifest__.py")):
             name = manifest.parent.name
-            if name in graph:
+            if name in paths:
                 continue
             data = ast.literal_eval(manifest.read_text())
             if data.get("installable", True):
-                graph[name] = set(data.get("depends", []))
-    return graph
+                paths[name] = manifest.parent
+    return paths
+
+
+def module_graph(roots: list[Path]) -> dict[str, set[str]]:
+    return {
+        name: set(ast.literal_eval((path / "__manifest__.py").read_text()).get("depends", []))
+        for name, path in module_paths(roots).items()
+    }
+
+
+def database_loaded_files(paths: dict[str, Path]) -> set[Path]:
+    """Include binary attachments loaded through XML across source boundaries."""
+    loaded: set[Path] = set()
+    for root in paths.values():
+        data = ast.literal_eval((root / "__manifest__.py").read_text())
+        for relative in (*data.get("data", ()), *data.get("demo", ())):
+            file = root / relative
+            loaded.add(file.resolve())
+            if file.suffix != ".xml":
+                continue
+            for element in ET.parse(file).iter():
+                reference = element.get("file", "")
+                name, separator, remainder = reference.partition("/")
+                if separator and name in paths:
+                    loaded.add((paths[name] / remainder).resolve())
+    return loaded
 
 
 def build_inventory(metadata: dict[str, Any]) -> dict[str, Any]:
     sources = []
+    source_roots: dict[str, list[Path]] = {}
     graph: dict[str, set[str]] = {}
     for source in metadata["sources"]:
         roots = [Path(path) for path in source["roots"]]
@@ -142,6 +180,7 @@ def build_inventory(metadata: dict[str, Any]) -> dict[str, Any]:
                 raise ValueError("Missing or ambiguous exact fetched addon checkout")
             roots += matches
         roots += [Path(path) for path in source.get("optional_roots", []) if Path(path).is_dir()]
+        source_roots[source["input_name"]] = roots
         if any(not root.is_dir() for root in roots):
             raise ValueError("Missing release source root")
         files, modules = (
@@ -167,6 +206,7 @@ def build_inventory(metadata: dict[str, Any]) -> dict[str, Any]:
         roots = [Path(path) for path in metadata["addon_paths"]]
         roots += [Path(path) for path in ("/odoo/addons", "/odoo/odoo/addons") if Path(path) not in roots]
         graph = module_graph(roots)
+        loaded = database_loaded_files(module_paths(roots))
         for source in sources:
             source["files"] = [
                 {**item, "module": "", "kind": "dependency", "manifest_database_sha256": ""}
@@ -174,6 +214,14 @@ def build_inventory(metadata: dict[str, Any]) -> dict[str, Any]:
                 else item
                 for item in source["files"]
             ]
+            for item in source["files"]:
+                if not item.get("module"):
+                    continue
+                for root in source_roots[source["input_name"]]:
+                    prefix = root.as_posix().lstrip("/") + "/"
+                    physical = Path("/" + item["path"]) if item["path"].startswith(prefix) else root / item["path"]
+                    if physical.resolve() in loaded:
+                        item["kind"] = "database_data"
     dependency_evidence = metadata.get("dependency_evidence")
     if dependency_evidence:
         for external in json.loads(Path(dependency_evidence).read_text())["external_compatibility_inputs"]:
