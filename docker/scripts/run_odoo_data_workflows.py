@@ -1759,7 +1759,7 @@ from odoo_website_bootstrap import (
     require_launchplane_payloads_if_configured,
 )
 
-payload = json.loads('__PAYLOAD__')
+payload = json.loads(__PAYLOAD__)
 
 registry = Registry(payload['db'])
 with registry.cursor() as cr:
@@ -1779,7 +1779,7 @@ with registry.cursor() as cr:
         print('Launchplane settings addon not installed; skipping settings apply.')
     apply_website_bootstrap(env, instance_override_payload)
     cr.commit()
-""").replace("__PAYLOAD__", json.dumps(payload))
+""").replace("__PAYLOAD__", repr(json.dumps(payload)))
 
         try:
             self._run_odoo_shell(script, "environment overrides")
@@ -1835,7 +1835,7 @@ import json
 from odoo import api, SUPERUSER_ID, Command
 from odoo.modules.registry import Registry
 
-payload = json.loads('__PAYLOAD__')
+payload = json.loads(__PAYLOAD__)
 
 registry = Registry(payload["db"])
 with registry.cursor() as cr:
@@ -1948,7 +1948,7 @@ with registry.cursor() as cr:
 
     cr.commit()
 """)
-        script = script.replace("__PAYLOAD__", json.dumps(payload))
+        script = script.replace("__PAYLOAD__", repr(json.dumps(payload)))
         self._run_odoo_shell(script, "GPT user provisioning")
         self._reset_db_connection()
 
@@ -2049,7 +2049,7 @@ from odoo import api, SUPERUSER_ID
 from odoo.exceptions import AccessDenied
 from odoo.modules.registry import Registry
 
-payload = json.loads('__PAYLOAD__')
+payload = json.loads(__PAYLOAD__)
 registry = Registry(payload['db'])
 with registry.cursor() as cr:
     env = api.Environment(cr, SUPERUSER_ID, {})
@@ -2073,7 +2073,7 @@ with registry.cursor() as cr:
 
         if authenticated:
             raise ValueError(f"Insecure configuration: active password for {login_name} is 'admin'.")
-""").replace("__PAYLOAD__", json.dumps(policy_payload))
+""").replace("__PAYLOAD__", repr(json.dumps(policy_payload)))
         self._run_odoo_shell(policy_script, "admin password policy")
         self._reset_db_connection()
 
@@ -2214,7 +2214,8 @@ with registry.cursor() as cr:
                 "from odoo.modules.registry import Registry\n"
                 "from run_odoo_data_workflows import LocalServerSettings, InProcessMaintenanceRunner\n"
                 f"runner = InProcessMaintenanceRunner(LocalServerSettings(**json.loads({json.dumps(settings)!r})), None, None)\n"
-                f"Registry.new({self.local.db_name!r}, update_module={bool(resolved['install_modules'] or resolved['update_modules'])!r})\n"
+                f"Registry.new({self.local.db_name!r}, update_module={bool(resolved['install_modules'] or resolved['update_modules'])!r}, "
+                f"install_modules={resolved['install_modules']!r}, upgrade_modules={resolved['update_modules']!r})\n"
                 f"runner.finish_planned_maintenance(json.loads({json.dumps(resolved)!r}))\n"
                 f"Path({str(receipt)!r}).write_text(json.dumps(runner.maintenance_receipt))\n"
             )

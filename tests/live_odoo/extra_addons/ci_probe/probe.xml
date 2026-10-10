@@ -4,4 +4,10 @@
         <field name="key">devkit.ci.community</field>
         <field name="value">loaded-from-xml</field>
     </record>
+    <data noupdate="1">
+        <record id="editor" model="ir.config_parameter">
+            <field name="key">devkit.ci.editor</field>
+            <field name="value">initial-editor-value</field>
+        </record>
+    </data>
 </odoo>

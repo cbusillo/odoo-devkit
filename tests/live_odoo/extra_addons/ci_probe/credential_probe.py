@@ -44,3 +44,5 @@ class CredentialProbe(models.AbstractModel):
     @api.model
     def check_update_boundary(self) -> None:
         observe_boundary(self.env.cr.dbname, "update_hook")
+        if os.environ.get("DEVKIT_FORCE_UPDATE_FAILURE"):
+            raise RuntimeError("Isolated module update failure")

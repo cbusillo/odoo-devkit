@@ -99,6 +99,12 @@ class TestLiveWorkflows(TransactionCase):
         timings = {}
         for mode in ("baseline", "planned"):
             with self.target() as runner:
+                runner.local.odoo_key = workflows.SecretStr("inert-'service\\key-for-isolated-fixture")
+                query(runner.local.db_name, "UPDATE ir_config_parameter SET value='editor-owned' WHERE key='devkit.ci.editor'")
+                query(
+                    runner.local.db_name,
+                    "UPDATE ir_config_parameter SET value='before-update' WHERE key IN ('devkit.ci.dependent','devkit.ci.enterprise')",
+                )
                 if mode == "planned":
                     payload = self.planned_payload(runner)
                     plan_file = self.root / (runner.local.db_name + "-plan.json")
@@ -127,9 +133,19 @@ class TestLiveWorkflows(TransactionCase):
                 }
                 if mode == "planned":
                     self.assertEqual(timings[mode]["registry_loads"], 1, "Planned maintenance loaded multiple registries")
-                    self.assertEqual(runner.maintenance_receipt["update_modules"], ["ci_probe"])
+                    self.assertEqual(runner.maintenance_receipt["update_modules"], ["ci_dependent_probe", "ci_probe"])
                     self.assertEqual(runner.maintenance_receipt["install_modules"], ["ci_boundary_install_probe"])
                     self.assert_password(runner)
+                    parameters = dict(
+                        query(runner.local.db_name, "SELECT key,value FROM ir_config_parameter WHERE key LIKE 'devkit.ci.%'")
+                    )
+                    self.assertEqual(parameters["devkit.ci.editor"], "editor-owned")
+                    self.assertEqual(parameters["devkit.ci.dependent"], "dependent-updated")
+                    self.assertEqual(parameters["devkit.ci.enterprise"], "before-update")
+                    self.assertEqual(
+                        query(runner.local.db_name, "SELECT count(*) FROM res_users WHERE login IN ('gpt','gpt-admin')")[0][0],
+                        len(workflows.OdooConfig.GPT_SERVICE_USERS),
+                    )
                     self.assertEqual(
                         query(runner.local.db_name, "SELECT value FROM ir_config_parameter WHERE key='web.base.url'")[0][0],
                         "https://fixture.example.test",
@@ -140,17 +156,15 @@ class TestLiveWorkflows(TransactionCase):
     def test_planned_missing_change_and_failed_update_never_pass_readback(self) -> None:
         for fault in ("missing_change", "update_failure", "readback_failure", "late_boundary"):
             with self.target() as runner:
+                query(
+                    "postgres",
+                    "CREATE TABLE IF NOT EXISTS devkit_boundary_events (id bigserial PRIMARY KEY, database_name text, event text)",
+                )
                 payload = self.planned_payload(runner)
                 if fault == "missing_change":
                     payload["release"]["update_modules"] = []
                 if fault == "update_failure":
-                    runner.os_env["DEVKIT_BOUNDARY_PROBE"] = "1"
-                    runner.os_env["DEVKIT_LANE_KEY"] = "inert-lane-sentinel"
-                    # The module's blocked sink refuses stale credentials at its real hook.
-                    query(
-                        runner.local.db_name,
-                        "INSERT INTO ir_config_parameter (key,value) VALUES ('printnode.api_key','inert-source-sentinel') ON CONFLICT (key) DO UPDATE SET value=excluded.value",
-                    )
+                    runner.os_env["DEVKIT_FORCE_UPDATE_FAILURE"] = "1"
                 if fault == "readback_failure":
                     payload["release"]["update_modules"] = ["ci_probe"]
                 plan_file = self.root / (runner.local.db_name + "-plan.json")
@@ -162,6 +176,7 @@ class TestLiveWorkflows(TransactionCase):
                     if fault == "late_boundary":
                         stack.enter_context(patch.object(runner, "prepare_credentials_before_registry"))
                         runner.os_env["DEVKIT_BOUNDARY_PROBE"] = "1"
+                        runner.os_env["DEVKIT_LANE_KEY"] = "inert-lane-sentinel"
                     if fault == "readback_failure":
 
                         def failed_readback(*args: Any, **kwargs: Any) -> Any:
@@ -229,7 +244,7 @@ class TestLiveWorkflows(TransactionCase):
                 "--database",
                 cls.source,
                 "--init",
-                "base,launchplane_settings,ci_probe,ci_enterprise_probe",
+                "base,launchplane_settings,ci_probe,ci_enterprise_probe,ci_dependent_probe",
                 "--without-demo",
                 "all",
                 "--stop-after-init",
