@@ -9,7 +9,7 @@ import os
 import re
 import subprocess
 import sys
-import xml.etree.ElementTree as ET
+from xml.etree import ElementTree
 from pathlib import Path
 from typing import Any
 
@@ -83,8 +83,8 @@ def classify_files(
         if path.suffix != ".xml" or path.as_posix() not in content:
             continue
         try:
-            references = xml_database_references(ET.fromstring(content[path.as_posix()]).iter())
-        except ET.ParseError:
+            references = xml_database_references(ElementTree.fromstring(content[path.as_posix()]).iter())
+        except ElementTree.ParseError:
             continue  # The assembled-image scan marks this declaration incomplete.
         for reference in references:
             if reference is None:
@@ -181,8 +181,8 @@ def database_loaded_files(paths: dict[str, Path]) -> tuple[set[Path], bool]:
             if file.suffix != ".xml":
                 continue
             try:
-                references = xml_database_references(ET.parse(file).iter())
-            except (OSError, ET.ParseError):
+                references = xml_database_references(ElementTree.parse(file).iter())
+            except (OSError, ElementTree.ParseError):
                 complete = False
                 print(f"Incomplete release inventory: {root.name}/{relative} XML is missing or unparsable", file=sys.stderr)
                 continue
@@ -317,7 +317,7 @@ def build_inventory(metadata: dict[str, Any]) -> dict[str, Any]:
                         if re.fullmatch(r"[A-Za-z0-9._-]+", component)
                         else "name-"
                         + hashlib.sha256(component.encode()).hexdigest()
-                        + (Path(component).suffix if re.fullmatch(r"\.[A-Za-z0-9_-]+", Path(component).suffix) else "")
+                        + (Path(component).suffix if re.fullmatch(r"[.][A-Za-z0-9_-]+", Path(component).suffix) else "")
                         for component in item["path"].split("/")
                     ),
                 }
@@ -335,13 +335,13 @@ def build_inventory(metadata: dict[str, Any]) -> dict[str, Any]:
 
 
 if __name__ == "__main__" and sys.argv[1] in {"--base", "--base-tools"}:
-    paths = (
+    base_paths = (
         ("/usr/local/bin",)
         if sys.argv[1] == "--base-tools"
         else ("/odoo", "/usr/local/bin", "/opt/launchplane/addons", "/opt/enterprise")
     )
-    roots = [Path(path) for path in paths if Path(path).is_dir()]
-    Path(sys.argv[2]).write_text(json.dumps(inventory(roots)[0], sort_keys=True))
+    base_roots = [Path(path) for path in base_paths if Path(path).is_dir()]
+    Path(sys.argv[2]).write_text(json.dumps(inventory(base_roots)[0], sort_keys=True))
 elif __name__ == "__main__" and sys.argv[1] == "--git":
     print(json.dumps(git_inventory(Path(sys.argv[2]), sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else ""), sort_keys=True))
 elif __name__ == "__main__":

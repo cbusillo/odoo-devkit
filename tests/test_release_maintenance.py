@@ -70,7 +70,7 @@ class ReleaseMaintenanceTests(unittest.TestCase):
             output.mkdir()
             (output / "dependency-provenance.json").write_text(json.dumps({"target_platform": "linux/amd64"}))
             (output / "release-compatibility.json").write_text(json.dumps(declaration))
-            merged = aggregate_release_inventories(evidence_root=root, expected_platforms=("linux/amd64",))
+            merged: dict[str, Any] = aggregate_release_inventories(evidence_root=root, expected_platforms=("linux/amd64",))
             base_images = [
                 BaseImageProvenance(
                     role=role,
@@ -267,7 +267,7 @@ class ReleaseMaintenanceTests(unittest.TestCase):
                     ],
                 }
                 (output / "release-compatibility.json").write_text(json.dumps(declarations[platform]))
-            merged = aggregate_release_inventories(evidence_root=root, expected_platforms=platforms)
+            merged: dict[str, Any] = aggregate_release_inventories(evidence_root=root, expected_platforms=platforms)
             files = merged["sources"][0]["files"]
             self.assertEqual(
                 {file["sha256"] for file in files}, {hashlib.sha256(platform.encode()).hexdigest() for platform in platforms}
@@ -291,7 +291,7 @@ class ReleaseMaintenanceTests(unittest.TestCase):
             "new": "uninstalled",
         }
         self.image = "fixture/image@sha256:" + "a" * 64
-        self.candidate = {
+        self.candidate: dict[str, Any] = {
             "artifact_id": "candidate",
             "image": {"repository": "fixture/image", "digest": "sha256:" + "a" * 64},
             "odoo_install_modules": ["new"],
@@ -300,7 +300,7 @@ class ReleaseMaintenanceTests(unittest.TestCase):
                 "modules": [{"name": name, "depends": sorted(deps)} for name, deps in self.graph.items()],
             },
         }
-        self.payload = {
+        self.payload: dict[str, Any] = {
             "database": "fixture",
             "candidate_manifest": self.candidate,
             "release": {
