@@ -548,6 +548,12 @@ Notes
   because migrations can reactivate crons. Update-only stages the credential
   values and updates modules; it does not activate integrations or complete ORM
   bookkeeping. Use `--post-deploy-maintenance` for that complete operation.
+- Addon maintenance starts Odoo only when the computed install or update list
+  contains work. In the legacy install-before-update path, already installed
+  addons skip the install pass without loading a registry; the subsequent
+  upgrade still runs. This lets upgrade migrations repair tenant state before
+  ordinary registry guards run, while preserving the guards and completion
+  evidence requirements.
 - `ODOO_RESTORE_KEPT_INTEGRATIONS` (comma-separated) names integrations whose
   restored settings stay, using the integration names of Launchplane's
   read-back: `shopify`, `printnode`, `fishbowl`, `repairshopr`, `cm_data`,
