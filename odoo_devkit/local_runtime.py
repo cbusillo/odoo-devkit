@@ -655,7 +655,8 @@ def publish_runtime_artifact(
     )
     dependency_provenance: dict[str, object]
     with tempfile.TemporaryDirectory(prefix="odoo-artifact-") as temporary_directory_name:
-        staged_context_root = Path(temporary_directory_name)
+        staged_context_root = Path(temporary_directory_name) / "context"
+        image_layout = Path(temporary_directory_name) / "image" if build_only else None
         build_metadata_file = staged_context_root / "build-metadata.json"
         staged_context = stage_artifact_build_context(
             manifest=manifest,
@@ -784,7 +785,7 @@ def publish_runtime_artifact(
             "--metadata-file",
             str(build_metadata_file),
         ]
-        build_command.extend(["--output", "type=cacheonly"] if build_only else ["--push"])
+        build_command.extend(["--output", f"type=oci,dest={image_layout},tar=false"] if build_only else ["--push"])
         if github_token is not None:
             build_command.extend(["--secret", "id=github_token,env=GITHUB_TOKEN"])
         if no_cache:
@@ -797,27 +798,6 @@ def publish_runtime_artifact(
             command=build_command,
             environment_overrides=build_environment,
         )
-        if build_only:
-            require_artifact_git_sources_unchanged((tenant_source, runtime_source, shared_addons_source))
-            require_staged_artifact_context_unchanged(staged_context_root=staged_context_root, staged_context=staged_context)
-            check_payload = {
-                "schema_version": 1,
-                "kind": "artifact_build_check",
-                "source_commit": tenant_source.commit,
-                "runtime_commit": runtime_source.commit,
-                "runtime_repository": runtime_source.repository,
-                "platforms": list(normalized_platforms),
-                "addon_sources": list(artifact_source_entries),
-                "source_selectors": list(artifact_source_selectors),
-                "base_images": [runtime_base_provenance.digest_reference, devtools_base_provenance.digest_reference],
-                "support_lock_sha256": staged_context.support_lock_sha256,
-                "tenant_lock_sha256": staged_context.tenant_lock_sha256,
-            }
-            check_output_file = None if output_file is None else output_file.expanduser().resolve()
-            if check_output_file is not None:
-                check_output_file.parent.mkdir(parents=True, exist_ok=True)
-                check_output_file.write_text(json.dumps(check_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-            return RuntimeArtifactPublishResult(manifest_payload=check_payload, output_file=check_output_file)
         artifact_image_digest = resolve_buildx_metadata_image_digest(build_metadata_file)
         require_staged_artifact_context_unchanged(staged_context_root=staged_context_root, staged_context=staged_context)
         evidence_root = staged_context_root / "evidence"
@@ -827,6 +807,7 @@ def publish_runtime_artifact(
             platforms=normalized_platforms,
             evidence_root=evidence_root,
             build_environment=build_environment,
+            image_layout=image_layout,
         )
         expected_uv_locks = (
             {
@@ -852,6 +833,28 @@ def publish_runtime_artifact(
             )
         except ArtifactProvenanceError as error:
             raise RuntimeCommandError(str(error)) from error
+        if build_only:
+            require_artifact_git_sources_unchanged((tenant_source, runtime_source, shared_addons_source))
+            require_staged_artifact_context_unchanged(staged_context_root=staged_context_root, staged_context=staged_context)
+            check_payload = {
+                "schema_version": 1,
+                "kind": "artifact_build_check",
+                "source_commit": tenant_source.commit,
+                "runtime_commit": runtime_source.commit,
+                "runtime_repository": runtime_source.repository,
+                "platforms": list(normalized_platforms),
+                "addon_sources": list(artifact_source_entries),
+                "source_selectors": list(artifact_source_selectors),
+                "base_images": [runtime_base_provenance.digest_reference, devtools_base_provenance.digest_reference],
+                "support_lock_sha256": staged_context.support_lock_sha256,
+                "tenant_lock_sha256": staged_context.tenant_lock_sha256,
+                "dependency_provenance": dependency_provenance,
+            }
+            check_output_file = None if output_file is None else output_file.expanduser().resolve()
+            if check_output_file is not None:
+                check_output_file.parent.mkdir(parents=True, exist_ok=True)
+                check_output_file.write_text(json.dumps(check_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            return RuntimeArtifactPublishResult(manifest_payload=check_payload, output_file=check_output_file)
         try:
             release_inventory = aggregate_release_inventories(evidence_root=evidence_root, expected_platforms=normalized_platforms)
         except ArtifactProvenanceError as error:
@@ -3274,6 +3277,7 @@ def extract_published_dependency_evidence(
     platforms: tuple[str, ...],
     evidence_root: Path,
     build_environment: dict[str, str],
+    image_layout: Path | None = None,
 ) -> None:
     evidence_root.mkdir(parents=True, exist_ok=True)
     command = [
@@ -3285,11 +3289,14 @@ def extract_published_dependency_evidence(
         "--platform",
         ",".join(platforms),
         "--build-arg",
-        f"ARTIFACT_IMAGE={image_reference}",
+        f"ARTIFACT_IMAGE={'built-image' if image_layout is not None else image_reference}",
         "--output",
         f"type=local,dest={evidence_root},platform-split=true",
         str(staged_context_root),
     ]
+    if image_layout is not None:
+        digest = image_reference.rsplit("@", 1)[1]
+        command[3:3] = ["--build-context", f"built-image=oci-layout://{image_layout.resolve()}@{digest}"]
     run_command(
         runtime_repo_path=staged_context_root,
         command=command,

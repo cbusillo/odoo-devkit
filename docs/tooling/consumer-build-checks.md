@@ -68,12 +68,18 @@ The command requires the executing devkit and runtime to be the same checkout
 at the requested exact SHA. It overrides their manifest refs in memory and
 uses the production artifact publisher's source verification, staging, lock
 and build-tool checks, base-image provenance, dependency preflight, and
-`docker/artifact.Dockerfile` production target. Buildx uses a cache-only output
-with no push. Base-image authentication uses the existing read path; image
-push authentication and published-image evidence extraction are omitted.
+`docker/artifact.Dockerfile` production target. Buildx exports every requested
+platform to a temporary local OCI image layout, without pushing. The shared
+`docker/dependency-evidence.Dockerfile` reads that exact image through a
+[digest-pinned named build context](https://docs.docker.com/reference/cli/docker/buildx/build/#build-context).
+The publisher's dependency aggregator validates its evidence schema, platform
+coverage, and exact staged tenant/support lock hashes before the check succeeds.
+Base-image authentication uses the existing read path; image push authentication
+is omitted. The temporary image layout is removed when the command exits.
 
 The JSON records built source commits, platforms, resolved addon inputs and
-base-image digests, and staged lock hashes. It is build-check evidence, not a
+base-image digests, staged lock hashes, and validated in-image
+`dependency_provenance`. It is build-check evidence, not a
 deployable artifact manifest. The workflow does not publish an image or ask
 Launchplane to deploy, promote, or change data. Credentials remain in the
 tenant's existing secret bindings. Local Compose `runtime build` continues to

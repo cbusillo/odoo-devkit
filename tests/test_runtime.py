@@ -1451,12 +1451,12 @@ homepage = true
                     self.assertTrue((context / "addons/opw_custom/__manifest__.py").is_file())
                     self.assertTrue((context / "runtime/uv.lock").is_file())
                     self.assertTrue((context / "project/uv.lock").is_file())
+                    self._write_artifact_build_outputs_for_command(command)
 
             with (
                 mock.patch("odoo_devkit.runtime.__file__", str(runtime_root / "odoo_devkit/runtime.py")),
                 mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_base_images"),
                 mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_image_push") as push_auth,
-                mock.patch("odoo_devkit.local_runtime.extract_published_dependency_evidence") as published_evidence,
                 mock.patch(
                     "odoo_devkit.local_runtime.resolve_base_image_provenance",
                     side_effect=self._resolve_base_image_provenance_fixture,
@@ -1464,20 +1464,92 @@ homepage = true
                 mock.patch("odoo_devkit.local_runtime.run_command", side_effect=execute),
             ):
                 payload = run_native_runtime_check_artifact(
-                    manifest=manifest, devkit_commit=commit, output_file=output, no_cache=False, platforms=("linux/amd64",)
+                    manifest=manifest,
+                    devkit_commit=commit,
+                    output_file=output,
+                    no_cache=False,
+                    platforms=("linux/amd64", "linux/arm64"),
                 )
             builds = [command for command in commands if command[:3] == ["docker", "buildx", "build"]]
-            self.assertEqual(len(builds), 1)
+            self.assertEqual(len(builds), 2)
             self.assertEqual(builds[0][builds[0].index("--target") + 1], "production")
-            self.assertEqual(builds[0][builds[0].index("--output") + 1], "type=cacheonly")
-            self.assertNotIn("--push", builds[0])
+            image_output = builds[0][builds[0].index("--output") + 1]
+            self.assertTrue(image_output.startswith("type=oci,"))
+            image_directory = Path(dict(option.split("=", 1) for option in image_output.split(","))["dest"])
+            self.assertIn(f"built-image=oci-layout://{image_directory.resolve()}@{self.artifact_image_digest}", builds[1])
+            self.assertFalse(image_directory.exists())
+            for build in builds:
+                self.assertNotIn("--push", build)
+                self.assertNotIn("--load", build)
             push_auth.assert_not_called()
-            published_evidence.assert_not_called()
+            self.assertEqual(payload["dependency_provenance"]["target_platforms"], ["linux/amd64", "linux/arm64"])
+            locks = {lock["scope"]: lock["sha256"] for lock in payload["dependency_provenance"]["uv_locks"]}
+            self.assertEqual(locks["tenant"], payload["tenant_lock_sha256"])
+            self.assertEqual(locks["support_runtime"], payload["support_lock_sha256"])
             self.assertNotIn("artifact_id", payload)
             self.assertNotIn("image", payload)
             self.assertEqual(payload["runtime_commit"], commit)
             self.assertEqual(json.loads(output.read_text()), payload)
             self.assertEqual(manifest.manifest_path.read_bytes(), original_manifest)
+
+    def test_artifact_check_rejects_broken_in_image_evidence_without_success_output(self) -> None:
+        for fault in ("extractor", "schema", "lock", "missing_platform"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as temporary_directory:
+                temp_root = Path(temporary_directory)
+                manifest, commit = self._prepare_artifact_check(temp_root)
+                assert manifest.runtime_repo is not None
+                runtime_root = manifest.runtime_repo.resolve_path(manifest_directory=manifest.manifest_directory)
+                assert runtime_root is not None
+                output = temp_root / "check.json"
+                extraction_reached = False
+
+                def execute(*, command: list[str], fault: str = fault, **_kwargs: object) -> None:
+                    nonlocal extraction_reached
+                    if command[:3] != ["docker", "buildx", "build"]:
+                        return
+                    if "--metadata-file" in command:
+                        self._write_buildx_metadata_for_command(command)
+                        return
+                    extraction_reached = True
+                    if fault == "extractor":
+                        raise local_runtime.RuntimeCommandError("Evidence COPY failed")
+                    self._write_dependency_evidence_for_command(command)
+                    output_options = dict(option.split("=", 1) for option in command[command.index("--output") + 1].split(","))
+                    sidecar = Path(output_options["dest"]) / "linux_arm64/dependency-provenance.json"
+                    if fault == "missing_platform":
+                        sidecar.unlink()
+                        return
+                    evidence = json.loads(sidecar.read_text())
+                    if fault == "schema":
+                        evidence["schema_version"] = 999
+                    else:
+                        evidence["uv_locks"][0]["sha256"] = "0" * 64
+                    sidecar.write_text(json.dumps(evidence))
+
+                with (
+                    mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_base_images"),
+                    mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_image_push") as push_auth,
+                    mock.patch(
+                        "odoo_devkit.local_runtime.resolve_base_image_provenance",
+                        side_effect=self._resolve_base_image_provenance_fixture,
+                    ),
+                    mock.patch("odoo_devkit.local_runtime.run_command", side_effect=execute),
+                ):
+                    with self.assertRaises(local_runtime.RuntimeCommandError):
+                        local_runtime.publish_runtime_artifact(
+                            manifest=manifest,
+                            runtime_repo_path=runtime_root,
+                            image_repository="unused",
+                            image_tag="unused",
+                            output_file=output,
+                            no_cache=False,
+                            build_only=True,
+                            expected_runtime_commit=commit,
+                            platforms=("linux/amd64", "linux/arm64"),
+                        )
+                self.assertTrue(extraction_reached)
+                self.assertFalse(output.exists())
+                push_auth.assert_not_called()
 
     def test_artifact_check_rejects_wrong_commit_before_registry_access(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
