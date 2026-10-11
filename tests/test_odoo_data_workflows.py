@@ -1880,6 +1880,49 @@ class CredentialBoundaryTests(unittest.TestCase):
             else:
                 self.runner.run_post_deploy_maintenance()
 
+    def run_update_only(self) -> int:
+        self.restoring = False
+        self.runner.local.data_workflow_lock_file = Path(self.scratch.name) / ".data_workflow_in_progress"
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.object(odoo_data_workflows, "LocalServerSettings", return_value=self.runner.local),
+            patch.object(odoo_data_workflows, "UpstreamServerSettings", return_value=None),
+            patch.object(odoo_data_workflows, "OdooDataWorkflowRunner", return_value=self.runner),
+            patch.object(self.runner, "update_addons", side_effect=lambda **_kwargs: self.hook("update_addons")) as update,
+        ):
+            result = odoo_data_workflows.main(["--update-only"])
+        if result == odoo_data_workflows.ExitCode.SUCCESS:
+            update.assert_called_once()
+        else:
+            update.assert_not_called()
+        self.assertFalse(self.runner.local.data_workflow_lock_file.exists())
+        return result
+
+    def test_update_only_commits_overrides_and_mail_fence_before_addon_hook(self) -> None:
+        result = self.run_update_only()
+
+        self.assertEqual(result, odoo_data_workflows.ExitCode.SUCCESS)
+        self.assertEqual(self.hooks, ["update_addons"])
+        self.assertLess(self.events.index("commit"), self.events.index("update_addons"))
+
+    def test_update_only_failed_or_rolled_back_boundary_prevents_addon_update(self) -> None:
+        for mode in ("failed", "rolled_back"):
+            with self.subTest(mode=mode):
+                conn = self.connection("fixture")
+                self.runner.local.db_conn = conn
+
+                def broken_commit(_conn: _BoundaryConnection = conn, _mode: str = mode) -> None:
+                    _conn.rollback()
+                    if _mode == "failed":
+                        raise odoo_data_workflows.OdooDatabaseUpdateError("planted commit failure")
+
+                conn.commit = broken_commit
+                result = self.run_update_only()
+
+                self.assertEqual(result, odoo_data_workflows.ExitCode.BOOTSTRAP_FAILED)
+                self.assertEqual(self.hooks, [])
+                self.assertIsNone(self.runner.local.db_conn)
+
     def test_maintenance_hooks_read_committed_overrides_and_preserve_lane_state(self) -> None:
         with sqlite3.connect(self.path) as reader:
             before = reader.execute("SELECT * FROM external_id").fetchall()
