@@ -68,14 +68,16 @@ The command requires the executing devkit and runtime to be the same checkout
 at the requested exact SHA. It overrides their manifest refs in memory and
 uses the production artifact publisher's source verification, staging, lock
 and build-tool checks, base-image provenance, dependency preflight, and
-`docker/artifact.Dockerfile` production target. Buildx exports every requested
-platform to a temporary local OCI image layout, without pushing. The shared
-`docker/dependency-evidence.Dockerfile` reads that exact image through a
-[digest-pinned named build context](https://docs.docker.com/reference/cli/docker/buildx/build/#build-context).
-The publisher's dependency aggregator validates its evidence schema, platform
-coverage, and exact staged tenant/support lock hashes before the check succeeds.
-Base-image authentication uses the existing read path; image push authentication
-is omitted. The temporary image layout is removed when the command exits.
+`docker/artifact.Dockerfile` production target. Buildx Bake passes every requested
+platform's production result directly to the shared
+`docker/dependency-evidence.Dockerfile` through a
+[named target context](https://docs.docker.com/build/bake/contexts/#using-a-target-as-a-build-context).
+Only evidence is exported locally; the image stays in BuildKit's cache without
+being pushed or loaded. The publisher's dependency aggregator validates the
+evidence schema, platform coverage, and exact staged tenant/support lock hashes
+before the check succeeds. Base-image authentication uses the existing read
+path; image push authentication is omitted. Temporary evidence is removed when
+the command exits.
 
 The JSON records built source commits, platforms, resolved addon inputs and
 base-image digests, staged lock hashes, and validated in-image

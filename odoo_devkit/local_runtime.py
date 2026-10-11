@@ -655,8 +655,7 @@ def publish_runtime_artifact(
     )
     dependency_provenance: dict[str, object]
     with tempfile.TemporaryDirectory(prefix="odoo-artifact-") as temporary_directory_name:
-        staged_context_root = Path(temporary_directory_name) / "context"
-        image_layout = Path(temporary_directory_name) / "image" if build_only else None
+        staged_context_root = Path(temporary_directory_name)
         build_metadata_file = staged_context_root / "build-metadata.json"
         staged_context = stage_artifact_build_context(
             manifest=manifest,
@@ -785,7 +784,7 @@ def publish_runtime_artifact(
             "--metadata-file",
             str(build_metadata_file),
         ]
-        build_command.extend(["--output", f"type=oci,dest={image_layout},tar=false"] if build_only else ["--push"])
+        build_command.append("--push")
         if github_token is not None:
             build_command.extend(["--secret", "id=github_token,env=GITHUB_TOKEN"])
         if no_cache:
@@ -793,22 +792,32 @@ def publish_runtime_artifact(
         for build_argument_name in ARTIFACT_PUBLISH_BUILD_ARG_KEYS:
             build_command.extend(["--build-arg", f"{build_argument_name}={runtime_values.get(build_argument_name, '')}"])
         build_command.append(str(staged_context_root))
-        run_command(
-            runtime_repo_path=staged_context_root,
-            command=build_command,
-            environment_overrides=build_environment,
-        )
-        artifact_image_digest = resolve_buildx_metadata_image_digest(build_metadata_file)
-        require_staged_artifact_context_unchanged(staged_context_root=staged_context_root, staged_context=staged_context)
         evidence_root = staged_context_root / "evidence"
-        extract_published_dependency_evidence(
-            staged_context_root=staged_context_root,
-            image_reference=f"{normalized_image_repository}@{artifact_image_digest}",
-            platforms=normalized_platforms,
-            evidence_root=evidence_root,
-            build_environment=build_environment,
-            image_layout=image_layout,
-        )
+        if build_only:
+            extract_built_dependency_evidence(
+                staged_context_root=staged_context_root,
+                platforms=normalized_platforms,
+                evidence_root=evidence_root,
+                build_arguments={key: runtime_values.get(key, "") for key in ARTIFACT_PUBLISH_BUILD_ARG_KEYS},
+                build_environment=build_environment,
+                no_cache=no_cache,
+                github_token=github_token is not None,
+            )
+        else:
+            run_command(
+                runtime_repo_path=staged_context_root,
+                command=build_command,
+                environment_overrides=build_environment,
+            )
+            artifact_image_digest = resolve_buildx_metadata_image_digest(build_metadata_file)
+            require_staged_artifact_context_unchanged(staged_context_root=staged_context_root, staged_context=staged_context)
+            extract_published_dependency_evidence(
+                staged_context_root=staged_context_root,
+                image_reference=f"{normalized_image_repository}@{artifact_image_digest}",
+                platforms=normalized_platforms,
+                evidence_root=evidence_root,
+                build_environment=build_environment,
+            )
         expected_uv_locks = (
             {
                 "scope": "support_runtime",
@@ -3270,6 +3279,53 @@ def split_image_reference(image_reference: str) -> tuple[str, tuple[str, ...]]:
     return repository, tags
 
 
+def extract_built_dependency_evidence(
+    *,
+    staged_context_root: Path,
+    platforms: tuple[str, ...],
+    evidence_root: Path,
+    build_arguments: dict[str, str],
+    build_environment: dict[str, str],
+    no_cache: bool,
+    github_token: bool,
+) -> None:
+    # Bake passes the production result directly to the shared extractor, per platform.
+    # Only evidence leaves BuildKit; no image is pushed, loaded or exported locally.
+    bake_file = staged_context_root / "evidence-bake.json"
+    bake_file.write_text(
+        json.dumps(
+            {
+                "target": {
+                    "production": {
+                        "context": ".",
+                        "dockerfile": "docker/artifact.Dockerfile",
+                        "target": "production",
+                        "platforms": list(platforms),
+                        "args": build_arguments,
+                        "no-cache": no_cache,
+                        "secret": ["id=github_token,env=GITHUB_TOKEN"] if github_token else [],
+                        "output": ["type=cacheonly"],
+                    },
+                    "evidence": {
+                        "context": ".",
+                        "dockerfile": "docker/dependency-evidence.Dockerfile",
+                        "platforms": list(platforms),
+                        "args": {"ARTIFACT_IMAGE": "built-image"},
+                        "contexts": {"built-image": "target:production"},
+                        "output": [f"type=local,dest={evidence_root},platform-split=true"],
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    run_command(
+        runtime_repo_path=staged_context_root,
+        command=["docker", "buildx", "bake", "--file", str(bake_file), "evidence"],
+        environment_overrides=build_environment,
+    )
+
+
 def extract_published_dependency_evidence(
     *,
     staged_context_root: Path,
@@ -3277,7 +3333,6 @@ def extract_published_dependency_evidence(
     platforms: tuple[str, ...],
     evidence_root: Path,
     build_environment: dict[str, str],
-    image_layout: Path | None = None,
 ) -> None:
     evidence_root.mkdir(parents=True, exist_ok=True)
     command = [
@@ -3289,14 +3344,11 @@ def extract_published_dependency_evidence(
         "--platform",
         ",".join(platforms),
         "--build-arg",
-        f"ARTIFACT_IMAGE={'built-image' if image_layout is not None else image_reference}",
+        f"ARTIFACT_IMAGE={image_reference}",
         "--output",
         f"type=local,dest={evidence_root},platform-split=true",
         str(staged_context_root),
     ]
-    if image_layout is not None:
-        digest = image_reference.rsplit("@", 1)[1]
-        command[3:3] = ["--build-context", f"built-image=oci-layout://{image_layout.resolve()}@{digest}"]
     run_command(
         runtime_repo_path=staged_context_root,
         command=command,

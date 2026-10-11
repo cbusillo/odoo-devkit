@@ -1446,12 +1446,27 @@ homepage = true
 
             def execute(*, command: list[str], **_kwargs: object) -> None:
                 commands.append(command)
-                if command[:3] == ["docker", "buildx", "build"]:
-                    context = Path(command[-1])
+                if command[:3] == ["docker", "buildx", "bake"]:
+                    bake = json.loads(Path(command[command.index("--file") + 1]).read_text())
+                    context = Path(command[command.index("--file") + 1]).parent
                     self.assertTrue((context / "addons/opw_custom/__manifest__.py").is_file())
                     self.assertTrue((context / "runtime/uv.lock").is_file())
                     self.assertTrue((context / "project/uv.lock").is_file())
-                    self._write_artifact_build_outputs_for_command(command)
+                    production = bake["target"]["production"]
+                    extractor = bake["target"]["evidence"]
+                    self.assertEqual(production["target"], "production")
+                    self.assertEqual(extractor["contexts"], {"built-image": "target:production"})
+                    self.assertEqual(extractor["platforms"], production["platforms"])
+                    self.assertEqual(production["output"], ["type=cacheonly"])
+                    self._write_dependency_evidence_for_command(
+                        [
+                            "--output",
+                            extractor["output"][0],
+                            "--platform",
+                            ",".join(extractor["platforms"]),
+                            str(context),
+                        ]
+                    )
 
             with (
                 mock.patch("odoo_devkit.runtime.__file__", str(runtime_root / "odoo_devkit/runtime.py")),
@@ -1470,20 +1485,15 @@ homepage = true
                     no_cache=False,
                     platforms=("linux/amd64", "linux/arm64"),
                 )
-            builds = [command for command in commands if command[:3] == ["docker", "buildx", "build"]]
-            self.assertEqual(len(builds), 2)
-            self.assertEqual(builds[0][builds[0].index("--target") + 1], "production")
-            image_output = builds[0][builds[0].index("--output") + 1]
-            self.assertTrue(image_output.startswith("type=oci,"))
-            image_directory = Path(dict(option.split("=", 1) for option in image_output.split(","))["dest"])
-            self.assertIn(f"built-image=oci-layout://{image_directory.resolve()}@{self.artifact_image_digest}", builds[1])
-            self.assertFalse(image_directory.exists())
-            for build in builds:
-                self.assertNotIn("--push", build)
-                self.assertNotIn("--load", build)
+            builds = [command for command in commands if command[:3] == ["docker", "buildx", "bake"]]
+            self.assertEqual(len(builds), 1)
+            self.assertNotIn("--push", builds[0])
+            self.assertNotIn("--load", builds[0])
             push_auth.assert_not_called()
-            self.assertEqual(payload["dependency_provenance"]["target_platforms"], ["linux/amd64", "linux/arm64"])
-            locks = {lock["scope"]: lock["sha256"] for lock in payload["dependency_provenance"]["uv_locks"]}
+            dependency_provenance = payload["dependency_provenance"]
+            assert isinstance(dependency_provenance, dict)
+            self.assertEqual(dependency_provenance["target_platforms"], ["linux/amd64", "linux/arm64"])
+            locks = {lock["scope"]: lock["sha256"] for lock in dependency_provenance["uv_locks"]}
             self.assertEqual(locks["tenant"], payload["tenant_lock_sha256"])
             self.assertEqual(locks["support_runtime"], payload["support_lock_sha256"])
             self.assertNotIn("artifact_id", payload)
@@ -1503,24 +1513,30 @@ homepage = true
                 output = temp_root / "check.json"
                 extraction_reached = False
 
-                def execute(*, command: list[str], fault: str = fault, **_kwargs: object) -> None:
+                def execute(*, command: list[str], injected_fault: str = fault, **_kwargs: object) -> None:
                     nonlocal extraction_reached
-                    if command[:3] != ["docker", "buildx", "build"]:
+                    if command[:3] != ["docker", "buildx", "bake"]:
                         return
-                    if "--metadata-file" in command:
-                        self._write_buildx_metadata_for_command(command)
-                        return
+                    bake_file = Path(command[command.index("--file") + 1])
+                    extractor = json.loads(bake_file.read_text())["target"]["evidence"]
+                    command = [
+                        "--output",
+                        extractor["output"][0],
+                        "--platform",
+                        ",".join(extractor["platforms"]),
+                        str(bake_file.parent),
+                    ]
                     extraction_reached = True
-                    if fault == "extractor":
+                    if injected_fault == "extractor":
                         raise local_runtime.RuntimeCommandError("Evidence COPY failed")
                     self._write_dependency_evidence_for_command(command)
                     output_options = dict(option.split("=", 1) for option in command[command.index("--output") + 1].split(","))
                     sidecar = Path(output_options["dest"]) / "linux_arm64/dependency-provenance.json"
-                    if fault == "missing_platform":
+                    if injected_fault == "missing_platform":
                         sidecar.unlink()
                         return
                     evidence = json.loads(sidecar.read_text())
-                    if fault == "schema":
+                    if injected_fault == "schema":
                         evidence["schema_version"] = 999
                     else:
                         evidence["uv_locks"][0]["sha256"] = "0" * 64
