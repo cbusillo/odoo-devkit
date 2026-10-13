@@ -702,3 +702,31 @@ and initialization commands forward `ODOO_DB_PASSWORD` as `PGPASSWORD` inside
 the container; Odoo's environment input overrides `db_password` from the
 file and preserves the supplied value. Use the devkit commands for this path;
 loading the generated conf alone is not equivalent.
+
+## External tenant worktrees
+
+The tenant overlay's `scripts/workspace-sync` and `scripts/workspace-status`
+keep using the active checkout's `workspace.toml` and tenant source. In a
+linked Git worktree they discover the primary checkout through Git's common
+repository directory, find its sibling `odoo-devkit`, and resolve relative
+non-tenant repository paths against that primary tenant checkout. Absolute
+paths and repo-addressed managed inputs keep their existing meaning.
+
+The underlying manifest commands accept `--related-repo-root /path/to/tenant`
+for this explicit path resolution. The tracked manifest is never rewritten;
+source paths are resolved in memory. Without that option relative paths keep
+resolving against the manifest directory.
+
+Linked-worktree wrappers default `ODOO_WORKSPACE_ROOT` to `<worktree>/.workspace`,
+so generated guidance lives at `.workspace/<workspace.name>/` and sync does not
+replace the primary workspace. This generated directory is ignored by the
+starter overlay. An explicitly supplied `ODOO_WORKSPACE_ROOT` is honored.
+Primary checkouts retain their manifest-defined workspace location.
+
+Set `ODOO_DEVKIT_REPO` to an existing devkit checkout when it is elsewhere or
+when testing a devkit task branch. That override selects the executable code;
+related manifest inputs still resolve against the primary tenant checkout.
+Run status with `--check` before using guidance and sync when it reports stale
+or missing materialization. A missing devkit checkout reports the override
+instead of attempting uv in a nonexistent directory. No primary workspace
+files or credentials are copied into the task workspace.
