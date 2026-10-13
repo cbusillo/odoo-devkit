@@ -33,7 +33,7 @@ class WorkspaceSyncTestCase(unittest.TestCase):
                 extra_repos='[repos.shared_addons]\nname = "shared"\npath = "../shared"\n'
                 '[repos.runtime]\nname = "runtime"\npath = "../runtime"\n',
             )
-            original_manifest = manifest_path.read_bytes()
+            original_manifest = tomllib.loads(manifest_path.read_text())
             parser = build_parser()
             base = ["--manifest", str(manifest_path), "--related-repo-root", str(primary)]
             with mock.patch("odoo_devkit.cli._discover_repo_root", return_value=devkit):
@@ -47,7 +47,7 @@ class WorkspaceSyncTestCase(unittest.TestCase):
             self.assertEqual((assembled / "sources" / "tenant").resolve(), tenant)
             self.assertEqual((assembled / "sources" / "shared-addons").resolve(), shared)
             self.assertEqual((assembled / "sources" / "runtime").resolve(), runtime)
-            self.assertEqual(manifest_path.read_bytes(), original_manifest)
+            self.assertEqual(tomllib.loads(manifest_path.read_text()), original_manifest)
             self.assertFalse((primary.parent / "workspaces").exists())
 
     def test_related_repo_root_preserves_absolute_and_managed_sources(self) -> None:
