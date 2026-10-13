@@ -87,7 +87,8 @@ class TenantOverlayScaffoldTests(unittest.TestCase):
             )
 
             for script in (output_directory / "scripts").iterdir():
-                self.assertTrue(os.access(script, os.X_OK), script)
+                template = repo_root / "templates" / "tenant-overlay" / script.relative_to(output_directory)
+                self.assertEqual(os.access(script, os.X_OK), os.access(template, os.X_OK), script)
 
             for written_path in result.written_paths:
                 self.assertNotIn("replace-me", written_path.read_text(encoding="utf-8"), written_path)

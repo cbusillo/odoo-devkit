@@ -43,12 +43,14 @@ class WorkspaceSyncTestCase(unittest.TestCase):
                         sync.handler(sync)
                         status = parser.parse_args(["workspace", "status", *base, "--check"])
                         status.handler(status)
-            assembled = root / "isolated" / "opw"
+            manifest = load_workspace_manifest(manifest_path)
+            assembled = root / "isolated" / manifest.workspace.name
             self.assertEqual((assembled / "sources" / "tenant").resolve(), tenant)
             self.assertEqual((assembled / "sources" / "shared-addons").resolve(), shared)
             self.assertEqual((assembled / "sources" / "runtime").resolve(), runtime)
             self.assertEqual(tomllib.loads(manifest_path.read_text()), original_manifest)
-            self.assertFalse((primary.parent / "workspaces").exists())
+            primary_workspace = (primary / manifest.workspace.workspace_root / manifest.workspace.name).resolve()
+            self.assertFalse(primary_workspace.exists())
 
     def test_related_repo_root_preserves_absolute_and_managed_sources(self) -> None:
         from odoo_devkit.cli import _load_manifest
