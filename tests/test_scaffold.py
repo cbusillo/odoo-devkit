@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from dataclasses import replace
@@ -84,6 +85,9 @@ class TenantOverlayScaffoldTests(unittest.TestCase):
                 tenant="opw",
                 force=False,
             )
+
+            for script in (output_directory / "scripts").iterdir():
+                self.assertTrue(os.access(script, os.X_OK), script)
 
             for written_path in result.written_paths:
                 self.assertNotIn("replace-me", written_path.read_text(encoding="utf-8"), written_path)

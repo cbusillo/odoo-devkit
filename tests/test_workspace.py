@@ -20,6 +20,52 @@ from odoo_devkit.workspace_surface import LOCAL_NOTES_PATH, RESERVED_OVERRIDE_PA
 
 
 class WorkspaceSyncTestCase(unittest.TestCase):
+    def test_cli_related_repo_root_syncs_isolated_tenant_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            primary = self._create_git_repo(root / "primary" / "tenant")
+            shared = self._create_git_repo(primary.parent / "shared")
+            runtime = self._create_git_repo(primary.parent / "runtime")
+            devkit = self._create_git_repo(primary.parent / "devkit")
+            tenant = self._create_git_repo(root / "external" / "tenant")
+            manifest_path = self._write_minimal_manifest(
+                tenant,
+                extra_repos='[repos.shared_addons]\nname = "shared"\npath = "../shared"\n'
+                '[repos.runtime]\nname = "runtime"\npath = "../runtime"\n',
+            )
+            original_manifest = manifest_path.read_bytes()
+            parser = build_parser()
+            base = ["--manifest", str(manifest_path), "--related-repo-root", str(primary)]
+            with mock.patch("odoo_devkit.cli._discover_repo_root", return_value=devkit):
+                with mock.patch.dict(os.environ, {"ODOO_WORKSPACE_ROOT": str(root / "isolated")}):
+                    with mock.patch("sys.stdout"):
+                        sync = parser.parse_args(["workspace", "sync", *base])
+                        sync.handler(sync)
+                        status = parser.parse_args(["workspace", "status", *base, "--check"])
+                        status.handler(status)
+            assembled = root / "isolated" / "opw"
+            self.assertEqual((assembled / "sources" / "tenant").resolve(), tenant)
+            self.assertEqual((assembled / "sources" / "shared-addons").resolve(), shared)
+            self.assertEqual((assembled / "sources" / "runtime").resolve(), runtime)
+            self.assertEqual(manifest_path.read_bytes(), original_manifest)
+            self.assertFalse((primary.parent / "workspaces").exists())
+
+    def test_related_repo_root_preserves_absolute_and_managed_sources(self) -> None:
+        from odoo_devkit.cli import _load_manifest
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest_path = self._write_minimal_manifest(
+                root,
+                extra_repos=f'[repos.runtime]\nname = "runtime"\npath = "{root / "absolute"}"\n'
+                '[repos.shared_addons]\nname = "shared"\nurl = "https://example.com/shared.git"\nref = "main"\n',
+            )
+            manifest = _load_manifest(manifest_path, related_repo_root=root / "other")
+            self.assertEqual(manifest.tenant_repo.resolve_path(manifest_directory=root), root)
+            self.assertEqual(manifest.runtime_repo.resolve_path(manifest_directory=root), root / "absolute")
+            self.assertIsNone(manifest.shared_addons_repo.path)
+            self.assertEqual(manifest.shared_addons_repo.url, load_workspace_manifest(manifest_path).shared_addons_repo.url)
+
     def test_manifest_accepts_an_explicit_empty_run_configuration_array(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             manifest_path = self._write_minimal_manifest(Path(directory))

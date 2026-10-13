@@ -74,6 +74,7 @@ def _scaffold_template_tree(
         destination_path.parent.mkdir(parents=True, exist_ok=True)
         rendered_text = _render_template(template_path.read_text(encoding="utf-8"), tenant=tenant)
         destination_path.write_text(rendered_text, encoding="utf-8")
+        destination_path.chmod(template_path.stat().st_mode & 0o777)
         written_paths.append(destination_path)
 
     return tuple(written_paths)

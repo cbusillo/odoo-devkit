@@ -1,0 +1,31 @@
+#!/bin/sh
+
+set -eu
+
+script_directory=$(CDPATH='' cd -- "$(dirname "$0")" && pwd -P)
+repo_root=$(CDPATH='' cd -- "$script_directory/.." && pwd -P)
+related_repo_root=$repo_root
+set -- "$@" --manifest "$repo_root/workspace.toml"
+
+# Git's common directory identifies the primary checkout independently of the
+# host's worktree placement. Keep the active manifest and tenant source.
+if [ -f "$repo_root/.git" ]; then
+    common_directory=$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir)
+    git_directory=$(git -C "$repo_root" rev-parse --absolute-git-dir)
+    if [ "$git_directory" != "$common_directory" ]; then
+        related_repo_root=$(CDPATH='' cd -- "$common_directory/.." && pwd -P)
+        : "${ODOO_WORKSPACE_ROOT:=$repo_root/.workspace}"
+        export ODOO_WORKSPACE_ROOT
+        set -- "$@" --related-repo-root "$related_repo_root"
+    fi
+fi
+
+devkit_repo=${ODOO_DEVKIT_REPO:-$related_repo_root/../odoo-devkit}
+if [ ! -f "$devkit_repo/pyproject.toml" ]; then
+    echo "Devkit checkout not found: $devkit_repo. Set ODOO_DEVKIT_REPO to an existing odoo-devkit checkout." >&2
+    exit 1
+fi
+
+devkit_repo=$(CDPATH='' cd -- "$devkit_repo" && pwd -P)
+
+exec uv --directory "$devkit_repo" run platform workspace "$@"

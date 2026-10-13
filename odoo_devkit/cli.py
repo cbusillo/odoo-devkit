@@ -241,6 +241,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _add_manifest_argument(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument("--manifest", type=Path, default=Path("workspace.toml"))
+    parser.add_argument(
+        "--related-repo-root",
+        type=Path,
+        help="Resolve relative non-tenant repository paths against this tenant checkout instead of the manifest directory",
+    )
     return parser
 
 
@@ -261,7 +266,7 @@ def _non_negative_int(value: str) -> int:
 
 
 def _handle_workspace_sync(arguments: argparse.Namespace) -> None:
-    manifest = _load_manifest(arguments.manifest)
+    manifest = _load_manifest(arguments.manifest, related_repo_root=getattr(arguments, "related_repo_root", None))
     result = sync_workspace(manifest=manifest, devkit_repo_path=_discover_repo_root())
     summary = {
         "workspace_path": str(result.workspace_path),
@@ -286,7 +291,7 @@ def _handle_workspace_sync(arguments: argparse.Namespace) -> None:
 def _handle_workspace_prepare_ide(arguments: argparse.Namespace) -> None:
     try:
         summary = prepare_odoo_sources(
-            manifest=_load_manifest(arguments.manifest),
+            manifest=_load_manifest(arguments.manifest, related_repo_root=getattr(arguments, "related_repo_root", None)),
             source_path=arguments.odoo_source,
             expected_commit=arguments.odoo_commit,
             expected_series=arguments.odoo_series,
@@ -298,7 +303,7 @@ def _handle_workspace_prepare_ide(arguments: argparse.Namespace) -> None:
 
 
 def _handle_workspace_status(arguments: argparse.Namespace) -> None:
-    manifest = _load_manifest(arguments.manifest)
+    manifest = _load_manifest(arguments.manifest, related_repo_root=getattr(arguments, "related_repo_root", None))
     summary = workspace_status(manifest=manifest, devkit_repo_path=_discover_repo_root())
     print(json.dumps(summary, indent=2, sort_keys=True))
     if arguments.check and not summary["current"]:
@@ -306,7 +311,7 @@ def _handle_workspace_status(arguments: argparse.Namespace) -> None:
 
 
 def _handle_workspace_clean(arguments: argparse.Namespace) -> None:
-    manifest = _load_manifest(arguments.manifest)
+    manifest = _load_manifest(arguments.manifest, related_repo_root=getattr(arguments, "related_repo_root", None))
     workspace_path = clean_workspace(manifest=manifest)
     print(json.dumps({"workspace_path": str(workspace_path), "removed": True}, indent=2, sort_keys=True))
 
@@ -399,7 +404,7 @@ def _handle_workspace_status_cockpit_root(arguments: argparse.Namespace) -> None
 
 
 def _handle_workspace_run(arguments: argparse.Namespace) -> None:
-    manifest = _load_manifest(arguments.manifest)
+    manifest = _load_manifest(arguments.manifest, related_repo_root=getattr(arguments, "related_repo_root", None))
     command = tuple(arguments.command)
     if command and command[0] == "--":
         command = command[1:]
@@ -408,13 +413,13 @@ def _handle_workspace_run(arguments: argparse.Namespace) -> None:
 
 
 def _handle_dependencies_inspect(arguments: argparse.Namespace) -> None:
-    manifest = _load_manifest(arguments.manifest)
+    manifest = _load_manifest(arguments.manifest, related_repo_root=getattr(arguments, "related_repo_root", None))
     inspection = inspect_dependency_workspace(manifest=manifest)
     print(json.dumps(inspection.to_dict(), indent=2, sort_keys=True))
 
 
 def _handle_dependencies_check(arguments: argparse.Namespace) -> None:
-    manifest = _load_manifest(arguments.manifest)
+    manifest = _load_manifest(arguments.manifest, related_repo_root=getattr(arguments, "related_repo_root", None))
     inspection = inspect_dependency_workspace(manifest=manifest)
     print(json.dumps(inspection.to_dict(), indent=2, sort_keys=True))
     if not inspection.current:
@@ -422,7 +427,7 @@ def _handle_dependencies_check(arguments: argparse.Namespace) -> None:
 
 
 def _handle_dependencies_normalize(arguments: argparse.Namespace) -> None:
-    manifest = _load_manifest(arguments.manifest)
+    manifest = _load_manifest(arguments.manifest, related_repo_root=getattr(arguments, "related_repo_root", None))
     result = normalize_dependency_workspace(manifest=manifest, output_directory=arguments.output_dir)
     print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
 
@@ -543,7 +548,7 @@ def _handle_runtime_odoo_shell(arguments: argparse.Namespace) -> None:
 
 
 def _load_runtime_manifest(arguments: argparse.Namespace) -> WorkspaceManifest:
-    manifest = _load_manifest(arguments.manifest)
+    manifest = _load_manifest(arguments.manifest, related_repo_root=getattr(arguments, "related_repo_root", None))
     runtime_instance_override = getattr(arguments, "runtime_instance", None)
     if runtime_instance_override is None:
         return manifest
@@ -568,12 +573,23 @@ def _run_runtime_handler(handler: Callable[[], object]) -> object:
         raise SystemExit(str(error)) from error
 
 
-def _load_manifest(manifest_path: Path) -> WorkspaceManifest:
+def _load_manifest(manifest_path: Path, *, related_repo_root: Path | None = None) -> WorkspaceManifest:
     resolved_manifest_path = manifest_path.expanduser().resolve()
     if not resolved_manifest_path.exists():
         raise SystemExit(f"Manifest not found: {resolved_manifest_path}")
     try:
-        return load_workspace_manifest(resolved_manifest_path)
+        manifest = load_workspace_manifest(resolved_manifest_path)
+        if related_repo_root is None:
+            return manifest
+        root = related_repo_root.expanduser().resolve()
+        related_repos = {}
+        for field in ("devkit_repo", "runtime_repo", "shared_addons_repo"):
+            repo = getattr(manifest, field)
+            if repo is not None and repo.path is not None:
+                path = repo.resolve_path(manifest_directory=root)
+                repo = replace(repo, path=str(path))
+            related_repos[field] = repo
+        return replace(manifest, **related_repos)
     except ValueError as error:
         raise SystemExit(str(error)) from error
 
