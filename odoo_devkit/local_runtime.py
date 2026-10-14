@@ -595,6 +595,8 @@ def publish_runtime_artifact(
         include_selection_sources=False,
         required_environment_keys=(),
     )
+    # Publishing has no Launchplane/stack fallback for tenant-owned build inputs.
+    runtime_values.update(manifest_build_values(manifest, required=True))
     runtime_values = apply_publish_artifact_input_manifest(
         runtime_context=runtime_context,
         runtime_values=runtime_values,
@@ -2217,8 +2219,8 @@ def build_runtime_env_values(
     return runtime_values
 
 
-def manifest_build_values(manifest: WorkspaceManifest) -> dict[str, str]:
-    """Build inputs the tenant manifest declares; they take precedence over any other source."""
+def manifest_build_values(manifest: WorkspaceManifest, *, required: bool = False) -> dict[str, str]:
+    """Read tenant-owned build inputs, requiring the complete table for publishing."""
     build = manifest.build
     declared = {
         "PYTHON_VERSION": manifest.workspace.python_version.strip(),
@@ -2226,6 +2228,10 @@ def manifest_build_values(manifest: WorkspaceManifest) -> dict[str, str]:
         "ODOO_BASE_RUNTIME_IMAGE": build.base_runtime_image,
         "ODOO_BASE_DEVTOOLS_IMAGE": build.base_devtools_image,
     }
+    if required:
+        missing = [key for key, value in declared.items() if not isinstance(value, str) or not value.strip()]
+        if missing:
+            raise RuntimeCommandError("Artifact publish requires workspace.toml build inputs: " + ", ".join(missing))
     values: dict[str, str] = {}
     for key, value in declared.items():
         if isinstance(value, str) and value:
