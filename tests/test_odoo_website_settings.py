@@ -95,6 +95,7 @@ class Environment:
 
 def settings() -> dict[str, object]:
     return {
+        "operation": "apply",
         "website_id": 1,
         "public_origin": "https://site.example",
         "public_indexing_enabled": True,
@@ -196,3 +197,22 @@ class WebsiteSettingsTests(unittest.TestCase):
         self.assertEqual(env.parameters.get_param(consumer.INDEXING_PARAMETER), "0")
         self.assertTrue(all(not record.google_analytics_key for record in env.websites.records))
         env.cr.commit.assert_called_once()
+
+    def test_historical_rollback_preserves_unrequested_consent_controls(self) -> None:
+        env = Environment()
+        env.websites.records[0].cookies_bar = False
+        env.websites.records[0].block_third_party_domains = True
+        self.apply(
+            env,
+            {
+                **settings(),
+                "operation": "disable_collection",
+                "google_analytics_key": "",
+                "public_indexing_enabled": False,
+                "cookies_bar": None,
+                "block_third_party_domains": None,
+            },
+        )
+        self.assertFalse(env.websites.records[0].google_analytics_key)
+        self.assertFalse(env.websites.records[0].cookies_bar)
+        self.assertTrue(env.websites.records[0].block_third_party_domains)

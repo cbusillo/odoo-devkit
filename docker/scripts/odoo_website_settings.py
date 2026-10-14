@@ -10,6 +10,7 @@ PRODUCTION_INSTANCE_NAMES = frozenset({"prod", "production"})
 INDEXING_PARAMETER = "cm_website.public_indexing_enabled"
 SETTINGS_FIELDS = frozenset(
     {
+        "operation",
         "website_id",
         "public_origin",
         "public_indexing_enabled",
@@ -58,9 +59,20 @@ def apply_website_settings(env: Any, payload: dict[str, object] | None, *, insta
     website_id = raw["website_id"]
     if type(website_id) is not int or website_id < 1:
         raise RuntimeError("Website settings require one native website ID.")
-    for key in ("public_indexing_enabled", "cookies_bar", "block_third_party_domains"):
-        if type(raw[key]) is not bool:
-            raise RuntimeError("Website settings require boolean choices.")
+    operation = raw["operation"]
+    if operation not in {"apply", "disable_collection"} or type(raw["public_indexing_enabled"]) is not bool:
+        raise RuntimeError("Website settings require a supported operation and indexing choice.")
+    if operation == "apply":
+        for key in ("cookies_bar", "block_third_party_domains"):
+            if type(raw[key]) is not bool:
+                raise RuntimeError("Website settings require boolean choices.")
+    elif (
+        raw["google_analytics_key"]
+        or raw["public_indexing_enabled"]
+        or raw["cookies_bar"] is not None
+        or raw["block_third_party_domains"] is not None
+    ):
+        raise RuntimeError("Collection-only rollback must preserve consent controls.")
     analytics = raw["google_analytics_key"]
     if not isinstance(analytics, str) or analytics and not re.fullmatch(r"G-[A-Z0-9]+", analytics):
         raise RuntimeError("Website settings require a GA4 Measurement ID or an empty key.")
@@ -87,7 +99,7 @@ def apply_website_settings(env: Any, payload: dict[str, object] | None, *, insta
         raise RuntimeError("Website settings origin does not match the native website domain.")
     if any(field not in website._fields for field in NATIVE_FIELDS):
         raise RuntimeError("Website settings require the native analytics and cookie fields.")
-    values = {field: raw[field] for field in NATIVE_FIELDS}
+    values = {field: raw[field] for field in NATIVE_FIELDS} if operation == "apply" else {}
     values["google_analytics_key"] = analytics or False
     website.write(values)
     website.flush_recordset(list(NATIVE_FIELDS))

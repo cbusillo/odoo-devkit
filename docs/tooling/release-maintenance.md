@@ -133,8 +133,9 @@ wording, event choices and actual collection remains with the product. This
 consumer creates no acceptance, credentials or remote operation.
 
 Launchplane selects the previous artifact's accepted settings on rollback. For
-an artifact predating this contract, it must send an explicit disabled object
-using the forward intent's verified website ID and public origin. Launchplane's
+an artifact predating this contract, it must send an explicit `disable_collection` object using the forward intent's verified
+website ID and public origin. That operation disables native GA4 and the CM
+indexing parameter while preserving unrequested cookie/third-party controls. Launchplane's
 stopped-web maintenance driver executes its generated copy of this committed
 consumer through the runtime's existing native shell, even when the older image
 has no consumer. An absent production object preserves existing fields; it is
