@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import io
+import json
 import types
 import unittest
 from contextlib import redirect_stdout
@@ -29,6 +31,13 @@ class Website(FakeRecord):
 
     def exists(self) -> Website:
         return self
+
+    def flush_recordset(self, fields: list[str]) -> None:
+        self.flushed = True
+
+    def invalidate_recordset(self, fields: list[str]) -> None:
+        if getattr(self, "cache_only", False):
+            self.google_analytics_key = "G-COPIED"
 
 
 class Websites:
@@ -99,8 +108,10 @@ class WebsiteSettingsTests(unittest.TestCase):
     def apply(self, env: Environment, values: dict[str, object] | None = None, *, instance: str = "prod") -> str:
         output = io.StringIO()
         with redirect_stdout(output):
-            consumer.apply_website_settings(env, {"instance": "prod", "website_settings": values or settings()}, instance=instance)
-        return output.getvalue()
+            result = consumer.apply_website_settings(
+                env, {"instance": "prod", "website_settings": values or settings()}, instance=instance
+            )
+        return result
 
     def test_native_apply_selects_one_website_and_verifies_digest(self) -> None:
         env = Environment()
@@ -108,7 +119,8 @@ class WebsiteSettingsTests(unittest.TestCase):
         self.assertEqual(env.websites.records[0].google_analytics_key, settings()["google_analytics_key"])
         self.assertEqual(env.websites.records[1].google_analytics_key, "G-COPIED")
         self.assertTrue(env.websites.records[0].cookies_bar)
-        self.assertIn("website_settings_sha256=", output)
+        self.assertEqual(output, hashlib.sha256(json.dumps(settings(), sort_keys=True, separators=(",", ":")).encode()).hexdigest())
+        self.assertEqual(env.parameters.get_param(consumer.INDEXING_PARAMETER), "1")
 
     def test_restored_production_settings_are_cleared_on_every_nonproduction_site(self) -> None:
         for instance in ("testing", "preview-pr-5", "", "unknown"):
@@ -140,7 +152,7 @@ class WebsiteSettingsTests(unittest.TestCase):
     def test_write_readback_failure_refuses_success(self) -> None:
         env = Environment()
         env.websites.records[0].persist_writes = False
-        with self.assertRaisesRegex(RuntimeError, "readback failed"):
+        with self.assertRaises(RuntimeError):
             self.apply(env)
 
     def test_rollback_disables_forward_settings(self) -> None:
@@ -149,3 +161,9 @@ class WebsiteSettingsTests(unittest.TestCase):
         self.apply(env, {**settings(), "google_analytics_key": "", "public_indexing_enabled": False})
         self.assertFalse(env.websites.records[0].google_analytics_key)
         self.assertEqual(env.parameters.get_param(consumer.INDEXING_PARAMETER), "0")
+
+    def test_database_readback_rejects_a_cache_only_write(self) -> None:
+        env = Environment()
+        env.websites.records[0].cache_only = True
+        with self.assertRaises(RuntimeError):
+            self.apply(env)

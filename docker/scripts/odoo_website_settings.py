@@ -6,6 +6,7 @@ import re
 from typing import Any
 from urllib.parse import urlsplit
 
+PRODUCTION_INSTANCE_NAMES = frozenset({"prod", "production"})
 INDEXING_PARAMETER = "cm_website.public_indexing_enabled"
 SETTINGS_FIELDS = frozenset(
     {
@@ -20,14 +21,14 @@ SETTINGS_FIELDS = frozenset(
 NATIVE_FIELDS = ("google_analytics_key", "cookies_bar", "block_third_party_domains")
 
 
-def apply_website_settings(env: Any, payload: dict[str, object] | None, *, instance: str) -> None:
+def apply_website_settings(env: Any, payload: dict[str, object] | None, *, instance: str) -> str | None:
     """Call in the existing environment-overrides transaction; caller commits.
 
     Empty/unknown instances are nonproduction. Clearing every copied website is
     mandatory and does not depend on the optional restore sanitization flag.
     """
     raw = payload.get("website_settings") if payload else None
-    production = instance.strip().lower() in {"prod", "production"}
+    production = instance.strip().lower() in PRODUCTION_INSTANCE_NAMES
     if "website" not in env.registry:
         if raw is not None:
             raise RuntimeError("Website settings require the native website model.")
@@ -36,10 +37,13 @@ def apply_website_settings(env: Any, payload: dict[str, object] | None, *, insta
     parameters = env["ir.config_parameter"].sudo()
     if not production:
         for website in websites.search([]):
-            if "google_analytics_key" in website._fields:
-                website.write({"google_analytics_key": False})
-                if website.google_analytics_key:
-                    raise RuntimeError("Nonproduction website analytics exclusion readback failed.")
+            if "google_analytics_key" not in website._fields:
+                raise RuntimeError("Native website analytics field is unavailable.")
+            website.write({"google_analytics_key": False})
+            website.flush_recordset(["google_analytics_key"])
+            website.invalidate_recordset(["google_analytics_key"])
+            if website.google_analytics_key:
+                raise RuntimeError("Nonproduction website analytics exclusion readback failed.")
         parameters.set_param(INDEXING_PARAMETER, "0")
         if str(parameters.get_param(INDEXING_PARAMETER)).lower() not in {"0", "false"}:
             raise RuntimeError("Nonproduction website indexing exclusion readback failed.")
@@ -47,7 +51,7 @@ def apply_website_settings(env: Any, payload: dict[str, object] | None, *, insta
         return
     if raw is None:
         return
-    if not payload or payload.get("instance") not in {"prod", "production"}:
+    if not payload or payload.get("instance") not in PRODUCTION_INSTANCE_NAMES:
         raise RuntimeError("Website settings require a matching production payload.")
     if not isinstance(raw, dict) or set(raw) != SETTINGS_FIELDS:
         raise RuntimeError("Invalid typed website settings fields.")
@@ -86,6 +90,8 @@ def apply_website_settings(env: Any, payload: dict[str, object] | None, *, insta
     values = {field: raw[field] for field in NATIVE_FIELDS}
     values["google_analytics_key"] = analytics or False
     website.write(values)
+    website.flush_recordset(list(NATIVE_FIELDS))
+    website.invalidate_recordset(list(NATIVE_FIELDS))
     for field, expected in values.items():
         if getattr(website, field) != expected:
             raise RuntimeError("Native website settings readback failed.")
@@ -94,4 +100,4 @@ def apply_website_settings(env: Any, payload: dict[str, object] | None, *, insta
     if parameters.get_param(INDEXING_PARAMETER) != indexing:
         raise RuntimeError("Website indexing readback failed.")
     digest = hashlib.sha256(json.dumps(raw, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    print("website_settings_sha256=" + digest)
+    return digest

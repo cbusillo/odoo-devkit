@@ -468,6 +468,7 @@ else:
 
 def _apply_environment_overrides_if_available(settings: StartupSettings) -> None:
     script = """
+from odoo_website_settings import apply_website_settings
 from odoo_website_bootstrap import (
     apply_website_bootstrap,
     load_instance_override_payload,
@@ -486,7 +487,10 @@ elif payload_has_launchplane_settings(instance_override_payload):
         'but launchplane.settings is not installed.'
     )
 apply_website_bootstrap(env, instance_override_payload)
+website_settings_digest = apply_website_settings(env, instance_override_payload, instance=__INSTANCE__)
 env.cr.commit()
+if website_settings_digest:
+    print("website_settings_sha256=" + website_settings_digest)
 if settings_payload_present:
     print('launchplane_settings_applied=true')
 elif instance_override_payload is None:
@@ -494,6 +498,7 @@ elif instance_override_payload is None:
 else:
     print('launchplane_settings_applied=false reason=no_managed_settings')
 """
+    script = script.replace("__INSTANCE__", repr(settings.platform_instance))
     _run_odoo_shell(settings, script, label="environment overrides")
 
 
