@@ -2599,23 +2599,40 @@ runtime_env = { ODOO_VERSION = "18.0", ODOO_BASE_RUNTIME_IMAGE = "ghcr.io/exampl
                 tenant_repo_path=tenant_repo_path,
                 runtime_repo_path=runtime_repo_path,
                 instance_name="testing",
+                build_inputs=True,
             )
             subprocess.run(["git", "add", "."], cwd=tenant_repo_path, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "workspace manifest"], cwd=tenant_repo_path, check=True, capture_output=True)
             manifest = load_workspace_manifest(manifest_path)
             self._configure_publish_runtime_payload()
 
-            with mock.patch("odoo_devkit.local_runtime.run_command") as run_command_mock:
-                with self.assertRaisesRegex(ValueError, "requires workspace.toml build inputs"):
-                    run_native_runtime_publish(
-                        manifest=manifest,
-                        image_repository="ghcr.io/example/opw-runtime",
-                        image_tag="opw-20260416-abcdef",
-                        output_file=None,
-                        no_cache=False,
-                    )
-
-            run_command_mock.assert_not_called()
+            for missing_field in (None, "odoo_version", "base_runtime_image", "base_devtools_image"):
+                missing = (
+                    {missing_field: None}
+                    if missing_field
+                    else {
+                        "odoo_version": None,
+                        "base_runtime_image": None,
+                        "base_devtools_image": None,
+                    }
+                )
+                incomplete = replace(manifest, build=replace(manifest.build, **missing))
+                with self.subTest(missing_field=missing_field):
+                    with mock.patch("odoo_devkit.local_runtime.run_command") as run_command_mock:
+                        with mock.patch(
+                            "odoo_devkit.local_runtime.preflight_artifact_git_sources",
+                            side_effect=AssertionError("Publish reached source preflight with incomplete build inputs"),
+                        ) as source_preflight:
+                            with self.assertRaises(ValueError):
+                                run_native_runtime_publish(
+                                    manifest=incomplete,
+                                    image_repository="ghcr.io/example/opw-runtime",
+                                    image_tag="opw-20260416-abcdef",
+                                    output_file=None,
+                                    no_cache=False,
+                                )
+                        source_preflight.assert_not_called()
+                    run_command_mock.assert_not_called()
 
     def test_publish_values_come_from_the_tenant_manifest_build_table(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -2667,27 +2684,6 @@ base_devtools_image = "ghcr.io/example/manifest:19.0-devtools"
                 manifest.build.base_devtools_image,
             ),
         )
-
-    def test_publish_requires_each_manifest_build_input_even_with_complete_payload(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            runtime = root / "runtime"
-            runtime.mkdir()
-            tenant = root / "tenant"
-            tenant.mkdir()
-            manifest = load_workspace_manifest(
-                self._write_manifest(
-                    tenant_repo_path=tenant,
-                    runtime_repo_path=runtime,
-                    build_inputs=True,
-                )
-            )
-            self._configure_publish_runtime_payload()
-            for field in ("odoo_version", "base_runtime_image", "base_devtools_image"):
-                with self.subTest(field=field):
-                    incomplete = replace(manifest, build=replace(manifest.build, **{field: None}))
-                    with self.assertRaises(local_runtime.RuntimeCommandError):
-                        local_runtime.manifest_build_values(incomplete, required=True)
 
     def test_manifest_repository_must_be_an_owner_name_slug(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
