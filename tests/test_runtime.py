@@ -2668,6 +2668,27 @@ base_devtools_image = "ghcr.io/example/manifest:19.0-devtools"
             ),
         )
 
+    def test_publish_requires_each_manifest_build_input_even_with_complete_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "runtime"
+            runtime.mkdir()
+            tenant = root / "tenant"
+            tenant.mkdir()
+            manifest = load_workspace_manifest(
+                self._write_manifest(
+                    tenant_repo_path=tenant,
+                    runtime_repo_path=runtime,
+                    build_inputs=True,
+                )
+            )
+            self._configure_publish_runtime_payload()
+            for field in ("odoo_version", "base_runtime_image", "base_devtools_image"):
+                with self.subTest(field=field):
+                    incomplete = replace(manifest, build=replace(manifest.build, **{field: None}))
+                    with self.assertRaises(local_runtime.RuntimeCommandError):
+                        local_runtime.manifest_build_values(incomplete, required=True)
+
     def test_manifest_repository_must_be_an_owner_name_slug(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
