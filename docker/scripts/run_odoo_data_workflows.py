@@ -1748,10 +1748,12 @@ class OdooDataWorkflowRunner:
         payload = {
             "db": self.local.db_name,
         }
-        script = textwrap.dedent("""
+        script = (
+            textwrap.dedent("""
 import json
 from odoo import api, SUPERUSER_ID
 from odoo.modules.registry import Registry
+from odoo_website_settings import apply_website_settings
 from odoo_website_bootstrap import (
     apply_website_bootstrap,
     load_instance_override_payload,
@@ -1778,8 +1780,12 @@ with registry.cursor() as cr:
     else:
         print('Launchplane settings addon not installed; skipping settings apply.')
     apply_website_bootstrap(env, instance_override_payload)
+    apply_website_settings(env, instance_override_payload, instance=__INSTANCE__)
     cr.commit()
-""").replace("__PAYLOAD__", repr(json.dumps(payload)))
+""")
+            .replace("__PAYLOAD__", repr(json.dumps(payload)))
+            .replace("__INSTANCE__", repr(self.local.platform_instance))
+        )
 
         try:
             self._run_odoo_shell(script, "environment overrides")

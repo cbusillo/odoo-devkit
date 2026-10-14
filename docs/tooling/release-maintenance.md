@@ -107,3 +107,27 @@ Artifact-specific tags and devkit commits remain in `image.tags` and
 `build_provenance.build_tools`; they are not repeated as generic build flags.
 The support lock remains compatible with the current digest-bound base image;
 consumer builds check its resolver constraints before source inventory work.
+
+## Native website settings
+
+The environment-overrides workflow consumes Launchplane's optional
+`website_settings` object in the same Odoo transaction as website bootstrap.
+Launchplane supplies the accepted artifact's settings: native website ID,
+public HTTPS origin, public indexing choice, GA4 Measurement ID (or empty),
+`cookies_bar` and `block_third_party_domains`. Analytics requires both consent
+controls; the native website domain must match the declared origin. Write and
+readback disagreement aborts the transaction. The workflow emits a digest of
+the verified settings, without printing the Measurement ID.
+
+On every nonproduction workflow, including restored production copies and
+`--no-sanitize`, every native website's GA key is cleared and
+`cm_website.public_indexing_enabled` is disabled before web serving resumes.
+An empty or unknown instance also excludes production collection. This is
+mandatory even without a Launchplane settings payload.
+
+This consumer creates no release acceptance, credentials or remote operation.
+The native Odoo cookie bar retains its Essential only / Accept all behavior;
+Client acceptance of consent wording, event choices and actual collection
+remains with the product. Launchplane selects the previous accepted artifact's
+settings on rollback; an artifact predating the contract disables collection
+and indexing rather than retaining forward-release settings.
