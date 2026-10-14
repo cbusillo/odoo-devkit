@@ -167,3 +167,32 @@ class WebsiteSettingsTests(unittest.TestCase):
         env.websites.records[0].cache_only = True
         with self.assertRaises(RuntimeError):
             self.apply(env)
+
+    def test_web_startup_clears_indexing_reapplied_by_legacy_settings(self) -> None:
+        from types import SimpleNamespace
+
+        from tests.test_odoo_startup import OdooStartupDependencySyncTests, odoo_startup
+
+        env = Environment()
+        env.registry = {"website", "launchplane.settings"}
+        env.cr = SimpleNamespace(commit=unittest.mock.Mock())
+        env.parameters.apply_from_env = lambda: env.parameters.set_param(consumer.INDEXING_PARAMETER, "1")
+        bootstrap = types.ModuleType("odoo_website_bootstrap")
+        bootstrap.load_instance_override_payload = lambda: {"instance": "testing"}
+        bootstrap.payload_has_launchplane_settings = lambda payload: True
+        bootstrap.require_launchplane_payloads_if_configured = lambda payload: None
+        bootstrap.apply_website_bootstrap = lambda environment, payload: None
+
+        def shell(settings: object, program: str, *, label: str) -> None:
+            exec(program, {"env": env})
+
+        with (
+            unittest.mock.patch.dict("sys.modules", {"odoo_website_bootstrap": bootstrap, "odoo_website_settings": consumer}),
+            unittest.mock.patch.object(odoo_startup, "_run_odoo_shell", side_effect=shell),
+        ):
+            odoo_startup._apply_environment_overrides_if_available(
+                OdooStartupDependencySyncTests._settings(platform_instance="testing")
+            )
+        self.assertEqual(env.parameters.get_param(consumer.INDEXING_PARAMETER), "0")
+        self.assertTrue(all(not record.google_analytics_key for record in env.websites.records))
+        env.cr.commit.assert_called_once()
