@@ -47,7 +47,7 @@ def apply_website_settings(env: Any, payload: dict[str, object] | None, *, insta
         parameters.set_param(INDEXING_PARAMETER, "0")
         if str(parameters.get_param(INDEXING_PARAMETER)).lower() not in {"0", "false"}:
             raise RuntimeError("Nonproduction website indexing exclusion readback failed.")
-        print("website_settings_nonproduction_excluded=true")
+        print("native_ga4_and_cm_indexing_excluded=true")
         return
     if raw is None:
         return

@@ -64,8 +64,7 @@ RUNTIME_SCRIPTS_PATH = "/volumes/scripts"
 BOUNDARY_COMMIT_PARAMETER = "odoo_devkit.credential_boundary_commit"
 
 # Production credentials a restored copy must not keep on a non-production instance.
-# This block is the single list for every tenant; extend it here, not per tenant.
-
+# This mapping is the single list for every tenant; extend it here, not per tenant.
 # ir_config_parameter keys per integration. The names are the ones Launchplane's integration
 # read-back and lane allowances use, so ODOO_RESTORE_KEPT_INTEGRATIONS can name them directly.
 INTEGRATION_CREDENTIAL_PARAMETER_KEYS: dict[str, tuple[str, ...]] = {

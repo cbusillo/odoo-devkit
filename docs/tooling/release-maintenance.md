@@ -110,25 +110,32 @@ consumer builds check its resolver constraints before source inventory work.
 
 ## Native website settings
 
-The environment-overrides workflow consumes Launchplane's optional
-`website_settings` object in the same Odoo transaction as website bootstrap.
-Launchplane supplies the accepted artifact's settings: native website ID,
-public HTTPS origin, public indexing choice, GA4 Measurement ID (or empty),
+The environment-overrides workflow and web startup consume Launchplane's
+optional `website_settings` object in the same Odoo transaction as website
+bootstrap. Launchplane supplies the accepted artifact's native `website_id`,
+public HTTPS origin, CM indexing choice, GA4 Measurement ID (or empty),
 `cookies_bar` and `block_third_party_domains`. Analytics requires both consent
-controls; the native website domain must match the declared origin. Write and
-readback disagreement aborts the transaction. After commit the workflow emits a digest of the verified settings, without
-printing the Measurement ID.
+controls. The native domain must match the declared origin; a mismatch refuses
+startup before any settings write. Changing the managed domain goes through
+Launchplane's supported website intent and accepted release path. Write and
+flushed/invalidation readback disagreement aborts the transaction. After commit,
+the caller emits the verified digest without printing the Measurement ID.
 
-On every nonproduction workflow and web startup, including restored production copies and
-`--no-sanitize`, every native website's GA key is cleared and
-`cm_website.public_indexing_enabled` is disabled before web serving resumes.
-An empty or unknown instance also excludes production collection. This is
-mandatory even without a Launchplane settings payload.
+Every nonproduction data workflow and web startup clears each native website's
+GA4 key and disables `cm_website.public_indexing_enabled`, including restored
+production copies, empty/unknown instances and `--no-sanitize`. The diagnostic
+is scoped to native GA4 and the CM addon parameter. It does not claim generic
+indexing exclusion for tenants without CM, or removal of Plausible, GTM or
+arbitrary custom-code tracking. Exclusion needs no settings payload.
 
-This consumer creates no release acceptance, credentials or remote operation.
-The native Odoo cookie bar retains its Essential only / Accept all behavior;
-Client acceptance of consent wording, event choices and actual collection
-remains with the product. Launchplane selects the previous accepted artifact's
-settings on rollback; an artifact predating the contract requires Launchplane to run its generated
-copy of this consumer through the stopped-web maintenance path, so it disables
-collection and indexing rather than retaining forward-release settings.
+Native Odoo consent remains Essential only / Accept all. Client acceptance of
+wording, event choices and actual collection remains with the product. This
+consumer creates no acceptance, credentials or remote operation.
+
+Launchplane selects the previous artifact's accepted settings on rollback. For
+an artifact predating this contract, it must send an explicit disabled object
+using the forward intent's verified website ID and public origin. Launchplane's
+stopped-web maintenance driver executes its generated copy of this committed
+consumer through the runtime's existing native shell, even when the older image
+has no consumer. An absent production object preserves existing fields; it is
+not a rollback instruction. Consumer or commit failure keeps web stopped.
