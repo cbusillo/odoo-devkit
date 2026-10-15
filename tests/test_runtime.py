@@ -1424,7 +1424,7 @@ homepage = true
         self._write_tenant_dependency_workspace(tenant_root, addon_names=("opw_custom",))
         (tenant_root / "addons/opw_custom/__manifest__.py").write_text("{}\n")
         self._write_runtime_repo(runtime_root)
-        manifest_path = self._write_manifest(tenant_repo_path=tenant_root, runtime_repo_path=runtime_root)
+        manifest_path = self._write_manifest(tenant_repo_path=tenant_root, runtime_repo_path=runtime_root, build_inputs=True)
         for root in (tenant_root, runtime_root):
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "artifact inputs"], cwd=root, check=True, capture_output=True)
@@ -1644,6 +1644,7 @@ homepage = true
                 shared_addons_repo_path=shared_addons_repo_path,
                 addons_paths=("sources/tenant/addons", "sources/shared-addons"),
                 instance_name="local",
+                build_inputs=True,
             )
             subprocess.run(["git", "add", "workspace.toml"], cwd=tenant_repo_path, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "workspace manifest"], cwd=tenant_repo_path, check=True, capture_output=True)
@@ -1744,6 +1745,7 @@ homepage = true
                 tenant_repo_path=tenant_repo_path,
                 runtime_repo_path=source_runtime_repo_path,
                 instance_name="testing",
+                build_inputs=True,
             )
             (tenant_repo_path / "artifact-inputs.toml").write_text(
                 """
@@ -1928,6 +1930,7 @@ install_modules = ["opw_custom"]
                 tenant_repo_path=tenant_repo_path,
                 runtime_repo_path=runtime_repo_path,
                 instance_name="testing",
+                build_inputs=True,
             )
             subprocess.run(["git", "add", "workspace.toml"], cwd=tenant_repo_path, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "workspace manifest"], cwd=tenant_repo_path, check=True, capture_output=True)
@@ -1960,6 +1963,7 @@ install_modules = ["opw_custom"]
                 tenant_repo_path=tenant_repo_path,
                 runtime_repo_path=source_runtime_repo_path,
                 instance_name="testing",
+                build_inputs=True,
             )
             (tenant_repo_path / "artifact-inputs.toml").write_text(
                 """
@@ -2068,6 +2072,7 @@ sources = [
                 runtime_repo_path=runtime_repo_path,
                 instance_name="testing",
                 artifact_inputs_file="artifact-inputs.toml",
+                build_inputs=True,
             )
             manifest = load_workspace_manifest(manifest_path)
             self._configure_publish_runtime_payload(
@@ -2104,6 +2109,7 @@ sources = [
                 runtime_repo_path=runtime_repo_path,
                 instance_name="testing",
                 artifact_inputs_file="config/publish-inputs.toml",
+                build_inputs=True,
             )
             (tenant_repo_path / "config").mkdir(parents=True, exist_ok=True)
             (tenant_repo_path / "config" / "publish-inputs.toml").write_text(
@@ -2420,6 +2426,7 @@ runtime_env = { ODOO_VERSION = "18.0", ODOO_BASE_RUNTIME_IMAGE = "ghcr.io/exampl
                 tenant_repo_path=tenant_repo_path,
                 runtime_repo_path=source_runtime_repo_path,
                 instance_name="testing",
+                build_inputs=True,
             )
             subprocess.run(["git", "add", "workspace.toml"], cwd=tenant_repo_path, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "workspace manifest"], cwd=tenant_repo_path, check=True, capture_output=True)
@@ -2491,7 +2498,7 @@ runtime_env = { ODOO_VERSION = "18.0", ODOO_BASE_RUNTIME_IMAGE = "ghcr.io/exampl
             addon_build_arg = next(argument for argument in captured_build_args if argument.startswith("ODOO_ADDON_REPOSITORIES="))
             self.assertEqual(addon_build_arg, f"ODOO_ADDON_REPOSITORIES={exact_ref}")
             expected_build_args = {
-                "ODOO_VERSION=20.0",
+                f"ODOO_VERSION={manifest.build.odoo_version}",
                 "ODOO_BASE_RUNTIME_IMAGE=ghcr.io/example/runtime@sha256:" + "2" * 64,
                 "ODOO_BASE_DEVTOOLS_IMAGE=ghcr.io/example/devtools@sha256:" + "3" * 64,
                 "OPENUPGRADE_ADDON_REPOSITORY=OCA/OpenUpgrade@411f6b8e85cac72dc7aa2e2dc5540001043c327d",
@@ -2507,7 +2514,7 @@ runtime_env = { ODOO_VERSION = "18.0", ODOO_BASE_RUNTIME_IMAGE = "ghcr.io/exampl
                 payload["odoo_install_modules"],
                 ["launchplane_settings", "disable_odoo_online", "opw_custom"],
             )
-            self.assertEqual(build_flags_payload["values"]["odoo_version"], "20.0")
+            self.assertEqual(build_flags_payload["values"]["odoo_version"], manifest.build.odoo_version)
             self.assertEqual(build_flags_payload["addon_skip_flags"], [])
             preflight_command = next(command for command in captured_commands if command[:2] == ["docker", "run"])
             build_command = next(command for command in captured_commands if command[:3] == ["docker", "buildx", "build"])
@@ -2560,6 +2567,7 @@ runtime_env = { ODOO_VERSION = "18.0", ODOO_BASE_RUNTIME_IMAGE = "ghcr.io/exampl
                 context_name="cm_website",
                 database_name="cm_website_testing",
                 instance_name="testing",
+                build_inputs=True,
             )
             subprocess.run(["git", "add", "workspace.toml"], cwd=tenant_repo_path, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "workspace manifest"], cwd=tenant_repo_path, check=True, capture_output=True)
@@ -2579,7 +2587,7 @@ runtime_env = { ODOO_VERSION = "18.0", ODOO_BASE_RUNTIME_IMAGE = "ghcr.io/exampl
                         platforms=("linux/amd64",),
                     )
 
-    def test_native_runtime_publish_rejects_payload_without_odoo_version_before_build(self) -> None:
+    def test_native_runtime_publish_rejects_missing_manifest_build_inputs_before_build(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
             tenant_repo_path = self._create_git_repo(temp_root / "tenant-repo")
@@ -2591,23 +2599,40 @@ runtime_env = { ODOO_VERSION = "18.0", ODOO_BASE_RUNTIME_IMAGE = "ghcr.io/exampl
                 tenant_repo_path=tenant_repo_path,
                 runtime_repo_path=runtime_repo_path,
                 instance_name="testing",
+                build_inputs=True,
             )
             subprocess.run(["git", "add", "."], cwd=tenant_repo_path, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "workspace manifest"], cwd=tenant_repo_path, check=True, capture_output=True)
             manifest = load_workspace_manifest(manifest_path)
-            self._configure_publish_runtime_payload(odoo_version=None)
+            self._configure_publish_runtime_payload()
 
-            with mock.patch("odoo_devkit.local_runtime.run_command") as run_command_mock:
-                with self.assertRaisesRegex(ValueError, "environment must include ODOO_VERSION"):
-                    run_native_runtime_publish(
-                        manifest=manifest,
-                        image_repository="ghcr.io/example/opw-runtime",
-                        image_tag="opw-20260416-abcdef",
-                        output_file=None,
-                        no_cache=False,
-                    )
-
-            run_command_mock.assert_not_called()
+            for missing_field in (None, "odoo_version", "base_runtime_image", "base_devtools_image"):
+                missing = (
+                    {missing_field: None}
+                    if missing_field
+                    else {
+                        "odoo_version": None,
+                        "base_runtime_image": None,
+                        "base_devtools_image": None,
+                    }
+                )
+                incomplete = replace(manifest, build=replace(manifest.build, **missing))
+                with self.subTest(missing_field=missing_field):
+                    with mock.patch("odoo_devkit.local_runtime.run_command") as run_command_mock:
+                        with mock.patch(
+                            "odoo_devkit.local_runtime.preflight_artifact_git_sources",
+                            side_effect=AssertionError("Publish reached source preflight with incomplete build inputs"),
+                        ) as source_preflight:
+                            with self.assertRaises(ValueError):
+                                run_native_runtime_publish(
+                                    manifest=incomplete,
+                                    image_repository="ghcr.io/example/opw-runtime",
+                                    image_tag="opw-20260416-abcdef",
+                                    output_file=None,
+                                    no_cache=False,
+                                )
+                        source_preflight.assert_not_called()
+                    run_command_mock.assert_not_called()
 
     def test_publish_values_come_from_the_tenant_manifest_build_table(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -2720,6 +2745,7 @@ name = "Cell Mechanic"
                 context_name="cm_website",
                 database_name="cm_website_testing",
                 instance_name="testing",
+                build_inputs=True,
             )
             (tenant_repo_path / "artifact-inputs.toml").write_text(
                 """
@@ -4107,6 +4133,7 @@ sources = [
         database_name: str = "opw",
         instance_name: str = "local",
         artifact_inputs_file: str | None = None,
+        build_inputs: bool = False,
     ) -> Path:
         manifest_path = tenant_repo_path / "workspace.toml"
         (tenant_repo_path / "addons").mkdir(parents=True, exist_ok=True)
@@ -4159,6 +4186,11 @@ attached_paths = ["sources/devkit"]
             + "\n",
             encoding="utf-8",
         )
+        if build_inputs:
+            with manifest_path.open("a", encoding="utf-8") as manifest_file:
+                manifest_file.write(
+                    '\n[build]\nodoo_version = "19.0"\nbase_runtime_image = "ghcr.io/example/runtime:19.0-runtime"\nbase_devtools_image = "ghcr.io/example/devtools:19.0-devtools"\n'
+                )
         return manifest_path
 
     @staticmethod
