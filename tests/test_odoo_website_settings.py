@@ -9,6 +9,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock, patch
 
 from tests.test_odoo_website_bootstrap import FakeRecord
 
@@ -176,7 +177,12 @@ class WebsiteSettingsTests(unittest.TestCase):
 
         env = Environment()
         env.registry = {"website", "launchplane.settings"}
-        env.cr = SimpleNamespace(commit=unittest.mock.Mock())
+
+        def committed() -> None:
+            self.assertEqual(env.parameters.get_param(consumer.INDEXING_PARAMETER), "0")
+            self.assertTrue(all(not record.google_analytics_key for record in env.websites.records))
+
+        env.cr = SimpleNamespace(commit=Mock(side_effect=committed))
         env.parameters.apply_from_env = lambda: env.parameters.set_param(consumer.INDEXING_PARAMETER, "1")
         bootstrap = types.ModuleType("odoo_website_bootstrap")
         bootstrap.load_instance_override_payload = lambda: {"instance": "testing"}
@@ -188,8 +194,8 @@ class WebsiteSettingsTests(unittest.TestCase):
             exec(program, {"env": env})
 
         with (
-            unittest.mock.patch.dict("sys.modules", {"odoo_website_bootstrap": bootstrap, "odoo_website_settings": consumer}),
-            unittest.mock.patch.object(odoo_startup, "_run_odoo_shell", side_effect=shell),
+            patch.dict("sys.modules", {"odoo_website_bootstrap": bootstrap, "odoo_website_settings": consumer}),
+            patch.object(odoo_startup, "_run_odoo_shell", side_effect=shell),
         ):
             odoo_startup._apply_environment_overrides_if_available(
                 OdooStartupDependencySyncTests._settings(platform_instance="testing")
@@ -197,6 +203,12 @@ class WebsiteSettingsTests(unittest.TestCase):
         self.assertEqual(env.parameters.get_param(consumer.INDEXING_PARAMETER), "0")
         self.assertTrue(all(not record.google_analytics_key for record in env.websites.records))
         env.cr.commit.assert_called_once()
+
+    def test_nonproduction_refuses_failed_indexing_readback(self) -> None:
+        env = Environment()
+        env.parameters.persist = False
+        with self.assertRaises(RuntimeError):
+            consumer.apply_website_settings(env, None, instance="testing")
 
     def test_historical_rollback_preserves_unrequested_consent_controls(self) -> None:
         env = Environment()

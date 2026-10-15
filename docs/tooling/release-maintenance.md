@@ -111,7 +111,7 @@ consumer builds check its resolver constraints before source inventory work.
 ## Native website settings
 
 The environment-overrides workflow and web startup consume Launchplane's
-optional `website_settings` object in the same Odoo transaction as website
+optional `website_settings` object in the startup Odoo transaction as website
 bootstrap. Launchplane supplies the accepted artifact's native `website_id`,
 public HTTPS origin, CM indexing choice, GA4 Measurement ID (or empty),
 `cookies_bar` and `block_third_party_domains`. Analytics requires both consent
@@ -140,3 +140,9 @@ stopped-web maintenance driver executes its generated copy of this committed
 consumer through the runtime's existing native shell, even when the older image
 has no consumer. An absent production object preserves existing fields; it is
 not a rollback instruction. Consumer or commit failure keeps web stopped.
+
+Native website checks in `tests/live_odoo/addons/website_settings_checks` exercise
+the Odoo domain normalizer, GA/cookie fields, persisted SQL readback, collection-only
+rollback, and a planted no-op write using synthetic records. Run them through the
+existing addon-CI runner and its pinned shared settings addon. No Client database,
+real stream or external event delivery is involved.
