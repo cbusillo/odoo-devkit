@@ -26,6 +26,7 @@ import psycopg2
 from odoo_admin_password import validate_admin_password
 from odoo_release_plan import load_plan, names, resolve_plan, verify_image_declaration
 from odoo_website_bootstrap import load_instance_override_payload, require_launchplane_payloads_if_configured
+from odoo_website_settings import PRODUCTION_INSTANCE_NAMES
 from passlib.context import CryptContext
 from psycopg2 import sql
 from psycopg2.extensions import connection
@@ -63,8 +64,7 @@ RUNTIME_SCRIPTS_PATH = "/volumes/scripts"
 BOUNDARY_COMMIT_PARAMETER = "odoo_devkit.credential_boundary_commit"
 
 # Production credentials a restored copy must not keep on a non-production instance.
-# This block is the single list for every tenant; extend it here, not per tenant.
-PRODUCTION_INSTANCE_NAMES = frozenset({"prod", "production"})
+# This mapping is the single list for every tenant; extend it here, not per tenant.
 # ir_config_parameter keys per integration. The names are the ones Launchplane's integration
 # read-back and lane allowances use, so ODOO_RESTORE_KEPT_INTEGRATIONS can name them directly.
 INTEGRATION_CREDENTIAL_PARAMETER_KEYS: dict[str, tuple[str, ...]] = {
@@ -1748,10 +1748,12 @@ class OdooDataWorkflowRunner:
         payload = {
             "db": self.local.db_name,
         }
-        script = textwrap.dedent("""
+        script = (
+            textwrap.dedent("""
 import json
 from odoo import api, SUPERUSER_ID
 from odoo.modules.registry import Registry
+from odoo_website_settings import apply_website_settings
 from odoo_website_bootstrap import (
     apply_website_bootstrap,
     load_instance_override_payload,
@@ -1778,8 +1780,14 @@ with registry.cursor() as cr:
     else:
         print('Launchplane settings addon not installed; skipping settings apply.')
     apply_website_bootstrap(env, instance_override_payload)
+    website_settings_digest = apply_website_settings(env, instance_override_payload, instance=__INSTANCE__)
     cr.commit()
-""").replace("__PAYLOAD__", repr(json.dumps(payload)))
+    if website_settings_digest:
+        print("website_settings_sha256=" + website_settings_digest)
+""")
+            .replace("__PAYLOAD__", repr(json.dumps(payload)))
+            .replace("__INSTANCE__", repr(self.local.platform_instance))
+        )
 
         try:
             self._run_odoo_shell(script, "environment overrides")
