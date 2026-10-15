@@ -210,6 +210,74 @@ class WebsiteSettingsTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             consumer.apply_website_settings(env, None, instance="testing")
 
+    def test_data_workflow_script_excludes_copied_settings_before_final_commit(self) -> None:
+        from contextlib import nullcontext
+        from types import SimpleNamespace
+
+        from tests.test_odoo_data_workflows import odoo_data_workflows as workflows
+
+        env = Environment()
+        env.registry = {"website", "launchplane.settings"}
+        commits = []
+        env.cr = SimpleNamespace(
+            commit=lambda: commits.append(
+                (
+                    env.parameters.get_param(consumer.INDEXING_PARAMETER),
+                    [record.google_analytics_key for record in env.websites.records],
+                )
+            )
+        )
+        env.parameters.apply_from_env = lambda: env.parameters.set_param(consumer.INDEXING_PARAMETER, "1")
+        bootstrap = types.ModuleType("odoo_website_bootstrap")
+        bootstrap.load_instance_override_payload = lambda: {"instance": "testing"}
+        bootstrap.payload_has_launchplane_settings = lambda payload: True
+        bootstrap.require_launchplane_payloads_if_configured = lambda payload: None
+        bootstrap.apply_website_bootstrap = lambda environment, payload: None
+        odoo = types.ModuleType("odoo")
+        odoo.api = SimpleNamespace(Environment=lambda cursor, uid, context: env)
+        odoo.SUPERUSER_ID = 1
+        registry = types.ModuleType("odoo.modules.registry")
+        registry.Registry = lambda database: SimpleNamespace(cursor=lambda: nullcontext(env.cr))
+        runner = object.__new__(workflows.OdooDataWorkflowRunner)
+        runner.local = SimpleNamespace(db_name="fixture-copy", platform_instance="testing")
+
+        def shell(program: str, label: str) -> None:
+            exec(program, {})
+
+        with (
+            patch.dict(
+                "sys.modules",
+                {
+                    "odoo": odoo,
+                    "odoo.modules.registry": registry,
+                    "odoo_website_bootstrap": bootstrap,
+                    "odoo_website_settings": consumer,
+                },
+            ),
+            patch.object(runner, "_run_odoo_shell", side_effect=shell),
+        ):
+            runner.apply_environment_overrides()
+        self.assertEqual(commits[-1][0], "0")
+        self.assertTrue(all(not key for key in commits[-1][1]))
+
+    def test_historical_rollback_recovers_from_an_invalid_forward_selector(self) -> None:
+        env = Environment()
+        self.apply(
+            env,
+            {
+                **settings(),
+                "operation": "disable_collection",
+                "website_id": 99999,
+                "public_origin": "https://wrong.example",
+                "public_indexing_enabled": False,
+                "google_analytics_key": "",
+                "cookies_bar": None,
+                "block_third_party_domains": None,
+            },
+        )
+        self.assertTrue(all(not record.google_analytics_key for record in env.websites.records))
+        self.assertEqual(env.parameters.get_param(consumer.INDEXING_PARAMETER), "0")
+
     def test_historical_rollback_preserves_unrequested_consent_controls(self) -> None:
         env = Environment()
         env.websites.records[0].cookies_bar = False

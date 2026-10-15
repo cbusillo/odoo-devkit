@@ -116,7 +116,7 @@ bootstrap. Launchplane supplies the accepted artifact's native `website_id`,
 public HTTPS origin, CM indexing choice, GA4 Measurement ID (or empty),
 `cookies_bar` and `block_third_party_domains`. Analytics requires both consent
 controls. The native domain must match the declared origin; a mismatch refuses
-startup before any settings write. Changing the managed domain goes through
+startup before any native website settings write. Changing the managed domain goes through
 Launchplane's supported website intent and accepted release path. Write and
 flushed/invalidation readback disagreement aborts the transaction. After commit,
 the caller emits the verified digest without printing the Measurement ID.
@@ -132,10 +132,13 @@ Native Odoo consent remains Essential only / Accept all. Client acceptance of
 wording, event choices and actual collection remains with the product. This
 consumer creates no acceptance, credentials or remote operation.
 
-Launchplane selects the previous artifact's accepted settings on rollback. For
-an artifact predating this contract, it must send an explicit `disable_collection` object using the forward intent's verified
-website ID and public origin. That operation disables native GA4 and the CM
-indexing parameter while preserving unrequested cookie/third-party controls. Launchplane's
+Launchplane selects the retained production snapshot from the decision authorizing rollback. For
+an artifact predating this contract, it sends an explicit
+`disable_collection` object using the forward intent's verified website ID and
+public origin. That operation clears native GA4 across the database (without reusing an
+unverified selector) and disables the CM
+indexing parameter while preserving unrequested cookie/third-party controls.
+Launchplane's
 stopped-web maintenance driver executes its generated copy of this committed
 consumer through the runtime's existing native shell, even when the older image
 has no consumer. An absent production object preserves existing fields; it is
@@ -146,3 +149,12 @@ the Odoo domain normalizer, GA/cookie fields, persisted SQL readback, collection
 rollback, and a planted no-op write using synthetic records. Run them through the
 existing addon-CI runner and its pinned shared settings addon. No Client database,
 real stream or external event delivery is involved.
+
+Data-workflow legacy settings retain their existing intermediate commit; a later
+website refusal does not undo that earlier write. The maintenance driver keeps
+web stopped, and restore/bootstrap remove a failed partial database. Startup
+applies legacy/bootstrap/native settings in one transaction. The pre-commit
+exclusion diagnostic alone is not success evidence: callers require a successful
+exit, and production application also requires the matching post-commit digest.
+On historical images Launchplane also supplies the legacy indexing parameter
+with the same typed choice, preventing the older startup addon from re-enabling it.

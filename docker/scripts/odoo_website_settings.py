@@ -22,6 +22,20 @@ SETTINGS_FIELDS = frozenset(
 NATIVE_FIELDS = ("google_analytics_key", "cookies_bar", "block_third_party_domains")
 
 
+def exclude_collection(websites: Any, parameters: Any) -> None:
+    for website in websites.search([]):
+        if "google_analytics_key" not in website._fields:
+            raise RuntimeError("Native website analytics field is unavailable.")
+        website.write({"google_analytics_key": False})
+        website.flush_recordset(["google_analytics_key"])
+        website.invalidate_recordset(["google_analytics_key"])
+        if website.google_analytics_key:
+            raise RuntimeError("Nonproduction website analytics exclusion readback failed.")
+    parameters.set_param(INDEXING_PARAMETER, "0")
+    if str(parameters.get_param(INDEXING_PARAMETER)).lower() not in {"0", "false"}:
+        raise RuntimeError("Nonproduction website indexing exclusion readback failed.")
+
+
 def apply_website_settings(env: Any, payload: dict[str, object] | None, *, instance: str) -> str | None:
     """Call in the existing environment-overrides transaction; caller commits.
 
@@ -37,17 +51,7 @@ def apply_website_settings(env: Any, payload: dict[str, object] | None, *, insta
     websites = env["website"].sudo()
     parameters = env["ir.config_parameter"].sudo()
     if not production:
-        for website in websites.search([]):
-            if "google_analytics_key" not in website._fields:
-                raise RuntimeError("Native website analytics field is unavailable.")
-            website.write({"google_analytics_key": False})
-            website.flush_recordset(["google_analytics_key"])
-            website.invalidate_recordset(["google_analytics_key"])
-            if website.google_analytics_key:
-                raise RuntimeError("Nonproduction website analytics exclusion readback failed.")
-        parameters.set_param(INDEXING_PARAMETER, "0")
-        if str(parameters.get_param(INDEXING_PARAMETER)).lower() not in {"0", "false"}:
-            raise RuntimeError("Nonproduction website indexing exclusion readback failed.")
+        exclude_collection(websites, parameters)
         print("native_ga4_and_cm_indexing_excluded=true")
         return
     if raw is None:
@@ -92,6 +96,11 @@ def apply_website_settings(env: Any, payload: dict[str, object] | None, *, insta
         or parsed.fragment
     ):
         raise RuntimeError("Website settings require a public HTTPS origin.")
+    if operation == "disable_collection":
+        # Historical recovery has no verified selector. Disable collection across
+        # the database while preserving every website's consent/embedding choices.
+        exclude_collection(websites, parameters)
+        return hashlib.sha256(json.dumps(raw, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     website = websites.browse(website_id).exists()
     if not website or len(website) != 1:
         raise RuntimeError("Website settings selector did not find exactly one website.")
