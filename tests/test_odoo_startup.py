@@ -488,7 +488,9 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
         self.assertEqual(recorder.execve.call_args.args[2]["PGPASSWORD"], "")
 
     @staticmethod
-    def _execute_admin_hardening(settings: StartupSettings, environment: MagicMock) -> str:
+    def _execute_admin_hardening(settings: StartupSettings, environment: MagicMock, *, preserved: bool = False) -> str:
+        from docker.scripts import odoo_admin_password
+
         exceptions = types.ModuleType("odoo.exceptions")
         exceptions.__dict__["AccessDenied"] = PermissionError
 
@@ -498,8 +500,8 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
 
         output = io.StringIO()
         with (
-            patch.dict(sys.modules, {"odoo.exceptions": exceptions}),
-            patch.object(sys, "path", [str(Path(__file__).resolve().parents[1] / "docker" / "scripts"), *sys.path]),
+            patch.dict(sys.modules, {"odoo.exceptions": exceptions, "odoo_admin_password": odoo_admin_password}),
+            patch.object(odoo_admin_password, "restored_logins_preserved", return_value=preserved),
             patch.object(odoo_startup, "_run_odoo_shell", side_effect=run_shell),
             redirect_stdout(output),
         ):
@@ -556,7 +558,7 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
         users = environment["res.users"].sudo().with_context()
         users.search.return_value = None
 
-        output = self._execute_admin_hardening(settings, environment)
+        output = self._execute_admin_hardening(settings, environment, preserved=True)
 
         self.assertIn("configured_admin_user_found=false", output)
         environment.cr.commit.assert_not_called()
@@ -566,22 +568,20 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
             with self.subTest(instance=instance):
                 settings = self._settings(platform_instance=instance, admin_password="isolated-bootstrap-password")
                 environment = MagicMock()
-                environment.cr.fetchone.return_value = ("true",)
                 admin = environment["res.users"].sudo().with_context().search()
                 admin.with_user.return_value = admin
                 admin._check_credentials.side_effect = PermissionError
                 for _ in range(2):
-                    self._execute_admin_hardening(settings, environment)
+                    self._execute_admin_hardening(settings, environment, preserved=True)
                 admin.with_context().sudo().write.assert_not_called()
 
     def test_production_still_applies_configured_password_even_with_copied_restore_marker(self) -> None:
         settings = self._settings(platform_instance="prod", admin_password="production-password")
         environment = MagicMock()
-        environment.cr.fetchone.return_value = ("true",)
         admin = environment["res.users"].sudo().with_context().search()
         admin.with_user.return_value = admin
         admin._check_credentials.side_effect = PermissionError
-        self._execute_admin_hardening(settings, environment)
+        self._execute_admin_hardening(settings, environment, preserved=True)
         admin.with_context().sudo().write.assert_called_once_with({"password": settings.admin_password})
 
     def test_admin_hardening_does_not_write_after_unexpected_credential_check_failure(self) -> None:

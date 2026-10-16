@@ -4012,10 +4012,10 @@ def apply_admin_password_if_configured(
             [('login', '=', payload['login'])],
             limit=1,
         )
-        if payload['instance'].strip().lower() not in PRODUCTION_INSTANCE_NAMES and restored_logins_preserved(env.cr):
-            print('restored_logins_preserved=true')
-        elif not admin_user:
+        if not admin_user:
             raise ValueError(f"Configured admin user not found: {payload['login']}")
+        elif payload['instance'].strip().lower() not in PRODUCTION_INSTANCE_NAMES and restored_logins_preserved(env.cr):
+            print('restored_logins_preserved=true')
         else:
             admin_user.with_context(no_reset_password=True).sudo().write({'password': os.environ['ODOO_ADMIN_PASSWORD']})
             print("admin_password_updated=true")

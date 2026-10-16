@@ -1610,18 +1610,20 @@ class UpdateAddonsModuleDetectionTests(unittest.TestCase):
 
 class EnsureAdminUserTests(unittest.TestCase):
     def test_restored_login_is_preserved_despite_an_isolated_bootstrap_password(self) -> None:
-        runner = self._runner("isolated-bootstrap-password")
-        cursor = runner.local.db_conn.cursor.return_value.__enter__.return_value
-        original_fetch = cursor.fetchone.side_effect
-        cursor.fetchone.side_effect = lambda: (
-            ("true",) if "ir_config_parameter" in cursor.execute.call_args.args[0] else original_fetch()
-        )
-        environment = MagicMock()
-        admin = environment["res.users"].sudo().search()
-        admin.with_user.return_value = admin
-        admin._check_credentials.side_effect = PermissionError
-        self._run_admin_hardening(runner, environment)
-        admin.with_context().sudo().write.assert_not_called()
+        for instance in ("testing", "prod", "production"):
+            with self.subTest(instance=instance):
+                runner = self._runner("isolated-bootstrap-password")
+                runner.local.platform_instance = instance
+                environment = MagicMock()
+                admin = environment["res.users"].sudo().search()
+                admin.with_user.return_value = admin
+                admin._check_credentials.side_effect = PermissionError
+                with patch.object(odoo_data_workflows, "restored_logins_preserved", return_value=True):
+                    self._run_admin_hardening(runner, environment)
+                if instance == "testing":
+                    admin.with_context().sudo().write.assert_not_called()
+                else:
+                    admin.with_context().sudo().write.assert_called_once_with({"password": "isolated-bootstrap-password"})
 
     def test_raw_single_line_admin_password_reaches_the_password_write_literally(self) -> None:
         for password in (" fake-password ", "\tfake-'\"\\-$password\t", "fake-password"):
@@ -1990,7 +1992,9 @@ class CredentialBoundaryTests(unittest.TestCase):
 
     def test_production_keeps_credentials_except_explicit_managed_override(self) -> None:
         self.runner.local.platform_instance = "prod"
-        self.runner.prepare_credentials_before_registry()
+        self.runner.prepare_credentials_before_registry(restored_copy=True)
+        with self.connection("fixture").cursor() as cursor:
+            self.assertFalse(odoo_data_workflows.restored_logins_preserved(cursor))
         with sqlite3.connect(self.path) as reader:
             parameters = dict(reader.execute("SELECT key,value FROM ir_config_parameter"))
             self.assertEqual(parameters["web_map.token_map_box"], PRODUCTION_PARAMETERS["web_map.token_map_box"])

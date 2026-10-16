@@ -3395,27 +3395,35 @@ sources = [
                 run_shell.assert_not_called()
 
     def test_local_init_preserves_restored_login_despite_configured_bootstrap_password(self) -> None:
-        odoo_env = mock.MagicMock()
-        odoo_env.cr.fetchone.return_value = ("true",)
-        user = odoo_env["res.users"].sudo().with_context().search()
+        from docker.scripts import odoo_admin_password
 
-        def run_shell(**kwargs: object) -> None:
-            exec(str(kwargs["input_text"]), {"env": odoo_env})
+        for instance in ("local", "prod"):
+            odoo_env = mock.MagicMock()
+            user = odoo_env["res.users"].sudo().with_context().search()
 
-        with (
-            mock.patch.dict(os.environ, {"ODOO_ADMIN_PASSWORD": "isolated-bootstrap-password"}),
-            mock.patch.object(sys, "path", [str(Path(__file__).resolve().parents[1] / "docker" / "scripts"), *sys.path]),
-            mock.patch.object(local_runtime, "compose_exec_with_input", side_effect=run_shell),
-            contextlib.redirect_stdout(io.StringIO()),
-        ):
-            local_runtime.apply_admin_password_if_configured(
-                runtime_repo_path=Path("unused"),
-                runtime_env_file=Path("unused"),
-                runtime_selection=mock.Mock(database_name="fixture", instance_name="local"),
-                stack_definition=mock.Mock(addons_path=("/odoo/addons",)),
-                loaded_environment={"ODOO_ADMIN_PASSWORD": "isolated-bootstrap-password"},
-            )
-        user.with_context().sudo().write.assert_not_called()
+            def run_shell(*, _environment: mock.MagicMock = odoo_env, **kwargs: object) -> None:
+                exec(str(kwargs["input_text"]), {"env": _environment})
+
+            with (
+                self.subTest(instance=instance),
+                mock.patch.dict(os.environ, {"ODOO_ADMIN_PASSWORD": "isolated-bootstrap-password"}),
+                mock.patch.dict(sys.modules, {"odoo_admin_password": odoo_admin_password}),
+                mock.patch.object(odoo_admin_password, "restored_logins_preserved", return_value=True),
+                mock.patch.object(sys, "path", [str(Path(__file__).resolve().parents[1] / "docker" / "scripts"), *sys.path]),
+                mock.patch.object(local_runtime, "compose_exec_with_input", side_effect=run_shell),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                local_runtime.apply_admin_password_if_configured(
+                    runtime_repo_path=Path("unused"),
+                    runtime_env_file=Path("unused"),
+                    runtime_selection=mock.Mock(database_name="fixture", instance_name=instance),
+                    stack_definition=mock.Mock(addons_path=("/odoo/addons",)),
+                    loaded_environment={"ODOO_ADMIN_PASSWORD": "isolated-bootstrap-password"},
+                )
+            if instance == "local":
+                user.with_context().sudo().write.assert_not_called()
+            else:
+                user.with_context().sudo().write.assert_called_once_with({"password": "isolated-bootstrap-password"})
 
     def test_local_password_commands_forward_container_secrets_without_exposing_them(self) -> None:
         password = " \tdb 'quotes' \"double\" $variables `commands`\\slashes\t "

@@ -451,10 +451,10 @@ admin_user = env['res.users'].sudo().with_context(active_test=False).search(
     [('login', '=', payload['login'])],
     limit=1,
 )
-if payload['nonproduction'] and restored_logins_preserved(env.cr):
-    print('restored_logins_preserved=true')
-elif not admin_user:
+if not admin_user:
     print(f"configured_admin_user_found=false login={payload['login']}")
+elif payload['nonproduction'] and restored_logins_preserved(env.cr):
+    print('restored_logins_preserved=true')
 else:
     try:
         admin_user.with_user(admin_user)._check_credentials(
