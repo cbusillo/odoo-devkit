@@ -249,8 +249,8 @@ Current runtime ownership is intentionally narrow and explicit:
   Restores still normalize the configured administrator's email to a test
   address, including with `--no-sanitize`. An active
   `admin`/`admin` account fails restore preparation and drops the restored database,
-  including on a local instance. A non-production copy with an unsafe restored
-  password fails rather than silently replacing that login. The verified upstream dump remains
+  including on a local instance. A non-production copy whose `admin` or configured
+  administrator still uses `admin` fails rather than silently replacing that login. The verified upstream dump remains
   available for recovery when preparation fails.
   For a disposable local source that still uses the default password, change
   it through Odoo's password settings before taking another copy. Alternatively,
