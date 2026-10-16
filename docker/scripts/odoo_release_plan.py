@@ -140,6 +140,7 @@ def verify_image_declaration(actual: dict[str, Any], expected: dict[str, Any], *
         ("read_write_compatible", False),
         ("modules", []),
         ("examined_inputs_sha256", ""),
+        ("examined_baseline_inputs_sha256", ""),
         ("database_update_modules", None),
     ):
         left, right = actual.get(field, default), expected.get(field, default)

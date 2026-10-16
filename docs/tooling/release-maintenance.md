@@ -40,17 +40,24 @@ builds never execute an XML expression to guess it.
 
 For an examined dependency/base/tool change, first build the immutable inputs
 with `runtime check-artifact`. The examination uses Launchplane's pure
-`release_examined_inputs_sha256` on the normalized manifest; that contract owns
-the fingerprint, so the build does not invent a second algorithm. Provide an
-external JSON file containing only `examined_inputs_sha256` and
+`release_examined_inputs_sha256` on both the normalized candidate manifest and
+the actual verified production manifest; that contract owns the fingerprint,
+so the build does not invent a second algorithm. Provide an external JSON file
+containing only `examined_inputs_sha256` (candidate),
+`examined_baseline_inputs_sha256` (production baseline), and
 `database_update_modules` (an explicit array, including `[]` when examination
 found no database work). Rebuild the same committed inputs using
 `runtime check-artifact --examined-input-plan <file>` or
 `runtime publish --examined-input-plan <file>`. Keep the file outside tracked
 source trees to avoid changing its own fingerprint. The declaration is baked
-into the image and published manifest; Launchplane verifies its fingerprint
-against the actual complete inputs. Its contract requires a matching examined
-fingerprint on the production baseline too. Stale evidence refuses execution.
+into the image and published manifest; Launchplane verifies both fingerprints
+against the actual complete inputs. The production baseline needs a complete
+verified inventory, but no examined plan of its own. If an intermediate build
+was never promoted, re-examine the actual production-to-candidate transition;
+a plan bound to that intermediate build is stale. Publish a newly verified
+artifact rather than editing immutable evidence. Legacy declarations without
+the baseline binding remain readable, but cannot complete an opaque or
+non-module dependency transition. Missing or stale bindings refuse execution.
 This workflow needs no Launchplane connection, credentials or deployment.
 
 The orchestrator sets `ODOO_RELEASE_MODULE_PLAN_FILE` and `ODOO_RELEASE_IMAGE`
