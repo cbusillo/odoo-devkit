@@ -228,18 +228,33 @@ Current runtime ownership is intentionally narrow and explicit:
   tenant database. This preserves boot for tenant databases that renamed or
   removed the default `admin` login while still checking active default admin
   passwords when matching users exist.
-- Startup, bootstrap, restore and post-deploy maintenance verify an existing administrator
+- A non-production restore preserves people's login passwords, including `admin`,
+  even when the lane has a different `ODOO_ADMIN_PASSWORD`. Before the first
+  registry load the restore commits `odoo_devkit.preserve_restored_logins` in
+  the copied database. Startup, local `init` and later maintenance honor it, so a restart or
+  deploy cannot replace a restored login with the lane's bootstrap password.
+  Infrastructure secrets and service API keys still follow the isolated-lane
+  credential boundary. Keep the bootstrap binding populated; public-runtime
+  preflight still requires it. Fresh databases use it normally, and production
+  ignores the copied preservation marker.
+  Changing the bootstrap binding therefore does not reset a restored person's
+  login; use Odoo's account password controls for that intentional change.
+- Startup, bootstrap and post-deploy maintenance on databases without that
+  preservation marker verify an existing administrator
   password before writing it. A matching configured password is left
   unchanged, avoiding password-change emails on ordinary restarts and deploys.
   Actual configured password changes still use Odoo's normal write path and
   security notifications. Quotes and backslashes in configured passwords are
   preserved when passed into the Odoo shell.
-  Restore applies this hardening even with `--no-sanitize`, including normalizing
-  the configured administrator's email to a test address. An active
+  Restores still normalize the configured administrator's email to a test
+  address, including with `--no-sanitize`. An active
   `admin`/`admin` account fails restore preparation and drops the restored database,
-  including on a local instance with no configured password; supply a nonblank
-  `ODOO_ADMIN_PASSWORD` to harden that copy. The verified upstream dump remains
+  including on a local instance. A non-production copy whose `admin` or configured
+  administrator still uses `admin` fails rather than silently replacing that login. The verified upstream dump remains
   available for recovery when preparation fails.
+  For a disposable local source that still uses the default password, change
+  it through Odoo's password settings before taking another copy. Alternatively,
+  bootstrap an empty disposable database with its configured password.
   The same holds for a configured `ODOO_ADMIN_LOGIN` checked by the
   default-password policy.
   Leading/trailing spaces and tabs in `ODOO_ADMIN_PASSWORD` are also literal:

@@ -1609,6 +1609,22 @@ class UpdateAddonsModuleDetectionTests(unittest.TestCase):
 
 
 class EnsureAdminUserTests(unittest.TestCase):
+    def test_restored_login_is_preserved_despite_an_isolated_bootstrap_password(self) -> None:
+        for instance in ("testing", "prod", "production"):
+            with self.subTest(instance=instance):
+                runner = self._runner("isolated-bootstrap-password")
+                runner.local.platform_instance = instance
+                environment = MagicMock()
+                admin = environment["res.users"].sudo().search()
+                admin.with_user.return_value = admin
+                admin._check_credentials.side_effect = PermissionError
+                with patch.object(odoo_data_workflows, "restored_logins_preserved", return_value=True):
+                    self._run_admin_hardening(runner, environment)
+                if instance == "testing":
+                    admin.with_context().sudo().write.assert_not_called()
+                else:
+                    admin.with_context().sudo().write.assert_called_once_with({"password": "isolated-bootstrap-password"})
+
     def test_raw_single_line_admin_password_reaches_the_password_write_literally(self) -> None:
         for password in (" fake-password ", "\tfake-'\"\\-$password\t", "fake-password"):
             with (
@@ -1948,6 +1964,12 @@ class CredentialBoundaryTests(unittest.TestCase):
         self.assertTrue(self.hooks)
         self.assertLess(self.events.index("commit"), self.events.index(self.hooks[0]))
 
+    def test_restore_persists_login_preservation_before_registry_and_maintenance_keeps_it(self) -> None:
+        self.runner.prepare_credentials_before_registry(restored_copy=True)
+        self.runner.prepare_credentials_before_registry()
+        with self.connection("fixture").cursor() as cursor:
+            self.assertTrue(odoo_data_workflows.restored_logins_preserved(cursor))
+
     def test_late_strip_fault_breaks_first_hook_check(self) -> None:
         with self.assertRaisesRegex(AssertionError, "hook ran before override commit"):
             self.run_maintenance(late_boundary=True)
@@ -1970,7 +1992,9 @@ class CredentialBoundaryTests(unittest.TestCase):
 
     def test_production_keeps_credentials_except_explicit_managed_override(self) -> None:
         self.runner.local.platform_instance = "prod"
-        self.runner.prepare_credentials_before_registry()
+        self.runner.prepare_credentials_before_registry(restored_copy=True)
+        with self.connection("fixture").cursor() as cursor:
+            self.assertFalse(odoo_data_workflows.restored_logins_preserved(cursor))
         with sqlite3.connect(self.path) as reader:
             parameters = dict(reader.execute("SELECT key,value FROM ir_config_parameter"))
             self.assertEqual(parameters["web_map.token_map_box"], PRODUCTION_PARAMETERS["web_map.token_map_box"])

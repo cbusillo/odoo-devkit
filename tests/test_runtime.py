@@ -3394,6 +3394,37 @@ sources = [
                 )
                 run_shell.assert_not_called()
 
+    def test_local_init_preserves_restored_login_despite_configured_bootstrap_password(self) -> None:
+        from docker.scripts import odoo_admin_password
+
+        for instance in ("local", "prod"):
+            odoo_env = mock.MagicMock()
+            user = odoo_env["res.users"].sudo().with_context().search()
+
+            def run_shell(*, _environment: mock.MagicMock = odoo_env, **kwargs: object) -> None:
+                exec(str(kwargs["input_text"]), {"env": _environment})
+
+            with (
+                self.subTest(instance=instance),
+                mock.patch.dict(os.environ, {"ODOO_ADMIN_PASSWORD": "isolated-bootstrap-password"}),
+                mock.patch.dict(sys.modules, {"odoo_admin_password": odoo_admin_password}),
+                mock.patch.object(odoo_admin_password, "restored_logins_preserved", return_value=True),
+                mock.patch.object(sys, "path", [str(Path(__file__).resolve().parents[1] / "docker" / "scripts"), *sys.path]),
+                mock.patch.object(local_runtime, "compose_exec_with_input", side_effect=run_shell),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                local_runtime.apply_admin_password_if_configured(
+                    runtime_repo_path=Path("unused"),
+                    runtime_env_file=Path("unused"),
+                    runtime_selection=mock.Mock(database_name="fixture", instance_name=instance),
+                    stack_definition=mock.Mock(addons_path=("/odoo/addons",)),
+                    loaded_environment={"ODOO_ADMIN_PASSWORD": "isolated-bootstrap-password"},
+                )
+            if instance == "local":
+                user.with_context().sudo().write.assert_not_called()
+            else:
+                user.with_context().sudo().write.assert_called_once_with({"password": "isolated-bootstrap-password"})
+
     def test_local_password_commands_forward_container_secrets_without_exposing_them(self) -> None:
         password = " \tdb 'quotes' \"double\" $variables `commands`\\slashes\t "
         admin_password = " \tadmin 'quotes' \"double\" $variables `commands`\\slashes\t "
@@ -3501,7 +3532,12 @@ sources = [
                         elif name == "admin":
                             users = mock.MagicMock()
                             user = users.sudo.return_value.with_context.return_value.search.return_value
-                            with mock.patch.dict(os.environ, environment):
+                            with (
+                                mock.patch.dict(os.environ, environment),
+                                mock.patch.object(
+                                    sys, "path", [str(Path(__file__).resolve().parents[1] / "docker" / "scripts"), *sys.path]
+                                ),
+                            ):
                                 odoo_env = mock.MagicMock()
                                 odoo_env.__getitem__.return_value = users
                                 exec(input_script, {"env": odoo_env})

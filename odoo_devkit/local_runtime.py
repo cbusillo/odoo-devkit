@@ -3995,12 +3995,17 @@ def apply_admin_password_if_configured(
         "--db_port=5432",
         f"--db_user={loaded_environment.get('ODOO_DB_USER', 'odoo')}",
     ]
-    script_payload = {"login": configured_admin_login}
+    script_payload = {"login": configured_admin_login, "instance": runtime_selection.instance_name}
     odoo_shell_script = textwrap.dedent(
         """
         import json
 
         import os
+        import sys
+
+        sys.path.insert(0, '/volumes/scripts')
+        from odoo_admin_password import restored_logins_preserved
+        from odoo_website_settings import PRODUCTION_INSTANCE_NAMES
 
         payload = json.loads(__PAYLOAD__)
         admin_user = env['res.users'].sudo().with_context(active_test=False).search(
@@ -4009,9 +4014,12 @@ def apply_admin_password_if_configured(
         )
         if not admin_user:
             raise ValueError(f"Configured admin user not found: {payload['login']}")
-        admin_user.with_context(no_reset_password=True).sudo().write({'password': os.environ['ODOO_ADMIN_PASSWORD']})
-        print("admin_password_updated=true")
-        env.cr.commit()
+        elif payload['instance'].strip().lower() not in PRODUCTION_INSTANCE_NAMES and restored_logins_preserved(env.cr):
+            print('restored_logins_preserved=true')
+        else:
+            admin_user.with_context(no_reset_password=True).sudo().write({'password': os.environ['ODOO_ADMIN_PASSWORD']})
+            print("admin_password_updated=true")
+            env.cr.commit()
         """
     ).replace("__PAYLOAD__", repr(json.dumps(script_payload)))
     compose_exec_with_input(

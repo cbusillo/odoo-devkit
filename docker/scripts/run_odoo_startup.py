@@ -24,6 +24,7 @@ from pathlib import Path
 
 import psycopg2
 from odoo_admin_password import validate_admin_password
+from odoo_website_settings import PRODUCTION_INSTANCE_NAMES
 
 RUNTIME_OPTION_MAP: tuple[tuple[str, str], ...] = (
     ("ODOO_DB_MAXCONN", "db_maxconn"),
@@ -438,9 +439,11 @@ def _apply_admin_password_if_configured(settings: StartupSettings) -> None:
     payload = {
         "login": settings.admin_login,
         "password": settings.admin_password,
+        "nonproduction": settings.platform_instance.strip().lower() not in PRODUCTION_INSTANCE_NAMES,
     }
     script = """
 import json
+from odoo_admin_password import restored_logins_preserved
 from odoo.exceptions import AccessDenied
 
 payload = json.loads(__PAYLOAD__)
@@ -450,6 +453,8 @@ admin_user = env['res.users'].sudo().with_context(active_test=False).search(
 )
 if not admin_user:
     print(f"configured_admin_user_found=false login={payload['login']}")
+elif payload['nonproduction'] and restored_logins_preserved(env.cr):
+    print('restored_logins_preserved=true')
 else:
     try:
         admin_user.with_user(admin_user)._check_credentials(

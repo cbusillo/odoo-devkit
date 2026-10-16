@@ -444,6 +444,16 @@ Notes
   password must be configured before the startup wrapper marks the runtime
   usable. Those three developer instance names may omit the admin password,
   but previews, testing, and prod must not expose an Odoo database with default credentials.
+- A restore onto any non-production instance commits a login-preservation
+  marker before the first registry load, including with `--no-sanitize`.
+  Restore, subsequent startup and maintenance preserve the copied login
+  passwords, including the configured administrator, even when the lane's
+  isolated bootstrap password differs. Keep `ODOO_ADMIN_PASSWORD` configured:
+  public preflight still requires it, and fresh databases still use it.
+  The active default-password refusal still runs; an unsafe restored login
+  fails preparation instead of being rotated. Production ignores the marker.
+  Infrastructure credentials, user API keys and outbound integrations still
+  follow the existing sanitization and lane-secret rules below.
 - Devkit-managed startup Odoo launches and data workflow Odoo shell subprocesses prepend
   `/volumes/scripts` to `PYTHONPATH` so shipped runtime helpers remain
   importable from generated shell snippets.
