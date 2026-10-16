@@ -23,7 +23,7 @@ from typing import Any
 from unittest.mock import patch
 
 import psycopg2
-from odoo_admin_password import validate_admin_password
+from odoo_admin_password import RESTORED_LOGINS_PARAMETER, restored_logins_preserved, validate_admin_password
 from odoo_release_plan import load_plan, names, resolve_plan, verify_image_declaration
 from odoo_website_bootstrap import load_instance_override_payload, require_launchplane_payloads_if_configured
 from odoo_website_settings import PRODUCTION_INSTANCE_NAMES
@@ -1684,6 +1684,8 @@ class OdooDataWorkflowRunner:
             if restored_copy:
                 self.fingerprint_restored_credentials()
                 self.neutralize_production_credentials(commit=False)
+                if not self._is_production_instance():
+                    parameters[RESTORED_LOGINS_PARAMETER] = "true"
             if do_sanitize:
                 self.sanitize_database()
             if restored_copy:
@@ -1965,6 +1967,7 @@ with registry.cursor() as cr:
         configured_admin_login = (self.local.admin_login or "").strip() or "admin"
         database_connection = self.connect_to_db()
         with database_connection.cursor() as cursor:
+            preserve_password = not self._is_production_instance() and restored_logins_preserved(cursor)
             cursor.execute("SELECT id, partner_id FROM res_users WHERE login=%s LIMIT 1", (configured_admin_login,))
             row = cursor.fetchone()
         if not row:
@@ -1974,7 +1977,7 @@ with registry.cursor() as cr:
 
         set_password = False
         password_plain: str | None = None
-        if self.local.admin_password:
+        if self.local.admin_password and not preserve_password:
             candidate = self.local.admin_password.get_secret_value()
             if candidate:
                 set_password = True

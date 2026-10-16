@@ -80,7 +80,8 @@ passwords produce no second write, both startup and data-workflow settings
 payloads apply through the installed addon, startup parses real environment
 settings, bootstrap initializes and hardens
 the administrator, and restores replace database and filestore contents, harden
-the administrator and drop a failed partial restore. A synthetic `ir.attachment`
+the administrator on fresh databases, preserve every restored login through
+startup and maintenance, and drop a failed partial restore. A synthetic `ir.attachment`
 is created in the source and read back through Odoo after restore, proving that
 the copied filestore is the one Odoo serves. The devkit-check mode records the
 base image ID and repository digests and builds from that resolved digest when

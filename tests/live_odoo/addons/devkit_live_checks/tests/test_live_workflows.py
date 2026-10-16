@@ -297,11 +297,15 @@ class TestLiveWorkflows(TransactionCase):
             env={**os.environ, **cls.environment},
         )
         query(cls.source, "INSERT INTO ir_config_parameter (key,value) VALUES ('devkit.ci.origin','source')")
+        query(cls.source, "UPDATE res_users SET password=%s WHERE login='admin'", (CRYPT.hash("synthetic-person-password"),))
         cls.attachment_bytes = b"synthetic attachment bytes\x00\xff"
         encoded = base64.b64encode(cls.attachment_bytes).decode()
         run(
             ["/odoo/odoo-bin", "shell", "--config", str(cls.generated_config), "--database", cls.source, "--no-http"],
             input=(
+                "env['res.users'].create(["
+                "{'name':'Restored staff','login':'restored-staff','password':'synthetic-staff-password'},"
+                "{'name':'Archived staff','login':'archived-staff','password':'synthetic-archived-password','active':False}])\n"
                 "attachment = env['ir.attachment'].create({"
                 f"'name': 'devkit-ci-attachment', 'type': 'binary', 'datas': {encoded!r}"
                 "})\nassert attachment.store_fname\nenv.cr.commit()\n"
@@ -397,6 +401,7 @@ os.execv('/bin/bash', ['bash', '-c', command])
 
     def test_public_startup_rejects_default_admin_before_exec(self) -> None:
         def check(runner: workflows.OdooDataWorkflowRunner) -> None:
+            query(runner.local.db_name, "UPDATE res_users SET password=%s WHERE login='admin'", (CRYPT.hash("admin"),))
             # A missing configured login leaves the active admin/admin untouched.
             # This reaches the real policy after the real initialization/hardening phases.
             settings = self.startup_settings(runner, admin_login="absent-configured-admin")
@@ -516,7 +521,11 @@ os.execv('/bin/bash', ['bash', '-c', command])
             ).encode(),
             env=runner.os_env,
         )
-        self.assert_password(runner)
+        self.assertEqual(
+            query(runner.local.db_name, "SELECT login,password FROM res_users ORDER BY id"),
+            query(self.source, "SELECT login,password FROM res_users ORDER BY id"),
+            "Restored login passwords changed",
+        )
 
     def test_restore_replaces_database(self) -> None:
         self.guarded(
@@ -532,11 +541,24 @@ os.execv('/bin/bash', ['bash', '-c', command])
             fault_message="Source attachment was not copied",
         )
 
-    def test_restore_hardens_admin(self) -> None:
+    def test_restore_preserves_logins_through_startup_and_maintenance(self) -> None:
+        def check(runner: workflows.OdooDataWorkflowRunner) -> None:
+            self.restore_check(runner)
+            settings = self.startup_settings(runner)
+            startup._write_runtime_config(settings)
+            startup._apply_admin_password_if_configured(settings)
+            runner.run_post_deploy_maintenance()
+            startup._apply_admin_password_if_configured(settings)
+            self.assertEqual(
+                query(runner.local.db_name, "SELECT login,password FROM res_users ORDER BY id"),
+                query(self.source, "SELECT login,password FROM res_users ORDER BY id"),
+                "Restored login passwords changed",
+            )
+
         self.guarded(
-            self.restore_check,
-            lambda runner: patch.object(runner, "ensure_admin_user"),
-            fault_message="Configured admin password was not applied",
+            check,
+            lambda runner: patch.object(workflows, "restored_logins_preserved", return_value=False),
+            fault_message="Restored login passwords changed",
         )
 
     def test_failed_restore_drops_partial_database(self) -> None:
