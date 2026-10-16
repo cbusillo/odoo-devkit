@@ -1975,6 +1975,8 @@ with registry.cursor() as cr:
             return
         _, partner_id = row
 
+        if preserve_password:
+            _logger.info("Preserving restored login password; the lane bootstrap password is not applied.")
         set_password = False
         password_plain: str | None = None
         if self.local.admin_password and not preserve_password:

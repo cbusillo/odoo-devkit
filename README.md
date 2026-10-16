@@ -231,12 +231,14 @@ Current runtime ownership is intentionally narrow and explicit:
 - A non-production restore preserves people's login passwords, including `admin`,
   even when the lane has a different `ODOO_ADMIN_PASSWORD`. Before the first
   registry load the restore commits `odoo_devkit.preserve_restored_logins` in
-  the copied database. Startup and later maintenance honor it, so a restart or
+  the copied database. Startup, local `init` and later maintenance honor it, so a restart or
   deploy cannot replace a restored login with the lane's bootstrap password.
   Infrastructure secrets and service API keys still follow the isolated-lane
   credential boundary. Keep the bootstrap binding populated; public-runtime
   preflight still requires it. Fresh databases use it normally, and production
   ignores the copied preservation marker.
+  Changing the bootstrap binding therefore does not reset a restored person's
+  login; use Odoo's account password controls for that intentional change.
 - Startup, bootstrap and post-deploy maintenance on databases without that
   preservation marker verify an existing administrator
   password before writing it. A matching configured password is left
@@ -250,6 +252,9 @@ Current runtime ownership is intentionally narrow and explicit:
   including on a local instance. A non-production copy with an unsafe restored
   password fails rather than silently replacing that login. The verified upstream dump remains
   available for recovery when preparation fails.
+  For a disposable local source that still uses the default password, change
+  it through Odoo's password settings before taking another copy. Alternatively,
+  bootstrap an empty disposable database with its configured password.
   The same holds for a configured `ODOO_ADMIN_LOGIN` checked by the
   default-password policy.
   Leading/trailing spaces and tabs in `ODOO_ADMIN_PASSWORD` are also literal:
