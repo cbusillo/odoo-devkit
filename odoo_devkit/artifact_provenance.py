@@ -29,16 +29,17 @@ def load_examined_input_plan(path: Path) -> dict[str, object]:
     """Accept provenance and module names only, before staging any build input."""
     payload = _load_json_object(path)
     modules = payload.get("database_update_modules")
-    fingerprint = payload.get("examined_inputs_sha256")
+    fingerprints = [payload.get(field) for field in ("examined_inputs_sha256", "examined_baseline_inputs_sha256")]
     if (
-        set(payload) != {"examined_inputs_sha256", "database_update_modules"}
-        or not isinstance(fingerprint, str)
-        or _SHA256_PATTERN.fullmatch(fingerprint) is None
+        set(payload) != {"examined_inputs_sha256", "examined_baseline_inputs_sha256", "database_update_modules"}
+        or any(not isinstance(value, str) or _SHA256_PATTERN.fullmatch(value) is None for value in fingerprints)
         or not isinstance(modules, list)
         or any(not isinstance(name, str) or re.fullmatch(r"[A-Za-z0-9_]+", name) is None for name in modules)
         or len(modules) != len(set(modules))
     ):
-        raise ArtifactProvenanceError("Examined input plan requires a canonical fingerprint and an explicit module array")
+        raise ArtifactProvenanceError(
+            "Examined input plan requires canonical candidate/baseline fingerprints and an explicit module array"
+        )
     return payload
 
 

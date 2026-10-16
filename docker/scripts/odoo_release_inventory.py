@@ -276,18 +276,18 @@ def build_inventory(metadata: dict[str, Any]) -> dict[str, Any]:
     complete = data_complete and all(not dependencies - graph.keys() for dependencies in graph.values())
     examined = metadata.get("examined_input_plan") or {}
     if examined:
-        fingerprint = examined.get("examined_inputs_sha256", "")
+        fingerprints = [examined.get(field) for field in ("examined_inputs_sha256", "examined_baseline_inputs_sha256")]
         modules = examined.get("database_update_modules")
         if (
-            set(examined) != {"examined_inputs_sha256", "database_update_modules"}
-            or not isinstance(fingerprint, str)
-            or len(fingerprint) != 64
-            or any(char not in "0123456789abcdef" for char in fingerprint)
+            set(examined) != {"examined_inputs_sha256", "examined_baseline_inputs_sha256", "database_update_modules"}
+            or any(not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None for value in fingerprints)
             or not isinstance(modules, list)
             or any(not isinstance(name, str) or name not in graph for name in modules)
             or len(modules) != len(set(modules))
         ):
-            raise ValueError("Examined input plan requires its canonical fingerprint and explicit known module names")
+            raise ValueError(
+                "Examined input plan requires canonical candidate/baseline fingerprints and explicit known module names"
+            )
     for source in sources:
         if source["input_name"] in {"base:runtime", "base:devtools"}:
             files = sorted(source["files"], key=lambda item: item["path"])
@@ -330,6 +330,7 @@ def build_inventory(metadata: dict[str, Any]) -> dict[str, Any]:
         "sources": sources,
         "modules": [{"name": name, "depends": sorted(dependencies)} for name, dependencies in sorted(graph.items())],
         "examined_inputs_sha256": examined.get("examined_inputs_sha256", ""),
+        "examined_baseline_inputs_sha256": examined.get("examined_baseline_inputs_sha256", ""),
         "database_update_modules": examined.get("database_update_modules"),
     }
 

@@ -220,7 +220,11 @@ class ReleaseMaintenanceTests(unittest.TestCase):
                     {"input_name": "tenant", "repository": "fixture/tenant", "commit": "a" * 40, "roots": [str(root / "tenant")]}
                 ],
                 "addon_paths": [str(root / "tenant"), str(root / "shared")],
-                "examined_input_plan": {"examined_inputs_sha256": "b" * 64, "database_update_modules": ["module"]},
+                "examined_input_plan": {
+                    "examined_inputs_sha256": "b" * 64,
+                    "examined_baseline_inputs_sha256": "c" * 64,
+                    "database_update_modules": ["module"],
+                },
             }
             declaration = inventory.build_inventory(metadata)
             self.assertTrue(declaration["complete"])
@@ -229,12 +233,64 @@ class ReleaseMaintenanceTests(unittest.TestCase):
             file = root / "examined.json"
             file.write_text(json.dumps(metadata["examined_input_plan"]))
             self.assertEqual(load_examined_input_plan(file), metadata["examined_input_plan"])
+            for field, value in metadata["examined_input_plan"].items():
+                self.assertEqual(declaration[field], value)
+            output = root / "linux_amd64"
+            output.mkdir()
+            (output / "dependency-provenance.json").write_text(json.dumps({"target_platform": "linux/amd64"}))
+            (output / "release-compatibility.json").write_text(json.dumps(declaration))
+            merged = aggregate_release_inventories(evidence_root=root, expected_platforms=("linux/amd64",))
+            plan.verify_image_declaration(declaration, merged, platform="linux/amd64")
+            for field, value in metadata["examined_input_plan"].items():
+                self.assertEqual(merged[field], value)
+            for baseline in ("", "d" * 64, None):
+                mismatched = copy.deepcopy(merged)
+                if baseline is None:
+                    mismatched.pop("examined_baseline_inputs_sha256")
+                else:
+                    mismatched["examined_baseline_inputs_sha256"] = baseline
+                with self.subTest(baseline=baseline), self.assertRaises(ValueError):
+                    plan.verify_image_declaration(declaration, mismatched, platform="linux/amd64")
+                with self.subTest(image_baseline=baseline), self.assertRaises(ValueError):
+                    plan.verify_image_declaration(mismatched, declaration, platform="linux/amd64")
             metadata["examined_input_plan"]["database_update_modules"] = ["missing"]
             with self.assertRaises(ValueError):
                 inventory.build_inventory(metadata)
             file.write_text(json.dumps({**metadata["examined_input_plan"], "token": "inert"}))
             with self.assertRaises(ArtifactProvenanceError):
                 load_examined_input_plan(file)
+
+    def test_examined_plan_requires_both_fingerprints_and_explicit_modules(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            file = root / "examined.json"
+            valid = {
+                "examined_inputs_sha256": "b" * 64,
+                "examined_baseline_inputs_sha256": "c" * 64,
+                "database_update_modules": [],
+            }
+            file.write_text(json.dumps(valid))
+            self.assertEqual(load_examined_input_plan(file), valid)
+            declaration = inventory.build_inventory({"sources": [], "examined_input_plan": valid})
+            self.assertEqual(declaration["database_update_modules"], [])
+            for field in valid:
+                invalid_values = (None, "", "g" * 64, "c" * 63, 42) if field != "database_update_modules" else (None, "", [42])
+                for value in (*invalid_values, "missing-field"):
+                    invalid = {**valid, field: value}
+                    if value == "missing-field":
+                        invalid.pop(field)
+                    file.write_text(json.dumps(invalid))
+                    with self.subTest(field=field, value=value):
+                        with self.assertRaises(ArtifactProvenanceError):
+                            load_examined_input_plan(file)
+                        with self.assertRaises(ValueError):
+                            inventory.build_inventory({"sources": [], "examined_input_plan": invalid})
+
+    def test_legacy_image_declarations_remain_readable(self) -> None:
+        declaration = inventory.build_inventory({"sources": []})
+        legacy = {key: value for key, value in declaration.items() if key != "examined_baseline_inputs_sha256"}
+        plan.verify_image_declaration(legacy, declaration, platform="linux/amd64")
+        plan.verify_image_declaration(declaration, legacy, platform="linux/amd64")
 
     def test_platform_native_inputs_are_retained_and_graph_disagreement_refuses(self) -> None:
         platforms = ("linux/amd64", "linux/arm64")
