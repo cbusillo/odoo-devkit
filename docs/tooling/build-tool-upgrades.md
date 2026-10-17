@@ -26,11 +26,21 @@ uv run python -m odoo_devkit.build_tool_sync \
 
 Add `--check` to exit nonzero when any synchronized value differs,
 `--check-build-tools` to ignore unrelated devkit-ref movement and fail only on
-centrally managed addon pin drift, or `--apply` to update the tenant's
-`workspace.toml` devkit/runtime refs and matching addon build-tool pins as one
-transaction. Apply mode reparses every changed TOML file, verifies the exact
-catalog contract, and runs the tenant's offline uv lock check. Any failure
-restores every touched file.
+centrally managed pin drift, or `--apply` to update the tenant's
+`workspace.toml` devkit/runtime refs, matching addon build-tool pins and
+support-owned lock versions as one transaction. Apply mode reparses every
+changed TOML file, verifies the exact catalog contract, and runs the tenant's
+offline uv lock check. Any failure restores every touched file.
+
+The support lock and the tenant lock install into one interpreter, so a package
+both lock must resolve to the support lock's version or the base runtime
+dependency preflight rejects the build. The plan reports each difference as a
+`support-lock:<package>` change in `uv.lock`, and `--check-build-tools` fails
+on it, so a runtime-python update a tenant has not taken shows up in that
+tenant's scheduled drift check. `--apply` relocks only those packages to the
+support versions and verifies that no difference remains. Regenerate any
+tenant file exported from its lock, such as `tenant-requirements.txt`, with the
+tenant's own export command before committing.
 
 The command owns deterministic file transformation and validation only.
 Launchplane owns repository inventory, credentials, branch creation, pull

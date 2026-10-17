@@ -184,6 +184,77 @@ class BuildToolSyncTest(unittest.TestCase):
             self.assertTrue(plan.changed)
             self.assertFalse(plan.build_tool_changed)
 
+    def test_plan_reports_tenant_lock_drift_from_support_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            support_packages = {"shared-core": "2.0.0", "support-only": "1.0.0"}
+            tenant_root, devkit_root, devkit_ref = self._write_fixture(
+                Path(temporary_directory), support_lock_packages=support_packages
+            )
+            tenant_packages = {"shared-core": "1.9.0", "tenant-only": "3.0.0"}
+            self._add_tenant_lock_packages(tenant_root, tenant_packages)
+            addon_path = tenant_root / "addons" / "example" / "pyproject.toml"
+            addon_path.write_text(addon_path.read_text().replace("hatchling==1.31.0", "hatchling==1.32.0"))
+
+            plan = plan_build_tool_sync(tenant_root=tenant_root, devkit_root=devkit_root, devkit_ref=devkit_ref)
+
+            self.assertTrue(plan.build_tool_changed)
+            self.assertEqual(plan.support_lock_pins, {"shared-core": support_packages["shared-core"]})
+            lock_changes = [change for change in plan.changes if change.path == "uv.lock"]
+            self.assertEqual(
+                [(change.before, change.after) for change in lock_changes],
+                [(tenant_packages["shared-core"], support_packages["shared-core"])],
+            )
+
+    def test_plan_accepts_tenant_lock_matching_support_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            support_packages = {"shared-core": "2.0.0"}
+            tenant_root, devkit_root, devkit_ref = self._write_fixture(
+                Path(temporary_directory), support_lock_packages=support_packages
+            )
+            self._add_tenant_lock_packages(tenant_root, support_packages)
+            addon_path = tenant_root / "addons" / "example" / "pyproject.toml"
+            addon_path.write_text(addon_path.read_text().replace("hatchling==1.31.0", "hatchling==1.32.0"))
+
+            plan = plan_build_tool_sync(tenant_root=tenant_root, devkit_root=devkit_root, devkit_ref=devkit_ref)
+
+            self.assertFalse(plan.build_tool_changed)
+            self.assertEqual(plan.support_lock_pins, {})
+
+    def test_apply_restores_tenant_lock_when_alignment_leaves_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            support_packages = {"shared-core": "2.0.0"}
+            tenant_root, devkit_root, devkit_ref = self._write_fixture(
+                Path(temporary_directory), support_lock_packages=support_packages
+            )
+            self._add_tenant_lock_packages(tenant_root, {"shared-core": "1.9.0"})
+            plan = plan_build_tool_sync(tenant_root=tenant_root, devkit_root=devkit_root, devkit_ref=devkit_ref)
+            tenant_lock_path = tenant_root / "uv.lock"
+            originals = {path: path.read_bytes() for path in (*plan.rendered_files, tenant_lock_path)}
+
+            def unrelated_relock(*, tenant_root: Path, pins: dict[str, str]) -> None:
+                tenant_lock_path.write_text(tenant_lock_path.read_text() + "\n")
+
+            with (
+                mock.patch("odoo_devkit.build_tool_sync._relock_tenant_support_packages", side_effect=unrelated_relock) as relock,
+                self.assertRaisesRegex(BuildToolSyncError, "still differs from the devkit support lock"),
+            ):
+                apply_build_tool_sync(plan)
+
+            relock.assert_called_once_with(tenant_root=plan.tenant_root, pins=plan.support_lock_pins)
+            self.assertEqual(originals, {path: path.read_bytes() for path in originals})
+
+    @staticmethod
+    def _add_tenant_lock_packages(tenant_root: Path, packages: dict[str, str]) -> None:
+        lock_path = tenant_root / "uv.lock"
+        lock_path.write_text(lock_path.read_text() + BuildToolSyncTest._lock_packages(packages))
+
+    @staticmethod
+    def _lock_packages(packages: dict[str, str]) -> str:
+        return "".join(
+            f'\n[[package]]\nname = "{name}"\nversion = "{version}"\nsource = {{ registry = "https://pypi.org/simple" }}\n'
+            for name, version in packages.items()
+        )
+
     @staticmethod
     def _expected_requirements(tenant_root: Path, devkit_root: Path) -> list[str]:
         original = tomllib.loads((tenant_root / "addons" / "example" / "pyproject.toml").read_text())["build-system"]["requires"]
@@ -198,7 +269,7 @@ class BuildToolSyncTest(unittest.TestCase):
         return expected
 
     @staticmethod
-    def _write_fixture(root: Path) -> tuple[Path, Path, str]:
+    def _write_fixture(root: Path, *, support_lock_packages: dict[str, str] | None = None) -> tuple[Path, Path, str]:
         tenant_root = root / "tenant"
         devkit_root = root / "devkit"
         (tenant_root / "addons" / "example").mkdir(parents=True)
@@ -217,7 +288,10 @@ class BuildToolSyncTest(unittest.TestCase):
             '[project]\nname = "runtime"\nversion = "0.0.0"\n'
             'dependencies = ["hatchling==1.32.0", "tenant-builder==2.0.0", "passlib>=1.7.4"]\n'
         )
-        (devkit_root / "docker" / "runtime-python" / "uv.lock").write_text("version = 1\n")
+        (devkit_root / "docker" / "runtime-python" / "uv.lock").write_text(
+            "version = 1\n" + BuildToolSyncTest._lock_packages(support_lock_packages or {})
+        )
+        subprocess.run(["uv", "lock", "--offline", "--no-config"], cwd=tenant_root, check=True, capture_output=True, text=True)
         subprocess.run(["git", "init", "--quiet"], cwd=devkit_root, check=True)
         subprocess.run(["git", "config", "user.name", "Test"], cwd=devkit_root, check=True)
         subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=devkit_root, check=True)

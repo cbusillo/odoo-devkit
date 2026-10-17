@@ -21,6 +21,8 @@ _FULL_GIT_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 _SECTION_PATTERN_TEMPLATE = r"(?ms)^\[{section}\]\s*$.*?(?=^\[|\Z)"
 _REF_PATTERN = re.compile(r"(?m)^(?P<prefix>\s*ref\s*=\s*)(?P<quote>[\"'])(?P<value>[^\"']+)(?P=quote)(?P<suffix>\s*(?:#.*)?)$")
 _IGNORED_ADDON_PATH_PARTS = frozenset({".git", ".venv", "build", "dist", "__pycache__"})
+_LOCAL_LOCK_SOURCE_KEYS = frozenset({"virtual", "editable", "directory", "path"})
+_SUPPORT_LOCK_CHANGE_PREFIX = "support-lock:"
 
 
 class BuildToolSyncError(ValueError):
@@ -51,6 +53,7 @@ class BuildToolSyncPlan:
     catalog: dict[str, str]
     rendered_files: dict[Path, str]
     changes: tuple[BuildToolChange, ...]
+    support_lock_pins: dict[str, str]
 
     @property
     def changed(self) -> bool:
@@ -58,7 +61,7 @@ class BuildToolSyncPlan:
 
     @property
     def build_tool_changed(self) -> bool:
-        return any(change.kind.startswith("build-system.requires:") for change in self.changes)
+        return any(change.kind.startswith(("build-system.requires:", _SUPPORT_LOCK_CHANGE_PREFIX)) for change in self.changes)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -109,6 +112,15 @@ def plan_build_tool_sync(*, tenant_root: Path, devkit_root: Path, devkit_ref: st
             rendered_files[pyproject_path] = rendered_text
             changes.extend(file_changes)
 
+    # The support and tenant locks install into one interpreter, so every
+    # package both lock must resolve to the support lock's version.
+    support_lock_pins, support_lock_changes = _plan_support_lock_alignment(
+        support_lock_path=devkit_root / "docker" / "runtime-python" / "uv.lock",
+        tenant_lock_path=tenant_root / "uv.lock",
+        tenant_root=tenant_root,
+    )
+    changes.extend(support_lock_changes)
+
     return BuildToolSyncPlan(
         tenant_root=tenant_root,
         devkit_root=devkit_root,
@@ -116,14 +128,20 @@ def plan_build_tool_sync(*, tenant_root: Path, devkit_root: Path, devkit_ref: st
         catalog=catalog,
         rendered_files=rendered_files,
         changes=tuple(changes),
+        support_lock_pins=support_lock_pins,
     )
 
 
 def apply_build_tool_sync(plan: BuildToolSyncPlan) -> None:
     originals = {path: path.read_bytes() for path in plan.rendered_files}
+    if plan.support_lock_pins:
+        tenant_lock_path = plan.tenant_root / "uv.lock"
+        originals[tenant_lock_path] = tenant_lock_path.read_bytes()
     try:
         for path, rendered_text in plan.rendered_files.items():
             _atomic_write_text(path=path, content=rendered_text)
+        if plan.support_lock_pins:
+            _relock_tenant_support_packages(tenant_root=plan.tenant_root, pins=plan.support_lock_pins)
         _validate_applied_plan(plan)
     except Exception as error:
         rollback_failures: list[str] = []
@@ -163,6 +181,77 @@ def _load_exact_catalog(path: Path) -> dict[str, str]:
     if not catalog:
         raise BuildToolSyncError(f"{path} does not contain any exact build-tool requirements.")
     return catalog
+
+
+def _plan_support_lock_alignment(
+    *,
+    support_lock_path: Path,
+    tenant_lock_path: Path,
+    tenant_root: Path,
+) -> tuple[dict[str, str], tuple[BuildToolChange, ...]]:
+    support_versions = _load_locked_versions(support_lock_path)
+    tenant_versions = _load_locked_versions(tenant_lock_path)
+    pins: dict[str, str] = {}
+    changes: list[BuildToolChange] = []
+    for name in sorted(support_versions.keys() & tenant_versions.keys()):
+        if tenant_versions[name] == support_versions[name]:
+            continue
+        if len(support_versions[name]) != 1:
+            raise BuildToolSyncError(
+                f"Support lock resolves {name} to several versions ({', '.join(support_versions[name])}); "
+                "the tenant lock cannot be aligned to one."
+            )
+        pins[name] = support_versions[name][0]
+        changes.append(
+            BuildToolChange(
+                path=tenant_lock_path.relative_to(tenant_root).as_posix(),
+                kind=f"{_SUPPORT_LOCK_CHANGE_PREFIX}{name}",
+                before=", ".join(tenant_versions[name]),
+                after=pins[name],
+            )
+        )
+    return pins, tuple(changes)
+
+
+def _load_locked_versions(path: Path) -> dict[str, tuple[str, ...]]:
+    packages = _load_toml(path).get("package", [])
+    if not isinstance(packages, list):
+        raise BuildToolSyncError(f"{path} package entries must be an array.")
+    versions: dict[str, set[str]] = {}
+    for package in packages:
+        if not isinstance(package, dict):
+            raise BuildToolSyncError(f"{path} contains a malformed package entry.")
+        source = package.get("source", {})
+        if isinstance(source, dict) and _LOCAL_LOCK_SOURCE_KEYS.intersection(source):
+            continue
+        name = package.get("name")
+        version = package.get("version")
+        if not isinstance(name, str) or not isinstance(version, str):
+            raise BuildToolSyncError(f"{path} contains a package entry without a name and version.")
+        versions.setdefault(_normalize_requirement_name(name), set()).add(version)
+    return {name: tuple(sorted(found)) for name, found in versions.items()}
+
+
+def _relock_tenant_support_packages(*, tenant_root: Path, pins: dict[str, str]) -> None:
+    command = ["uv", "lock", "--no-config"]
+    for name, version in sorted(pins.items()):
+        command.extend(("--upgrade-package", f"{name}=={version}"))
+    try:
+        result = subprocess.run(
+            command,
+            cwd=tenant_root,
+            capture_output=True,
+            text=True,
+            env=_sanitized_command_environment(),
+            timeout=300,
+        )
+    except FileNotFoundError as error:
+        raise BuildToolSyncError("uv is required to align the tenant lock.") from error
+    except subprocess.TimeoutExpired as error:
+        raise BuildToolSyncError("Tenant lock alignment timed out after 300 seconds.") from error
+    if result.returncode != 0:
+        message = result.stderr.strip() or result.stdout.strip() or "uv lock failed"
+        raise BuildToolSyncError(f"Tenant lock alignment failed: {message}")
 
 
 def _render_workspace_refs(
@@ -285,6 +374,14 @@ def _validate_applied_plan(plan: BuildToolSyncPlan) -> None:
         )
     except DependencyWorkspaceError as error:
         raise BuildToolSyncError(str(error)) from error
+    _pins, remaining_drift = _plan_support_lock_alignment(
+        support_lock_path=plan.devkit_root / "docker" / "runtime-python" / "uv.lock",
+        tenant_lock_path=plan.tenant_root / "uv.lock",
+        tenant_root=plan.tenant_root,
+    )
+    if remaining_drift:
+        drift = ", ".join(f"{change.kind.removeprefix(_SUPPORT_LOCK_CHANGE_PREFIX)} {change.before}" for change in remaining_drift)
+        raise BuildToolSyncError(f"Tenant lock still differs from the devkit support lock: {drift}")
     try:
         result = subprocess.run(
             ["uv", "lock", "--check", "--offline", "--no-config"],
@@ -439,7 +536,10 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument(
         "--check-build-tools",
         action="store_true",
-        help="Exit nonzero only when centrally managed addon build-tool pins differ from the catalog.",
+        help=(
+            "Exit nonzero only when centrally managed addon build-tool pins differ from the catalog "
+            "or the tenant lock differs from the devkit support lock."
+        ),
     )
     mode.add_argument("--apply", action="store_true", help="Apply the planned changes and validate the result atomically.")
     return parser
