@@ -243,6 +243,35 @@ class BuildToolSyncTest(unittest.TestCase):
             relock.assert_called_once_with(tenant_root=plan.tenant_root, pins=plan.support_lock_pins)
             self.assertEqual(originals, {path: path.read_bytes() for path in originals})
 
+    def test_apply_moves_devkit_workflow_pins_with_workspace_refs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            tenant_root, devkit_root, devkit_ref = self._write_fixture(Path(temporary_directory))
+            devkit_repository = "example/odoo-devkit"
+            workspace_path = tenant_root / "workspace.toml"
+            workspace_path.write_text(
+                workspace_path.read_text().replace("[repos.devkit]\n", f'[repos.devkit]\nrepository = "{devkit_repository}"\n')
+            )
+            previous_ref = "a" * 40
+            unrelated_pins = [f"example/other-tool@{previous_ref}", f"{devkit_repository}/.github/actions/addon-tests@main"]
+            workflow_path = tenant_root / ".github" / "workflows" / "addon-tests.yml"
+            workflow_path.parent.mkdir(parents=True)
+            workflow_path.write_text(
+                "jobs:\n  test:\n    steps:\n"
+                f"      - uses: {devkit_repository}/.github/actions/addon-tests@{previous_ref}\n"
+                + "".join(f"      - uses: {pin}\n" for pin in unrelated_pins)
+            )
+
+            plan = plan_build_tool_sync(tenant_root=tenant_root, devkit_root=devkit_root, devkit_ref=devkit_ref)
+            apply_build_tool_sync(plan)
+
+            workflow_text = workflow_path.read_text()
+            self.assertIn(f"uses: {devkit_repository}/.github/actions/addon-tests@{devkit_ref}\n", workflow_text)
+            self.assertNotIn(f"{devkit_repository}/.github/actions/addon-tests@{previous_ref}", workflow_text)
+            for pin in unrelated_pins:
+                self.assertIn(f"uses: {pin}\n", workflow_text)
+            workflow_changes = [change for change in plan.changes if change.path == ".github/workflows/addon-tests.yml"]
+            self.assertEqual([(change.before, change.after) for change in workflow_changes], [(previous_ref, devkit_ref)])
+
     @staticmethod
     def _add_tenant_lock_packages(tenant_root: Path, packages: dict[str, str]) -> None:
         lock_path = tenant_root / "uv.lock"
