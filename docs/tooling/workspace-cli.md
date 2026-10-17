@@ -725,7 +725,9 @@ paths and repo-addressed managed inputs keep their existing meaning.
 The underlying manifest commands accept `--related-repo-root /path/to/tenant`
 for this explicit path resolution. The tracked manifest is never rewritten;
 source paths are resolved in memory. Without that option relative paths keep
-resolving against the manifest directory.
+resolving against the manifest directory. A workspace synced with the option
+writes it into the generated devkit commands, such as the dependency check, so
+they resolve the same related repositories.
 
 Linked-worktree wrappers default `ODOO_WORKSPACE_ROOT` to `<worktree>/.workspace`,
 so generated guidance lives at `.workspace/<workspace.name>/` and sync does not

@@ -97,6 +97,7 @@ class WorkspaceManifest:
     shared_addons_repo: RepoDefinition | None = None
     devkit_repo: RepoDefinition | None = None
     runtime_repo: RepoDefinition | None = None
+    related_repo_root: Path | None = None
 
     @property
     def manifest_directory(self) -> Path:

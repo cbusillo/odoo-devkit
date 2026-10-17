@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest import mock
 from xml.etree import ElementTree
 
-from odoo_devkit import local_runtime, workspace
+from odoo_devkit import local_runtime, workspace, workspace_surface
 from odoo_devkit.cli import build_parser
 from odoo_devkit.manifest import load_workspace_manifest
 from odoo_devkit.runtime_environment import RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR
@@ -67,6 +67,28 @@ class WorkspaceSyncTestCase(unittest.TestCase):
             self.assertEqual(manifest.runtime_repo.resolve_path(manifest_directory=root), root / "absolute")
             self.assertIsNone(manifest.shared_addons_repo.path)
             self.assertEqual(manifest.shared_addons_repo.url, load_workspace_manifest(manifest_path).shared_addons_repo.url)
+
+    def test_generated_command_arguments_check_dependencies_from_external_worktree(self) -> None:
+        from odoo_devkit.cli import _load_manifest
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            primary = root / "primary" / "tenant"
+            primary.mkdir(parents=True)
+            (primary.parent / "shared").mkdir()
+            tenant = root / "external" / "tenant"
+            pure_addon = tenant / "addons" / "pure_addon"
+            pure_addon.mkdir(parents=True)
+            (pure_addon / "__manifest__.py").write_text("{}\n", encoding="utf-8")
+            manifest_path = self._write_minimal_manifest(
+                tenant,
+                extra_repos='[repos.shared_addons]\nname = "shared"\npath = "../shared"\n',
+            )
+            manifest = _load_manifest(manifest_path, related_repo_root=primary)
+            parser = build_parser()
+            check = parser.parse_args(["dependencies", "check", *workspace_surface.manifest_command_arguments(manifest)])
+            with mock.patch("sys.stdout"):
+                check.handler(check)
 
     def test_manifest_accepts_an_explicit_empty_run_configuration_array(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

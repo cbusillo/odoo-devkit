@@ -589,7 +589,7 @@ def _load_manifest(manifest_path: Path, *, related_repo_root: Path | None = None
                 path = repo.resolve_path(manifest_directory=root)
                 repo = replace(repo, path=str(path))
             related_repos[field] = repo
-        return replace(manifest, **related_repos)
+        return replace(manifest, related_repo_root=root, **related_repos)
     except ValueError as error:
         raise SystemExit(str(error)) from error
 
