@@ -34,8 +34,11 @@ changed TOML file, verifies the exact catalog contract, and runs the tenant's
 offline uv lock check. Any failure restores every touched file.
 
 The support lock and the tenant lock install into one interpreter, so a package
-both lock must resolve to the support lock's version or the base runtime
-dependency preflight rejects the build. The plan reports each difference as a
+both install must have the support lock's exact requirement or the base runtime
+dependency preflight rejects the build. The plan compares the same frozen
+exports the preflight installs (no default groups, workspace members omitted),
+so development-only packages are ignored and a different source at the same
+version still counts. It reports each difference as a
 `support-lock:<package>` change in `uv.lock`, and `--check-build-tools` fails
 on it, so a runtime-python update a tenant has not taken shows up in that
 tenant's scheduled drift check. `--apply` relocks only those packages to the

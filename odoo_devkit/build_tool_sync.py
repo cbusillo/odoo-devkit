@@ -21,7 +21,6 @@ _FULL_GIT_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 _SECTION_PATTERN_TEMPLATE = r"(?ms)^\[{section}\]\s*$.*?(?=^\[|\Z)"
 _REF_PATTERN = re.compile(r"(?m)^(?P<prefix>\s*ref\s*=\s*)(?P<quote>[\"'])(?P<value>[^\"']+)(?P=quote)(?P<suffix>\s*(?:#.*)?)$")
 _IGNORED_ADDON_PATH_PARTS = frozenset({".git", ".venv", "build", "dist", "__pycache__"})
-_LOCAL_LOCK_SOURCE_KEYS = frozenset({"virtual", "editable", "directory", "path"})
 _SUPPORT_LOCK_CHANGE_PREFIX = "support-lock:"
 
 
@@ -130,8 +129,7 @@ def plan_build_tool_sync(*, tenant_root: Path, devkit_root: Path, devkit_ref: st
     # The support and tenant locks install into one interpreter, so every
     # package both lock must resolve to the support lock's version.
     support_lock_pins, support_lock_changes = _plan_support_lock_alignment(
-        support_lock_path=devkit_root / "docker" / "runtime-python" / "uv.lock",
-        tenant_lock_path=tenant_root / "uv.lock",
+        support_root=devkit_root / "docker" / "runtime-python",
         tenant_root=tenant_root,
     )
     changes.extend(support_lock_changes)
@@ -200,51 +198,79 @@ def _load_exact_catalog(path: Path) -> dict[str, str]:
 
 def _plan_support_lock_alignment(
     *,
-    support_lock_path: Path,
-    tenant_lock_path: Path,
+    support_root: Path,
     tenant_root: Path,
 ) -> tuple[dict[str, str], tuple[BuildToolChange, ...]]:
-    support_versions = _load_locked_versions(support_lock_path)
-    tenant_versions = _load_locked_versions(tenant_lock_path)
+    # Compare the same exports the base runtime dependency preflight installs,
+    # so inactive groups and extras are ignored and direct sources are kept.
+    support_requirements = _export_installed_requirements(project_root=support_root, all_packages=False)
+    tenant_requirements = _export_installed_requirements(project_root=tenant_root, all_packages=True)
     pins: dict[str, str] = {}
     changes: list[BuildToolChange] = []
-    for name in sorted(support_versions.keys() & tenant_versions.keys()):
-        if tenant_versions[name] == support_versions[name]:
+    for name in sorted(support_requirements.keys() & tenant_requirements.keys()):
+        if tenant_requirements[name] == support_requirements[name]:
             continue
-        if len(support_versions[name]) != 1:
+        exact_versions = [_EXACT_REQUIREMENT_PATTERN.fullmatch(requirement) for requirement in support_requirements[name]]
+        if len(exact_versions) != 1 or exact_versions[0] is None:
             raise BuildToolSyncError(
-                f"Support lock resolves {name} to several versions ({', '.join(support_versions[name])}); "
-                "the tenant lock cannot be aligned to one."
+                f"Support lock installs {name} as {', '.join(support_requirements[name])}; "
+                "the tenant lock can only be aligned to one exact registry version."
             )
-        pins[name] = support_versions[name][0]
+        pins[name] = exact_versions[0].group("version")
         changes.append(
             BuildToolChange(
-                path=tenant_lock_path.relative_to(tenant_root).as_posix(),
+                path="uv.lock",
                 kind=f"{_SUPPORT_LOCK_CHANGE_PREFIX}{name}",
-                before=", ".join(tenant_versions[name]),
-                after=pins[name],
+                before=", ".join(tenant_requirements[name]),
+                after=support_requirements[name][0],
             )
         )
     return pins, tuple(changes)
 
 
-def _load_locked_versions(path: Path) -> dict[str, tuple[str, ...]]:
-    packages = _load_toml(path).get("package", [])
-    if not isinstance(packages, list):
-        raise BuildToolSyncError(f"{path} package entries must be an array.")
-    versions: dict[str, set[str]] = {}
-    for package in packages:
-        if not isinstance(package, dict):
-            raise BuildToolSyncError(f"{path} contains a malformed package entry.")
-        source = package.get("source", {})
-        if isinstance(source, dict) and _LOCAL_LOCK_SOURCE_KEYS.intersection(source):
+def _export_installed_requirements(*, project_root: Path, all_packages: bool) -> dict[str, tuple[str, ...]]:
+    command = [
+        "uv",
+        "export",
+        "--quiet",
+        "--frozen",
+        "--no-config",
+        "--format",
+        "requirements.txt",
+        "--no-emit-workspace",
+        "--no-default-groups",
+        "--no-hashes",
+        "--no-header",
+        "--no-annotate",
+    ]
+    if all_packages:
+        command.append("--all-packages")
+    try:
+        result = subprocess.run(
+            command,
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            env=_sanitized_command_environment(),
+            timeout=120,
+        )
+    except FileNotFoundError as error:
+        raise BuildToolSyncError("uv is required to compare the tenant and support locks.") from error
+    except subprocess.TimeoutExpired as error:
+        raise BuildToolSyncError(f"Exporting {project_root / 'uv.lock'} timed out after 120 seconds.") from error
+    if result.returncode != 0:
+        message = result.stderr.strip() or result.stdout.strip() or "uv export failed"
+        raise BuildToolSyncError(f"Unable to export {project_root / 'uv.lock'}: {message}")
+    requirements: dict[str, set[str]] = {}
+    for line in result.stdout.splitlines():
+        requirement = " ".join(line.split())
+        if not requirement or requirement.startswith(("#", "-")):
             continue
-        name = package.get("name")
-        version = package.get("version")
-        if not isinstance(name, str) or not isinstance(version, str):
-            raise BuildToolSyncError(f"{path} contains a package entry without a name and version.")
-        versions.setdefault(_normalize_requirement_name(name), set()).add(version)
-    return {name: tuple(sorted(found)) for name, found in versions.items()}
+        name = _requirement_name(requirement)
+        if not name:
+            raise BuildToolSyncError(f"Unable to parse exported requirement from {project_root / 'uv.lock'}: {requirement}")
+        requirements.setdefault(name, set()).add(requirement)
+    return {name: tuple(sorted(found)) for name, found in requirements.items()}
 
 
 def _relock_tenant_support_packages(*, tenant_root: Path, pins: dict[str, str]) -> None:
@@ -430,8 +456,7 @@ def _validate_applied_plan(plan: BuildToolSyncPlan) -> None:
     except DependencyWorkspaceError as error:
         raise BuildToolSyncError(str(error)) from error
     _pins, remaining_drift = _plan_support_lock_alignment(
-        support_lock_path=plan.devkit_root / "docker" / "runtime-python" / "uv.lock",
-        tenant_lock_path=plan.tenant_root / "uv.lock",
+        support_root=plan.devkit_root / "docker" / "runtime-python",
         tenant_root=plan.tenant_root,
     )
     if remaining_drift:
