@@ -2,8 +2,12 @@
 
 Treat this file as the thin tenant-specific overlay for a tenant repo.
 
+Client: (fill in the person whose business this product serves)
+
 ## Start Here
 
+- Read the owner's [overall DIRECTION.md](https://github.com/cbusillo/direction/blob/HEAD/DIRECTION.md)
+  first.
 - Use the shared workspace-root `AGENTS.md` as the canonical coding-agent guide
   for Codex and Claude Code.
 - Use `odoo-devkit` docs for shared DX/runtime/bootstrap behavior.
