@@ -33,10 +33,8 @@ lanes live in `launchplane`.
 - [tooling/addon-ci.md](tooling/addon-ci.md) for disposable addon suites and
   live devkit startup/restore checks with planted-fault proof.
 - [../.github/github.json](../.github/github.json) for validation commands and
-  repository routing. Its `prWorkflow` records the normal merge method and
-  observed GitHub merge requirements; live branch protection and rulesets
-  remain authoritative. Dependency commands are documented in the workspace
-  CLI guide above.
+  repository routing. Dependency commands are documented in the workspace CLI
+  guide above.
 
 ## Shared Responsibilities
 

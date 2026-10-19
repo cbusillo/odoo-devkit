@@ -63,8 +63,8 @@ Optional IDE run configurations use `[[ide.run_configurations]]` tables.
 Omitting them or setting `run_configurations = []` under `[ide]` defines none;
 other value types and non-table entries are rejected when the manifest loads.
 
-Non-local `platform runtime publish` is invoked by Launchplane's reusable
-artifact workflow, which supplies the required runtime-environment payload.
+Non-local `platform runtime publish` is invoked by the product's own build
+workflow, which supplies the required runtime-environment payload.
 
 ## `workspace sync`
 
