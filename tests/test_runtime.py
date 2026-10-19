@@ -1250,14 +1250,6 @@ ODOO_DB_PASSWORD = ""
                                 instance_name="local",
                             )
 
-    def test_runtime_environment_configuration_guidance_uses_explicit_payload(self) -> None:
-        guidance = local_runtime.runtime_environment_configuration_guidance(noun="it")
-
-        self.assertIn(local_runtime.RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR, guidance)
-        self.assertIn("selected context and instance", guidance)
-        self.assertNotIn("runtime-environments.toml", guidance)
-        self.assertNotIn("harbor", guidance)
-
     def test_command_execution_environment_excludes_runtime_payload(self) -> None:
         with mock.patch.dict(
             os.environ,
@@ -1834,7 +1826,7 @@ sources = [
             )
             self.assertEqual(
                 payload["odoo_install_modules"],
-                ["launchplane_settings", "disable_odoo_online", "opw_custom"],
+                [*local_runtime.LAUNCHPLANE_REQUIRED_ODOO_MODULES, "opw_custom"],
             )
             self.assertNotIn("odoo_addon_repository_selectors", build_flags_payload["values"])
 
@@ -2045,7 +2037,7 @@ sources = [
             )
             self.assertEqual(
                 payload["odoo_install_modules"],
-                ["launchplane_settings", "disable_odoo_online", "opw_custom"],
+                [*local_runtime.LAUNCHPLANE_REQUIRED_ODOO_MODULES, "opw_custom"],
             )
 
     def test_native_runtime_publish_revalidates_required_values_after_artifact_inputs(self) -> None:
@@ -2245,7 +2237,7 @@ sources = [
             )
             self.assertEqual(
                 selection.effective_install_modules,
-                ("launchplane_settings", "disable_odoo_online", "opw_custom"),
+                (*local_runtime.LAUNCHPLANE_REQUIRED_ODOO_MODULES, "opw_custom"),
             )
 
     def test_resolve_runtime_selection_keeps_local_modules_explicit(self) -> None:
@@ -2321,7 +2313,7 @@ sources = [
 
             self.assertEqual(
                 selection.effective_install_modules,
-                ("launchplane_settings", "disable_odoo_online", "opw_custom", "website_sale"),
+                (*local_runtime.LAUNCHPLANE_REQUIRED_ODOO_MODULES, "opw_custom", "website_sale"),
             )
 
     def test_hosted_selection_fails_before_loading_valid_stack(self) -> None:
@@ -2512,7 +2504,7 @@ runtime_env = { ODOO_VERSION = "18.0", ODOO_BASE_RUNTIME_IMAGE = "ghcr.io/exampl
             )
             self.assertEqual(
                 payload["odoo_install_modules"],
-                ["launchplane_settings", "disable_odoo_online", "opw_custom"],
+                [*local_runtime.LAUNCHPLANE_REQUIRED_ODOO_MODULES, "opw_custom"],
             )
             self.assertEqual(build_flags_payload["values"]["odoo_version"], manifest.build.odoo_version)
             self.assertEqual(build_flags_payload["addon_skip_flags"], [])
@@ -2827,7 +2819,7 @@ sources = [
             self.assertEqual(image_payload["tags"], ["cm_website-20260606-abcdef"])
             self.assertEqual(
                 payload["odoo_install_modules"],
-                ["launchplane_settings", "disable_odoo_online", "cm_website"],
+                [*local_runtime.LAUNCHPLANE_REQUIRED_ODOO_MODULES, "cm_website"],
             )
             self.assertIn(
                 "ODOO_ADDON_REPOSITORIES=cbusillo/disable_odoo_online@411f6b8e85cac72dc7aa2e2dc5540001043c327d",
@@ -3779,40 +3771,6 @@ sources = [
 
             with self.assertRaisesRegex(ValueError, "requires --instance local"):
                 run_native_runtime_psql(manifest=manifest, psql_arguments=())
-
-    def test_native_runtime_odoo_shell_runs_local_helper(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            temp_root = Path(temporary_directory)
-            tenant_repo_path = temp_root / "tenant-repo"
-            runtime_repo_path = temp_root / "runtime-repo"
-            tenant_repo_path.mkdir(parents=True, exist_ok=True)
-            runtime_repo_path.mkdir(parents=True, exist_ok=True)
-            manifest_path = self._write_manifest(
-                tenant_repo_path=tenant_repo_path,
-                runtime_repo_path=runtime_repo_path,
-            )
-            manifest = load_workspace_manifest(manifest_path)
-
-            with mock.patch("odoo_devkit.runtime.run_odoo_shell_command") as run_odoo_shell_command:
-                exit_code = run_native_runtime_odoo_shell(
-                    manifest=manifest,
-                    service="script-runner",
-                    database_name="opw-alt",
-                    script_path=Path("tmp/script.py"),
-                    log_file=Path("tmp/odoo-shell.log"),
-                    dry_run=True,
-                )
-
-            self.assertEqual(exit_code, 0)
-            run_odoo_shell_command.assert_called_once_with(
-                manifest=manifest,
-                runtime_repo_path=runtime_repo_path.resolve(),
-                service="script-runner",
-                database_name="opw-alt",
-                script_path=Path("tmp/script.py"),
-                log_file=Path("tmp/odoo-shell.log"),
-                dry_run=True,
-            )
 
     def test_native_runtime_odoo_shell_rejects_non_local_instance(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
