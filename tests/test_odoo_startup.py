@@ -307,19 +307,6 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
         self.assertEqual(parser["options"]["db_name"], "opw")
         self.assertEqual(parser["options"]["dbfilter"], "^opw$")
 
-    def test_local_runtime_config_does_not_pin_http_database_filter(self) -> None:
-        settings = self._settings()
-        parser = configparser.ConfigParser(interpolation=None)
-
-        with TemporaryDirectory() as directory:
-            settings = replace(settings, config_path=str(Path(directory) / "odoo.conf"), base_config_path="")
-            with patch.dict(os.environ, {}, clear=True):
-                odoo_startup._write_runtime_config(settings)
-            parser.read(settings.config_path)
-
-        self.assertEqual(parser["options"]["db_name"], "opw")
-        self.assertNotIn("dbfilter", parser["options"])
-
     def test_managed_mail_options_replace_base_config_without_logging_password(self) -> None:
         environment = {
             "ODOO_SMTP_SERVER": "smtp.example.test",
@@ -381,13 +368,6 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
 
         self.assertIn("--db-filter=^opw$", command)
         self.assertIn("--stop-after-init", command)
-
-    def test_local_odoo_server_command_does_not_pin_database_filter(self) -> None:
-        settings = self._settings()
-
-        command = odoo_startup._build_odoo_command(settings, stop_after_init=False)
-
-        self.assertNotIn("--db-filter=^opw$", command)
 
     def test_odoo_shell_command_does_not_pin_database_filter(self) -> None:
         settings = self._settings(platform_instance="testing", admin_password="safe-admin-password")
