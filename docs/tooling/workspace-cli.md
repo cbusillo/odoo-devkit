@@ -63,8 +63,8 @@ Optional IDE run configurations use `[[ide.run_configurations]]` tables.
 Omitting them or setting `run_configurations = []` under `[ide]` defines none;
 other value types and non-table entries are rejected when the manifest loads.
 
-Non-local `platform runtime publish` is invoked by Launchplane's reusable
-artifact workflow, which supplies the required runtime-environment payload.
+Non-local `platform runtime publish` is invoked by the product's own build
+workflow, which supplies the required runtime-environment payload.
 
 ## `workspace sync`
 
@@ -634,7 +634,7 @@ Notes
   schema-v2 publish because exporting the full workspace lock while skipping a
   member would make the evidence false. Remove the project from the tenant
   workspace instead.
-- Non-local publish requires Launchplane to supply
+- Non-local publish requires the product's build to supply
   `ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON`. The payload is authoritative for
   artifact build runtime keys and deliberately excludes deployment-only
   database/master secrets. Publish enforces stack-required values only when

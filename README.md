@@ -101,9 +101,9 @@ Do not put the payload or its values in `workspace.toml`, generated workspace
 docs, checked-in config, `.env`, `platform/.env`, or
 `platform/secrets.toml`. Missing input, context/instance mismatches, non-string
 values, and legacy devkit-local env/secrets files fail closed. Non-local
-Launchplane artifact workflows use the same typed payload envelope but include
-only artifact build inputs; they do not require or transmit database, master
-password, or other deployment-only secrets. A stack-required key is enforced
+artifact builds use the same typed payload envelope but include only artifact
+build inputs; they do not require or transmit database, master password, or
+other deployment-only secrets. A stack-required key is enforced
 during publish only when it is itself an artifact build input. Non-local
 mutation remains Launchplane-owned.
 
@@ -295,9 +295,9 @@ uv --directory ../odoo-devkit run platform runtime workflow \
   --workflow bootstrap
 ```
 
-Non-local artifact publishing runs through Launchplane's reusable workflow,
-which supplies the authoritative runtime-environment payload and records the
-resulting artifact.
+Non-local artifacts are built by the product's own build workflow, which
+calls `platform runtime publish` with the runtime-environment payload; see
+launchplane#2602.
 
 `platform runtime publish` stages the tenant addons plus shared addons into a
 real build context, requires clean git worktrees for the repos it captures,
