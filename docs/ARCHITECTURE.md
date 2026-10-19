@@ -47,8 +47,8 @@ When
 - Devkit-owned local runtime bundle (`docker-compose.yml`, `platform/stack.toml`,
   Dockerfile, and local runtime scripts).
 - Checked-in stack runtime values and Odoo overrides are local-development
-  defaults only; Launchplane runtime-environment records own non-local artifact
-  publish values and hosted lane authority.
+  defaults only; Launchplane runtime-environment records own hosted lane values
+  and authority.
 - Shared tenant runtime contracts that must stay safe across stable-lane
   redeploys, including conservative database image/version changes for
   long-lived tenant volumes.

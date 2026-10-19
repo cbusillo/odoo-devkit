@@ -634,7 +634,7 @@ Notes
   schema-v2 publish because exporting the full workspace lock while skipping a
   member would make the evidence false. Remove the project from the tenant
   workspace instead.
-- Non-local publish requires Launchplane to supply
+- Non-local publish requires the product's build to supply
   `ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON`. The payload is authoritative for
   artifact build runtime keys and deliberately excludes deployment-only
   database/master secrets. Publish enforces stack-required values only when
