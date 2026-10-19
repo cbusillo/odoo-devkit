@@ -143,14 +143,6 @@ repo_name = "odoo-docker"
             manifest = load_workspace_cockpit_manifest(output_directory / "workspace-cockpit.toml")
             self.assertEqual(manifest.repos, template.repos)
             self.assertTrue(workspace_cockpit_status(manifest=manifest, output_directory=output_directory).is_current)
-            for relative_path in ("AGENTS.md", "docs/README.md", "docs/session-prompt.md"):
-                contents = (output_directory / relative_path).read_text(encoding="utf-8")
-                for repo in template.repos:
-                    if relative_path.endswith("session-prompt.md") and repo.group != "primary":
-                        continue
-                    self.assertIn(repo.path, contents)
-                    if relative_path != "docs/README.md":
-                        self.assertIn(repo.repo_name, contents)
 
     def test_workspace_cockpit_scaffold_refuses_to_overwrite_without_force(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

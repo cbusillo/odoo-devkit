@@ -840,7 +840,7 @@ class DependencyWorkspaceTests(unittest.TestCase):
 
             run_uv_lock.assert_not_called()
 
-    def test_normalize_uv_commands_match_generation_and_tenant_ci_export(self) -> None:
+    def test_normalize_uv_commands_match_recorded_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory_name:
             staged_root = Path(temporary_directory_name)
             export_path = staged_root / "tenant-requirements.txt"
@@ -875,21 +875,24 @@ class DependencyWorkspaceTests(unittest.TestCase):
                     )
 
             lock_call, export_call = run_mock.call_args_list
-            self.assertEqual(lock_call.args[0], ["uv", "lock", "--python", selected_python, "--no-config"])
-            self.assertEqual(
-                export_call.args[0],
-                [
-                    "uv",
-                    "export",
-                    "--frozen",
-                    "--all-packages",
-                    "--no-emit-workspace",
-                    "--no-default-groups",
-                    "--no-config",
-                    "--output-file",
-                    "tenant-requirements.txt",
-                ],
-            )
+            # The provenance record must name the commands that actually ran.
+            manifest = mock.Mock(tenant="tenant", workspace=mock.Mock(python_version=selected_python))
+            with (
+                mock.patch("odoo_devkit.dependency_workspace._git_head_commit", return_value="0" * 40),
+                mock.patch("odoo_devkit.dependency_workspace._git_worktree_dirty", return_value=False),
+                mock.patch("odoo_devkit.dependency_workspace._uv_version", return_value="uv"),
+                mock.patch("odoo_devkit.dependency_workspace._sha256_file", return_value=""),
+            ):
+                recorded_tool = dependency_workspace._normalization_provenance(
+                    manifest=manifest,
+                    tenant_repo_path=staged_root,
+                    shared_addons_repo_path=None,
+                    source_inputs=[],
+                    normalized_lock_path=staged_root / "uv.lock",
+                    export_path=export_path,
+                )["tool"]
+            self.assertEqual(lock_call.args[0], recorded_tool["lock_arguments"])
+            self.assertEqual(export_call.args[0], recorded_tool["export_arguments"])
             for call in (lock_call, export_call):
                 self.assertEqual(call.kwargs["cwd"], staged_root)
                 self.assertEqual(call.kwargs["env"]["KEEP_ME"], "yes")
