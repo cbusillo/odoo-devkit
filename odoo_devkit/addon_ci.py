@@ -366,7 +366,7 @@ def run_tests(
                 summary_file.write(summary)
 
 
-def main() -> None:
+def argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image")
     parser.add_argument("--odoo-version")
@@ -376,6 +376,11 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--timeout", type=int, default=1800)
     parser.add_argument("--devkit-checks", action="store_true", help="Mount devkit scripts and synthetic live-check addons")
+    return parser
+
+
+def main() -> None:
+    parser = argument_parser()
     arguments = parser.parse_args()
     if arguments.tenant:
         manifest = load_workspace_manifest(arguments.tenant.resolve() / "workspace.toml")
