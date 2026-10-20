@@ -13,8 +13,9 @@ from .addon_ci import argument_parser
 
 
 def check_command(command: str) -> None:
-    if "$(" in command or "`" in command:
-        raise ValueError("addonOdoo must not use shell command substitution")
+    # This is a restricted single-line invocation, not a general shell script.
+    if any(character in command for character in "\r\n\0`") or "$(" in command:
+        raise ValueError("addonOdoo must be one line without command substitution or control characters")
     lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
     lexer.commenters = ""

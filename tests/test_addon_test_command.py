@@ -21,8 +21,9 @@ class AddonTestCommandTests(unittest.TestCase):
             "uv --directory ../odoo-devkit run python -m odoo_devkit.addon_ci --tenant . --addons-root addons --output out || true",
             "uv --directory ../odoo-devkit run python -m odoo_devkit.addon_ci --tenant . --addons-root addons --output out||true",
             "uv --directory ../odoo-devkit run python -m odoo_devkit.addon_ci --tenant . --addons-root addons --output out;true",
-            "uv --directory $(choose-devkit) run python -m odoo_devkit.addon_ci --tenant . --addons-root addons --output out",
+            'uv --directory "$(choose-devkit)" run python -m odoo_devkit.addon_ci --tenant . --addons-root addons --output out',
             "uv --directory `choose-devkit` run python -m odoo_devkit.addon_ci --tenant . --addons-root addons --output out",
+            "uv --directory ../odoo-devkit run python -m odoo_devkit.addon_ci --tenant . --addons-root addons --output\ntrue",
         ):
             with self.subTest(command=command), self.assertRaises(ValueError):
                 check_command(command)

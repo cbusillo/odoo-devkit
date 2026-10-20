@@ -80,7 +80,9 @@ include metadata changes in their workflow path filters. Before creating test
 resources, the action runs `python -m odoo_devkit.addon_test_command` against
 that declaration. This linter requires the `uv --directory <devkit> run
 [--locked] python -m odoo_devkit.addon_ci` entrypoint and its required inputs,
-and rejects runtime updates, help-only invocations and trailing shell commands.
+as a restricted single-line command, and rejects runtime updates, help-only
+invocations, shell operators, redirection and command substitution. Only the
+shown uv prefix is supported; addon arguments use the runner's own parser.
 The runner then requires a successful nonempty Odoo test summary. The linter
 does not execute shell text or assert workflow wording.
 
