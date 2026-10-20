@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import psycopg2
+from odoo_addon_paths import expand_addon_paths
 from odoo_admin_password import validate_admin_password
 from odoo_website_settings import PRODUCTION_INSTANCE_NAMES
 
@@ -100,7 +101,7 @@ def _normalize_comma_list_with_first_item(first_item: str, raw_list: str) -> str
         if not item or item in normalized_items:
             continue
         normalized_items.append(item)
-    return ",".join(normalized_items)
+    return ",".join(str(path) for path in expand_addon_paths(Path(item) for item in normalized_items))
 
 
 def _parse_arguments() -> argparse.Namespace:

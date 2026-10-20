@@ -80,6 +80,19 @@ class _FakeUsers:
 
 
 class OdooStartupDependencySyncTests(unittest.TestCase):
+    def test_startup_discovers_packaged_groups_without_treating_addons_as_groups(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            shared = root / "shared"
+            for addon in (root / "tenant_probe", shared / "shared_probe"):
+                addon.mkdir(parents=True)
+                (addon / "__manifest__.py").write_text("{'name': 'Probe', 'depends': []}")
+            configured = odoo_startup._normalize_comma_list_with_first_item(str(root), str(shared))
+            inherited = odoo_startup._normalize_comma_list_with_first_item(str(root), "")
+            self.assertEqual(inherited, configured)
+            discovered = {manifest.parent.name for path in inherited.split(",") for manifest in Path(path).glob("*/__manifest__.py")}
+            self.assertEqual(discovered, {"tenant_probe", "shared_probe"})
+
     @staticmethod
     def _settings(
         *,

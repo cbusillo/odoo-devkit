@@ -414,6 +414,25 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
 
         self.assertEqual(runner.os_env["PYTHONPATH"], "/volumes/scripts:/opt/custom")
 
+    def test_explicit_addon_root_exposes_packaged_groups_to_upgrade_and_shell(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            shared = root / "shared"
+            addon = shared / "shared_probe"
+            addon.mkdir(parents=True)
+            (addon / "__manifest__.py").write_text("{'name': 'Shared probe', 'depends': []}")
+            settings = self._local_settings()
+            settings.addons_path = str(root)
+            runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
+            runner.os_env["ODOO_ADDONS_PATH"] = str(root)
+            self.assertIn(shared, runner._resolve_addons_paths())
+            path_exists = Path.exists
+            with patch.object(Path, "exists", lambda path: path == Path("/odoo/odoo-bin") or path_exists(path)):
+                commands = (runner._odoo_runtime_connection_flags(), runner._odoo_shell_command())
+            for command in commands:
+                paths = next(arg.split("=", 1)[1] for arg in command if arg.startswith("--addons-path="))
+                self.assertIn(str(shared), paths.split(","))
+
     def test_data_workflow_shell_prepends_runtime_scripts_to_pythonpath(self) -> None:
         with patch.dict(os.environ, {"PYTHONPATH": "/opt/custom"}, clear=True):
             runner = odoo_data_workflows.OdooDataWorkflowRunner(self._local_settings(), upstream=None, env_file=None)

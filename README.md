@@ -303,6 +303,11 @@ launchplane#2602.
 real build context, requires clean git worktrees for the repos it captures,
 pushes the resulting image, resolves the pushed digest, and emits a
 control-plane-compatible artifact manifest JSON file.
+Runtime startup, upgrade and shell commands expose packaged addon groups under
+each configured addon root, including the shared addons staged in
+`/opt/project/addons/shared`. An inherited explicit addon path therefore sees
+the same packaged modules as the artifact build. Explicit roots retain their
+precedence; discovered groups follow them.
 When the repo-owned artifact inputs file exists (`artifact-inputs.toml`
 beside `workspace.toml` by default, or the path in `[artifacts].inputs_file`),
 runtime and publish treat that file as the repo-owned source-input contract.

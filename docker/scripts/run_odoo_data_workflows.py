@@ -23,6 +23,7 @@ from typing import Any
 from unittest.mock import patch
 
 import psycopg2
+from odoo_addon_paths import addon_group_dirs, expand_addon_paths
 from odoo_admin_password import RESTORED_LOGINS_PARAMETER, restored_logins_preserved, validate_admin_password
 from odoo_release_plan import load_plan, names, resolve_plan, verify_image_declaration
 from odoo_website_bootstrap import load_instance_override_payload, require_launchplane_payloads_if_configured
@@ -912,7 +913,7 @@ class OdooDataWorkflowRunner:
             f"--db_port={self.local.port}",
             f"--db_user={self.local.db_user}",
         ]
-        addons_path = (self.local.addons_path or "").strip()
+        addons_path = ",".join(str(path) for path in self._resolve_addons_paths())
         if addons_path:
             command_flags.append(f"--addons-path={addons_path}")
         data_dir = (self.os_env.get("ODOO_DATA_DIR") or "").strip()
@@ -1519,13 +1520,14 @@ class OdooDataWorkflowRunner:
             ("ODOO_DB_HOST", "--db_host"),
             ("ODOO_DB_PORT", "--db_port"),
             ("ODOO_DB_USER", "--db_user"),
-            ("ODOO_ADDONS_PATH", "--addons-path"),
             ("ODOO_DATA_DIR", "--data-dir"),
         )
         for environment_name, command_flag in environment_flag_map:
             environment_value = (self.os_env.get(environment_name) or "").strip()
             if environment_value:
                 command.append(f"{command_flag}={environment_value}")
+
+        command.append("--addons-path=" + ",".join(str(path) for path in self._resolve_addons_paths()))
 
         command += ["-d", self.local.db_name, "--no-http"]
         generated_config_path = Path("/volumes/config/_generated.conf")
@@ -2385,20 +2387,7 @@ with registry.cursor() as cr:
 
     @staticmethod
     def _project_addon_group_dirs() -> list[Path]:
-        addons_root = Path("/opt/project/addons")
-        if not addons_root.is_dir():
-            return []
-
-        grouped_dirs: list[Path] = []
-        for child_path in sorted(addons_root.iterdir()):
-            if not child_path.is_dir():
-                continue
-            if child_path.name.startswith((".", "__")):
-                continue
-            if (child_path / "__manifest__.py").exists() or (child_path / "__openerp__.py").exists():
-                continue
-            grouped_dirs.append(child_path)
-        return grouped_dirs
+        return addon_group_dirs(Path("/opt/project/addons"))
 
     def _local_dependency_closure(self, modules: Sequence[str], local_module_paths: dict[str, Path]) -> set[str]:
         """Return the modules plus every local addon they depend on, directly or not."""
@@ -2479,7 +2468,7 @@ with registry.cursor() as cr:
         for core_root in (Path("/odoo/addons"), Path("/odoo/odoo/addons")):
             if core_root.is_dir() and core_root not in addons_paths:
                 addons_paths.append(core_root)
-        return addons_paths
+        return expand_addon_paths(addons_paths)
 
     @staticmethod
     def _split_module_list(raw: str | None) -> list[str]:
