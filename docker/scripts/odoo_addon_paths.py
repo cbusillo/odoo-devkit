@@ -23,11 +23,11 @@ def addon_group_dirs(root: Path) -> list[Path]:
 
 
 def expand_addon_paths(paths: Iterable[Path], *, source_root: Path | None = None) -> list[Path]:
-    groups = addon_group_dirs(source_root if source_root is not None else PROJECT_ADDONS_ROOT)
     resolved: list[Path] = []
     for path in paths:
         additions = [path]
         if path == PROJECT_ADDONS_ROOT:
+            groups = addon_group_dirs(source_root if source_root is not None else PROJECT_ADDONS_ROOT)
             additions.extend(PROJECT_ADDONS_ROOT / group.name for group in groups)
         for addition in additions:
             if addition not in resolved:

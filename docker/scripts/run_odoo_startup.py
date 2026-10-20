@@ -94,7 +94,7 @@ def _split_modules(raw_modules: str) -> tuple[str, ...]:
     return tuple(parsed_modules)
 
 
-def _normalize_comma_list_with_first_item(first_item: str, raw_list: str) -> str:
+def _normalize_addons_path(first_item: str, raw_list: str) -> str:
     normalized_items = [first_item]
     for raw_item in raw_list.split(","):
         item = raw_item.strip()
@@ -135,7 +135,7 @@ def _load_settings(argument_namespace: argparse.Namespace) -> StartupSettings:
         master_password=master_password,
         admin_login=os.environ.get("ODOO_ADMIN_LOGIN", "").strip() or "admin",
         admin_password=os.environ.get("ODOO_ADMIN_PASSWORD", ""),
-        addons_path=_normalize_comma_list_with_first_item(
+        addons_path=_normalize_addons_path(
             LAUNCHPLANE_ADDONS_PATH,
             os.environ.get("ODOO_ADDONS_PATH", "").strip(),
         ),

@@ -92,13 +92,13 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
             (later / "shared_probe").mkdir(parents=True)
             (later / "shared_probe/__init__.py").touch()
             (later / "shared_probe/__manifest__.py").write_text("{'name': 'Other probe'}")
-            nested = root / "tenant_probe/tests/nested_probe"
+            nested = root / "tenant_probe/nested_probe"
             nested.mkdir(parents=True)
             (nested / "__init__.py").touch()
             (nested / "__manifest__.py").write_text("{'name': 'Nested probe'}")
             with patch.dict(odoo_startup.expand_addon_paths.__globals__, PROJECT_ADDONS_ROOT=root):
-                configured = odoo_startup._normalize_comma_list_with_first_item(str(root), f"{shared},{later}")
-                inherited = odoo_startup._normalize_comma_list_with_first_item(str(root), str(later))
+                configured = odoo_startup._normalize_addons_path(str(root), f"{shared},{later}")
+                inherited = odoo_startup._normalize_addons_path(str(root), str(later))
             self.assertEqual(inherited, configured)
             self.assertLess(inherited.split(",").index(str(shared)), inherited.split(",").index(str(later)))
             self.assertNotIn(str(root / "tenant_probe"), inherited.split(","))

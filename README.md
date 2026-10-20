@@ -308,6 +308,9 @@ the configured project addon root, including the shared addons staged in
 `/opt/project/addons/shared`. An inherited explicit addon path therefore sees
 the same packaged modules as the artifact build. Explicit roots retain their
 precedence; discovered groups follow their project root, matching the build.
+Without an explicit addon environment path, AUTO updates use the generated
+configuration path, falling back to the packaged project addons when no
+configuration exists.
 When the repo-owned artifact inputs file exists (`artifact-inputs.toml`
 beside `workspace.toml` by default, or the path in `[artifacts].inputs_file`),
 runtime and publish treat that file as the repo-owned source-input contract.

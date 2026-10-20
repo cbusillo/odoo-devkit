@@ -17,7 +17,7 @@ import tomllib
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import TextIO
+from typing import Protocol, TextIO, cast
 
 from .artifact_inputs import (
     ArtifactInputsDefinition,
@@ -43,13 +43,15 @@ from .ide_support import write_pycharm_odoo_conf
 from .manifest import WorkspaceManifest
 from .runtime_environment import RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR, sanitized_subprocess_environment
 
+
+class _ExpandAddonPaths(Protocol):
+    def __call__(self, paths: Iterable[Path], *, source_root: Path | None = None) -> list[Path]: ...
+
+
 _addon_path_script = Path(__file__).resolve().parents[1] / "docker/scripts/odoo_addon_paths.py"
-if _addon_path_script.is_file():
-    _addon_path_support = runpy.run_path(str(_addon_path_script))
-    addon_group_dirs = _addon_path_support["addon_group_dirs"]
-    expand_addon_paths = _addon_path_support["expand_addon_paths"]
-else:
-    from .addon_paths import addon_group_dirs, expand_addon_paths
+if not _addon_path_script.is_file():
+    _addon_path_script = Path(__file__).with_name("addon_paths.py")
+expand_addon_paths = cast(_ExpandAddonPaths, runpy.run_path(str(_addon_path_script))["expand_addon_paths"])
 
 ScalarValue = str | int | float | bool
 ScalarMap = dict[str, ScalarValue]
@@ -1652,10 +1654,6 @@ def merge_odoo_override_definitions(
         config_parameters=config_parameters,
         addon_settings=addon_settings,
     )
-
-
-def discover_project_addon_group_paths(repo_root: Path) -> tuple[str, ...]:
-    return tuple(f"/opt/project/addons/{path.name}" for path in addon_group_dirs(repo_root / "addons"))
 
 
 def load_environment(*, repo_root: Path, context_name: str, instance_name: str, collision_mode: str = "warn") -> LoadedEnvironment:
