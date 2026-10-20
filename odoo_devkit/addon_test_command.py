@@ -3,13 +3,24 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import shlex
 from pathlib import Path
 
+from .addon_ci import argument_parser
+
 
 def check_command(command: str) -> None:
-    words = shlex.split(command)
+    if "$(" in command or "`" in command:
+        raise ValueError("addonOdoo must not use shell command substitution")
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    words = list(lexer)
+    if any(word and all(character in lexer.punctuation_chars for character in word) for word in words):
+        raise ValueError("addonOdoo must not chain shell commands or redirect its result")
     if len(words) < 4 or words[:2] != ["uv", "--directory"]:
         raise ValueError("addonOdoo must use uv --directory <devkit-checkout> run python -m odoo_devkit.addon_ci")
     words = words[3:]
@@ -19,27 +30,25 @@ def check_command(command: str) -> None:
         words.pop(0)
     if words[:3] != ["python", "-m", "odoo_devkit.addon_ci"]:
         raise ValueError("addonOdoo must invoke odoo_devkit.addon_ci; a runtime update does not run tests")
-    words = words[3:]
-    options = {"--tenant", "--addons-root", "--support-root", "--output", "--image", "--odoo-version", "--timeout"}
-    supplied: dict[str, str] = {}
-    while words:
-        option = words.pop(0)
-        if option not in options or option in supplied or not words:
-            raise ValueError(f"Unsupported, repeated or incomplete addonOdoo option: {option}")
-        value = words.pop(0)
-        if not value or value.startswith("--") or value in {";", "&&", "||", "|", "&"}:
-            raise ValueError(f"Missing addonOdoo value for {option}")
-        supplied[option] = value
-    if not {"--addons-root", "--output"} <= supplied.keys() or not ({"--tenant", "--image"} & supplied.keys()):
-        raise ValueError("addonOdoo requires --addons-root, --output and either --tenant or --image")
+    # Use the runner's parser so its supported arguments have one source of truth.
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        try:
+            arguments = argument_parser().parse_args(words[3:])
+        except SystemExit as error:
+            raise ValueError("addonOdoo must supply runnable addon_ci arguments, not help or an incomplete command") from error
+    if not (arguments.tenant or arguments.image):
+        raise ValueError("addonOdoo requires either --tenant or --image")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("metadata", type=Path)
     arguments = parser.parse_args()
-    metadata = json.loads(arguments.metadata.read_text(encoding="utf-8"))
-    command = metadata.get("qualityGate", {}).get("test", {}).get("addonOdoo")
+    try:
+        metadata = json.loads(arguments.metadata.read_text(encoding="utf-8"))
+        command = metadata.get("qualityGate", {}).get("test", {}).get("addonOdoo")
+    except (OSError, ValueError, AttributeError) as error:
+        parser.error(f"Cannot read addonOdoo metadata: {error}")
     if not isinstance(command, str) or not command.strip():
         parser.error("qualityGate.test.addonOdoo must declare the addon_ci command")
     try:

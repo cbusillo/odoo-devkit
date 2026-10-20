@@ -46,7 +46,8 @@ summary, zero tests, reported failures/errors, or nonzero Odoo exit fails the jo
 Callers upload the evidence even when the run fails and apply path filters to
 addon and test-input changes, so docs-only changes do not run the suites.
 
-Local example, from an isolated devkit checkout:
+Direct runner example, from an isolated devkit checkout (tenant declarations
+use the cross-checkout form described below):
 
 ```bash
 uv run python -m odoo_devkit.addon_ci \
