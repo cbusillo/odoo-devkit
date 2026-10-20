@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import runpy
 import shlex
 import shutil
 import subprocess
@@ -41,6 +42,14 @@ from .dependency_workspace import (
 from .ide_support import write_pycharm_odoo_conf
 from .manifest import WorkspaceManifest
 from .runtime_environment import RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR, sanitized_subprocess_environment
+
+_addon_path_script = Path(__file__).resolve().parents[1] / "docker/scripts/odoo_addon_paths.py"
+if _addon_path_script.is_file():
+    _addon_path_support = runpy.run_path(str(_addon_path_script))
+    addon_group_dirs = _addon_path_support["addon_group_dirs"]
+    expand_addon_paths = _addon_path_support["expand_addon_paths"]
+else:
+    from .addon_paths import addon_group_dirs, expand_addon_paths
 
 ScalarValue = str | int | float | bool
 ScalarMap = dict[str, ScalarValue]
@@ -1587,26 +1596,17 @@ def _parse_instance_definition(*, context_name: str, instance_name: str, raw_ins
 
 def expand_project_addons_paths(*, stack_definition: StackDefinition, stack_file_path: Path) -> StackDefinition:
     repo_root = stack_file_path.parent.parent
-    grouped_paths = discover_project_addon_group_paths(repo_root)
-    if not grouped_paths:
+    expanded_paths = tuple(
+        str(path)
+        for path in expand_addon_paths((Path(path) for path in stack_definition.addons_path), source_root=repo_root / "addons")
+    )
+    if expanded_paths == stack_definition.addons_path:
         return stack_definition
-    expanded_paths: list[str] = []
-    seen_paths: set[str] = set()
-    for addons_path in stack_definition.addons_path:
-        if addons_path not in seen_paths:
-            seen_paths.add(addons_path)
-            expanded_paths.append(addons_path)
-        if addons_path == "/opt/project/addons":
-            for grouped_path in grouped_paths:
-                if grouped_path in seen_paths:
-                    continue
-                seen_paths.add(grouped_path)
-                expanded_paths.append(grouped_path)
     return StackDefinition(
         schema_version=stack_definition.schema_version,
         odoo_version=stack_definition.odoo_version,
         state_root=stack_definition.state_root,
-        addons_path=tuple(expanded_paths),
+        addons_path=expanded_paths,
         runtime_env=stack_definition.runtime_env,
         odoo_overrides=stack_definition.odoo_overrides,
         required_env_keys=stack_definition.required_env_keys,
@@ -1655,19 +1655,7 @@ def merge_odoo_override_definitions(
 
 
 def discover_project_addon_group_paths(repo_root: Path) -> tuple[str, ...]:
-    addons_root = repo_root / "addons"
-    if not addons_root.is_dir():
-        return ()
-    grouped_paths: list[str] = []
-    for child_path in sorted(addons_root.iterdir()):
-        if not child_path.is_dir():
-            continue
-        if child_path.name.startswith((".", "__")):
-            continue
-        if (child_path / "__manifest__.py").exists() or (child_path / "__openerp__.py").exists():
-            continue
-        grouped_paths.append(f"/opt/project/addons/{child_path.name}")
-    return tuple(grouped_paths)
+    return tuple(f"/opt/project/addons/{path.name}" for path in addon_group_dirs(repo_root / "addons"))
 
 
 def load_environment(*, repo_root: Path, context_name: str, instance_name: str, collision_mode: str = "warn") -> LoadedEnvironment:

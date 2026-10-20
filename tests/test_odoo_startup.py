@@ -82,14 +82,26 @@ class _FakeUsers:
 class OdooStartupDependencySyncTests(unittest.TestCase):
     def test_startup_discovers_packaged_groups_without_treating_addons_as_groups(self) -> None:
         with TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory) / "addons"
             shared = root / "shared"
             for addon in (root / "tenant_probe", shared / "shared_probe"):
                 addon.mkdir(parents=True)
+                (addon / "__init__.py").touch()
                 (addon / "__manifest__.py").write_text("{'name': 'Probe', 'depends': []}")
-            configured = odoo_startup._normalize_comma_list_with_first_item(str(root), str(shared))
-            inherited = odoo_startup._normalize_comma_list_with_first_item(str(root), "")
+            later = Path(directory) / "extra-addons"
+            (later / "shared_probe").mkdir(parents=True)
+            (later / "shared_probe/__init__.py").touch()
+            (later / "shared_probe/__manifest__.py").write_text("{'name': 'Other probe'}")
+            nested = root / "tenant_probe/tests/nested_probe"
+            nested.mkdir(parents=True)
+            (nested / "__init__.py").touch()
+            (nested / "__manifest__.py").write_text("{'name': 'Nested probe'}")
+            with patch.dict(odoo_startup.expand_addon_paths.__globals__, PROJECT_ADDONS_ROOT=root):
+                configured = odoo_startup._normalize_comma_list_with_first_item(str(root), f"{shared},{later}")
+                inherited = odoo_startup._normalize_comma_list_with_first_item(str(root), str(later))
             self.assertEqual(inherited, configured)
+            self.assertLess(inherited.split(",").index(str(shared)), inherited.split(",").index(str(later)))
+            self.assertNotIn(str(root / "tenant_probe"), inherited.split(","))
             discovered = {manifest.parent.name for path in inherited.split(",") for manifest in Path(path).glob("*/__manifest__.py")}
             self.assertEqual(discovered, {"tenant_probe", "shared_probe"})
 

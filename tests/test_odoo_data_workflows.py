@@ -420,18 +420,24 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
             shared = root / "shared"
             addon = shared / "shared_probe"
             addon.mkdir(parents=True)
+            (addon / "__init__.py").touch()
             (addon / "__manifest__.py").write_text("{'name': 'Shared probe', 'depends': []}")
             settings = self._local_settings()
             settings.addons_path = str(root)
             runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
-            runner.os_env["ODOO_ADDONS_PATH"] = str(root)
-            self.assertIn(shared, runner._resolve_addons_paths())
             path_exists = Path.exists
-            with patch.object(Path, "exists", lambda path: path == Path("/odoo/odoo-bin") or path_exists(path)):
+            with (
+                patch.dict(odoo_data_workflows.expand_addon_paths.__globals__, PROJECT_ADDONS_ROOT=root),
+                patch.object(Path, "exists", lambda path: path == Path("/odoo/odoo-bin") or path_exists(path)),
+            ):
+                self.assertIn(shared, runner._resolve_addons_paths())
+                self.assertIn("shared_probe", runner.compute_update_module_list())
+                runner._auto_addon_dirs = [root / "outside-config"]
                 commands = (runner._odoo_runtime_connection_flags(), runner._odoo_shell_command())
             for command in commands:
                 paths = next(arg.split("=", 1)[1] for arg in command if arg.startswith("--addons-path="))
                 self.assertIn(str(shared), paths.split(","))
+                self.assertNotIn(str(root / "outside-config"), paths.split(","))
 
     def test_data_workflow_shell_prepends_runtime_scripts_to_pythonpath(self) -> None:
         with patch.dict(os.environ, {"PYTHONPATH": "/opt/custom"}, clear=True):
@@ -1555,6 +1561,7 @@ class UpdateAddonsModuleDetectionTests(unittest.TestCase):
     ) -> None:
         module_path = addons_root / module_name
         module_path.mkdir(parents=True)
+        (module_path / "__init__.py").touch()
         manifest = {"name": module_name, "depends": list(depends)}
         (module_path / manifest_name).write_text(repr(manifest), encoding="utf-8")
 
