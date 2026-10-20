@@ -10,6 +10,8 @@ into the generated workspace root.
   first for priorities, stop boundaries, and retired concepts. This repository
   has no `DIRECTION.md` of its own.
 - Use [docs/README.md](docs/README.md) as the shared docs index.
+- Write Python and Odoo JavaScript in the shared
+  [Python and Odoo style](https://github.com/cbusillo/codex-skills/blob/HEAD/skills/references/python-odoo-style.md).
 - Read [README.md](README.md) for the current bootstrap scope and command
   surface.
 - Keep agent instructions in `AGENTS.md`, including tenant overlays and nested

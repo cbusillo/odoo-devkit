@@ -11,6 +11,8 @@ Client: (fill in the person whose business this product serves)
 - Use the shared workspace-root `AGENTS.md` as the canonical coding-agent guide
   for Codex and Claude Code.
 - Use `odoo-devkit` docs for shared DX/runtime/bootstrap behavior.
+- Write Python and Odoo JavaScript in the shared
+  [Python and Odoo style](https://github.com/cbusillo/codex-skills/blob/HEAD/skills/references/python-odoo-style.md).
 - Keep this file focused on tenant-specific domain notes, repo-local guardrails,
   and links to tenant-owned docs.
 
