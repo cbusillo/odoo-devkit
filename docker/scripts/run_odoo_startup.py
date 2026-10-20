@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import psycopg2
+from odoo_addon_paths import expand_addon_paths
 from odoo_admin_password import validate_admin_password
 from odoo_website_settings import PRODUCTION_INSTANCE_NAMES
 
@@ -93,14 +94,14 @@ def _split_modules(raw_modules: str) -> tuple[str, ...]:
     return tuple(parsed_modules)
 
 
-def _normalize_comma_list_with_first_item(first_item: str, raw_list: str) -> str:
+def _normalize_addons_path(first_item: str, raw_list: str) -> str:
     normalized_items = [first_item]
     for raw_item in raw_list.split(","):
         item = raw_item.strip()
         if not item or item in normalized_items:
             continue
         normalized_items.append(item)
-    return ",".join(normalized_items)
+    return ",".join(str(path) for path in expand_addon_paths(Path(item) for item in normalized_items))
 
 
 def _parse_arguments() -> argparse.Namespace:
@@ -134,7 +135,7 @@ def _load_settings(argument_namespace: argparse.Namespace) -> StartupSettings:
         master_password=master_password,
         admin_login=os.environ.get("ODOO_ADMIN_LOGIN", "").strip() or "admin",
         admin_password=os.environ.get("ODOO_ADMIN_PASSWORD", ""),
-        addons_path=_normalize_comma_list_with_first_item(
+        addons_path=_normalize_addons_path(
             LAUNCHPLANE_ADDONS_PATH,
             os.environ.get("ODOO_ADDONS_PATH", "").strip(),
         ),

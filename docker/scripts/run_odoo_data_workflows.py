@@ -23,6 +23,7 @@ from typing import Any
 from unittest.mock import patch
 
 import psycopg2
+from odoo_addon_paths import expand_addon_paths
 from odoo_admin_password import RESTORED_LOGINS_PARAMETER, restored_logins_preserved, validate_admin_password
 from odoo_release_plan import load_plan, names, resolve_plan, verify_image_declaration
 from odoo_website_bootstrap import load_instance_override_payload, require_launchplane_payloads_if_configured
@@ -912,7 +913,7 @@ class OdooDataWorkflowRunner:
             f"--db_port={self.local.port}",
             f"--db_user={self.local.db_user}",
         ]
-        addons_path = (self.local.addons_path or "").strip()
+        addons_path = ",".join(str(path) for path in self._configured_addons_paths())
         if addons_path:
             command_flags.append(f"--addons-path={addons_path}")
         data_dir = (self.os_env.get("ODOO_DATA_DIR") or "").strip()
@@ -1519,13 +1520,16 @@ class OdooDataWorkflowRunner:
             ("ODOO_DB_HOST", "--db_host"),
             ("ODOO_DB_PORT", "--db_port"),
             ("ODOO_DB_USER", "--db_user"),
-            ("ODOO_ADDONS_PATH", "--addons-path"),
             ("ODOO_DATA_DIR", "--data-dir"),
         )
         for environment_name, command_flag in environment_flag_map:
             environment_value = (self.os_env.get(environment_name) or "").strip()
             if environment_value:
                 command.append(f"{command_flag}={environment_value}")
+
+        addons_path = ",".join(str(path) for path in self._configured_addons_paths())
+        if addons_path:
+            command.append("--addons-path=" + addons_path)
 
         command += ["-d", self.local.db_name, "--no-http"]
         generated_config_path = Path("/volumes/config/_generated.conf")
@@ -2266,34 +2270,14 @@ with registry.cursor() as cr:
         """Return mapping of local module names to their filesystem paths."""
         excluded_roots = self._resolve_excluded_addon_roots()
 
-        def _extend_from_raw(raw: str | None) -> None:
-            if not raw:
-                return
-            separator = "," if "," in raw else ":"
-            for token in raw.split(separator):
-                stripped = token.strip()
-                if stripped:
-                    candidate_dirs.append(stripped)
-
-        candidate_dirs: list[str] = []
-        _extend_from_raw(self.local.local_addons_dirs)
-        _extend_from_raw(self.local.addons_path)
-        if "/opt/extra_addons" not in candidate_dirs:
-            candidate_dirs.append("/opt/extra_addons")
-
+        raw_dirs = (self.local.local_addons_dirs or "").strip()
+        separator = "," if "," in raw_dirs else ":"
+        candidate_dirs = expand_addon_paths(Path(token.strip()) for token in raw_dirs.split(separator) if token.strip())
+        candidate_dirs.extend(path for path in self._configured_addons_paths() if path not in candidate_dirs)
         if not candidate_dirs:
-            generated_conf = Path("/volumes/config/_generated.conf")
-            if generated_conf.exists():
-                try:
-                    conf_text = generated_conf.read_text(encoding="utf-8", errors="ignore")
-                except OSError:
-                    conf_text = ""
-                match = re.search(r"^\s*addons_path\s*=\s*(.+)$", conf_text, re.MULTILINE)
-                if match:
-                    _extend_from_raw(match.group(1).strip())
-
-        if not candidate_dirs:
-            candidate_dirs = ["/opt/project/addons", *(str(path) for path in self._project_addon_group_dirs())]
+            candidate_dirs = expand_addon_paths([Path("/opt/project/addons")])
+        if Path("/opt/extra_addons") not in candidate_dirs:
+            candidate_dirs.append(Path("/opt/extra_addons"))
 
         discovered: dict[str, Path] = {}
         resolved_dirs: list[Path] = []
@@ -2302,7 +2286,7 @@ with registry.cursor() as cr:
                 base = Path(raw_dir).expanduser()
                 base = base.resolve()
             except OSError:
-                base = Path(raw_dir)
+                base = raw_dir
 
             normalized = str(base)
             if "/odoo/addons" in normalized or "/odoo/odoo/addons" in normalized:
@@ -2383,23 +2367,6 @@ with registry.cursor() as cr:
                     return True
         return False
 
-    @staticmethod
-    def _project_addon_group_dirs() -> list[Path]:
-        addons_root = Path("/opt/project/addons")
-        if not addons_root.is_dir():
-            return []
-
-        grouped_dirs: list[Path] = []
-        for child_path in sorted(addons_root.iterdir()):
-            if not child_path.is_dir():
-                continue
-            if child_path.name.startswith((".", "__")):
-                continue
-            if (child_path / "__manifest__.py").exists() or (child_path / "__openerp__.py").exists():
-                continue
-            grouped_dirs.append(child_path)
-        return grouped_dirs
-
     def _local_dependency_closure(self, modules: Sequence[str], local_module_paths: dict[str, Path]) -> set[str]:
         """Return the modules plus every local addon they depend on, directly or not."""
         closure = set(modules)
@@ -2442,7 +2409,7 @@ with registry.cursor() as cr:
             cursor.execute("select name from ir_module_module where state in ('installed','to upgrade','to install')")
             return {row[0] for row in cursor.fetchall()}
 
-    def _resolve_addons_paths(self) -> list[Path]:
+    def _configured_addons_paths(self) -> list[Path]:
         addons_env = (self.local.addons_path or "").strip()
         addons_paths: list[Path] = []
         if addons_env:
@@ -2462,13 +2429,18 @@ with registry.cursor() as cr:
                     sep = "," if "," in raw_paths else ":"
                     for raw_path in [path_entry.strip() for path_entry in raw_paths.split(sep) if path_entry.strip()]:
                         addons_paths.append(Path(raw_path))
+        return expand_addon_paths(addons_paths)
+
+    def _resolve_addons_paths(self) -> list[Path]:
+        addons_paths = self._configured_addons_paths()
         if not addons_paths:
-            addons_paths = [
-                Path("/opt/project/addons"),
-                *self._project_addon_group_dirs(),
-                Path("/odoo/addons"),
-                Path("/opt/extra_addons"),
-            ]
+            addons_paths = expand_addon_paths(
+                [
+                    Path("/opt/project/addons"),
+                    Path("/odoo/addons"),
+                    Path("/opt/extra_addons"),
+                ]
+            )
         if getattr(self, "_auto_addon_dirs", None):
             for auto_dir in self._auto_addon_dirs:
                 if auto_dir not in addons_paths:

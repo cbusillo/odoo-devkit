@@ -80,6 +80,31 @@ class _FakeUsers:
 
 
 class OdooStartupDependencySyncTests(unittest.TestCase):
+    def test_startup_discovers_packaged_groups_without_treating_addons_as_groups(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory) / "addons"
+            shared = root / "shared"
+            for addon in (root / "tenant_probe", shared / "shared_probe"):
+                addon.mkdir(parents=True)
+                (addon / "__init__.py").touch()
+                (addon / "__manifest__.py").write_text("{'name': 'Probe', 'depends': []}")
+            later = Path(directory) / "extra-addons"
+            (later / "shared_probe").mkdir(parents=True)
+            (later / "shared_probe/__init__.py").touch()
+            (later / "shared_probe/__manifest__.py").write_text("{'name': 'Other probe'}")
+            nested = root / "tenant_probe/nested_probe"
+            nested.mkdir(parents=True)
+            (nested / "__init__.py").touch()
+            (nested / "__manifest__.py").write_text("{'name': 'Nested probe'}")
+            with patch.dict(odoo_startup.expand_addon_paths.__globals__, PROJECT_ADDONS_ROOT=root):
+                configured = odoo_startup._normalize_addons_path(str(root), f"{shared},{later}")
+                inherited = odoo_startup._normalize_addons_path(str(root), str(later))
+            self.assertEqual(inherited, configured)
+            self.assertLess(inherited.split(",").index(str(shared)), inherited.split(",").index(str(later)))
+            self.assertNotIn(str(root / "tenant_probe"), inherited.split(","))
+            discovered = {manifest.parent.name for path in inherited.split(",") for manifest in Path(path).glob("*/__manifest__.py")}
+            self.assertEqual(discovered, {"tenant_probe", "shared_probe"})
+
     @staticmethod
     def _settings(
         *,
@@ -125,7 +150,6 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
             settings = odoo_startup._load_settings(argparse.Namespace(config_path="/tmp/generated.conf"))
 
         self.assertEqual(settings.platform_instance, "local")
-        self.assertEqual(settings.addons_path, "/opt/launchplane/addons,/odoo/addons")
 
     def test_raw_admin_line_separators_stop_startup_before_any_side_effect(self) -> None:
         separators = ("\n", "\r", "\r\n", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029")
@@ -159,6 +183,7 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
                         self.assertEqual(recorder.mock_calls, [])
 
     def test_load_settings_preserves_launchplane_addon_path_first(self) -> None:
+        configured_paths = ["/fixture/addons", odoo_startup.LAUNCHPLANE_ADDONS_PATH, "/fixture/core"]
         environment = {
             "PLATFORM_INSTANCE": "local",
             "ODOO_DB_NAME": "opw",
@@ -167,15 +192,15 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
             "ODOO_DB_USER": "odoo",
             "ODOO_DB_PASSWORD": "database-password",
             "ODOO_MASTER_PASSWORD": "master-password",
-            "ODOO_ADDONS_PATH": "/opt/project/addons,/opt/launchplane/addons,/odoo/addons",
+            "ODOO_ADDONS_PATH": ",".join(configured_paths),
         }
 
         with patch.dict(os.environ, environment, clear=True):
             settings = odoo_startup._load_settings(argparse.Namespace(config_path="/tmp/generated.conf"))
 
         self.assertEqual(
-            settings.addons_path,
-            "/opt/launchplane/addons,/opt/project/addons,/odoo/addons",
+            settings.addons_path.split(","),
+            [odoo_startup.LAUNCHPLANE_ADDONS_PATH, configured_paths[0], configured_paths[2]],
         )
 
     def test_raw_single_line_admin_password_reaches_the_password_write_literally(self) -> None:
