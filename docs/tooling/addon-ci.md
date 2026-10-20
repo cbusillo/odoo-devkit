@@ -46,7 +46,8 @@ summary, zero tests, reported failures/errors, or nonzero Odoo exit fails the jo
 Callers upload the evidence even when the run fails and apply path filters to
 addon and test-input changes, so docs-only changes do not run the suites.
 
-Local example, from an isolated devkit checkout:
+Direct runner example, from an isolated devkit checkout (tenant declarations
+use the cross-checkout form described below):
 
 ```bash
 uv run python -m odoo_devkit.addon_ci \
@@ -63,6 +64,27 @@ uses only throwaway containers, never an installed runtime or Client data.
 Existing browser harnesses can still skip a broken suite;
 their failure propagation is tracked in shared-addons #40 and is separate from
 this runner's Odoo process/summary gate.
+
+## Declared local command
+
+Each caller records its local invocation in `.github/github.json` under
+`qualityGate.test.addonOdoo`; READMEs and agent guides point there. Use
+`ODOO_DEVKIT_REPO` and `ODOO_SHARED_ADDONS_REPO` for external task worktrees,
+and set `ADDON_TEST_OUTPUT` to the task's evidence directory before running it.
+`ADDON_TEST_ROOT` can select a prepared directory containing one owned addon
+for focused local verification; keep its dependencies available through the
+support root. Omit that override to test all owned addons.
+
+Callers pass `command-metadata: source/.github/github.json` to the action and
+include metadata changes in their workflow path filters. Before creating test
+resources, the action runs `python -m odoo_devkit.addon_test_command` against
+that declaration. This linter requires the `uv --directory <devkit> run
+[--locked] python -m odoo_devkit.addon_ci` entrypoint and its required inputs,
+as a restricted single-line command, and rejects runtime updates, help-only
+invocations, shell operators, redirection and command substitution. Only the
+shown uv prefix is supported; addon arguments use the runner's own parser.
+The runner then requires a successful nonempty Odoo test summary. The linter
+does not execute shell text or assert workflow wording.
 
 ## Devkit live checks
 
