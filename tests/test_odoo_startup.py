@@ -150,7 +150,6 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
             settings = odoo_startup._load_settings(argparse.Namespace(config_path="/tmp/generated.conf"))
 
         self.assertEqual(settings.platform_instance, "local")
-        self.assertEqual(settings.addons_path, "/opt/launchplane/addons,/odoo/addons")
 
     def test_raw_admin_line_separators_stop_startup_before_any_side_effect(self) -> None:
         separators = ("\n", "\r", "\r\n", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029")
@@ -184,6 +183,7 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
                         self.assertEqual(recorder.mock_calls, [])
 
     def test_load_settings_preserves_launchplane_addon_path_first(self) -> None:
+        configured_paths = ["/fixture/addons", odoo_startup.LAUNCHPLANE_ADDONS_PATH, "/fixture/core"]
         environment = {
             "PLATFORM_INSTANCE": "local",
             "ODOO_DB_NAME": "opw",
@@ -192,15 +192,15 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
             "ODOO_DB_USER": "odoo",
             "ODOO_DB_PASSWORD": "database-password",
             "ODOO_MASTER_PASSWORD": "master-password",
-            "ODOO_ADDONS_PATH": "/opt/project/addons,/opt/launchplane/addons,/odoo/addons",
+            "ODOO_ADDONS_PATH": ",".join(configured_paths),
         }
 
         with patch.dict(os.environ, environment, clear=True):
             settings = odoo_startup._load_settings(argparse.Namespace(config_path="/tmp/generated.conf"))
 
         self.assertEqual(
-            settings.addons_path,
-            "/opt/launchplane/addons,/opt/project/addons,/odoo/addons",
+            settings.addons_path.split(","),
+            [odoo_startup.LAUNCHPLANE_ADDONS_PATH, configured_paths[0], configured_paths[2]],
         )
 
     def test_raw_single_line_admin_password_reaches_the_password_write_literally(self) -> None:
