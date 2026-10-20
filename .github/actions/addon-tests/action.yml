@@ -19,6 +19,9 @@ inputs:
   source-token:
     description: Existing repository source-read token for manifest-declared private addons
     default: ''
+  command-metadata:
+    description: Repository github.json to check for the canonical local addon test entrypoint, relative to the workspace
+    default: ''
 runs:
   using: composite
   steps:
@@ -33,8 +36,12 @@ runs:
         ADDON_CI_IMAGE: ${{ inputs.image }}
         ADDON_CI_OUTPUT: ${{ inputs.output }}
         ADDON_CI_SOURCE_TOKEN: ${{ inputs.source-token }}
+        ADDON_CI_METADATA: ${{ inputs.command-metadata }}
       run: |
         set -euo pipefail
+        if [ -n "$ADDON_CI_METADATA" ]; then
+          uv --directory "$ADDON_CI_ACTION/../../.." run --locked python -m odoo_devkit.addon_test_command "$GITHUB_WORKSPACE/$ADDON_CI_METADATA"
+        fi
         if [[ "$ADDON_CI_OUTPUT" != /* ]]; then ADDON_CI_OUTPUT="$GITHUB_WORKSPACE/$ADDON_CI_OUTPUT"; fi
         args=(--addons-root "$GITHUB_WORKSPACE/$ADDON_CI_ROOT" --output "$ADDON_CI_OUTPUT")
         if [ -n "$ADDON_CI_TENANT" ]; then args+=(--tenant "$GITHUB_WORKSPACE/$ADDON_CI_TENANT"); fi

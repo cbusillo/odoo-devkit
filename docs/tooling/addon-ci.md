@@ -64,6 +64,25 @@ Existing browser harnesses can still skip a broken suite;
 their failure propagation is tracked in shared-addons #40 and is separate from
 this runner's Odoo process/summary gate.
 
+## Declared local command
+
+Each caller records its local invocation in `.github/github.json` under
+`qualityGate.test.addonOdoo`; READMEs and agent guides point there. Use
+`ODOO_DEVKIT_REPO` and `ODOO_SHARED_ADDONS_REPO` for external task worktrees,
+and set `ADDON_TEST_OUTPUT` to the task's evidence directory before running it.
+`ADDON_TEST_ROOT` can select a prepared directory containing one owned addon
+for focused local verification; keep its dependencies available through the
+support root. Omit that override to test all owned addons.
+
+Callers pass `command-metadata: source/.github/github.json` to the action and
+include metadata changes in their workflow path filters. Before creating test
+resources, the action runs `python -m odoo_devkit.addon_test_command` against
+that declaration. This linter requires the `uv --directory <devkit> run
+[--locked] python -m odoo_devkit.addon_ci` entrypoint and its required inputs,
+and rejects runtime updates, help-only invocations and trailing shell commands.
+The runner then requires a successful nonempty Odoo test summary. The linter
+does not execute shell text or assert workflow wording.
+
 ## Devkit live checks
 
 The `Devkit live Odoo checks` workflow runs the same runner with
