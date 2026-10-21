@@ -4,12 +4,12 @@ import ast
 import os
 import re
 import subprocess
-import tempfile
 import tomllib
 from pathlib import Path
 from typing import cast
 from xml.etree import ElementTree
 
+from .atomic_files import atomic_write_bytes
 from .manifest import WorkspaceManifest
 from .runtime_environment import sanitized_subprocess_environment
 
@@ -66,7 +66,7 @@ def prepare_odoo_sources(
     written_paths = []
     try:
         for path, content_bytes in writes.items():
-            _write_atomic(path, content_bytes)
+            atomic_write_bytes(path=path, content=content_bytes)
             written_paths.append(path)
     except OSError:
         if modules_root is not None:
@@ -255,19 +255,6 @@ def _require_local_ignored_file(project_path: Path, path: Path) -> None:
     )
     if ignored.returncode != 0:
         raise ValueError(f"{relative_path} must already be Git-ignored before IDE preparation")
-
-
-def _write_atomic(path: Path, content: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = None
-    try:
-        with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}.", delete=False) as temporary_file:
-            temporary_path = Path(temporary_file.name)
-            temporary_file.write(content)
-        os.replace(temporary_path, path)
-    finally:
-        if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
 
 
 def _git(directory: Path, *arguments: str) -> str:
