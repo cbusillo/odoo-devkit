@@ -46,26 +46,37 @@ support versions and verifies that no difference remains. Regenerate any
 tenant file exported from its lock, such as `tenant-requirements.txt`, with the
 tenant's own export command before committing.
 
-The command owns deterministic file transformation and validation only.
-Launchplane owns repository inventory, credentials, branch creation, pull
-requests, merge ordering, retries, and audited rollout state.
+The command owns deterministic file transformation and validation only. It
+opens no pull request.
+
+## Moving The Pin
+
+Each tenant's `workspace.toml` `[repos.devkit]` ref is its one devkit pin;
+`[repos.runtime]` names the same commit. Renovate moves it: a tenant
+`renovate.json` custom regex manager with the `git-refs` datasource tracks the
+head commit of devkit `main` and opens one pull request per tenant that
+rewrites both refs to that exact commit. Renovate updates the same pull request
+when `main` moves again. Tenant CI is the gate, and the merge train lands the
+pull request after an agent's review, like any engineering change.
+
+Renovate only rewrites the refs. Tenant CI runs `--check-build-tools` against
+the pinned devkit, so a pin move that also needs addon build-tool or support
+lock changes fails there; the reviewing agent runs `--apply` with the same
+commit on that branch.
 
 ## Rollout Order
 
-1. Pin each tenant to its current known-good devkit commit.
-2. Open and validate the devkit catalog/lock update.
-3. Run the synchronization command against the devkit candidate commit to
+1. Open and validate the devkit catalog/lock update.
+2. Run the synchronization command against the devkit candidate commit to
    preview and validate the downstream changes.
-4. Merge the devkit update and capture the resulting commit on `main`.
-5. Rerun synchronization with that final commit, then merge the green tenant
-   updates. Do not permanently pin a pull-request head that may be replaced by
+3. Merge the devkit update. Renovate then proposes the resulting `main` commit
+   to each tenant; never pin a pull-request head that may be replaced by
    squash or rebase merge.
 
 Tenant Dependabot may ignore centrally owned build tools only after the
 runtime-python Dependabot lane, lock validation, and synchronization path are
 operational. Security updates then originate from the central catalog and use
-the same downstream rollout. Tenants should also run a scheduled sync check
-against devkit `main` so a centrally available update cannot remain silent.
+the same downstream rollout.
 
 ## Recovery
 
