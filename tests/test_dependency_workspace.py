@@ -816,9 +816,17 @@ class DependencyWorkspaceTests(unittest.TestCase):
                 text=True,
             ).strip()
             self.assertEqual(installed, catalog.requirements[0].split("==")[1])
-            with mock.patch("odoo_devkit.dependency_workspace.manifest_base_python_catalogs", return_value=(catalog,)):
+            with mock.patch(
+                "odoo_devkit.dependency_workspace.manifest_base_python_catalogs", side_effect=AssertionError("registry access")
+            ):
                 with self.assertRaisesRegex(ValueError, "empty"):
                     dependency_workspace.prepare_dependency_workspace(manifest=manifest, output_directory=output)
+            failed = root / "failed"
+            conflict = BasePythonCatalog(catalog.image, catalog.platform, ("idna==2.10",))
+            with mock.patch("odoo_devkit.dependency_workspace.manifest_base_python_catalogs", return_value=(conflict,)):
+                with self.assertRaisesRegex(ValueError, "idna"):
+                    dependency_workspace.prepare_dependency_workspace(manifest=manifest, output_directory=failed)
+            self.assertFalse(failed.exists())
 
     def test_normalize_is_idempotent_for_a_current_lock(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory_name:

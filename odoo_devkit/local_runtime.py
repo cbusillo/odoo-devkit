@@ -547,7 +547,7 @@ def build_runtime(*, manifest: WorkspaceManifest, runtime_repo_path: Path, no_ca
     values = build_runtime_env_values(runtime_context=runtime_context)
     values.update(manifest_build_values(manifest, required=True))
     for key in ("OPENUPGRADELIB_INSTALL_SPEC", "ODOO_PYTHON_SYNC_SKIP_ADDONS"):
-        if values.get(key, "").strip():
+        if (values.get(key) or runtime_context.environment.merged_values.get(key, "")).strip():
             raise RuntimeCommandError(
                 f"Strict local builds do not support {key}; remove it and declare Python dependencies in locked tenant metadata, normalize, and rebuild."
             )
@@ -2253,7 +2253,6 @@ def build_runtime_env_values(
         "OPENUPGRADE_SCRIPTS_PATH": openupgrade_environment.get("OPENUPGRADE_SCRIPTS_PATH", ""),
         "OPENUPGRADE_TARGET_VERSION": openupgrade_environment.get("OPENUPGRADE_TARGET_VERSION", ""),
         "OPENUPGRADE_SKIP_UPDATE_ADDONS": openupgrade_environment.get("OPENUPGRADE_SKIP_UPDATE_ADDONS", "True"),
-        "OPENUPGRADELIB_INSTALL_SPEC": openupgrade_environment.get("OPENUPGRADELIB_INSTALL_SPEC", ""),
         "ODOO_PYTHON_SYNC_SKIP_ADDONS": source_environment.get("ODOO_PYTHON_SYNC_SKIP_ADDONS", ""),
         "GITHUB_TOKEN": source_environment.get("GITHUB_TOKEN", ""),
     }
@@ -2300,7 +2299,7 @@ def manifest_build_values(manifest: WorkspaceManifest, *, required: bool = False
     if required:
         missing = [key for key, value in declared.items() if not isinstance(value, str) or not value.strip()]
         if missing:
-            raise RuntimeCommandError("Artifact publish requires workspace.toml build inputs: " + ", ".join(missing))
+            raise RuntimeCommandError("Build requires workspace.toml [build] inputs: " + ", ".join(missing))
     values: dict[str, str] = {}
     for key, value in declared.items():
         if isinstance(value, str) and value:
@@ -3654,13 +3653,6 @@ def resolve_openupgrade_addon_repository(source_environment: dict[str, str]) -> 
     raise RuntimeCommandError("OPENUPGRADE_ADDON_REPOSITORY must be set when OPENUPGRADE_ENABLED is true.")
 
 
-def resolve_openupgradelib_install_spec(source_environment: dict[str, str]) -> str:
-    install_specification = source_environment.get("OPENUPGRADELIB_INSTALL_SPEC", "").strip()
-    if install_specification:
-        return install_specification
-    raise RuntimeCommandError("OPENUPGRADELIB_INSTALL_SPEC must be set when OPENUPGRADE_ENABLED is true.")
-
-
 def runtime_env_file_for_scope(*, repo_root: Path, context_name: str, instance_name: str) -> Path:
     return repo_root / ".platform" / "env" / f"{context_name}.{instance_name}.env"
 
@@ -3721,7 +3713,8 @@ def compose_runtime_env_file(runtime_env_file: Path) -> Path:
 
 def build_registry_auth_environment(*, source_environment: dict[str, str], runtime_env_file: Path) -> dict[str, str]:
     registry_auth_environment = dict(source_environment)
-    registry_auth_environment.update(parse_env_file(runtime_env_file))
+    if runtime_env_file.exists():
+        registry_auth_environment.update(parse_env_file(runtime_env_file))
     return registry_auth_environment
 
 

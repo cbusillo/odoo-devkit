@@ -4,13 +4,12 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import subprocess
 import tempfile
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, NotRequired, TypedDict
+from typing import Any, Literal, TypedDict
 from urllib.parse import urlsplit
 
 from .base_python import BASE_PYTHON_PLATFORMS, PLATFORM_MACHINES, BasePythonCatalog
@@ -106,9 +105,12 @@ def _toml_value(value: Any) -> str:
 def manifest_base_python_catalogs(manifest: WorkspaceManifest) -> tuple[BasePythonCatalog, ...]:
     from .base_python import read_base_python_catalogs
     from .local_runtime import (
+        build_registry_auth_environment,
         ensure_registry_auth_for_base_images,
+        load_environment,
         manifest_build_values,
         resolve_image_digest,
+        runtime_env_file_for_scope,
         split_image_reference,
     )
 
@@ -116,7 +118,20 @@ def manifest_base_python_catalogs(manifest: WorkspaceManifest) -> tuple[BasePyth
     image = values.get("ODOO_BASE_RUNTIME_IMAGE")
     if not image:
         return ()
-    ensure_registry_auth_for_base_images(values)
+    from .runtime import resolve_runtime_repo_path
+
+    runtime_root = resolve_runtime_repo_path(manifest)
+    environment = load_environment(
+        repo_root=runtime_root, context_name=manifest.runtime.context, instance_name=manifest.runtime.instance
+    )
+    auth_values = build_registry_auth_environment(
+        source_environment=environment.merged_values,
+        runtime_env_file=runtime_env_file_for_scope(
+            repo_root=runtime_root, context_name=manifest.runtime.context, instance_name=manifest.runtime.instance
+        ),
+    )
+    auth_values.update(values)
+    ensure_registry_auth_for_base_images(auth_values)
     repository, _ = split_image_reference(image)
     immutable = f"{repository}@{resolve_image_digest(image)}"
     return read_base_python_catalogs(image=immutable, platforms=BASE_PYTHON_PLATFORMS)
@@ -156,8 +171,6 @@ class DependencyNormalizationProvenance(TypedDict):
     source: DependencyNormalizationSource
     tool: DependencyNormalizationTool
     artifacts: list[DependencyNormalizationArtifact]
-    base_python_catalogs: NotRequired[list[dict[str, object]]]
-    effective_artifacts: NotRequired[list[DependencyNormalizationArtifact]]
 
 
 @dataclass(frozen=True)
@@ -468,8 +481,7 @@ def normalize_dependency_workspace(
                 lock_replaced = True
             inspection = require_publishable_dependency_workspace(manifest=manifest)
             if output_directory is not None:
-                retained_root = output_directory.expanduser().resolve()
-                retained_export_path = retained_root / "tenant-requirements.txt"
+                retained_export_path = output_directory.expanduser().resolve() / "tenant-requirements.txt"
                 _atomic_write_bytes(path=retained_export_path, content=export_path.read_bytes())
         except BaseException as error:
             if lock_replaced:
@@ -490,14 +502,22 @@ def normalize_dependency_workspace(
 
 def prepare_dependency_workspace(*, manifest: WorkspaceManifest, output_directory: Path) -> DependencyWorkspaceInspection:
     """Stage the effective host workspace without modifying canonical metadata."""
+    destination = output_directory.expanduser().resolve()
+    if destination.exists() and (not destination.is_dir() or any(destination.iterdir())):
+        raise DependencyWorkspaceError("Dependency workspace staging destination must be empty")
     catalogs = manifest_base_python_catalogs(manifest)
     if not catalogs:
         raise DependencyWorkspaceError("Dependency preparation requires published base images in manifest [build].")
-    destination = output_directory.expanduser().resolve()
-    inspection = stage_publishable_dependency_workspace(
-        manifest=manifest, destination_root=destination, catalogs=catalogs, committed=False
-    )
-    _write_frozen_dependency_export(staged_root=destination, export_path=destination / "tenant-requirements.txt")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=f".{destination.name}-", dir=destination.parent) as temporary:
+        staged = Path(temporary) / "workspace"
+        inspection = stage_publishable_dependency_workspace(
+            manifest=manifest, destination_root=staged, catalogs=catalogs, committed=False
+        )
+        _write_frozen_dependency_export(staged_root=staged, export_path=staged / "tenant-requirements.txt")
+        if destination.exists():
+            destination.rmdir()
+        staged.replace(destination)
     return inspection
 
 

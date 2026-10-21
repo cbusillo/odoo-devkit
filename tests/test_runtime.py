@@ -1456,11 +1456,16 @@ homepage = true
             for repo in (tenant_root, runtime_root):
                 subprocess.run(["git", "remote", "remove", "origin"], cwd=repo, check=True)
             (tenant_root / "addons/shared").symlink_to(root / "absent-shared", target_is_directory=True)
+            # Exercise the shipped stack through the build boundary, rather than asserting config text.
+            (runtime_root / "platform/stack.toml").write_bytes(
+                (Path(__file__).resolve().parents[1] / "platform/stack.toml").read_bytes()
+            )
             source_lock = (tenant_root / "uv.lock").read_bytes()
             catalogs = tuple(
                 BasePythonCatalog("registry.invalid/base@sha256:" + "2" * 64, platform, (f"idna=={version}",))
                 for platform, version in (("linux/amd64", "3.10"), ("linux/arm64", "3.11"))
             )
+            runtime_values_path = runtime_root / ".platform/env/opw.local.env"
             overlay = runtime_root / ".platform/env/opw.local.dependencies.json"
             staged_locks = []
 
@@ -1469,9 +1474,9 @@ homepage = true
                 self.assertTrue((stage / "addons/opw_custom/static/src/shared/file.js").is_file())
                 self.assertFalse((stage / "addons/opw_custom/static/src/shared/ignored.private").exists())
                 self.assertEqual(environment_overrides["GITHUB_TOKEN"], "synthetic-build-token")
-                values = local_runtime.parse_env_file(runtime_root / ".platform/env/opw.local.env")
+                values = local_runtime.parse_env_file(runtime_values_path)
                 self.assertEqual(values["ODOO_PYTHON_SYNC_SKIP_ADDONS"], "")
-                self.assertEqual(values["OPENUPGRADELIB_INSTALL_SPEC"], "")
+                self.assertNotIn("OPENUPGRADELIB_INSTALL_SPEC", values)
                 staged_locks.append((stage / "project/uv.lock").read_bytes())
 
             with (
@@ -1508,6 +1513,20 @@ homepage = true
             self.assertEqual(hashlib.sha256(staged_locks[0]).hexdigest(), staged.tenant_lock_sha256)
             self.assertEqual((tenant_root / "uv.lock").read_bytes(), source_lock)
             self.assertNotEqual(staged.tenant_lock_sha256, hashlib.sha256(source_lock).hexdigest())
+
+    def test_host_catalog_auth_uses_the_same_resolved_environment_as_local_build(self) -> None:
+        from odoo_devkit.dependency_workspace import manifest_base_python_catalogs
+
+        with tempfile.TemporaryDirectory() as temporary:
+            manifest, _ = self._prepare_artifact_check(Path(temporary))
+            self._configure_publish_runtime_payload(instance="local", environment={"GHCR_READ_TOKEN": "synthetic-read-token"})
+            with (
+                mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_base_images") as registry,
+                mock.patch("odoo_devkit.local_runtime.resolve_image_digest", return_value="sha256:" + "2" * 64),
+                mock.patch("odoo_devkit.base_python.read_base_python_catalogs", return_value=()),
+            ):
+                manifest_base_python_catalogs(manifest)
+            self.assertEqual(registry.call_args.args[0]["GHCR_READ_TOKEN"], "synthetic-read-token")
 
     def _prepare_artifact_check(self, temp_root: Path) -> tuple[WorkspaceManifest, str]:
         tenant_root = self._create_git_repo(temp_root / "tenant-repo")
