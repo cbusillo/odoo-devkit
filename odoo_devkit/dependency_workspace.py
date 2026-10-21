@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Literal, NotRequired, TypedDict
 from urllib.parse import urlsplit
 
-from .base_python import PLATFORM_MACHINES, BasePythonCatalog
+from .base_python import BASE_PYTHON_PLATFORMS, PLATFORM_MACHINES, BasePythonCatalog
 from .manifest import WorkspaceManifest
 
 DependencyProjectOwner = Literal["tenant", "shared_addons"]
@@ -104,7 +104,7 @@ def _toml_value(value: Any) -> str:
 
 
 def manifest_base_python_catalogs(manifest: WorkspaceManifest) -> tuple[BasePythonCatalog, ...]:
-    from .base_python import native_base_platform, read_base_python_catalogs
+    from .base_python import read_base_python_catalogs
     from .local_runtime import (
         ensure_registry_auth_for_base_images,
         manifest_build_values,
@@ -119,7 +119,7 @@ def manifest_base_python_catalogs(manifest: WorkspaceManifest) -> tuple[BasePyth
     ensure_registry_auth_for_base_images(values)
     repository, _ = split_image_reference(image)
     immutable = f"{repository}@{resolve_image_digest(image)}"
-    return read_base_python_catalogs(image=immutable, platforms=(native_base_platform(),))
+    return read_base_python_catalogs(image=immutable, platforms=BASE_PYTHON_PLATFORMS)
 
 
 class DependencyNormalizationInput(TypedDict):
@@ -157,7 +157,7 @@ class DependencyNormalizationProvenance(TypedDict):
     tool: DependencyNormalizationTool
     artifacts: list[DependencyNormalizationArtifact]
     base_python_catalogs: NotRequired[list[dict[str, object]]]
-    source_lock_sha256: NotRequired[str]
+    effective_artifacts: NotRequired[list[DependencyNormalizationArtifact]]
 
 
 @dataclass(frozen=True)
@@ -473,16 +473,19 @@ def normalize_dependency_workspace(
                     staged_root=staged_root, catalogs=base_catalogs, python_version=manifest.workspace.python_version
                 )
                 _write_frozen_dependency_export(staged_root=staged_root, export_path=export_path)
-                provenance["source_lock_sha256"] = hashlib.sha256(normalized_lock_bytes).hexdigest()
                 provenance["base_python_catalogs"] = [
-                    {"image": catalog.image, "platform": catalog.platform, "requirements": list(catalog.requirements)}
+                    {
+                        "image": catalog.image,
+                        "platform": catalog.platform,
+                        "constraints_sha256": hashlib.sha256(("\n".join(catalog.requirements) + "\n").encode()).hexdigest(),
+                    }
                     for catalog in base_catalogs
                 ]
                 effective_artifacts: list[DependencyNormalizationArtifact] = [
                     {"path": "uv.lock", "sha256": _sha256_file(staged_root / "uv.lock")},
                     {"path": "tenant-requirements.txt", "sha256": _sha256_file(export_path)},
                 ]
-                provenance["artifacts"] = effective_artifacts
+                provenance["effective_artifacts"] = effective_artifacts
             if output_directory is not None:
                 retained_root = output_directory.expanduser().resolve()
                 if base_catalogs:

@@ -86,9 +86,11 @@ class BasePythonTests(unittest.TestCase):
             (source / "pyproject.toml").write_text(
                 '[project]\nname="fixture"\nversion="0"\nrequires-python=">=3.13"\n'
                 'dependencies=["idna>=3", "humanfriendly>=9"]\n[tool.uv]\npackage=false\n'
-                'constraint-dependencies=["humanfriendly==10.0"]\n'
+                'constraint-dependencies=["humanfriendly<11"]\n'
             )
-            subprocess.run(["uv", "lock", "--no-config"], cwd=source, check=True, capture_output=True)
+            subprocess.run(
+                ["uv", "lock", "--no-config", "--upgrade-package", "humanfriendly==9.2"], cwd=source, check=True, capture_output=True
+            )
             original = {p.name: p.read_bytes() for p in source.iterdir()}
             locks = []
             for index, version in enumerate(("3.10", "3.11", "3.11")):
@@ -102,7 +104,7 @@ class BasePythonTests(unittest.TestCase):
                 derive_base_python_lock(staged_root=stage, catalogs=(catalog,), python_version="3.13")
                 packages = {p["name"]: p["version"] for p in tomllib.loads((stage / "uv.lock").read_text())["package"]}
                 self.assertEqual(packages["idna"], version)
-                self.assertEqual(packages["humanfriendly"], "10.0")
+                self.assertEqual(packages["humanfriendly"], "9.2")
                 subprocess.run(["uv", "lock", "--check", "--offline", "--no-config"], cwd=stage, check=True, capture_output=True)
                 locks.append((stage / "uv.lock").read_bytes())
             self.assertEqual(locks[1], locks[2])

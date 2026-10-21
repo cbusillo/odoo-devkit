@@ -244,8 +244,8 @@ Purpose
 
 When `[build].base_runtime_image` is configured, normalization also resolves
 that published image to an immutable digest and reads its baked
-`/opt/launchplane/base-python-constraints.txt` for the host's corresponding
-Linux architecture. It never reconstructs this catalog from a tenant image.
+`/opt/launchplane/base-python-constraints.txt` for both supported Linux
+architectures. It never reconstructs this catalog from a tenant image.
 Missing catalogs and conflicting tenant requirements fail with the base digest
 and resolver's package details.
 
@@ -264,14 +264,16 @@ not only `tenant-requirements.txt`. Its constraints also apply to declared host
 overlaps, while platform markers keep Linux-only requirements out of a macOS
 environment. Source-only `dependencies inspect/check` remain offline source
 contract checks; normalization and image consumers additionally qualify the
-selected base. Normalization's JSON separates the source lock hash from the
-effective artifacts and records the exact catalog identity.
+selected base. Normalization's JSON keeps canonical `artifacts` separate from
+`effective_artifacts` and records source lock hashes and catalog identities.
 
-Local `runtime build` stages the same support and tenant locks for
+Local `runtime build` uses artifact staging in working-tree mode for
 `docker/Dockerfile`. Its ignored `.platform/dependencies` state and per-runtime
-Compose overlay keep those derived root files mounted during local use. Local
-source edits remain allowed; their Git markers identify the baseline and are
-not a publish handoff. Addon CI derives temporary locks from the exact image it
+Compose overlay keep four derived metadata files mounted during local use. Full
+build contexts are temporary and a failed build preserves the current overlay.
+Local edits remain allowed, ignored files stay excluded, and `local/<role>` Git
+markers identify the baseline without requiring a remote or claiming a release
+identity. Addon CI derives temporary locks from the exact published image it
 builds FROM. Artifact builds use the same resolver with immutable committed
 source snapshots and the exact resolved base digest for every target platform.
 Different architecture catalogs receive architecture markers in the universal

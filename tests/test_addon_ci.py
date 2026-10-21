@@ -35,6 +35,49 @@ class AddonCiTests(unittest.TestCase):
             reference = root / "reference"
             shutil.copytree(source, reference)
             derive_base_python_lock(staged_root=reference, catalogs=(catalog,), python_version=">=3.13")
+            tenant = root / "source"
+            shutil.copytree(source, tenant)
+            with (tenant / "pyproject.toml").open("a") as project:
+                project.write("[tool.uv.workspace]\nmembers=[]\n")
+            (tenant / "addons" / "pure").mkdir(parents=True)
+            (tenant / "addons/pure/__manifest__.py").write_text("{}\n")
+            (tenant / "workspace.toml").write_text("""schema_version=1
+tenant="fixture"
+[workspace]
+name="fixture"
+python="3.13"
+[repos.tenant]
+name="fixture"
+path="."
+[repos.devkit]
+name="devkit"
+path="../absent-devkit"
+[repos.shared_addons]
+name="shared"
+path="../absent-shared"
+[runtime]
+context="fixture"
+instance="local"
+database="fixture"
+addons_paths=[]
+[ide]
+mode="tenant_repo"
+focus_paths=[]
+attached_paths=[]
+""")
+            support = root / "shared-addons"
+            support.mkdir()
+            (support / "README.md").write_text("fixture\n")
+            subprocess.run(["uv", "lock", "--no-config"], cwd=tenant, check=True, capture_output=True)
+            for checkout in (tenant, support):
+                for args in (
+                    ["git", "init", "-q"],
+                    ["git", "config", "user.name", "Fixture"],
+                    ["git", "config", "user.email", "fixture@example.invalid"],
+                    ["git", "add", "."],
+                    ["git", "commit", "-qm", "fixture"],
+                ):
+                    subprocess.run(args, cwd=checkout, check=True, capture_output=True)
             original_command = addon_ci.command
             docker_calls = []
 
@@ -52,7 +95,7 @@ class AddonCiTests(unittest.TestCase):
                 patch("odoo_devkit.addon_ci.read_base_python_catalogs", return_value=(catalog,)),
                 patch("odoo_devkit.local_runtime.resolve_image_digest", return_value=image.split("@", 1)[1]),
             ):
-                addon_ci.build_test_image("registry.invalid/base:mutable", None, context, "fixture:test")
+                addon_ci.build_test_image("registry.invalid/base:mutable", tenant, context, "fixture:test", support_root=support)
             self.assertIn(f"BASE_IMAGE={image}", docker_calls[0])
             self.assertEqual((context / "runtime-python/uv.lock").read_bytes(), (reference / "uv.lock").read_bytes())
             self.assertIn(catalog.requirements[0], (context / "requirements.txt").read_text())

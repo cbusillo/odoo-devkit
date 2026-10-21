@@ -14,11 +14,12 @@ import tempfile
 import time
 import tomllib
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Literal, TypedDict
 
 from .artifact_inputs import effective_artifact_input_sources, load_artifact_inputs_definition
-from .base_python import native_base_platform, read_base_python_catalogs
+from .base_python import BASE_PYTHON_PLATFORMS, read_base_python_catalogs
 from .dependency_workspace import derive_base_python_lock, stage_publishable_dependency_workspace
 from .manifest import load_workspace_manifest
 
@@ -101,21 +102,33 @@ def fetch_source(args: list[str], *, capture: bool = False) -> subprocess.Comple
     return subprocess.run(args, check=True, text=True, env=environment, capture_output=capture, timeout=180)
 
 
-def build_test_image(image: str, tenant: Path | None, context: Path, tag: str) -> None:
+def build_test_image(image: str, tenant: Path | None, context: Path, tag: str, *, support_root: Path | None = None) -> None:
     from .local_runtime import resolve_image_digest, split_image_reference
 
     repository, _ = split_image_reference(image)
     image = f"{repository}@{resolve_image_digest(image)}"
-    base_catalogs = read_base_python_catalogs(image=image, platforms=(native_base_platform(),))
+    base_catalogs = read_base_python_catalogs(image=image, platforms=BASE_PYTHON_PLATFORMS)
     catalogs = []
     for name in ("runtime-python", "addon-tests"):
         staged = context / name
-        shutil.copytree(ROOT / "docker" / name, staged)
+        staged.mkdir()
+        for filename in ("pyproject.toml", "uv.lock"):
+            shutil.copy2(ROOT / "docker" / name / filename, staged / filename)
         catalogs.append(staged)
     python_requirement = tomllib.loads((catalogs[1] / "pyproject.toml").read_text())["project"]["requires-python"]
     command(["uv", "python", "install", python_requirement])
     if tenant is not None:
         manifest = load_workspace_manifest(tenant / "workspace.toml")
+        # Actions checkouts need not use the developer's sibling directory names.
+        manifest = replace(
+            manifest,
+            devkit_repo=replace(manifest.devkit_repo, path=str(ROOT)) if manifest.devkit_repo else None,
+            shared_addons_repo=(
+                replace(manifest.shared_addons_repo, path=str(support_root))
+                if manifest.shared_addons_repo and support_root is not None
+                else manifest.shared_addons_repo
+            ),
+        )
         staged = context / "tenant"
         stage_publishable_dependency_workspace(manifest=manifest, destination_root=staged, committed=False)
         catalogs.append(staged)
@@ -234,7 +247,7 @@ def run_tests(
                 result["base_image_repo_digests"] = base_metadata["RepoDigests"]
                 if result["base_image_repo_digests"]:
                     build_image = result["base_image_repo_digests"][0]
-            build_test_image(build_image, tenant, context, image_tag)
+            build_test_image(build_image, tenant, context, image_tag, support_root=support_root)
         result["test_image_id"] = command(
             ["docker", "image", "inspect", image_tag, "--format", "{{.Id}}"], capture=True
         ).stdout.strip()

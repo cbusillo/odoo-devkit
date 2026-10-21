@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import platform as host_platform
 import re
 import subprocess
 import tempfile
@@ -15,6 +14,7 @@ BASE_PYTHON_CATALOG_PATH = "/opt/launchplane/base-python-constraints.txt"
 _EXACT = re.compile(r"([A-Za-z0-9][A-Za-z0-9._-]*)==([0-9][A-Za-z0-9.!+_-]*)")
 _IMMUTABLE = re.compile(r"[^\s@]+@sha256:[0-9a-f]{64}")
 PLATFORM_MACHINES = {"linux/amd64": ("x86_64", "AMD64"), "linux/arm64": ("aarch64", "arm64")}
+BASE_PYTHON_PLATFORMS = tuple(PLATFORM_MACHINES)
 
 
 @dataclass(frozen=True)
@@ -22,14 +22,6 @@ class BasePythonCatalog:
     image: str
     platform: str
     requirements: tuple[str, ...]
-
-
-def native_base_platform() -> str:
-    machine = host_platform.machine()
-    for platform, machines in PLATFORM_MACHINES.items():
-        if machine in machines:
-            return platform
-    raise ValueError(f"Unsupported base Python platform for host architecture {machine}")
 
 
 def parse_base_python_catalog(text: str, *, image: str, platform: str) -> BasePythonCatalog:

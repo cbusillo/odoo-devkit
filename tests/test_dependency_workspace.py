@@ -786,8 +786,17 @@ class DependencyWorkspaceTests(unittest.TestCase):
             self.assertEqual((tenant / "uv.lock").read_bytes(), source_lock)
             self.assertNotEqual((output / "uv.lock").read_bytes(), source_lock)
             self.assertIn(catalog.requirements[0], (output / "tenant-requirements.txt").read_text())
-            self.assertEqual(result.provenance["source_lock_sha256"], hashlib.sha256(source_lock).hexdigest())
+            canonical_lock = next(a for a in result.provenance["artifacts"] if a["path"] == "uv.lock")
+            self.assertEqual(canonical_lock["sha256"], hashlib.sha256(source_lock).hexdigest())
+            effective_lock = next(a for a in result.provenance["effective_artifacts"] if a["path"] == "uv.lock")
+            self.assertEqual(effective_lock["sha256"], hashlib.sha256((output / "uv.lock").read_bytes()).hexdigest())
             subprocess.run(["uv", "sync", "--frozen", "--no-config"], cwd=output, check=True, capture_output=True)
+            member = tenant / "addons/tenant_addon/pyproject.toml"
+            member.write_text(member.read_text().replace("idna>=3", "idna<3"))
+            with mock.patch("odoo_devkit.dependency_workspace.manifest_base_python_catalogs", return_value=(catalog,)):
+                with self.assertRaisesRegex(ValueError, "idna"):
+                    normalize_dependency_workspace(manifest=manifest)
+            self.assertEqual((tenant / "uv.lock").read_bytes(), source_lock)
 
     def test_normalize_is_idempotent_for_a_current_lock(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory_name:

@@ -33,7 +33,7 @@ ARG ODOO_PYTHON_SYNC_SKIP_ADDONS
 USER root
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-RUN rm -rf /opt/project \
+RUN rm -rf /opt/project /opt/runtime \
     && mkdir -p /opt/project /volumes
 
 COPY --from=project-payload /payload/ /
@@ -52,7 +52,7 @@ ARG ODOO_PYTHON_SYNC_SKIP_ADDONS
 USER root
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-RUN rm -rf /opt/project \
+RUN rm -rf /opt/project /opt/runtime \
     && mkdir -p /opt/project /volumes
 
 COPY --from=project-payload /payload/ /

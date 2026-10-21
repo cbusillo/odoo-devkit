@@ -1262,11 +1262,15 @@ ODOO_DB_PASSWORD = ""
     def test_command_execution_environment_excludes_runtime_payload(self) -> None:
         with mock.patch.dict(
             os.environ,
-            {local_runtime.RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR: '{"environment":{"SECRET":"test-only"}}'},
+            {
+                local_runtime.RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR: '{"environment":{"SECRET":"test-only"}}',
+                "ADDON_CI_SOURCE_TOKEN": "synthetic-git-only",
+            },
         ):
             execution_environment = local_runtime.command_execution_env()
 
         self.assertNotIn(local_runtime.RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR, execution_environment)
+        self.assertNotIn("ADDON_CI_SOURCE_TOKEN", execution_environment)
 
     def test_native_runtime_select_prefers_manifest_mounts_over_runtime_repo_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1422,33 +1426,61 @@ homepage = true
     def test_local_build_derives_the_same_lock_as_artifact_staging(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            manifest, _commit = self._prepare_artifact_check(root)
-            self._configure_publish_runtime_payload(instance="local")
+            manifest, runtime_commit = self._prepare_artifact_check(root)
+            self._configure_publish_runtime_payload(instance="local", environment={"GITHUB_TOKEN": "synthetic-build-token"})
             tenant_root = manifest.tenant_repo.resolve_path(manifest_directory=manifest.manifest_directory)
             assert manifest.runtime_repo is not None
             runtime_root = manifest.runtime_repo.resolve_path(manifest_directory=manifest.manifest_directory)
             assert tenant_root is not None and runtime_root is not None
+            nested = tenant_root / "addons/opw_custom/static/src/shared/file.js"
+            nested.parent.mkdir(parents=True)
+            nested.write_text("export default 1;\n")
+            (tenant_root / ".gitignore").write_text("*.private\n")
+            (nested.parent / "ignored.private").write_text("synthetic ignored fixture")
+            project = tenant_root / "pyproject.toml"
+            project.write_text(project.read_text().replace("dependencies = []", 'dependencies = ["idna>=3"]', 1))
+            subprocess.run(["uv", "lock", "--no-config"], cwd=tenant_root, check=True, capture_output=True)
+            subprocess.run(["git", "add", "."], cwd=tenant_root, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-qm", "local staging fixture"], cwd=tenant_root, check=True)
+            for repo in (tenant_root, runtime_root):
+                subprocess.run(["git", "remote", "remove", "origin"], cwd=repo, check=True)
             source_lock = (tenant_root / "uv.lock").read_bytes()
+            catalogs = tuple(
+                BasePythonCatalog("registry.invalid/base@sha256:" + "2" * 64, platform, (f"idna=={version}",))
+                for platform, version in (("linux/amd64", "3.10"), ("linux/arm64", "3.11"))
+            )
+            overlay = runtime_root / ".platform/env/opw.local.dependencies.json"
+            staged_locks = []
+
+            def execute(*, command: list[str], environment_overrides: dict[str, str], **_kwargs: object) -> None:
+                stage = Path(command[-3]).parent
+                self.assertTrue((stage / "addons/opw_custom/static/src/shared/file.js").is_file())
+                self.assertFalse((stage / "addons/opw_custom/static/src/shared/ignored.private").exists())
+                self.assertEqual(environment_overrides["GITHUB_TOKEN"], "synthetic-build-token")
+                staged_locks.append((stage / "project/uv.lock").read_bytes())
+
             with (
                 mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_base_images"),
                 mock.patch("odoo_devkit.local_runtime.resolve_image_digest", return_value="sha256:" + "2" * 64),
-                mock.patch("odoo_devkit.local_runtime.run_command") as command,
+                mock.patch("odoo_devkit.local_runtime.read_base_python_catalogs", return_value=catalogs),
+                mock.patch(
+                    "odoo_devkit.local_runtime.run_command", side_effect=local_runtime.RuntimeCommandError("fixture build failed")
+                ) as command,
             ):
+                with self.assertRaises(local_runtime.RuntimeCommandError):
+                    local_runtime.build_runtime(manifest=manifest, runtime_repo_path=runtime_root, no_cache=True)
+                self.assertFalse(overlay.exists())
+                command.side_effect = execute
                 local_runtime.build_runtime(manifest=manifest, runtime_repo_path=runtime_root, no_cache=True)
-            command_args = command.call_args.kwargs["command"]
-            self.assertEqual(command_args[-2:], ["build", "--no-cache"])
-            local_root = next((runtime_root / ".platform/dependencies").iterdir())
-            local_lock = (local_root / "project/uv.lock").read_bytes()
+            self.assertTrue(overlay.is_file())
+            self.assertFalse(any((runtime_root / ".platform/dependencies").rglob("build-*")))
             tenant_source = local_runtime.GitSourceSnapshot(
                 "tenant",
                 tenant_root,
                 "example/tenant-repo",
                 subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=tenant_root, text=True).strip(),
             )
-            runtime_source = local_runtime.GitSourceSnapshot("runtime", runtime_root, "example/runtime-repo", _commit)
-            catalogs = local_runtime.read_base_python_catalogs(
-                image="registry.invalid/base@sha256:" + "2" * 64, platforms=("linux/arm64",)
-            )
+            runtime_source = local_runtime.GitSourceSnapshot("runtime", runtime_root, "example/runtime-repo", runtime_commit)
             staged = local_runtime.stage_artifact_build_context(
                 manifest=manifest,
                 runtime_repo_path=runtime_root,
@@ -1458,7 +1490,7 @@ homepage = true
                 shared_addons_source=None,
                 catalogs=catalogs,
             )
-            self.assertEqual(hashlib.sha256(local_lock).hexdigest(), staged.tenant_lock_sha256)
+            self.assertEqual(hashlib.sha256(staged_locks[0]).hexdigest(), staged.tenant_lock_sha256)
             self.assertEqual((tenant_root / "uv.lock").read_bytes(), source_lock)
             assert staged.lock_derivation is not None
             self.assertEqual(staged.lock_derivation["source_tenant_lock_sha256"], hashlib.sha256(source_lock).hexdigest())

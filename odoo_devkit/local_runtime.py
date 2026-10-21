@@ -33,7 +33,7 @@ from .artifact_provenance import (
     normalize_git_commit,
     normalize_repository_identity,
 )
-from .base_python import BasePythonCatalog, native_base_platform, read_base_python_catalogs
+from .base_python import BASE_PYTHON_PLATFORMS, BasePythonCatalog, read_base_python_catalogs
 from .dependency_workspace import (
     DependencyWorkspaceError,
     derive_base_python_lock,
@@ -57,7 +57,7 @@ expand_addon_paths = cast(_ExpandAddonPaths, runpy.run_path(str(_addon_path_scri
 
 ScalarValue = str | int | float | bool
 ScalarMap = dict[str, ScalarValue]
-DEFAULT_ARTIFACT_IMAGE_PLATFORMS = ("linux/amd64", "linux/arm64")
+DEFAULT_ARTIFACT_IMAGE_PLATFORMS = BASE_PYTHON_PLATFORMS
 GIT_SHA_PATTERN = re.compile(r"[0-9a-fA-F]{7,40}")
 DEPENDENCY_SOURCE_REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 ENVIRONMENT_VARIABLE_NAME_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -537,9 +537,9 @@ def up_runtime(*, manifest: WorkspaceManifest, runtime_repo_path: Path, build_im
         source_environment=runtime_context.environment.merged_values,
     )
     runtime_env_file = write_runtime_env_file(runtime_context=runtime_context)
-    compose_command = compose_base_command(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file)
     if build_images:
         build_runtime(manifest=manifest, runtime_repo_path=runtime_repo_path, no_cache=False)
+    compose_command = compose_base_command(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file)
     run_command(runtime_repo_path=runtime_repo_path, command=compose_command + ["up", "-d", "--no-build"])
 
 
@@ -558,66 +558,83 @@ def build_runtime(*, manifest: WorkspaceManifest, runtime_repo_path: Path, no_ca
         )
     )
     compose_command = compose_base_command(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file)
-    if manifest.build.base_runtime_image:
-        values = build_runtime_env_values(runtime_context=runtime_context)
-        values.update(manifest_build_values(manifest, required=True))
-        platform = native_base_platform()
-        for key in ("ODOO_BASE_RUNTIME_IMAGE", "ODOO_BASE_DEVTOOLS_IMAGE"):
-            repository, _ = split_image_reference(values[key])
-            values[key] = f"{repository}@{resolve_image_digest(values[key])}"
-        catalogs = read_base_python_catalogs(image=values["ODOO_BASE_RUNTIME_IMAGE"], platforms=(platform,))
-        state_root = runtime_repo_path / ".platform" / "dependencies"
-        state_root.mkdir(parents=True, exist_ok=True)
-        staged_root = Path(tempfile.mkdtemp(prefix="build-", dir=state_root))
-        shutil.copytree(runtime_repo_path / "docker", staged_root / "docker")
-        shutil.copytree(runtime_repo_path / "platform" / "config", staged_root / "platform" / "config")
-        shutil.copytree(runtime_repo_path / "docker" / "runtime-python", staged_root / "runtime")
-        stage_publishable_dependency_workspace(
-            manifest=manifest, destination_root=staged_root / "project", committed=False, catalogs=catalogs
+    if not manifest.build.base_runtime_image:
+        build_command = compose_command + ["build"] + (["--no-cache"] if no_cache else [])
+        run_command(runtime_repo_path=runtime_repo_path, command=build_command)
+        return
+    values = build_runtime_env_values(runtime_context=runtime_context)
+    values.update(manifest_build_values(manifest, required=True))
+    for key in ("ODOO_BASE_RUNTIME_IMAGE", "ODOO_BASE_DEVTOOLS_IMAGE"):
+        repository, _ = split_image_reference(values[key])
+        values[key] = f"{repository}@{resolve_image_digest(values[key])}"
+    catalogs = read_base_python_catalogs(image=values["ODOO_BASE_RUNTIME_IMAGE"], platforms=DEFAULT_ARTIFACT_IMAGE_PLATFORMS)
+    build_environment = command_execution_env()
+    github_token = resolve_github_token_for_build(runtime_context.environment.merged_values)
+    if github_token is not None:
+        build_environment["GITHUB_TOKEN"] = github_token
+    tenant_root = manifest.tenant_repo.resolve_path(manifest_directory=manifest.manifest_directory)
+    assert tenant_root is not None
+    shared_root = resolve_manifest_shared_addons_repo_path(manifest=manifest)
+    state_root = runtime_repo_path / ".platform" / "dependencies" / runtime_env_file.stem
+    state_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="build-", dir=state_root) as temporary:
+        staged_root = Path(temporary)
+        stage_artifact_build_context(
+            manifest=manifest,
+            runtime_repo_path=runtime_repo_path,
+            staged_context_root=staged_root,
+            tenant_source=local_dependency_source(tenant_root, "tenant"),
+            runtime_source=local_dependency_source(runtime_repo_path, "runtime"),
+            shared_addons_source=local_dependency_source(shared_root, "shared-addons") if shared_root is not None else None,
+            catalogs=catalogs,
+            working_tree=True,
         )
-        derive_base_python_lock(
-            staged_root=staged_root / "runtime", catalogs=catalogs, python_version=manifest.workspace.python_version
-        )
-        (staged_root / "runtime" / DEPENDENCY_LAYOUT_MARKER_FILE).write_text("2\n", encoding="utf-8")
-        tenant_root = manifest.tenant_repo.resolve_path(manifest_directory=manifest.manifest_directory)
-        assert tenant_root is not None
-        shutil.copytree(tenant_root / "addons", staged_root / "addons", ignore=shutil.ignore_patterns("shared"))
-        shared_root = resolve_manifest_shared_addons_repo_path(manifest=manifest)
-        if shared_root is not None:
-            shutil.copytree(shared_root, staged_root / "addons" / "shared", ignore=shutil.ignore_patterns(".git", ".venv"))
-        for staged, source, lock_path in (
-            (staged_root / "runtime", runtime_repo_path, "docker/runtime-python/uv.lock"),
-            (staged_root / "project", tenant_root, "uv.lock"),
-            *(([(staged_root / "addons" / "shared", shared_root, None)]) if shared_root is not None else []),
-        ):
-            # Local sources may be dirty; this baseline attribution is never a release handoff.
-            commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip()
-            origin = subprocess.check_output(["git", "config", "--get", "remote.origin.url"], cwd=source, text=True).strip()
-            snapshot = GitSourceSnapshot("local", source, normalize_repository_identity(origin), commit)
-            write_dependency_source_marker(staged, source=snapshot, lock_path=lock_path)
-        services: dict[str, dict[str, object]] = {
-            "web": {
-                "build": {
-                    "context": str(staged_root),
-                    "dockerfile": "docker/Dockerfile",
-                    "target": values["COMPOSE_BUILD_TARGET"],
-                    "args": {key: values.get(key, "") for key in ARTIFACT_PUBLISH_BUILD_ARG_KEYS},
+        build_overlay = staged_root / "compose.json"
+        build_overlay.write_text(
+            json.dumps(
+                {
+                    "services": {
+                        "web": {
+                            "build": {
+                                "context": str(staged_root),
+                                "dockerfile": "docker/Dockerfile",
+                                "target": values["COMPOSE_BUILD_TARGET"],
+                                "args": {key: values.get(key, "") for key in ARTIFACT_PUBLISH_BUILD_ARG_KEYS},
+                                "secrets": ["github_token"],
+                            }
+                        }
+                    }
                 }
-            },
-        }
-        for service in ("web", "script-runner"):
-            services.setdefault(service, {})["volumes"] = [
-                f"{staged_root / 'project' / 'pyproject.toml'}:/opt/project/pyproject.toml:ro",
-                f"{staged_root / 'project' / 'uv.lock'}:/opt/project/uv.lock:ro",
-                f"{staged_root / 'runtime'}:/opt/runtime:ro",
-            ]
+            ),
+            encoding="utf-8",
+        )
+        build_command = compose_command + ["-f", str(build_overlay), "build"] + (["--no-cache"] if no_cache else [])
+        run_command(runtime_repo_path=runtime_repo_path, command=build_command, environment_overrides=build_environment)
+        # Retain only four derived metadata files, never full build contexts.
+        mounts = []
+        for root, target in (("runtime", "/opt/runtime"), ("project", "/opt/project")):
+            for name in ("pyproject.toml", "uv.lock"):
+                destination = state_root / f"{root}-{name}"
+                pending = destination.with_suffix(destination.suffix + ".tmp")
+                pending.write_bytes((staged_root / root / name).read_bytes())
+                pending.replace(destination)
+                mounts.append(f"{destination}:{target}/{name}:ro")
         overlay_path = runtime_env_file.with_suffix(".dependencies.json")
-        overlay_path.write_text(json.dumps({"services": services}), encoding="utf-8")
-        compose_command = compose_base_command(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file)
-    build_command = compose_command + ["build"]
-    if no_cache:
-        build_command.append("--no-cache")
-    run_command(runtime_repo_path=runtime_repo_path, command=build_command)
+        pending_overlay = overlay_path.with_suffix(".tmp")
+        pending_overlay.write_text(
+            json.dumps({"services": {name: {"volumes": mounts} for name in ("web", "script-runner")}}), encoding="utf-8"
+        )
+        pending_overlay.replace(overlay_path)
+
+
+def local_dependency_source(repo_path: Path, role: str) -> GitSourceSnapshot:
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo_path, capture_output=True, text=True, env=artifact_git_command_env()
+    )
+    if result.returncode or re.fullmatch(r"[0-9a-f]{40}", result.stdout.strip()) is None:
+        raise RuntimeCommandError(f"Local {role} dependency input requires a Git baseline")
+    # Dirty/local-only inputs have no publishable repository identity or remote prerequisite.
+    return GitSourceSnapshot(role, repo_path, f"local/{role}", result.stdout.strip())
 
 
 def publish_runtime_artifact(
@@ -716,7 +733,9 @@ def publish_runtime_artifact(
         "ODOO_BASE_DEVTOOLS_IMAGE": devtools_base_provenance.digest_reference,
     }
     try:
-        base_catalogs = read_base_python_catalogs(image=runtime_base_provenance.digest_reference, platforms=normalized_platforms)
+        base_catalogs = read_base_python_catalogs(
+            image=runtime_base_provenance.digest_reference, platforms=DEFAULT_ARTIFACT_IMAGE_PLATFORMS
+        )
     except ValueError as error:
         raise RuntimeCommandError(str(error)) from error
 
@@ -2155,6 +2174,8 @@ def write_runtime_env_file(*, runtime_context: RuntimeContext) -> Path:
     runtime_env_file.parent.mkdir(parents=True, exist_ok=True)
     runtime_values = build_runtime_env_values(runtime_context=runtime_context)
     runtime_env_file.write_text(render_runtime_env(runtime_values), encoding="utf-8")
+    if not runtime_context.manifest.build.base_runtime_image:
+        runtime_env_file.with_suffix(".dependencies.json").unlink(missing_ok=True)
     return runtime_env_file
 
 
@@ -2579,6 +2600,7 @@ def stage_artifact_build_context(
     runtime_source: GitSourceSnapshot,
     shared_addons_source: GitSourceSnapshot | None,
     catalogs: tuple[BasePythonCatalog, ...] = (),
+    working_tree: bool = False,
 ) -> StagedArtifactContext:
     tenant_repo_path = manifest.tenant_repo.resolve_path(manifest_directory=manifest.manifest_directory)
     if tenant_repo_path is None or not tenant_repo_path.exists():
@@ -2588,21 +2610,21 @@ def stage_artifact_build_context(
     staged_context_root.mkdir(parents=True, exist_ok=True)
     copy_required_path(
         repo_path=runtime_source.repo_path,
-        source_commit=runtime_source.commit,
+        source_commit=None if working_tree else runtime_source.commit,
         source_path=runtime_repo_path / "docker",
         destination_path=staged_context_root / "docker",
         label="runtime docker directory",
     )
     copy_required_path(
         repo_path=runtime_source.repo_path,
-        source_commit=runtime_source.commit,
+        source_commit=None if working_tree else runtime_source.commit,
         source_path=runtime_repo_path / "platform" / "config",
         destination_path=staged_context_root / "platform" / "config",
         label="runtime platform config directory",
     )
     copy_required_path(
         repo_path=runtime_source.repo_path,
-        source_commit=runtime_source.commit,
+        source_commit=None if working_tree else runtime_source.commit,
         source_path=runtime_repo_path / "docker" / "runtime-python",
         destination_path=staged_context_root / "runtime",
         label="runtime Python dependency catalog",
@@ -2614,6 +2636,7 @@ def stage_artifact_build_context(
             destination_root=staged_context_root / "project",
             tenant_commit=tenant_source.commit,
             shared_addons_commit=shared_addons_source.commit if shared_addons_source is not None else None,
+            committed=not working_tree,
         )
         source_tenant_sha256 = sha256_file(staged_context_root / "project" / "uv.lock")
         if catalogs:
@@ -2627,7 +2650,7 @@ def stage_artifact_build_context(
     tenant_addons_root = tenant_repo_path / "addons"
     copy_required_path(
         repo_path=tenant_source.repo_path,
-        source_commit=tenant_source.commit,
+        source_commit=None if working_tree else tenant_source.commit,
         source_path=tenant_addons_root,
         destination_path=staged_addons_root,
         label="tenant addons directory",
@@ -2645,7 +2668,7 @@ def stage_artifact_build_context(
         shared_destination = staged_addons_root / "shared"
         copy_required_path(
             repo_path=shared_addons_source.repo_path,
-            source_commit=shared_addons_source.commit,
+            source_commit=None if working_tree else shared_addons_source.commit,
             source_path=shared_addons_repo_path,
             destination_path=shared_destination,
             label="shared addons repository",
@@ -2680,10 +2703,12 @@ def stage_artifact_build_context(
             {
                 "source_support_lock_sha256": source_support_sha256,
                 "source_tenant_lock_sha256": source_tenant_sha256,
-                "effective_support_lock_sha256": sha256_file(support_lock_path),
-                "effective_tenant_lock_sha256": sha256_file(tenant_lock_path),
                 "catalogs": [
-                    {"image": catalog.image, "platform": catalog.platform, "requirements": list(catalog.requirements)}
+                    {
+                        "image": catalog.image,
+                        "platform": catalog.platform,
+                        "constraints_sha256": hashlib.sha256(("\n".join(catalog.requirements) + "\n").encode()).hexdigest(),
+                    }
                     for catalog in catalogs
                 ],
             }
@@ -2696,7 +2721,7 @@ def stage_artifact_build_context(
 def copy_required_path(
     *,
     repo_path: Path,
-    source_commit: str,
+    source_commit: str | None,
     source_path: Path,
     destination_path: Path,
     label: str,
@@ -2721,6 +2746,30 @@ def copy_required_path(
         relative_source_path = normalized_source_path.relative_to(normalized_repo_path)
     except ValueError as error:
         raise RuntimeCommandError(f"Required {label} escapes its source repository.") from error
+    if source_commit is None:
+        result = subprocess.run(
+            ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", relative_source_path.as_posix()],
+            cwd=normalized_repo_path,
+            capture_output=True,
+            env=artifact_git_command_env(),
+        )
+        if result.returncode:
+            raise RuntimeCommandError(f"Cannot enumerate local {label} inputs")
+        for raw_path in sorted(set(result.stdout.split(b"\0")) - {b""}):
+            entry = Path(os.fsdecode(raw_path))
+            source_file = normalized_repo_path / entry
+            if any((normalized_repo_path / parent).is_symlink() for parent in (entry, *entry.parents)):
+                raise RuntimeCommandError(f"Local {label} input cannot traverse symlinks: {entry}")
+            if not source_file.exists():
+                continue
+            if not source_file.is_file():
+                raise RuntimeCommandError(f"Local {label} input must be a regular file: {entry}")
+            target = (
+                destination_path if normalized_source_path.is_file() else destination_path / entry.relative_to(relative_source_path)
+            )
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_file, target)
+        return
     if relative_source_path == Path("."):
         object_type = "tree"
     else:
@@ -4176,6 +4225,7 @@ def assert_active_admin_password_is_not_default(
 
 def command_execution_env() -> dict[str, str]:
     execution_env = sanitized_subprocess_environment()
+    execution_env.pop("ADDON_CI_SOURCE_TOKEN", None)
     for runtime_key in PLATFORM_RUNTIME_ENV_KEYS:
         execution_env.pop(runtime_key, None)
     for passthrough_key in PLATFORM_RUNTIME_PASSTHROUGH_KEYS:
