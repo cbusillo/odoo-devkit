@@ -1071,19 +1071,14 @@ def run_init_workflow(*, manifest: WorkspaceManifest, runtime_repo_path: Path) -
     # Refresh the private environment before Compose creates/recreates the runner,
     # so container-side credentials agree with the payload loaded for this init.
     runtime_env_file = write_runtime_env_file(runtime_context=runtime_context)
-    install_modules = ",".join(runtime_context.selection.effective_install_modules)
-    addons_path_argument = ",".join(runtime_context.stack.stack_definition.addons_path)
     init_command = [
-        "/odoo/odoo-bin",
-        "-d",
-        runtime_context.selection.database_name,
-        f"--addons-path={addons_path_argument}",
-        "--data-dir=/volumes/data",
+        *_odoo_bin_command(
+            database_name=runtime_context.selection.database_name,
+            addons_path=runtime_context.stack.stack_definition.addons_path,
+            database_user=runtime_context.environment.merged_values.get("ODOO_DB_USER", "odoo"),
+        ),
         "-i",
-        install_modules,
-        "--db_host=database",
-        "--db_port=5432",
-        f"--db_user={runtime_context.environment.merged_values.get('ODOO_DB_USER', 'odoo')}",
+        ",".join(runtime_context.selection.effective_install_modules),
         "--stop-after-init",
     ]
 
@@ -1118,6 +1113,20 @@ def run_init_workflow(*, manifest: WorkspaceManifest, runtime_repo_path: Path) -
         runtime_env_file=runtime_env_file,
         operation=run_init_operation,
     )
+
+
+def _odoo_bin_command(*command: str, database_name: str, addons_path: tuple[str, ...], database_user: str) -> list[str]:
+    return [
+        "/odoo/odoo-bin",
+        *command,
+        "-d",
+        database_name,
+        f"--addons-path={','.join(addons_path)}",
+        "--data-dir=/volumes/data",
+        "--db_host=database",
+        "--db_port=5432",
+        f"--db_user={database_user}",
+    ]
 
 
 def run_openupgrade_workflow(*, manifest: WorkspaceManifest, runtime_repo_path: Path) -> None:
@@ -3873,18 +3882,12 @@ def run_odoo_shell_command(
     if not normalized_service:
         raise RuntimeCommandError("Service name must be a non-empty value.")
     target_database = (database_name or "").strip() or runtime_context.selection.database_name
-    addons_path_argument = ",".join(runtime_context.stack.stack_definition.addons_path)
-    odoo_shell_command = [
-        "/odoo/odoo-bin",
+    odoo_shell_command = _odoo_bin_command(
         "shell",
-        "-d",
-        target_database,
-        f"--addons-path={addons_path_argument}",
-        "--data-dir=/volumes/data",
-        "--db_host=database",
-        "--db_port=5432",
-        f"--db_user={runtime_context.environment.merged_values.get('ODOO_DB_USER', 'odoo')}",
-    ]
+        database_name=target_database,
+        addons_path=runtime_context.stack.stack_definition.addons_path,
+        database_user=runtime_context.environment.merged_values.get("ODOO_DB_USER", "odoo"),
+    )
     compose_command = compose_base_command(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file)
 
     resolved_script_path: Path | None = None
@@ -4084,18 +4087,12 @@ def apply_admin_password_if_configured(
     if not admin_password.strip():
         return
     configured_admin_login = loaded_environment.get("ODOO_ADMIN_LOGIN", "").strip() or "admin"
-    addons_path_argument = ",".join(stack_definition.addons_path)
-    odoo_shell_command = [
-        "/odoo/odoo-bin",
+    odoo_shell_command = _odoo_bin_command(
         "shell",
-        "-d",
-        runtime_selection.database_name,
-        f"--addons-path={addons_path_argument}",
-        "--data-dir=/volumes/data",
-        "--db_host=database",
-        "--db_port=5432",
-        f"--db_user={loaded_environment.get('ODOO_DB_USER', 'odoo')}",
-    ]
+        database_name=runtime_selection.database_name,
+        addons_path=stack_definition.addons_path,
+        database_user=loaded_environment.get("ODOO_DB_USER", "odoo"),
+    )
     script_payload = {"login": configured_admin_login, "instance": runtime_selection.instance_name}
     odoo_shell_script = textwrap.dedent(
         """
@@ -4140,18 +4137,12 @@ def assert_active_admin_password_is_not_default(
     stack_definition: StackDefinition,
     loaded_environment: dict[str, str],
 ) -> None:
-    addons_path_argument = ",".join(stack_definition.addons_path)
-    odoo_shell_command = [
-        "/odoo/odoo-bin",
+    odoo_shell_command = _odoo_bin_command(
         "shell",
-        "-d",
-        runtime_selection.database_name,
-        f"--addons-path={addons_path_argument}",
-        "--data-dir=/volumes/data",
-        "--db_host=database",
-        "--db_port=5432",
-        f"--db_user={loaded_environment.get('ODOO_DB_USER', 'odoo')}",
-    ]
+        database_name=runtime_selection.database_name,
+        addons_path=stack_definition.addons_path,
+        database_user=loaded_environment.get("ODOO_DB_USER", "odoo"),
+    )
     configured_admin_login = loaded_environment.get("ODOO_ADMIN_LOGIN", "").strip() or "admin"
     login_names_to_check = ["admin"]
     if configured_admin_login not in login_names_to_check:
