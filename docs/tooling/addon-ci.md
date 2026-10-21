@@ -13,6 +13,15 @@ common and context-default external addon sources from `artifact-inputs.toml`
 provide the community devtools image and derive the Odoo series from an addon
 manifest.
 
+Before the tests, the action runs the shared
+[comment check](https://github.com/cbusillo/codex-skills/blob/main/scripts/check_new_comments.py)
+on the caller's last commit, fetching its parent when the checkout is shallow.
+It fails on comments and docstrings the commit adds to Python files outside the
+exceptions in
+[Names Instead Of Comments](https://github.com/cbusillo/codex-skills/blob/main/skills/references/python-odoo-style.md#names-instead-of-comments).
+Run it locally with
+`uv run --no-project <codex-skills>/scripts/check_new_comments.py --repo . --base origin/main`.
+
 The runner installs all installable owned addons, including ones without tests,
 and selects tests by the owned module names. Shared addons are installed as
 tenant dependencies without selecting their tests again. Test discovery remains

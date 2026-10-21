@@ -26,6 +26,27 @@ runs:
   using: composite
   steps:
     - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      with:
+        repository: cbusillo/codex-skills
+        ref: CODEX_SKILLS_PIN
+        path: .style-check-catalog
+        persist-credentials: false
+    - name: Check new comments and docstrings
+      shell: bash
+      env:
+        STYLE_CHECK_ROOT: ${{ inputs.addons-root }}
+        STYLE_CHECK_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        source_root=$(git -C "$GITHUB_WORKSPACE/$STYLE_CHECK_ROOT" rev-parse --show-toplevel)
+        if ! git -C "$source_root" rev-parse --verify --quiet 'HEAD^1' >/dev/null; then
+          GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$STYLE_CHECK_TOKEN" | base64 -w0)" \
+            git -C "$source_root" fetch --quiet --no-tags --depth=2 origin "$(git -C "$source_root" rev-parse HEAD)"
+        fi
+        uv run --no-project --no-config "$GITHUB_WORKSPACE/.style-check-catalog/scripts/check_new_comments.py" \
+          --repo "$source_root" --base 'HEAD^1' --format github
     - name: Run addon tests
       shell: bash
       env:

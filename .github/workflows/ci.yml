@@ -38,6 +38,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -52,3 +54,16 @@ jobs:
 
       - name: Run unit tests
         run: uv run python -m unittest discover -s tests
+
+      - name: Check out style check
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: cbusillo/codex-skills
+          ref: CODEX_SKILLS_PIN
+          path: .style-check-catalog
+          persist-credentials: false
+
+      - name: Check new comments and docstrings
+        run: >-
+          uv run --no-project --no-config .style-check-catalog/scripts/check_new_comments.py
+          --repo . --base HEAD^1 --format github
