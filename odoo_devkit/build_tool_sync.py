@@ -5,12 +5,12 @@ import json
 import os
 import re
 import subprocess
-import tempfile
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .atomic_files import atomic_write_bytes
 from .dependency_workspace import DependencyWorkspaceError, require_staged_build_requirements_supplied
 
 _EXACT_REQUIREMENT_PATTERN = re.compile(
@@ -152,7 +152,7 @@ def apply_build_tool_sync(plan: BuildToolSyncPlan) -> None:
         originals[tenant_lock_path] = tenant_lock_path.read_bytes()
     try:
         for path, rendered_text in plan.rendered_files.items():
-            _atomic_write_text(path=path, content=rendered_text)
+            atomic_write_bytes(path=path, content=rendered_text.encode())
         if plan.support_lock_pins:
             _relock_tenant_support_packages(tenant_root=plan.tenant_root, pins=plan.support_lock_pins)
         _validate_applied_plan(plan)
@@ -160,7 +160,7 @@ def apply_build_tool_sync(plan: BuildToolSyncPlan) -> None:
         rollback_failures: list[str] = []
         for path, original_bytes in originals.items():
             try:
-                _atomic_write_bytes(path=path, content=original_bytes)
+                atomic_write_bytes(path=path, content=original_bytes)
             except OSError as rollback_error:
                 rollback_failures.append(f"{path}: {rollback_error}")
         if rollback_failures:
@@ -588,22 +588,6 @@ def _git_command_environment() -> dict[str, str]:
     environment["GIT_NO_REPLACE_OBJECTS"] = "1"
     environment["GIT_OPTIONAL_LOCKS"] = "0"
     return environment
-
-
-def _atomic_write_text(*, path: Path, content: str) -> None:
-    _atomic_write_bytes(path=path, content=content.encode())
-
-
-def _atomic_write_bytes(*, path: Path, content: bytes) -> None:
-    file_mode = path.stat().st_mode
-    with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}.", delete=False) as temporary_file:
-        temporary_path = Path(temporary_file.name)
-        temporary_file.write(content)
-    try:
-        os.chmod(temporary_path, file_mode)
-        os.replace(temporary_path, path)
-    finally:
-        temporary_path.unlink(missing_ok=True)
 
 
 def build_parser() -> argparse.ArgumentParser:

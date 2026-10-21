@@ -257,16 +257,14 @@ class OdooSourcesTestCase(unittest.TestCase):
         self.assertEqual(module_path.read_bytes(), original)
 
     def test_partial_new_project_write_can_be_retried(self) -> None:
-        from odoo_devkit import pycharm_sources
+        from odoo_devkit.atomic_files import atomic_write_bytes
 
-        write_atomic = pycharm_sources._write_atomic
-
-        def fail_modules(path: Path, content: bytes) -> None:
+        def fail_modules(*, path: Path, content: bytes) -> None:
             if path.name == "modules.xml":
                 raise PermissionError("injected modules.xml write failure")
-            write_atomic(path, content)
+            atomic_write_bytes(path=path, content=content)
 
-        with mock.patch.object(pycharm_sources, "_write_atomic", side_effect=fail_modules):
+        with mock.patch("odoo_devkit.pycharm_sources.atomic_write_bytes", side_effect=fail_modules):
             with self.assertRaisesRegex(PermissionError, "injected"):
                 self.prepare()
         self.assertEqual(list((self.project / ".idea").iterdir()), [])
@@ -282,18 +280,15 @@ class OdooSourcesTestCase(unittest.TestCase):
         self.assertEqual(Path(module_path).name, "tenant.iml")
 
     def test_failed_temp_write_leaves_no_orphan_and_preserves_existing_file(self) -> None:
-        from odoo_devkit import pycharm_sources
+        from odoo_devkit import atomic_files
 
         target = self.root / "owner.iml"
         target.write_bytes(b"original settings")
-        temporary_file = tempfile.NamedTemporaryFile(dir=self.root, delete=False)
-        temporary_path = Path(temporary_file.name)
-        with mock.patch.object(pycharm_sources.tempfile, "NamedTemporaryFile", return_value=temporary_file):
-            with mock.patch.object(temporary_file, "write", side_effect=OSError("disk full")):
-                with self.assertRaisesRegex(OSError, "disk full"):
-                    pycharm_sources._write_atomic(target, b"replacement")
+        with mock.patch.object(atomic_files.os, "fsync", side_effect=OSError("disk full")):
+            with self.assertRaisesRegex(OSError, "disk full"):
+                atomic_files.atomic_write_bytes(path=target, content=b"replacement")
         self.assertEqual(target.read_bytes(), b"original settings")
-        self.assertFalse(temporary_path.exists())
+        self.assertEqual([path.name for path in self.root.iterdir() if path.name.startswith(".owner.iml.")], [])
 
     def test_unresolved_custom_macro_fails_before_any_write(self) -> None:
         self.prepare()

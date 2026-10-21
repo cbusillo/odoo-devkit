@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Literal, TypedDict
 from urllib.parse import urlsplit
 
+from .atomic_files import atomic_write_bytes
 from .base_python import BASE_PYTHON_PLATFORMS, PLATFORM_MACHINES, BasePythonCatalog
 from .manifest import WorkspaceManifest
 
@@ -477,16 +478,16 @@ def normalize_dependency_workspace(
         lock_replaced = False
         try:
             if changed:
-                _atomic_write_bytes(path=tenant_lock_path, content=normalized_lock_bytes)
+                atomic_write_bytes(path=tenant_lock_path, content=normalized_lock_bytes)
                 lock_replaced = True
             inspection = require_publishable_dependency_workspace(manifest=manifest)
             if output_directory is not None:
                 retained_export_path = output_directory.expanduser().resolve() / "tenant-requirements.txt"
-                _atomic_write_bytes(path=retained_export_path, content=export_path.read_bytes())
+                atomic_write_bytes(path=retained_export_path, content=export_path.read_bytes())
         except BaseException as error:
             if lock_replaced:
                 try:
-                    _atomic_write_bytes(path=tenant_lock_path, content=original_lock_bytes)
+                    atomic_write_bytes(path=tenant_lock_path, content=original_lock_bytes)
                 except OSError as rollback_error:
                     raise DependencyWorkspaceError(
                         f"Dependency normalization failed and uv.lock rollback was incomplete: {rollback_error}"
@@ -1358,23 +1359,6 @@ def _git_worktree_dirty(repo_path: Path) -> bool:
     if result.returncode != 0:
         raise DependencyWorkspaceError("Dependency normalization requires readable Git worktree status")
     return bool(result.stdout)
-
-
-def _atomic_write_bytes(*, path: Path, content: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    mode = path.stat().st_mode & 0o777 if path.exists() else 0o644
-    file_descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temporary_path = Path(temporary_name)
-    try:
-        with os.fdopen(file_descriptor, "wb") as temporary_file:
-            temporary_file.write(content)
-            temporary_file.flush()
-            os.fsync(temporary_file.fileno())
-        temporary_path.chmod(mode)
-        os.replace(temporary_path, path)
-    except BaseException:
-        temporary_path.unlink(missing_ok=True)
-        raise
 
 
 def _git_command_env() -> dict[str, str]:
