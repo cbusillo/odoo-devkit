@@ -98,7 +98,7 @@ class BuildToolSyncTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             tenant_root, devkit_root, devkit_ref = self._write_fixture(Path(temporary_directory))
             plan = plan_build_tool_sync(tenant_root=tenant_root, devkit_root=devkit_root, devkit_ref=devkit_ref)
-            real_atomic_write = build_tool_sync_module._atomic_write_bytes
+            real_atomic_write = build_tool_sync_module.atomic_write_bytes
             call_count = 0
 
             def fail_first_rollback(*, path: Path, content: bytes) -> None:
@@ -110,7 +110,7 @@ class BuildToolSyncTest(unittest.TestCase):
 
             with (
                 mock.patch("odoo_devkit.build_tool_sync._validate_applied_plan", side_effect=BuildToolSyncError("boom")),
-                mock.patch("odoo_devkit.build_tool_sync._atomic_write_bytes", side_effect=fail_first_rollback),
+                mock.patch("odoo_devkit.build_tool_sync.atomic_write_bytes", side_effect=fail_first_rollback),
                 self.assertRaisesRegex(BuildToolSyncError, "rollback was incomplete"),
             ):
                 apply_build_tool_sync(plan)
