@@ -66,6 +66,14 @@ other value types and non-table entries are rejected when the manifest loads.
 Non-local `platform runtime publish` is invoked by the product's own build
 workflow, which supplies the required runtime-environment payload.
 
+Hosted startup honors `ODOO_PROXY_MODE` in its generated Odoo configuration.
+Set it to `True` through the lane's managed runtime settings when Odoo sits
+behind a trusted reverse proxy that supplies forwarded headers. Set it to
+`False` to disable proxy mode explicitly. An absent or blank value preserves
+the base configuration; without a base setting, Odoo's disabled default applies.
+Changing `web.base.url` alone does not change the scheme of incoming requests
+used to build OAuth callbacks.
+
 ## `workspace sync`
 
 Purpose

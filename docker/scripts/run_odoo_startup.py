@@ -28,6 +28,7 @@ from odoo_admin_password import validate_admin_password
 from odoo_website_settings import PRODUCTION_INSTANCE_NAMES
 
 RUNTIME_OPTION_MAP: tuple[tuple[str, str], ...] = (
+    ("ODOO_PROXY_MODE", "proxy_mode"),
     ("ODOO_DB_MAXCONN", "db_maxconn"),
     ("ODOO_MAX_CRON_THREADS", "max_cron_threads"),
     ("ODOO_WORKERS", "workers"),
