@@ -17,9 +17,9 @@ manifests rather than keeping another site inventory here.
    bot-pushed task branch in that repository. The tenant workflow verifies branch
    containment before executing candidate code with its existing secret bindings.
 2. In each affected tenant repository, dispatch `build-tool-drift.yml` with
-   `devkit_commit` set to that SHA. A nonempty input selects its `consumer-build`
-   job; an empty input retains the build-tool drift check. The scheduled drift
-   check also remains available.
+   `devkit_commit` set to that SHA to run its `consumer-build` job. Build-tool
+   drift surfaces on the tenant's Renovate pin pull request instead
+   ([build-tool upgrades](build-tool-upgrades.md#moving-the-pin)).
 
    ```bash
    uv run /path/to/codex-skills/skills/github/scripts/github_workflow_babysit.py dispatch \
