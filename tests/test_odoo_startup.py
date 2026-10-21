@@ -368,6 +368,24 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
             self.assertEqual(parser["options"]["smtp_password"], "")
         self.assertNotIn(environment["ODOO_SMTP_PASSWORD"], output.getvalue())
 
+    def test_startup_honors_explicit_proxy_mode_and_preserves_inherited_default(self) -> None:
+        for inherited in (None, False, True):
+            for configured in (None, "", "  ", "True", " False "):
+                with self.subTest(inherited=inherited, configured=configured), TemporaryDirectory() as directory:
+                    base = Path(directory) / "base.conf"
+                    target = Path(directory) / "runtime.conf"
+                    if inherited is not None:
+                        base.write_text(f"[options]\nproxy_mode = {inherited}\n", encoding="utf-8")
+                    settings = replace(self._settings(), base_config_path=str(base), config_path=str(target))
+                    environment = {} if configured is None else {"ODOO_PROXY_MODE": configured}
+                    with patch.dict(os.environ, environment, clear=True):
+                        odoo_startup._write_runtime_config(settings)
+                    parser = configparser.ConfigParser(interpolation=None)
+                    parser.read(target)
+                    requested = configured.strip() if configured is not None else ""
+                    expected = requested.lower() == "true" if requested else inherited
+                    self.assertEqual(parser["options"].getboolean("proxy_mode", fallback=None), expected)
+
     def test_database_filter_escapes_database_name(self) -> None:
         pattern = odoo_startup._database_filter_pattern("tenant.prod")
 
