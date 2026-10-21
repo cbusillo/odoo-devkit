@@ -424,7 +424,6 @@ def normalize_dependency_workspace(
         tenant_repo_path=tenant_repo_path,
         project_inputs=project_inputs,
     )
-    base_catalogs = manifest_base_python_catalogs(manifest)
 
     with tempfile.TemporaryDirectory(prefix="odoo-dependency-normalize-") as temporary_directory_name:
         staged_root = Path(temporary_directory_name)
@@ -468,30 +467,8 @@ def normalize_dependency_workspace(
                 _atomic_write_bytes(path=tenant_lock_path, content=normalized_lock_bytes)
                 lock_replaced = True
             inspection = require_publishable_dependency_workspace(manifest=manifest)
-            if base_catalogs:
-                derive_base_python_lock(
-                    staged_root=staged_root, catalogs=base_catalogs, python_version=manifest.workspace.python_version
-                )
-                _write_frozen_dependency_export(staged_root=staged_root, export_path=export_path)
-                provenance["base_python_catalogs"] = [
-                    {
-                        "image": catalog.image,
-                        "platform": catalog.platform,
-                        "constraints_sha256": hashlib.sha256(("\n".join(catalog.requirements) + "\n").encode()).hexdigest(),
-                    }
-                    for catalog in base_catalogs
-                ]
-                effective_artifacts: list[DependencyNormalizationArtifact] = [
-                    {"path": "uv.lock", "sha256": _sha256_file(staged_root / "uv.lock")},
-                    {"path": "tenant-requirements.txt", "sha256": _sha256_file(export_path)},
-                ]
-                provenance["effective_artifacts"] = effective_artifacts
             if output_directory is not None:
                 retained_root = output_directory.expanduser().resolve()
-                if base_catalogs:
-                    if retained_root.exists() and any(retained_root.iterdir()):
-                        raise DependencyWorkspaceError("Base-derived dependency output directory must be empty")
-                    shutil.copytree(staged_root, retained_root, dirs_exist_ok=True)
                 retained_export_path = retained_root / "tenant-requirements.txt"
                 _atomic_write_bytes(path=retained_export_path, content=export_path.read_bytes())
         except BaseException as error:
@@ -509,6 +486,19 @@ def normalize_dependency_workspace(
         inspection=inspection,
         provenance=provenance,
     )
+
+
+def prepare_dependency_workspace(*, manifest: WorkspaceManifest, output_directory: Path) -> DependencyWorkspaceInspection:
+    """Stage the effective host workspace without modifying canonical metadata."""
+    catalogs = manifest_base_python_catalogs(manifest)
+    if not catalogs:
+        raise DependencyWorkspaceError("Dependency preparation requires published base images in manifest [build].")
+    destination = output_directory.expanduser().resolve()
+    inspection = stage_publishable_dependency_workspace(
+        manifest=manifest, destination_root=destination, catalogs=catalogs, committed=False
+    )
+    _write_frozen_dependency_export(staged_root=destination, export_path=destination / "tenant-requirements.txt")
+    return inspection
 
 
 def stage_publishable_dependency_workspace(

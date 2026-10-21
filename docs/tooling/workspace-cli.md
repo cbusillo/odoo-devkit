@@ -257,27 +257,48 @@ source lock still describes the source pyproject; it need not change when a
 compatible base package moves. Frozen exports and installations use the
 derived lock, including support/runtime and addon-test catalogs.
 
-For a host environment, use `dependencies normalize --output-dir <empty-dir>`
-and then `uv sync --frozen --project <empty-dir>`. With a configured base the
-output contains the complete derived metadata workspace and frozen export,
-not only `tenant-requirements.txt`. Its constraints also apply to declared host
-overlaps, while platform markers keep Linux-only requirements out of a macOS
-environment. Source-only `dependencies inspect/check` remain offline source
-contract checks; normalization and image consumers additionally qualify the
-selected base. Normalization's JSON keeps canonical `artifacts` separate from
-`effective_artifacts` and records source lock hashes and catalog identities.
+Canonical `dependencies normalize`, including `--output-dir`, stays registry
+independent and retains its canonical frozen export and hash contract. It does
+not qualify the base or add generated constraints to source metadata.
+
+For a host environment, use `dependencies prepare --output-dir <empty-dir>`
+with the workspace manifest, then install the staged workspace:
+
+```bash
+uv sync --frozen --all-packages --no-default-groups --project <empty-dir>
+```
+
+Preparation reads the published base and retains the complete derived metadata
+workspace and frozen export. `--all-packages` includes addon member requirements
+when the root itself declares none. Constraints apply to declared host overlaps;
+platform markers retain Linux-only requirements outside a macOS environment.
+Source-only `dependencies inspect/check` remain offline source contract checks.
 
 Local `runtime build` uses artifact staging in working-tree mode for
 `docker/Dockerfile`. Its ignored `.platform/dependencies` state and per-runtime
 Compose overlay keep four derived metadata files mounted during local use. Full
 build contexts are temporary and a failed build preserves the current overlay.
-Local edits remain allowed, ignored files stay excluded, and `local/<role>` Git
+Local edits to tracked metadata remain allowed; add new metadata to Git and
+normalize before staging. Nested addon repositories use declared shared/external
+source routes. The reserved top-level `addons/shared` comes only from the
+declared shared checkout; nested directories named `shared` stay included.
+Ignored files stay excluded, and `local/<role>` Git
 markers identify the baseline without requiring a remote or claiming a release
 identity. Addon CI derives temporary locks from the exact published image it
 builds FROM. Artifact builds use the same resolver with immutable committed
 source snapshots and the exact resolved base digest for every target platform.
 Different architecture catalogs receive architecture markers in the universal
-lock. No checked-in base package list is authoritative.
+lock. Catalog extraction may download both platform images, even for a single
+platform build; it uses the existing Docker cache. No checked-in base package
+list is authoritative. Local builds require manifest `[build]` base inputs,
+just as artifact builds do.
+
+Local OpenUpgrade builds use the same strict frozen dependency install. Declare
+`openupgradelib` in owned addon metadata (including an exact VCS source when
+needed), run canonical normalization, and rebuild. OpenUpgrade source fetching
+and execution remain available. Remove explicit `OPENUPGRADELIB_INSTALL_SPEC`
+and `ODOO_PYTHON_SYNC_SKIP_ADDONS` inputs: strict local builds reject these legacy
+overrides instead of running an installer after dependency verification.
 
 The layered installer's inherited-package refusal and final environment
 validation remain independent checks. Generated constraints are ordinary
@@ -670,11 +691,9 @@ Notes
   to use `docker/Dockerfile`. In dependency provenance, each lock's repository,
   source ref and path identify its source inputs (`docker/runtime-python/uv.lock`
   or tenant `uv.lock`); its hash attests the exact derived bytes installed in the
-  image, not the original committed blob. The existing build-flags values map
-  carries `base_python_lock_derivation` as JSON, recording both source and
-  effective lock hashes and immutable platform catalogs. Build-only JSON exposes
-  the same receipt directly. This keeps the artifact schema unchanged while
-  making the transformation explicit. Nested shared-addon source markers keep
+  image, not the original committed blob. Existing immutable base-image
+  provenance identifies the base used for derivation; no additional receipt or
+  artifact schema is introduced. Nested shared-addon source markers keep
   installed shared distributions attributed to the shared repository commit.
 - Publish does not mutate `/venv` after dependency evidence is written. An
   OpenUpgrade or other Python dependency must be represented by the locked

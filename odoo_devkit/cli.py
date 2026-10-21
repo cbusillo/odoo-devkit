@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
-from .dependency_workspace import inspect_dependency_workspace, normalize_dependency_workspace
+from .dependency_workspace import inspect_dependency_workspace, normalize_dependency_workspace, prepare_dependency_workspace
 from .manifest import WorkspaceManifest, load_workspace_manifest
 from .pycharm_sources import prepare_odoo_sources
 from .runtime import (
@@ -129,9 +129,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-dir",
         type=Path,
         default=None,
-        help="Retain the frozen export and, when a base is configured, a derived host workspace in an empty directory",
+        help="Retain the canonical frozen dependency export",
     )
     dependencies_normalize_parser.set_defaults(handler=_handle_dependencies_normalize)
+
+    dependencies_prepare_parser = _add_manifest_argument(
+        dependencies_subparsers.add_parser("prepare", help="Stage base-derived dependencies for a frozen host install")
+    )
+    dependencies_prepare_parser.add_argument(
+        "--output-dir", type=Path, required=True, help="Empty directory for the effective workspace"
+    )
+    dependencies_prepare_parser.set_defaults(handler=_handle_dependencies_prepare)
 
     runtime_parser = subparsers.add_parser("runtime", help="Run local runtime workflows via the workspace manifest")
     runtime_subparsers = runtime_parser.add_subparsers(dest="runtime_command")
@@ -430,6 +438,12 @@ def _handle_dependencies_normalize(arguments: argparse.Namespace) -> None:
     manifest = _load_manifest(arguments.manifest, related_repo_root=getattr(arguments, "related_repo_root", None))
     result = normalize_dependency_workspace(manifest=manifest, output_directory=arguments.output_dir)
     print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+
+
+def _handle_dependencies_prepare(arguments: argparse.Namespace) -> None:
+    manifest = _load_manifest(arguments.manifest, related_repo_root=getattr(arguments, "related_repo_root", None))
+    inspection = prepare_dependency_workspace(manifest=manifest, output_directory=arguments.output_dir)
+    print(json.dumps(inspection.to_dict(), indent=2, sort_keys=True))
 
 
 def _handle_runtime_select(arguments: argparse.Namespace) -> None:

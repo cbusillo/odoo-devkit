@@ -453,7 +453,6 @@ class StagedArtifactContext:
     file_hashes: dict[str, str]
     support_lock_sha256: str
     tenant_lock_sha256: str
-    lock_derivation: dict[str, object] | None = None
 
 
 class RuntimeCommandError(ValueError):
@@ -545,6 +544,13 @@ def up_runtime(*, manifest: WorkspaceManifest, runtime_repo_path: Path, build_im
 
 def build_runtime(*, manifest: WorkspaceManifest, runtime_repo_path: Path, no_cache: bool) -> None:
     runtime_context = load_runtime_context(manifest=manifest, runtime_repo_path=runtime_repo_path)
+    values = build_runtime_env_values(runtime_context=runtime_context)
+    values.update(manifest_build_values(manifest, required=True))
+    for key in ("OPENUPGRADELIB_INSTALL_SPEC", "ODOO_PYTHON_SYNC_SKIP_ADDONS"):
+        if values.get(key, "").strip():
+            raise RuntimeCommandError(
+                f"Strict local builds do not support {key}; remove it and declare Python dependencies in locked tenant metadata, normalize, and rebuild."
+            )
     write_runtime_odoo_conf_file(
         runtime_selection=runtime_context.selection,
         stack_definition=runtime_context.stack.stack_definition,
@@ -558,12 +564,6 @@ def build_runtime(*, manifest: WorkspaceManifest, runtime_repo_path: Path, no_ca
         )
     )
     compose_command = compose_base_command(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file)
-    if not manifest.build.base_runtime_image:
-        build_command = compose_command + ["build"] + (["--no-cache"] if no_cache else [])
-        run_command(runtime_repo_path=runtime_repo_path, command=build_command)
-        return
-    values = build_runtime_env_values(runtime_context=runtime_context)
-    values.update(manifest_build_values(manifest, required=True))
     for key in ("ODOO_BASE_RUNTIME_IMAGE", "ODOO_BASE_DEVTOOLS_IMAGE"):
         repository, _ = split_image_reference(values[key])
         values[key] = f"{repository}@{resolve_image_digest(values[key])}"
@@ -954,7 +954,6 @@ def publish_runtime_artifact(
                 "support_lock_sha256": staged_context.support_lock_sha256,
                 "tenant_lock_sha256": staged_context.tenant_lock_sha256,
                 "dependency_provenance": dependency_provenance,
-                "base_python_lock_derivation": staged_context.lock_derivation,
             }
             check_output_file = None if output_file is None else output_file.expanduser().resolve()
             if check_output_file is not None:
@@ -985,7 +984,6 @@ def publish_runtime_artifact(
         dependency_provenance=dependency_provenance,
         odoo_version=runtime_values.get("ODOO_VERSION", ""),
         release_compatibility=release_inventory,
-        lock_derivation=staged_context.lock_derivation,
     )
 
     normalized_output_file = None if output_file is None else output_file.expanduser().resolve()
@@ -2261,8 +2259,6 @@ def build_runtime_env_values(
     }
     if openupgrade_enabled(openupgrade_environment):
         runtime_values["OPENUPGRADE_ADDON_REPOSITORY"] = resolve_openupgrade_addon_repository(openupgrade_environment)
-        runtime_values["OPENUPGRADELIB_INSTALL_SPEC"] = resolve_openupgradelib_install_spec(openupgrade_environment)
-        runtime_values["ODOO_PYTHON_SYNC_SKIP_ADDONS"] = "openupgrade_framework,openupgrade_scripts,openupgrade_scripts_custom"
     for environment_key in sorted(source_environment):
         include_value = environment_key in PLATFORM_RUNTIME_PASSTHROUGH_KEYS or any(
             environment_key.startswith(prefix) for prefix in PLATFORM_RUNTIME_PASSTHROUGH_PREFIXES
@@ -2629,7 +2625,6 @@ def stage_artifact_build_context(
         destination_path=staged_context_root / "runtime",
         label="runtime Python dependency catalog",
     )
-    source_support_sha256 = sha256_file(staged_context_root / "runtime" / "uv.lock")
     try:
         stage_publishable_dependency_workspace(
             manifest=manifest,
@@ -2638,7 +2633,6 @@ def stage_artifact_build_context(
             shared_addons_commit=shared_addons_source.commit if shared_addons_source is not None else None,
             committed=not working_tree,
         )
-        source_tenant_sha256 = sha256_file(staged_context_root / "project" / "uv.lock")
         if catalogs:
             for root in (staged_context_root / "runtime", staged_context_root / "project"):
                 derive_base_python_lock(staged_root=root, catalogs=catalogs, python_version=manifest.workspace.python_version)
@@ -2654,6 +2648,7 @@ def stage_artifact_build_context(
         source_path=tenant_addons_root,
         destination_path=staged_addons_root,
         label="tenant addons directory",
+        exclude_relative_paths=(Path("shared"),),
     )
     staged_tenant_shared_path = staged_addons_root / "shared"
     if staged_tenant_shared_path.is_dir():
@@ -2699,22 +2694,6 @@ def stage_artifact_build_context(
         file_hashes=snapshot_staged_artifact_files(staged_context_root),
         support_lock_sha256=sha256_file(support_lock_path),
         tenant_lock_sha256=sha256_file(tenant_lock_path),
-        lock_derivation=(
-            {
-                "source_support_lock_sha256": source_support_sha256,
-                "source_tenant_lock_sha256": source_tenant_sha256,
-                "catalogs": [
-                    {
-                        "image": catalog.image,
-                        "platform": catalog.platform,
-                        "constraints_sha256": hashlib.sha256(("\n".join(catalog.requirements) + "\n").encode()).hexdigest(),
-                    }
-                    for catalog in catalogs
-                ],
-            }
-            if catalogs
-            else None
-        ),
     )
 
 
@@ -2725,6 +2704,7 @@ def copy_required_path(
     source_path: Path,
     destination_path: Path,
     label: str,
+    exclude_relative_paths: tuple[Path, ...] = (),
 ) -> None:
     normalized_repo_path = require_git_repository_root(repo_path=repo_path, label=label)
     lexical_repo_path = repo_path.absolute()
@@ -2757,6 +2737,8 @@ def copy_required_path(
             raise RuntimeCommandError(f"Cannot enumerate local {label} inputs")
         for raw_path in sorted(set(result.stdout.split(b"\0")) - {b""}):
             entry = Path(os.fsdecode(raw_path))
+            if any(entry.relative_to(relative_source_path).is_relative_to(excluded) for excluded in exclude_relative_paths):
+                continue
             source_file = normalized_repo_path / entry
             if any((normalized_repo_path / parent).is_symlink() for parent in (entry, *entry.parents)):
                 raise RuntimeCommandError(f"Local {label} input cannot traverse symlinks: {entry}")
@@ -2807,6 +2789,8 @@ def copy_required_path(
             entry_path = Path(os.fsdecode(raw_entry_path))
         except ValueError as error:
             raise RuntimeCommandError(f"Unable to parse committed files for required {label}.") from error
+        if any(entry_path.relative_to(relative_source_path).is_relative_to(excluded) for excluded in exclude_relative_paths):
+            continue
         if entry_type != "blob" or mode not in {"100644", "100755"}:
             raise RuntimeCommandError(f"Artifact staging accepts only committed regular files for {label}: {entry_path.as_posix()}")
         if object_type == "blob":
@@ -3524,7 +3508,6 @@ def build_runtime_artifact_manifest_payload(
     dependency_provenance: dict[str, object],
     odoo_version: str,
     release_compatibility: dict[str, object] | None = None,
-    lock_derivation: dict[str, object] | None = None,
 ) -> dict[str, object]:
     artifact_id = f"artifact-{context_name}-{image_digest.removeprefix('sha256:')[:16]}"
     build_flag_values = {
@@ -3532,8 +3515,6 @@ def build_runtime_artifact_manifest_payload(
         "odoo_version": odoo_version,
         "runtime_repo": runtime_repo_name,
     }
-    if lock_derivation is not None:
-        build_flag_values["base_python_lock_derivation"] = json.dumps(lock_derivation, sort_keys=True, separators=(",", ":"))
     normalized_selectors: list[dict[str, str]] = []
     for selector_entry in source_selector_entries:
         try:

@@ -1383,28 +1383,32 @@ homepage = true
             self.assertEqual(command[-3:], ["up", "-d", "--no-build"])
             self.assertEqual(run_mock.call_args.kwargs["cwd"], runtime_repo_path.resolve())
 
-    def test_native_runtime_build_runs_compose_build_with_no_cache(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            temp_root = Path(temporary_directory)
-            tenant_repo_path = temp_root / "tenant-repo"
-            runtime_repo_path = temp_root / "runtime-repo"
-            tenant_repo_path.mkdir(parents=True, exist_ok=True)
-            self._write_runtime_repo(runtime_repo_path)
-            manifest_path = self._write_manifest(tenant_repo_path=tenant_repo_path, runtime_repo_path=runtime_repo_path)
+    def test_local_build_requires_manifest_base_before_writes_or_registry_access(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            tenant, runtime = root / "tenant", root / "runtime"
+            tenant.mkdir()
+            self._write_runtime_repo(runtime)
+            manifest = load_workspace_manifest(self._write_manifest(tenant_repo_path=tenant, runtime_repo_path=runtime))
+            with mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_base_images") as registry:
+                with self.assertRaisesRegex(local_runtime.RuntimeCommandError, "build"):
+                    local_runtime.build_runtime(manifest=manifest, runtime_repo_path=runtime, no_cache=True)
+            registry.assert_not_called()
+            self.assertFalse((runtime / ".platform/env").exists())
 
-            manifest = load_workspace_manifest(manifest_path)
-
-            with mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_base_images") as ensure_registry_auth:
-                with mock.patch("odoo_devkit.local_runtime.subprocess.run") as run_mock:
-                    run_mock.return_value = mock.Mock(returncode=0)
-                    with contextlib.redirect_stdout(io.StringIO()):
-                        exit_code = run_native_runtime_build(manifest=manifest, no_cache=True)
-
-            self.assertEqual(exit_code, 0)
-            ensure_registry_auth.assert_called_once()
-            command = run_mock.call_args.kwargs.get("args", run_mock.call_args.args[0])
-            self.assertEqual(command[-2:], ["build", "--no-cache"])
-            self.assertEqual(run_mock.call_args.kwargs["cwd"], runtime_repo_path.resolve())
+    def test_local_build_rejects_explicit_legacy_dependency_overrides(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest, _ = self._prepare_artifact_check(root)
+            assert manifest.runtime_repo is not None
+            runtime = manifest.runtime_repo.resolve_path(manifest_directory=manifest.manifest_directory)
+            assert runtime is not None
+            for key in ("ODOO_PYTHON_SYNC_SKIP_ADDONS", "OPENUPGRADELIB_INSTALL_SPEC"):
+                self._configure_publish_runtime_payload(instance="local", environment={key: "legacy"})
+                with mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_base_images") as registry:
+                    with self.assertRaisesRegex(local_runtime.RuntimeCommandError, "locked.*metadata"):
+                        local_runtime.build_runtime(manifest=manifest, runtime_repo_path=runtime, no_cache=False)
+                registry.assert_not_called()
 
     def test_native_runtime_build_rejects_non_local_instance(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1427,7 +1431,14 @@ homepage = true
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             manifest, runtime_commit = self._prepare_artifact_check(root)
-            self._configure_publish_runtime_payload(instance="local", environment={"GITHUB_TOKEN": "synthetic-build-token"})
+            self._configure_publish_runtime_payload(
+                instance="local",
+                environment={
+                    "GITHUB_TOKEN": "synthetic-build-token",
+                    "OPENUPGRADE_ENABLED": "True",
+                    "OPENUPGRADE_ADDON_REPOSITORY": "example/OpenUpgrade@" + "4" * 40,
+                },
+            )
             tenant_root = manifest.tenant_repo.resolve_path(manifest_directory=manifest.manifest_directory)
             assert manifest.runtime_repo is not None
             runtime_root = manifest.runtime_repo.resolve_path(manifest_directory=manifest.manifest_directory)
@@ -1444,6 +1455,7 @@ homepage = true
             subprocess.run(["git", "commit", "-qm", "local staging fixture"], cwd=tenant_root, check=True)
             for repo in (tenant_root, runtime_root):
                 subprocess.run(["git", "remote", "remove", "origin"], cwd=repo, check=True)
+            (tenant_root / "addons/shared").symlink_to(root / "absent-shared", target_is_directory=True)
             source_lock = (tenant_root / "uv.lock").read_bytes()
             catalogs = tuple(
                 BasePythonCatalog("registry.invalid/base@sha256:" + "2" * 64, platform, (f"idna=={version}",))
@@ -1457,6 +1469,9 @@ homepage = true
                 self.assertTrue((stage / "addons/opw_custom/static/src/shared/file.js").is_file())
                 self.assertFalse((stage / "addons/opw_custom/static/src/shared/ignored.private").exists())
                 self.assertEqual(environment_overrides["GITHUB_TOKEN"], "synthetic-build-token")
+                values = local_runtime.parse_env_file(runtime_root / ".platform/env/opw.local.env")
+                self.assertEqual(values["ODOO_PYTHON_SYNC_SKIP_ADDONS"], "")
+                self.assertEqual(values["OPENUPGRADELIB_INSTALL_SPEC"], "")
                 staged_locks.append((stage / "project/uv.lock").read_bytes())
 
             with (
@@ -1492,9 +1507,7 @@ homepage = true
             )
             self.assertEqual(hashlib.sha256(staged_locks[0]).hexdigest(), staged.tenant_lock_sha256)
             self.assertEqual((tenant_root / "uv.lock").read_bytes(), source_lock)
-            assert staged.lock_derivation is not None
-            self.assertEqual(staged.lock_derivation["source_tenant_lock_sha256"], hashlib.sha256(source_lock).hexdigest())
-            self.assertNotEqual(staged.tenant_lock_sha256, staged.lock_derivation["source_tenant_lock_sha256"])
+            self.assertNotEqual(staged.tenant_lock_sha256, hashlib.sha256(source_lock).hexdigest())
 
     def _prepare_artifact_check(self, temp_root: Path) -> tuple[WorkspaceManifest, str]:
         tenant_root = self._create_git_repo(temp_root / "tenant-repo")
