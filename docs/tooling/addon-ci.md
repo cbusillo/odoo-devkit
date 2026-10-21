@@ -2,6 +2,10 @@
 
 The `addon-tests` composite action in this repository runs the caller's addon
 suites on a fresh database. Callers pin the action to an exact devkit commit.
+A tenant's pin is its `workspace.toml` `[repos.devkit]` ref: the workflow
+checks out that repository and ref, then runs the action by local path
+(`uses: ./<devkit checkout>/.github/actions/addon-tests`), so CI and the
+workspace use one devkit commit and there is no second ref to keep in sync.
 Tenant callers provide their checkout and a shared-addons checkout; the runner
 reads the tenant's devtools image and Odoo version from `workspace.toml` and
 common and context-default external addon sources from `artifact-inputs.toml`
