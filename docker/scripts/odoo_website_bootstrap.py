@@ -398,15 +398,6 @@ def _find_website_page_by_url(env: Any, website: Any, *, url: str) -> Any | None
     return page_model.search(page_domain, order="id", limit=1)
 
 
-def _find_website_page(env: Any, website: Any, *, xmlid: str, url: str) -> tuple[Any | None, bool]:
-    page = _find_website_page_by_xmlid(env, xmlid=xmlid)
-    if page:
-        return page, True
-    if xmlid:
-        return None, False
-    return _find_website_page_by_url(env, website, url=url), False
-
-
 def _verify_route(env: Any, website: Any, route_payload: dict[str, object], *, fallback_module: str) -> Any | None:
     route_url = str(route_payload.get("url") or "").strip()
     if not route_url:

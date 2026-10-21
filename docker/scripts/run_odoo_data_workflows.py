@@ -25,7 +25,7 @@ from unittest.mock import patch
 import psycopg2
 from odoo_addon_paths import expand_addon_paths
 from odoo_admin_password import RESTORED_LOGINS_PARAMETER, restored_logins_preserved, validate_admin_password
-from odoo_release_plan import load_plan, names, resolve_plan, verify_image_declaration
+from odoo_release_plan import load_plan, resolve_plan, verify_image_declaration
 from odoo_website_bootstrap import load_instance_override_payload, require_launchplane_payloads_if_configured
 from odoo_website_settings import PRODUCTION_INSTANCE_NAMES
 from passlib.context import CryptContext
@@ -55,7 +55,6 @@ class SqlCallType(Enum):
 
 class ExitCode(IntEnum):
     SUCCESS = 0
-    RESTORE_FAILED_BOOTSTRAP_SUCCESS = 10
     BOOTSTRAP_FAILED = 20
     INVALID_ARGS = 30
     RESTORE_FAILED = 40
@@ -291,10 +290,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     finally:
         if lock_acquired:
             workflow_runner.release_data_workflow_lock()
-
-
-def run_odoo_data_workflows() -> int:  # Entry point for pyproject scripts
-    return main()
 
 
 @dataclass(frozen=True)
