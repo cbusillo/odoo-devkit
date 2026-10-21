@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 from odoo_devkit import dependency_workspace
+from odoo_devkit.base_python import BasePythonCatalog
 from odoo_devkit.cli import build_parser
 from odoo_devkit.dependency_workspace import (
     inspect_dependency_workspace,
@@ -765,6 +766,68 @@ class DependencyWorkspaceTests(unittest.TestCase):
             self.assertEqual((tenant_repo_path / "uv.lock").read_bytes(), first_lock_bytes)
             self.assertEqual((output_directory / "tenant-requirements.txt").read_bytes(), first_export_bytes)
 
+    def test_canonical_normalization_needs_no_base_access_and_retains_matching_hashes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            tenant = root / "tenant"
+            self._write_member_pyproject(tenant / "addons" / "tenant_addon", dependencies=("idna>=3",))
+            self._write_root_workspace(tenant_repo_path=tenant, members=("addons/tenant_addon",))
+            (tenant / "uv.lock").unlink()
+            subprocess.run(["uv", "lock", "--no-config"], cwd=tenant, check=True, capture_output=True)
+            self._commit_repo(tenant)
+            manifest = self._write_manifest(temp_root=root, tenant_repo_path=tenant)
+            output = root / "normalized"
+            with mock.patch(
+                "odoo_devkit.dependency_workspace.manifest_base_python_catalogs", side_effect=AssertionError("registry access")
+            ):
+                result = normalize_dependency_workspace(manifest=manifest, output_directory=output)
+            for artifact in result.provenance["artifacts"]:
+                path = tenant / "uv.lock" if artifact["path"] == "uv.lock" else output / artifact["path"]
+                self.assertEqual(artifact["sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
+
+    def test_host_prepare_installs_member_dependencies_without_changing_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            tenant = root / "tenant"
+            self._write_member_pyproject(tenant / "addons" / "tenant_addon", dependencies=("idna>=3",))
+            self._write_root_workspace(tenant_repo_path=tenant, members=("addons/tenant_addon",))
+            (tenant / "uv.lock").unlink()
+            subprocess.run(["uv", "lock", "--no-config"], cwd=tenant, check=True, capture_output=True)
+            self._commit_repo(tenant)
+            manifest = self._write_manifest(temp_root=root, tenant_repo_path=tenant)
+            source_metadata = (tenant / "pyproject.toml").read_bytes()
+            source_lock = (tenant / "uv.lock").read_bytes()
+            catalog = BasePythonCatalog("registry.invalid/base@sha256:" + "e" * 64, "linux/arm64", ("idna==3.10",))
+            output = root / "effective"
+            with mock.patch("odoo_devkit.dependency_workspace.manifest_base_python_catalogs", return_value=(catalog,)):
+                dependency_workspace.prepare_dependency_workspace(manifest=manifest, output_directory=output)
+            self.assertEqual((tenant / "pyproject.toml").read_bytes(), source_metadata)
+            self.assertEqual((tenant / "uv.lock").read_bytes(), source_lock)
+            self.assertNotEqual((output / "uv.lock").read_bytes(), source_lock)
+            self.assertIn(catalog.requirements[0], (output / "tenant-requirements.txt").read_text())
+            subprocess.run(
+                ["uv", "sync", "--frozen", "--all-packages", "--no-default-groups", "--no-config"],
+                cwd=output,
+                check=True,
+                capture_output=True,
+            )
+            installed = subprocess.check_output(
+                [str(output / ".venv/bin/python"), "-c", "import importlib.metadata; print(importlib.metadata.version('idna'))"],
+                text=True,
+            ).strip()
+            self.assertEqual(installed, catalog.requirements[0].split("==")[1])
+            with mock.patch(
+                "odoo_devkit.dependency_workspace.manifest_base_python_catalogs", side_effect=AssertionError("registry access")
+            ):
+                with self.assertRaisesRegex(ValueError, "empty"):
+                    dependency_workspace.prepare_dependency_workspace(manifest=manifest, output_directory=output)
+            failed = root / "failed"
+            conflict = BasePythonCatalog(catalog.image, catalog.platform, ("idna==2.10",))
+            with mock.patch("odoo_devkit.dependency_workspace.manifest_base_python_catalogs", return_value=(conflict,)):
+                with self.assertRaisesRegex(ValueError, "idna"):
+                    dependency_workspace.prepare_dependency_workspace(manifest=manifest, output_directory=failed)
+            self.assertFalse(failed.exists())
+
     def test_normalize_is_idempotent_for_a_current_lock(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory_name:
             temp_root = Path(temporary_directory_name)
@@ -925,6 +988,22 @@ class DependencyWorkspaceTests(unittest.TestCase):
 
             self.assertEqual(json.loads(output.getvalue()), result.to_dict.return_value)
             normalize.assert_called_once_with(manifest=manifest, output_directory=temp_root / "normalized")
+
+    def test_cli_prepare_stages_the_requested_host_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = self._write_manifest(temp_root=root, tenant_repo_path=root / "tenant")
+            destination = root / "effective"
+            arguments = build_parser().parse_args(
+                ["dependencies", "prepare", "--manifest", str(manifest.manifest_path), "--output-dir", str(destination)]
+            )
+            inspection = mock.Mock()
+            inspection.to_dict.return_value = {"publishable": True}
+            with mock.patch("odoo_devkit.cli.prepare_dependency_workspace", return_value=inspection) as prepare:
+                with contextlib.redirect_stdout(io.StringIO()) as output:
+                    arguments.handler(arguments)
+            prepare.assert_called_once_with(manifest=manifest, output_directory=destination)
+            self.assertEqual(json.loads(output.getvalue()), inspection.to_dict.return_value)
 
     def test_cli_inspect_and_check_emit_structured_status(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory_name:

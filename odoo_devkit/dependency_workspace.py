@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import subprocess
@@ -11,6 +12,7 @@ from pathlib import Path
 from typing import Any, Literal, TypedDict
 from urllib.parse import urlsplit
 
+from .base_python import BASE_PYTHON_PLATFORMS, PLATFORM_MACHINES, BasePythonCatalog
 from .manifest import WorkspaceManifest
 
 DependencyProjectOwner = Literal["tenant", "shared_addons"]
@@ -56,6 +58,83 @@ _STALE_TENANT_LOCK_FINDING = "Tenant uv.lock is not current for the combined own
 
 class DependencyWorkspaceError(ValueError):
     pass
+
+
+def derive_base_python_lock(*, staged_root: Path, catalogs: tuple[BasePythonCatalog, ...], python_version: str) -> None:
+    """Constrain a staged root and resolve from its source lock, without upgrades."""
+    if not catalogs:
+        raise DependencyWorkspaceError("Base-derived locking requires an image-owned Python catalog")
+    by_platform: dict[str, tuple[str, ...]] = {}
+    for catalog in catalogs:
+        previous = by_platform.setdefault(catalog.platform, catalog.requirements)
+        if previous != catalog.requirements:
+            raise DependencyWorkspaceError(f"Base Python catalogs disagree for {catalog.image} ({catalog.platform})")
+    payload = _load_pyproject(staged_root / "pyproject.toml")
+    config = payload.setdefault("tool", {}).setdefault("uv", {})
+    constraints = list(config.get("constraint-dependencies", []))
+    requirements = sorted({requirement for values in by_platform.values() for requirement in values})
+    for requirement in requirements:
+        selected = [platform for platform, values in by_platform.items() if requirement in values]
+        if len(selected) == len(by_platform):
+            constraints.append(requirement)
+        else:
+            markers = [f"platform_machine == '{machine}'" for platform in selected for machine in PLATFORM_MACHINES[platform]]
+            constraints.append(requirement + "; " + " or ".join(markers))
+    config["constraint-dependencies"] = list(dict.fromkeys(constraints))
+    # Only staged metadata is serialized. The source pyproject remains untouched.
+    (staged_root / "pyproject.toml").write_text(
+        "\n".join(f"{json.dumps(key)} = {_toml_value(value)}" for key, value in payload.items()) + "\n", encoding="utf-8"
+    )
+    try:
+        _run_uv_lock(staged_root=staged_root, python_version=python_version)
+    except DependencyWorkspaceError as error:
+        bases = ", ".join(f"{catalog.image} ({catalog.platform})" for catalog in catalogs)
+        raise DependencyWorkspaceError(f"Cannot derive dependency lock against base {bases}: {error}") from error
+
+
+def _toml_value(value: Any) -> str:
+    if isinstance(value, dict):
+        return "{" + ", ".join(f"{json.dumps(key)} = {_toml_value(item)}" for key, item in value.items()) + "}"
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
+    if isinstance(value, (str, int, float, bool)):
+        return json.dumps(value, ensure_ascii=False)
+    raise DependencyWorkspaceError(f"Unsupported staged dependency metadata value: {type(value).__name__}")
+
+
+def manifest_base_python_catalogs(manifest: WorkspaceManifest) -> tuple[BasePythonCatalog, ...]:
+    from .base_python import read_base_python_catalogs
+    from .local_runtime import (
+        build_registry_auth_environment,
+        ensure_registry_auth_for_base_images,
+        load_environment,
+        manifest_build_values,
+        resolve_image_digest,
+        runtime_env_file_for_scope,
+        split_image_reference,
+    )
+
+    values = manifest_build_values(manifest)
+    image = values.get("ODOO_BASE_RUNTIME_IMAGE")
+    if not image:
+        return ()
+    from .runtime import resolve_runtime_repo_path
+
+    runtime_root = resolve_runtime_repo_path(manifest)
+    environment = load_environment(
+        repo_root=runtime_root, context_name=manifest.runtime.context, instance_name=manifest.runtime.instance
+    )
+    auth_values = build_registry_auth_environment(
+        source_environment=environment.merged_values,
+        runtime_env_file=runtime_env_file_for_scope(
+            repo_root=runtime_root, context_name=manifest.runtime.context, instance_name=manifest.runtime.instance
+        ),
+    )
+    auth_values.update(values)
+    ensure_registry_auth_for_base_images(auth_values)
+    repository, _ = split_image_reference(image)
+    immutable = f"{repository}@{resolve_image_digest(image)}"
+    return read_base_python_catalogs(image=immutable, platforms=BASE_PYTHON_PLATFORMS)
 
 
 class DependencyNormalizationInput(TypedDict):
@@ -421,12 +500,35 @@ def normalize_dependency_workspace(
     )
 
 
+def prepare_dependency_workspace(*, manifest: WorkspaceManifest, output_directory: Path) -> DependencyWorkspaceInspection:
+    """Stage the effective host workspace without modifying canonical metadata."""
+    destination = output_directory.expanduser().resolve()
+    if destination.exists() and (not destination.is_dir() or any(destination.iterdir())):
+        raise DependencyWorkspaceError("Dependency workspace staging destination must be empty")
+    catalogs = manifest_base_python_catalogs(manifest)
+    if not catalogs:
+        raise DependencyWorkspaceError("Dependency preparation requires published base images in manifest [build].")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=f".{destination.name}-", dir=destination.parent) as temporary:
+        staged = Path(temporary) / "workspace"
+        inspection = stage_publishable_dependency_workspace(
+            manifest=manifest, destination_root=staged, catalogs=catalogs, committed=False
+        )
+        _write_frozen_dependency_export(staged_root=staged, export_path=staged / "tenant-requirements.txt")
+        if destination.exists():
+            destination.rmdir()
+        staged.replace(destination)
+    return inspection
+
+
 def stage_publishable_dependency_workspace(
     *,
     manifest: WorkspaceManifest,
     destination_root: Path,
     tenant_commit: str | None = None,
     shared_addons_commit: str | None = None,
+    catalogs: tuple[BasePythonCatalog, ...] = (),
+    committed: bool = True,
 ) -> DependencyWorkspaceInspection:
     inspection = require_publishable_dependency_workspace(manifest=manifest)
     tenant_repo_path = manifest.tenant_repo.resolve_path(manifest_directory=manifest.manifest_directory)
@@ -437,16 +539,20 @@ def stage_publishable_dependency_workspace(
     if destination_root.exists() and any(destination_root.iterdir()):
         raise DependencyWorkspaceError("Dependency workspace staging destination must be empty")
     destination_root.mkdir(parents=True, exist_ok=True)
-    source_commits = {
-        tenant_repo_path: tenant_commit or _git_head_commit(tenant_repo_path),
-        **(
-            {
-                shared_addons_repo_path: shared_addons_commit or _git_head_commit(shared_addons_repo_path),
-            }
-            if shared_addons_repo_path is not None
-            else {}
-        ),
-    }
+    source_commits = (
+        {
+            tenant_repo_path: tenant_commit or _git_head_commit(tenant_repo_path),
+            **(
+                {
+                    shared_addons_repo_path: shared_addons_commit or _git_head_commit(shared_addons_repo_path),
+                }
+                if shared_addons_repo_path is not None
+                else {}
+            ),
+        }
+        if committed
+        else None
+    )
     _stage_dependency_directory_layout(
         tenant_repo_path=tenant_repo_path,
         shared_addons_repo_path=shared_addons_repo_path,
@@ -463,6 +569,8 @@ def stage_publishable_dependency_workspace(
         staged_root=destination_root,
         source_commits=source_commits,
     )
+    if catalogs:
+        derive_base_python_lock(staged_root=destination_root, catalogs=catalogs, python_version=manifest.workspace.python_version)
     return inspection
 
 
@@ -1128,7 +1236,8 @@ def _uv_command_env() -> dict[str, str]:
     environment = {
         key: value
         for key, value in os.environ.items()
-        if not key.startswith(("PIP_", "UV_")) and key not in {"PYTHONPATH", "VIRTUAL_ENV"}
+        if not key.startswith(("PIP_", "UV_"))
+        and key not in {"PYTHONPATH", "VIRTUAL_ENV", "ADDON_CI_SOURCE_TOKEN", "ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON"}
     }
     environment["UV_NO_PROGRESS"] = "1"
     return environment

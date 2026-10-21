@@ -33,8 +33,10 @@ from .artifact_provenance import (
     normalize_git_commit,
     normalize_repository_identity,
 )
+from .base_python import BASE_PYTHON_PLATFORMS, BasePythonCatalog, read_base_python_catalogs
 from .dependency_workspace import (
     DependencyWorkspaceError,
+    derive_base_python_lock,
     require_staged_build_requirements_supplied,
     require_staged_dependency_workspace_current,
     stage_publishable_dependency_workspace,
@@ -55,7 +57,7 @@ expand_addon_paths = cast(_ExpandAddonPaths, runpy.run_path(str(_addon_path_scri
 
 ScalarValue = str | int | float | bool
 ScalarMap = dict[str, ScalarValue]
-DEFAULT_ARTIFACT_IMAGE_PLATFORMS = ("linux/amd64", "linux/arm64")
+DEFAULT_ARTIFACT_IMAGE_PLATFORMS = BASE_PYTHON_PLATFORMS
 GIT_SHA_PATTERN = re.compile(r"[0-9a-fA-F]{7,40}")
 DEPENDENCY_SOURCE_REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 ENVIRONMENT_VARIABLE_NAME_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -534,14 +536,21 @@ def up_runtime(*, manifest: WorkspaceManifest, runtime_repo_path: Path, build_im
         source_environment=runtime_context.environment.merged_values,
     )
     runtime_env_file = write_runtime_env_file(runtime_context=runtime_context)
-    compose_command = compose_base_command(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file)
     if build_images:
         build_runtime(manifest=manifest, runtime_repo_path=runtime_repo_path, no_cache=False)
+    compose_command = compose_base_command(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file)
     run_command(runtime_repo_path=runtime_repo_path, command=compose_command + ["up", "-d", "--no-build"])
 
 
 def build_runtime(*, manifest: WorkspaceManifest, runtime_repo_path: Path, no_cache: bool) -> None:
     runtime_context = load_runtime_context(manifest=manifest, runtime_repo_path=runtime_repo_path)
+    values = build_runtime_env_values(runtime_context=runtime_context)
+    values.update(manifest_build_values(manifest, required=True))
+    for key in ("OPENUPGRADELIB_INSTALL_SPEC", "ODOO_PYTHON_SYNC_SKIP_ADDONS"):
+        if (values.get(key) or runtime_context.environment.merged_values.get(key, "")).strip():
+            raise RuntimeCommandError(
+                f"Strict local builds do not support {key}; remove it and declare Python dependencies in locked tenant metadata, normalize, and rebuild."
+            )
     write_runtime_odoo_conf_file(
         runtime_selection=runtime_context.selection,
         stack_definition=runtime_context.stack.stack_definition,
@@ -555,10 +564,77 @@ def build_runtime(*, manifest: WorkspaceManifest, runtime_repo_path: Path, no_ca
         )
     )
     compose_command = compose_base_command(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file)
-    build_command = compose_command + ["build"]
-    if no_cache:
-        build_command.append("--no-cache")
-    run_command(runtime_repo_path=runtime_repo_path, command=build_command)
+    for key in ("ODOO_BASE_RUNTIME_IMAGE", "ODOO_BASE_DEVTOOLS_IMAGE"):
+        repository, _ = split_image_reference(values[key])
+        values[key] = f"{repository}@{resolve_image_digest(values[key])}"
+    catalogs = read_base_python_catalogs(image=values["ODOO_BASE_RUNTIME_IMAGE"], platforms=DEFAULT_ARTIFACT_IMAGE_PLATFORMS)
+    build_environment = command_execution_env()
+    github_token = resolve_github_token_for_build(runtime_context.environment.merged_values)
+    if github_token is not None:
+        build_environment["GITHUB_TOKEN"] = github_token
+    tenant_root = manifest.tenant_repo.resolve_path(manifest_directory=manifest.manifest_directory)
+    assert tenant_root is not None
+    shared_root = resolve_manifest_shared_addons_repo_path(manifest=manifest)
+    state_root = runtime_repo_path / ".platform" / "dependencies" / runtime_env_file.stem
+    state_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="build-", dir=state_root) as temporary:
+        staged_root = Path(temporary)
+        stage_artifact_build_context(
+            manifest=manifest,
+            runtime_repo_path=runtime_repo_path,
+            staged_context_root=staged_root,
+            tenant_source=local_dependency_source(tenant_root, "tenant"),
+            runtime_source=local_dependency_source(runtime_repo_path, "runtime"),
+            shared_addons_source=local_dependency_source(shared_root, "shared-addons") if shared_root is not None else None,
+            catalogs=catalogs,
+            working_tree=True,
+        )
+        build_overlay = staged_root / "compose.json"
+        build_overlay.write_text(
+            json.dumps(
+                {
+                    "services": {
+                        "web": {
+                            "build": {
+                                "context": str(staged_root),
+                                "dockerfile": "docker/Dockerfile",
+                                "target": values["COMPOSE_BUILD_TARGET"],
+                                "args": {key: values.get(key, "") for key in ARTIFACT_PUBLISH_BUILD_ARG_KEYS},
+                                "secrets": ["github_token"],
+                            }
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        build_command = compose_command + ["-f", str(build_overlay), "build"] + (["--no-cache"] if no_cache else [])
+        run_command(runtime_repo_path=runtime_repo_path, command=build_command, environment_overrides=build_environment)
+        # Retain only four derived metadata files, never full build contexts.
+        mounts = []
+        for root, target in (("runtime", "/opt/runtime"), ("project", "/opt/project")):
+            for name in ("pyproject.toml", "uv.lock"):
+                destination = state_root / f"{root}-{name}"
+                pending = destination.with_suffix(destination.suffix + ".tmp")
+                pending.write_bytes((staged_root / root / name).read_bytes())
+                pending.replace(destination)
+                mounts.append(f"{destination}:{target}/{name}:ro")
+        overlay_path = runtime_env_file.with_suffix(".dependencies.json")
+        pending_overlay = overlay_path.with_suffix(".tmp")
+        pending_overlay.write_text(
+            json.dumps({"services": {name: {"volumes": mounts} for name in ("web", "script-runner")}}), encoding="utf-8"
+        )
+        pending_overlay.replace(overlay_path)
+
+
+def local_dependency_source(repo_path: Path, role: str) -> GitSourceSnapshot:
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo_path, capture_output=True, text=True, env=artifact_git_command_env()
+    )
+    if result.returncode or re.fullmatch(r"[0-9a-f]{40}", result.stdout.strip()) is None:
+        raise RuntimeCommandError(f"Local {role} dependency input requires a Git baseline")
+    # Dirty/local-only inputs have no publishable repository identity or remote prerequisite.
+    return GitSourceSnapshot(role, repo_path, f"local/{role}", result.stdout.strip())
 
 
 def publish_runtime_artifact(
@@ -656,6 +732,12 @@ def publish_runtime_artifact(
         "ODOO_BASE_RUNTIME_IMAGE": runtime_base_provenance.digest_reference,
         "ODOO_BASE_DEVTOOLS_IMAGE": devtools_base_provenance.digest_reference,
     }
+    try:
+        base_catalogs = read_base_python_catalogs(
+            image=runtime_base_provenance.digest_reference, platforms=DEFAULT_ARTIFACT_IMAGE_PLATFORMS
+        )
+    except ValueError as error:
+        raise RuntimeCommandError(str(error)) from error
 
     build_environment = command_execution_env()
     github_token = resolve_github_token_for_build(runtime_values)
@@ -677,6 +759,7 @@ def publish_runtime_artifact(
             tenant_source=tenant_source,
             runtime_source=runtime_source,
             shared_addons_source=shared_addons_source,
+            catalogs=base_catalogs,
         )
         inventory_sources: list[dict[str, object]] = [
             {
@@ -2089,6 +2172,8 @@ def write_runtime_env_file(*, runtime_context: RuntimeContext) -> Path:
     runtime_env_file.parent.mkdir(parents=True, exist_ok=True)
     runtime_values = build_runtime_env_values(runtime_context=runtime_context)
     runtime_env_file.write_text(render_runtime_env(runtime_values), encoding="utf-8")
+    if not runtime_context.manifest.build.base_runtime_image:
+        runtime_env_file.with_suffix(".dependencies.json").unlink(missing_ok=True)
     return runtime_env_file
 
 
@@ -2168,14 +2253,11 @@ def build_runtime_env_values(
         "OPENUPGRADE_SCRIPTS_PATH": openupgrade_environment.get("OPENUPGRADE_SCRIPTS_PATH", ""),
         "OPENUPGRADE_TARGET_VERSION": openupgrade_environment.get("OPENUPGRADE_TARGET_VERSION", ""),
         "OPENUPGRADE_SKIP_UPDATE_ADDONS": openupgrade_environment.get("OPENUPGRADE_SKIP_UPDATE_ADDONS", "True"),
-        "OPENUPGRADELIB_INSTALL_SPEC": openupgrade_environment.get("OPENUPGRADELIB_INSTALL_SPEC", ""),
         "ODOO_PYTHON_SYNC_SKIP_ADDONS": source_environment.get("ODOO_PYTHON_SYNC_SKIP_ADDONS", ""),
         "GITHUB_TOKEN": source_environment.get("GITHUB_TOKEN", ""),
     }
     if openupgrade_enabled(openupgrade_environment):
         runtime_values["OPENUPGRADE_ADDON_REPOSITORY"] = resolve_openupgrade_addon_repository(openupgrade_environment)
-        runtime_values["OPENUPGRADELIB_INSTALL_SPEC"] = resolve_openupgradelib_install_spec(openupgrade_environment)
-        runtime_values["ODOO_PYTHON_SYNC_SKIP_ADDONS"] = "openupgrade_framework,openupgrade_scripts,openupgrade_scripts_custom"
     for environment_key in sorted(source_environment):
         include_value = environment_key in PLATFORM_RUNTIME_PASSTHROUGH_KEYS or any(
             environment_key.startswith(prefix) for prefix in PLATFORM_RUNTIME_PASSTHROUGH_PREFIXES
@@ -2217,7 +2299,7 @@ def manifest_build_values(manifest: WorkspaceManifest, *, required: bool = False
     if required:
         missing = [key for key, value in declared.items() if not isinstance(value, str) or not value.strip()]
         if missing:
-            raise RuntimeCommandError("Artifact publish requires workspace.toml build inputs: " + ", ".join(missing))
+            raise RuntimeCommandError("Build requires workspace.toml [build] inputs: " + ", ".join(missing))
     values: dict[str, str] = {}
     for key, value in declared.items():
         if isinstance(value, str) and value:
@@ -2512,6 +2594,8 @@ def stage_artifact_build_context(
     tenant_source: GitSourceSnapshot,
     runtime_source: GitSourceSnapshot,
     shared_addons_source: GitSourceSnapshot | None,
+    catalogs: tuple[BasePythonCatalog, ...] = (),
+    working_tree: bool = False,
 ) -> StagedArtifactContext:
     tenant_repo_path = manifest.tenant_repo.resolve_path(manifest_directory=manifest.manifest_directory)
     if tenant_repo_path is None or not tenant_repo_path.exists():
@@ -2521,21 +2605,21 @@ def stage_artifact_build_context(
     staged_context_root.mkdir(parents=True, exist_ok=True)
     copy_required_path(
         repo_path=runtime_source.repo_path,
-        source_commit=runtime_source.commit,
+        source_commit=None if working_tree else runtime_source.commit,
         source_path=runtime_repo_path / "docker",
         destination_path=staged_context_root / "docker",
         label="runtime docker directory",
     )
     copy_required_path(
         repo_path=runtime_source.repo_path,
-        source_commit=runtime_source.commit,
+        source_commit=None if working_tree else runtime_source.commit,
         source_path=runtime_repo_path / "platform" / "config",
         destination_path=staged_context_root / "platform" / "config",
         label="runtime platform config directory",
     )
     copy_required_path(
         repo_path=runtime_source.repo_path,
-        source_commit=runtime_source.commit,
+        source_commit=None if working_tree else runtime_source.commit,
         source_path=runtime_repo_path / "docker" / "runtime-python",
         destination_path=staged_context_root / "runtime",
         label="runtime Python dependency catalog",
@@ -2546,7 +2630,11 @@ def stage_artifact_build_context(
             destination_root=staged_context_root / "project",
             tenant_commit=tenant_source.commit,
             shared_addons_commit=shared_addons_source.commit if shared_addons_source is not None else None,
+            committed=not working_tree,
         )
+        if catalogs:
+            for root in (staged_context_root / "runtime", staged_context_root / "project"):
+                derive_base_python_lock(staged_root=root, catalogs=catalogs, python_version=manifest.workspace.python_version)
     except DependencyWorkspaceError as error:
         raise RuntimeCommandError(str(error)) from error
     (staged_context_root / "runtime" / DEPENDENCY_LAYOUT_MARKER_FILE).write_text("2\n", encoding="utf-8")
@@ -2555,10 +2643,11 @@ def stage_artifact_build_context(
     tenant_addons_root = tenant_repo_path / "addons"
     copy_required_path(
         repo_path=tenant_source.repo_path,
-        source_commit=tenant_source.commit,
+        source_commit=None if working_tree else tenant_source.commit,
         source_path=tenant_addons_root,
         destination_path=staged_addons_root,
         label="tenant addons directory",
+        exclude_relative_paths=(Path("shared"),),
     )
     staged_tenant_shared_path = staged_addons_root / "shared"
     if staged_tenant_shared_path.is_dir():
@@ -2573,7 +2662,7 @@ def stage_artifact_build_context(
         shared_destination = staged_addons_root / "shared"
         copy_required_path(
             repo_path=shared_addons_source.repo_path,
-            source_commit=shared_addons_source.commit,
+            source_commit=None if working_tree else shared_addons_source.commit,
             source_path=shared_addons_repo_path,
             destination_path=shared_destination,
             label="shared addons repository",
@@ -2610,10 +2699,11 @@ def stage_artifact_build_context(
 def copy_required_path(
     *,
     repo_path: Path,
-    source_commit: str,
+    source_commit: str | None,
     source_path: Path,
     destination_path: Path,
     label: str,
+    exclude_relative_paths: tuple[Path, ...] = (),
 ) -> None:
     normalized_repo_path = require_git_repository_root(repo_path=repo_path, label=label)
     lexical_repo_path = repo_path.absolute()
@@ -2635,6 +2725,32 @@ def copy_required_path(
         relative_source_path = normalized_source_path.relative_to(normalized_repo_path)
     except ValueError as error:
         raise RuntimeCommandError(f"Required {label} escapes its source repository.") from error
+    if source_commit is None:
+        result = subprocess.run(
+            ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", relative_source_path.as_posix()],
+            cwd=normalized_repo_path,
+            capture_output=True,
+            env=artifact_git_command_env(),
+        )
+        if result.returncode:
+            raise RuntimeCommandError(f"Cannot enumerate local {label} inputs")
+        for raw_path in sorted(set(result.stdout.split(b"\0")) - {b""}):
+            entry = Path(os.fsdecode(raw_path))
+            if any(entry.relative_to(relative_source_path).is_relative_to(excluded) for excluded in exclude_relative_paths):
+                continue
+            source_file = normalized_repo_path / entry
+            if any((normalized_repo_path / parent).is_symlink() for parent in (entry, *entry.parents)):
+                raise RuntimeCommandError(f"Local {label} input cannot traverse symlinks: {entry}")
+            if not source_file.exists():
+                continue
+            if not source_file.is_file():
+                raise RuntimeCommandError(f"Local {label} input must be a regular file: {entry}")
+            target = (
+                destination_path if normalized_source_path.is_file() else destination_path / entry.relative_to(relative_source_path)
+            )
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_file, target)
+        return
     if relative_source_path == Path("."):
         object_type = "tree"
     else:
@@ -2672,6 +2788,8 @@ def copy_required_path(
             entry_path = Path(os.fsdecode(raw_entry_path))
         except ValueError as error:
             raise RuntimeCommandError(f"Unable to parse committed files for required {label}.") from error
+        if any(entry_path.relative_to(relative_source_path).is_relative_to(excluded) for excluded in exclude_relative_paths):
+            continue
         if entry_type != "blob" or mode not in {"100644", "100755"}:
             raise RuntimeCommandError(f"Artifact staging accepts only committed regular files for {label}: {entry_path.as_posix()}")
         if object_type == "blob":
@@ -3535,13 +3653,6 @@ def resolve_openupgrade_addon_repository(source_environment: dict[str, str]) -> 
     raise RuntimeCommandError("OPENUPGRADE_ADDON_REPOSITORY must be set when OPENUPGRADE_ENABLED is true.")
 
 
-def resolve_openupgradelib_install_spec(source_environment: dict[str, str]) -> str:
-    install_specification = source_environment.get("OPENUPGRADELIB_INSTALL_SPEC", "").strip()
-    if install_specification:
-        return install_specification
-    raise RuntimeCommandError("OPENUPGRADELIB_INSTALL_SPEC must be set when OPENUPGRADE_ENABLED is true.")
-
-
 def runtime_env_file_for_scope(*, repo_root: Path, context_name: str, instance_name: str) -> Path:
     return repo_root / ".platform" / "env" / f"{context_name}.{instance_name}.env"
 
@@ -3564,6 +3675,9 @@ def compose_base_command(*, runtime_repo_path: Path, runtime_env_file: Path) -> 
     optional_override_file = runtime_repo_path / "docker-compose.override.yml"
     if optional_override_file.exists():
         compose_files.append(optional_override_file)
+    dependency_overlay = runtime_env_file.with_suffix(".dependencies.json")
+    if dependency_overlay.exists():
+        compose_files.append(dependency_overlay)
     missing_files = [compose_file for compose_file in compose_files if not compose_file.exists()]
     if missing_files:
         missing_display = ", ".join(str(compose_file) for compose_file in missing_files)
@@ -3599,7 +3713,8 @@ def compose_runtime_env_file(runtime_env_file: Path) -> Path:
 
 def build_registry_auth_environment(*, source_environment: dict[str, str], runtime_env_file: Path) -> dict[str, str]:
     registry_auth_environment = dict(source_environment)
-    registry_auth_environment.update(parse_env_file(runtime_env_file))
+    if runtime_env_file.exists():
+        registry_auth_environment.update(parse_env_file(runtime_env_file))
     return registry_auth_environment
 
 
@@ -4084,6 +4199,7 @@ def assert_active_admin_password_is_not_default(
 
 def command_execution_env() -> dict[str, str]:
     execution_env = sanitized_subprocess_environment()
+    execution_env.pop("ADDON_CI_SOURCE_TOKEN", None)
     for runtime_key in PLATFORM_RUNTIME_ENV_KEYS:
         execution_env.pop(runtime_key, None)
     for passthrough_key in PLATFORM_RUNTIME_PASSTHROUGH_KEYS:

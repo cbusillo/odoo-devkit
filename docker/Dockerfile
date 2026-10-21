@@ -4,20 +4,17 @@ ARG ODOO_BASE_RUNTIME_IMAGE
 ARG ODOO_BASE_DEVTOOLS_IMAGE
 ARG ODOO_ADDON_REPOSITORIES
 ARG OPENUPGRADE_ADDON_REPOSITORY
-ARG OPENUPGRADELIB_INSTALL_SPEC
-ARG ODOO_PYTHON_SYNC_SKIP_ADDONS
 
 FROM scratch AS project-payload
 COPY /platform/config /payload/volumes/config
 COPY /docker/scripts /payload/volumes/scripts
 COPY /addons /payload/opt/project/addons
-COPY /pyproject.toml /payload/opt/project/pyproject.toml
-COPY /uv.lock /payload/opt/project/uv.lock
+COPY /runtime /payload/opt/runtime
+COPY /project /payload/opt/project
 
 FROM ${ODOO_BASE_RUNTIME_IMAGE} AS addon-sources
 ARG ODOO_ADDON_REPOSITORIES
 ARG OPENUPGRADE_ADDON_REPOSITORY
-ARG OPENUPGRADELIB_INSTALL_SPEC
 USER root
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN --mount=type=secret,id=github_token \
@@ -28,12 +25,10 @@ RUN --mount=type=secret,id=github_token \
 FROM ${ODOO_BASE_RUNTIME_IMAGE} AS base-runtime
 ARG ODOO_ADDON_REPOSITORIES
 ARG OPENUPGRADE_ADDON_REPOSITORY
-ARG OPENUPGRADELIB_INSTALL_SPEC
-ARG ODOO_PYTHON_SYNC_SKIP_ADDONS
 USER root
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-RUN rm -rf /opt/project \
+RUN rm -rf /opt/project /opt/runtime \
     && mkdir -p /opt/project /volumes
 
 COPY --from=project-payload /payload/ /
@@ -47,12 +42,10 @@ RUN mkdir -p /volumes /opt/project \
 FROM ${ODOO_BASE_DEVTOOLS_IMAGE} AS base-devtools
 ARG ODOO_ADDON_REPOSITORIES
 ARG OPENUPGRADE_ADDON_REPOSITORY
-ARG OPENUPGRADELIB_INSTALL_SPEC
-ARG ODOO_PYTHON_SYNC_SKIP_ADDONS
 USER root
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-RUN rm -rf /opt/project \
+RUN rm -rf /opt/project /opt/runtime \
     && mkdir -p /opt/project /volumes
 
 COPY --from=project-payload /payload/ /
@@ -66,17 +59,17 @@ RUN mkdir -p /volumes /opt/project \
     && ln -s /volumes/tools /opt/project/tools
 
 FROM base-runtime AS production
+ARG TARGETPLATFORM
 WORKDIR /opt/project
 RUN --mount=type=cache,target=/home/ubuntu/.cache/uv,uid=1000,gid=1000,sharing=locked \
-	ODOO_PYTHON_SYNC_SKIP_ADDONS="${ODOO_PYTHON_SYNC_SKIP_ADDONS}" /usr/local/bin/odoo-python-sync.sh prod
-RUN /bin/bash /volumes/scripts/install_openupgradelib_if_needed.sh
+	TARGETPLATFORM="${TARGETPLATFORM}" /usr/local/bin/odoo-python-sync.sh prod
 WORKDIR /
 USER ubuntu
 
 FROM base-devtools AS development
+ARG TARGETPLATFORM
 WORKDIR /opt/project
 
 RUN --mount=type=cache,target=/home/ubuntu/.cache/uv,uid=1000,gid=1000,sharing=locked \
-	ODOO_PYTHON_SYNC_SKIP_ADDONS="${ODOO_PYTHON_SYNC_SKIP_ADDONS}" /usr/local/bin/odoo-python-sync.sh dev
-RUN /bin/bash /volumes/scripts/install_openupgradelib_if_needed.sh
+	TARGETPLATFORM="${TARGETPLATFORM}" /usr/local/bin/odoo-python-sync.sh dev
 USER ubuntu

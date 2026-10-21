@@ -20,6 +20,7 @@ from pathlib import Path
 from unittest import mock
 
 from odoo_devkit import artifact_inputs, local_runtime
+from odoo_devkit.base_python import BasePythonCatalog
 from odoo_devkit.cli import (
     _handle_runtime_build,
     _handle_runtime_down,
@@ -64,6 +65,14 @@ class RuntimeCommandTests(unittest.TestCase):
             side_effect=self._load_environment_from_explicit_payload,
         )
         self.load_environment_patch.start()
+        catalog_patch = mock.patch(
+            "odoo_devkit.local_runtime.read_base_python_catalogs",
+            side_effect=lambda *, image, platforms: tuple(
+                BasePythonCatalog(image, platform, ("idna==3.11",)) for platform in platforms
+            ),
+        )
+        catalog_patch.start()
+        self.addCleanup(catalog_patch.stop)
 
     def tearDown(self) -> None:
         self.load_environment_patch.stop()
@@ -1253,11 +1262,15 @@ ODOO_DB_PASSWORD = ""
     def test_command_execution_environment_excludes_runtime_payload(self) -> None:
         with mock.patch.dict(
             os.environ,
-            {local_runtime.RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR: '{"environment":{"SECRET":"test-only"}}'},
+            {
+                local_runtime.RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR: '{"environment":{"SECRET":"test-only"}}',
+                "ADDON_CI_SOURCE_TOKEN": "synthetic-git-only",
+            },
         ):
             execution_environment = local_runtime.command_execution_env()
 
         self.assertNotIn(local_runtime.RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR, execution_environment)
+        self.assertNotIn("ADDON_CI_SOURCE_TOKEN", execution_environment)
 
     def test_native_runtime_select_prefers_manifest_mounts_over_runtime_repo_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1370,28 +1383,32 @@ homepage = true
             self.assertEqual(command[-3:], ["up", "-d", "--no-build"])
             self.assertEqual(run_mock.call_args.kwargs["cwd"], runtime_repo_path.resolve())
 
-    def test_native_runtime_build_runs_compose_build_with_no_cache(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            temp_root = Path(temporary_directory)
-            tenant_repo_path = temp_root / "tenant-repo"
-            runtime_repo_path = temp_root / "runtime-repo"
-            tenant_repo_path.mkdir(parents=True, exist_ok=True)
-            self._write_runtime_repo(runtime_repo_path)
-            manifest_path = self._write_manifest(tenant_repo_path=tenant_repo_path, runtime_repo_path=runtime_repo_path)
+    def test_local_build_requires_manifest_base_before_writes_or_registry_access(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            tenant, runtime = root / "tenant", root / "runtime"
+            tenant.mkdir()
+            self._write_runtime_repo(runtime)
+            manifest = load_workspace_manifest(self._write_manifest(tenant_repo_path=tenant, runtime_repo_path=runtime))
+            with mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_base_images") as registry:
+                with self.assertRaisesRegex(local_runtime.RuntimeCommandError, "build"):
+                    local_runtime.build_runtime(manifest=manifest, runtime_repo_path=runtime, no_cache=True)
+            registry.assert_not_called()
+            self.assertFalse((runtime / ".platform/env").exists())
 
-            manifest = load_workspace_manifest(manifest_path)
-
-            with mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_base_images") as ensure_registry_auth:
-                with mock.patch("odoo_devkit.local_runtime.subprocess.run") as run_mock:
-                    run_mock.return_value = mock.Mock(returncode=0)
-                    with contextlib.redirect_stdout(io.StringIO()):
-                        exit_code = run_native_runtime_build(manifest=manifest, no_cache=True)
-
-            self.assertEqual(exit_code, 0)
-            ensure_registry_auth.assert_called_once()
-            command = run_mock.call_args.kwargs.get("args", run_mock.call_args.args[0])
-            self.assertEqual(command[-2:], ["build", "--no-cache"])
-            self.assertEqual(run_mock.call_args.kwargs["cwd"], runtime_repo_path.resolve())
+    def test_local_build_rejects_explicit_legacy_dependency_overrides(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest, _ = self._prepare_artifact_check(root)
+            assert manifest.runtime_repo is not None
+            runtime = manifest.runtime_repo.resolve_path(manifest_directory=manifest.manifest_directory)
+            assert runtime is not None
+            for key in ("ODOO_PYTHON_SYNC_SKIP_ADDONS", "OPENUPGRADELIB_INSTALL_SPEC"):
+                self._configure_publish_runtime_payload(instance="local", environment={key: "legacy"})
+                with mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_base_images") as registry:
+                    with self.assertRaisesRegex(local_runtime.RuntimeCommandError, "locked.*metadata"):
+                        local_runtime.build_runtime(manifest=manifest, runtime_repo_path=runtime, no_cache=False)
+                registry.assert_not_called()
 
     def test_native_runtime_build_rejects_non_local_instance(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1409,6 +1426,107 @@ homepage = true
 
             with self.assertRaisesRegex(ValueError, "requires --instance local"):
                 run_native_runtime_build(manifest=manifest, no_cache=False)
+
+    def test_local_build_derives_the_same_lock_as_artifact_staging(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest, runtime_commit = self._prepare_artifact_check(root)
+            self._configure_publish_runtime_payload(
+                instance="local",
+                environment={
+                    "GITHUB_TOKEN": "synthetic-build-token",
+                    "OPENUPGRADE_ENABLED": "True",
+                    "OPENUPGRADE_ADDON_REPOSITORY": "example/OpenUpgrade@" + "4" * 40,
+                },
+            )
+            tenant_root = manifest.tenant_repo.resolve_path(manifest_directory=manifest.manifest_directory)
+            assert manifest.runtime_repo is not None
+            runtime_root = manifest.runtime_repo.resolve_path(manifest_directory=manifest.manifest_directory)
+            assert tenant_root is not None and runtime_root is not None
+            nested = tenant_root / "addons/opw_custom/static/src/shared/file.js"
+            nested.parent.mkdir(parents=True)
+            nested.write_text("export default 1;\n")
+            (tenant_root / ".gitignore").write_text("*.private\n")
+            (nested.parent / "ignored.private").write_text("synthetic ignored fixture")
+            project = tenant_root / "pyproject.toml"
+            project.write_text(project.read_text().replace("dependencies = []", 'dependencies = ["idna>=3"]', 1))
+            subprocess.run(["uv", "lock", "--no-config"], cwd=tenant_root, check=True, capture_output=True)
+            subprocess.run(["git", "add", "."], cwd=tenant_root, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-qm", "local staging fixture"], cwd=tenant_root, check=True)
+            for repo in (tenant_root, runtime_root):
+                subprocess.run(["git", "remote", "remove", "origin"], cwd=repo, check=True)
+            (tenant_root / "addons/shared").symlink_to(root / "absent-shared", target_is_directory=True)
+            # Exercise the shipped stack through the build boundary, rather than asserting config text.
+            (runtime_root / "platform/stack.toml").write_bytes(
+                (Path(__file__).resolve().parents[1] / "platform/stack.toml").read_bytes()
+            )
+            source_lock = (tenant_root / "uv.lock").read_bytes()
+            catalogs = tuple(
+                BasePythonCatalog("registry.invalid/base@sha256:" + "2" * 64, platform, (f"idna=={version}",))
+                for platform, version in (("linux/amd64", "3.10"), ("linux/arm64", "3.11"))
+            )
+            runtime_values_path = runtime_root / ".platform/env/opw.local.env"
+            overlay = runtime_root / ".platform/env/opw.local.dependencies.json"
+            staged_locks = []
+
+            def execute(*, command: list[str], environment_overrides: dict[str, str], **_kwargs: object) -> None:
+                stage = Path(command[-3]).parent
+                self.assertTrue((stage / "addons/opw_custom/static/src/shared/file.js").is_file())
+                self.assertFalse((stage / "addons/opw_custom/static/src/shared/ignored.private").exists())
+                self.assertEqual(environment_overrides["GITHUB_TOKEN"], "synthetic-build-token")
+                values = local_runtime.parse_env_file(runtime_values_path)
+                self.assertEqual(values["ODOO_PYTHON_SYNC_SKIP_ADDONS"], "")
+                self.assertNotIn("OPENUPGRADELIB_INSTALL_SPEC", values)
+                staged_locks.append((stage / "project/uv.lock").read_bytes())
+
+            with (
+                mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_base_images"),
+                mock.patch("odoo_devkit.local_runtime.resolve_image_digest", return_value="sha256:" + "2" * 64),
+                mock.patch("odoo_devkit.local_runtime.read_base_python_catalogs", return_value=catalogs),
+                mock.patch(
+                    "odoo_devkit.local_runtime.run_command", side_effect=local_runtime.RuntimeCommandError("fixture build failed")
+                ) as command,
+            ):
+                with self.assertRaises(local_runtime.RuntimeCommandError):
+                    local_runtime.build_runtime(manifest=manifest, runtime_repo_path=runtime_root, no_cache=True)
+                self.assertFalse(overlay.exists())
+                command.side_effect = execute
+                local_runtime.build_runtime(manifest=manifest, runtime_repo_path=runtime_root, no_cache=True)
+            self.assertTrue(overlay.is_file())
+            self.assertFalse(any((runtime_root / ".platform/dependencies").rglob("build-*")))
+            tenant_source = local_runtime.GitSourceSnapshot(
+                "tenant",
+                tenant_root,
+                "example/tenant-repo",
+                subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=tenant_root, text=True).strip(),
+            )
+            runtime_source = local_runtime.GitSourceSnapshot("runtime", runtime_root, "example/runtime-repo", runtime_commit)
+            staged = local_runtime.stage_artifact_build_context(
+                manifest=manifest,
+                runtime_repo_path=runtime_root,
+                staged_context_root=root / "artifact",
+                tenant_source=tenant_source,
+                runtime_source=runtime_source,
+                shared_addons_source=None,
+                catalogs=catalogs,
+            )
+            self.assertEqual(hashlib.sha256(staged_locks[0]).hexdigest(), staged.tenant_lock_sha256)
+            self.assertEqual((tenant_root / "uv.lock").read_bytes(), source_lock)
+            self.assertNotEqual(staged.tenant_lock_sha256, hashlib.sha256(source_lock).hexdigest())
+
+    def test_host_catalog_auth_uses_the_same_resolved_environment_as_local_build(self) -> None:
+        from odoo_devkit.dependency_workspace import manifest_base_python_catalogs
+
+        with tempfile.TemporaryDirectory() as temporary:
+            manifest, _ = self._prepare_artifact_check(Path(temporary))
+            self._configure_publish_runtime_payload(instance="local", environment={"GHCR_READ_TOKEN": "synthetic-read-token"})
+            with (
+                mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_base_images") as registry,
+                mock.patch("odoo_devkit.local_runtime.resolve_image_digest", return_value="sha256:" + "2" * 64),
+                mock.patch("odoo_devkit.base_python.read_base_python_catalogs", return_value=()),
+            ):
+                manifest_base_python_catalogs(manifest)
+            self.assertEqual(registry.call_args.args[0]["GHCR_READ_TOKEN"], "synthetic-read-token")
 
     def _prepare_artifact_check(self, temp_root: Path) -> tuple[WorkspaceManifest, str]:
         tenant_root = self._create_git_repo(temp_root / "tenant-repo")
