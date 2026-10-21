@@ -20,7 +20,7 @@ It fails on comments and docstrings the commit adds to Python files outside the
 exceptions in
 [Names Instead Of Comments](https://github.com/cbusillo/codex-skills/blob/main/skills/references/python-odoo-style.md#names-instead-of-comments).
 Run it locally with
-`uv run --no-project <codex-skills>/scripts/check_new_comments.py --repo . --base origin/main`.
+`uv run --no-project <codex-skills>/scripts/check_new_comments.py --repo . --base "$(git merge-base origin/main HEAD)"`.
 
 The runner installs all installable owned addons, including ones without tests,
 and selects tests by the owned module names. Shared addons are installed as
