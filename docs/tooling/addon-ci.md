@@ -15,8 +15,11 @@ tenant dependencies without selecting their tests again. Test discovery remains
 Odoo's responsibility. Browser suites use the image's Chromium plus the locked
 CI-only `websocket-client` dependency catalog in `docker/addon-tests`.
 
-Runtime-support, CI-only and tenant locks are checked offline and exported with
-frozen semantics. The test image extends the
+Runtime-support, CI-only and tenant metadata are staged from their source locks,
+constrained by the exact published base's baked Python catalog, and relocked
+without broad upgrades. Source files stay unchanged. The derived locks are
+checked offline and exported with frozen semantics. The test image builds FROM
+that same immutable digest and extends the
 base Python environment additively, constraining every installed base package
 to its existing version, and checks the final environment. A dependency conflict
 fails the build instead of replacing a base-owned package. External source

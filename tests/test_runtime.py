@@ -20,6 +20,7 @@ from pathlib import Path
 from unittest import mock
 
 from odoo_devkit import artifact_inputs, local_runtime
+from odoo_devkit.base_python import BasePythonCatalog
 from odoo_devkit.cli import (
     _handle_runtime_build,
     _handle_runtime_down,
@@ -64,6 +65,14 @@ class RuntimeCommandTests(unittest.TestCase):
             side_effect=self._load_environment_from_explicit_payload,
         )
         self.load_environment_patch.start()
+        catalog_patch = mock.patch(
+            "odoo_devkit.local_runtime.read_base_python_catalogs",
+            side_effect=lambda *, image, platforms: tuple(
+                BasePythonCatalog(image, platform, ("idna==3.11",)) for platform in platforms
+            ),
+        )
+        catalog_patch.start()
+        self.addCleanup(catalog_patch.stop)
 
     def tearDown(self) -> None:
         self.load_environment_patch.stop()
@@ -1409,6 +1418,51 @@ homepage = true
 
             with self.assertRaisesRegex(ValueError, "requires --instance local"):
                 run_native_runtime_build(manifest=manifest, no_cache=False)
+
+    def test_local_build_derives_the_same_lock_as_artifact_staging(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest, _commit = self._prepare_artifact_check(root)
+            self._configure_publish_runtime_payload(instance="local")
+            tenant_root = manifest.tenant_repo.resolve_path(manifest_directory=manifest.manifest_directory)
+            assert manifest.runtime_repo is not None
+            runtime_root = manifest.runtime_repo.resolve_path(manifest_directory=manifest.manifest_directory)
+            assert tenant_root is not None and runtime_root is not None
+            source_lock = (tenant_root / "uv.lock").read_bytes()
+            with (
+                mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_base_images"),
+                mock.patch("odoo_devkit.local_runtime.resolve_image_digest", return_value="sha256:" + "2" * 64),
+                mock.patch("odoo_devkit.local_runtime.run_command") as command,
+            ):
+                local_runtime.build_runtime(manifest=manifest, runtime_repo_path=runtime_root, no_cache=True)
+            command_args = command.call_args.kwargs["command"]
+            self.assertEqual(command_args[-2:], ["build", "--no-cache"])
+            local_root = next((runtime_root / ".platform/dependencies").iterdir())
+            local_lock = (local_root / "project/uv.lock").read_bytes()
+            tenant_source = local_runtime.GitSourceSnapshot(
+                "tenant",
+                tenant_root,
+                "example/tenant-repo",
+                subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=tenant_root, text=True).strip(),
+            )
+            runtime_source = local_runtime.GitSourceSnapshot("runtime", runtime_root, "example/runtime-repo", _commit)
+            catalogs = local_runtime.read_base_python_catalogs(
+                image="registry.invalid/base@sha256:" + "2" * 64, platforms=("linux/arm64",)
+            )
+            staged = local_runtime.stage_artifact_build_context(
+                manifest=manifest,
+                runtime_repo_path=runtime_root,
+                staged_context_root=root / "artifact",
+                tenant_source=tenant_source,
+                runtime_source=runtime_source,
+                shared_addons_source=None,
+                catalogs=catalogs,
+            )
+            self.assertEqual(hashlib.sha256(local_lock).hexdigest(), staged.tenant_lock_sha256)
+            self.assertEqual((tenant_root / "uv.lock").read_bytes(), source_lock)
+            assert staged.lock_derivation is not None
+            self.assertEqual(staged.lock_derivation["source_tenant_lock_sha256"], hashlib.sha256(source_lock).hexdigest())
+            self.assertNotEqual(staged.tenant_lock_sha256, staged.lock_derivation["source_tenant_lock_sha256"])
 
     def _prepare_artifact_check(self, temp_root: Path) -> tuple[WorkspaceManifest, str]:
         tenant_root = self._create_git_repo(temp_root / "tenant-repo")

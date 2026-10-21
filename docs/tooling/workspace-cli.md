@@ -240,6 +240,48 @@ Purpose
   export write fails. Tenant manifests, addon metadata, shared-addon sources,
   and CI workflows remain owned by their existing repositories.
 
+### Image-owned Python versions
+
+When `[build].base_runtime_image` is configured, normalization also resolves
+that published image to an immutable digest and reads its baked
+`/opt/launchplane/base-python-constraints.txt` for the host's corresponding
+Linux architecture. It never reconstructs this catalog from a tenant image.
+Missing catalogs and conflicting tenant requirements fail with the base digest
+and resolver's package details.
+
+The shared staging resolver merges all base entries into root
+`tool.uv.constraint-dependencies`, retaining tenant constraints and addon
+requirements. It starts from each source lock and runs ordinary `uv lock`
+without broad upgrades. Generated constraints stay in staging. The canonical
+source lock still describes the source pyproject; it need not change when a
+compatible base package moves. Frozen exports and installations use the
+derived lock, including support/runtime and addon-test catalogs.
+
+For a host environment, use `dependencies normalize --output-dir <empty-dir>`
+and then `uv sync --frozen --project <empty-dir>`. With a configured base the
+output contains the complete derived metadata workspace and frozen export,
+not only `tenant-requirements.txt`. Its constraints also apply to declared host
+overlaps, while platform markers keep Linux-only requirements out of a macOS
+environment. Source-only `dependencies inspect/check` remain offline source
+contract checks; normalization and image consumers additionally qualify the
+selected base. Normalization's JSON separates the source lock hash from the
+effective artifacts and records the exact catalog identity.
+
+Local `runtime build` stages the same support and tenant locks for
+`docker/Dockerfile`. Its ignored `.platform/dependencies` state and per-runtime
+Compose overlay keep those derived root files mounted during local use. Local
+source edits remain allowed; their Git markers identify the baseline and are
+not a publish handoff. Addon CI derives temporary locks from the exact image it
+builds FROM. Artifact builds use the same resolver with immutable committed
+source snapshots and the exact resolved base digest for every target platform.
+Different architecture catalogs receive architecture markers in the universal
+lock. No checked-in base package list is authoritative.
+
+The layered installer's inherited-package refusal and final environment
+validation remain independent checks. Generated constraints are ordinary
+constraints, never overrides; they cannot make an explicit incompatible
+tenant or addon requirement acceptable.
+
 ## `workspace scaffold-cockpit-root`
 
 Purpose
@@ -623,8 +665,14 @@ Notes
   includes base-image/build-tool provenance, both uv locks, per-platform exact
   Python package inventories, and external compatibility descriptors.
 - The artifact path uses `docker/artifact.Dockerfile`; local Compose continues
-  to use `docker/Dockerfile`. Support lock evidence identifies
-  `docker/runtime-python/uv.lock`, and nested shared-addon source markers keep
+  to use `docker/Dockerfile`. In dependency provenance, each lock's repository,
+  source ref and path identify its source inputs (`docker/runtime-python/uv.lock`
+  or tenant `uv.lock`); its hash attests the exact derived bytes installed in the
+  image, not the original committed blob. The existing build-flags values map
+  carries `base_python_lock_derivation` as JSON, recording both source and
+  effective lock hashes and immutable platform catalogs. Build-only JSON exposes
+  the same receipt directly. This keeps the artifact schema unchanged while
+  making the transformation explicit. Nested shared-addon source markers keep
   installed shared distributions attributed to the shared repository commit.
 - Publish does not mutate `/venv` after dependency evidence is written. An
   OpenUpgrade or other Python dependency must be represented by the locked

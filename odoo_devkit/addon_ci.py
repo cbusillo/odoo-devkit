@@ -8,6 +8,7 @@ import base64
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import time
@@ -17,6 +18,8 @@ from pathlib import Path
 from typing import Literal, TypedDict
 
 from .artifact_inputs import effective_artifact_input_sources, load_artifact_inputs_definition
+from .base_python import native_base_platform, read_base_python_catalogs
+from .dependency_workspace import derive_base_python_lock, stage_publishable_dependency_workspace
 from .manifest import load_workspace_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -99,13 +102,26 @@ def fetch_source(args: list[str], *, capture: bool = False) -> subprocess.Comple
 
 
 def build_test_image(image: str, tenant: Path | None, context: Path, tag: str) -> None:
-    catalogs = [ROOT / "docker" / "runtime-python", ROOT / "docker" / "addon-tests"]
+    from .local_runtime import resolve_image_digest, split_image_reference
+
+    repository, _ = split_image_reference(image)
+    image = f"{repository}@{resolve_image_digest(image)}"
+    base_catalogs = read_base_python_catalogs(image=image, platforms=(native_base_platform(),))
+    catalogs = []
+    for name in ("runtime-python", "addon-tests"):
+        staged = context / name
+        shutil.copytree(ROOT / "docker" / name, staged)
+        catalogs.append(staged)
     python_requirement = tomllib.loads((catalogs[1] / "pyproject.toml").read_text())["project"]["requires-python"]
     command(["uv", "python", "install", python_requirement])
     if tenant is not None:
-        catalogs.append(tenant)
+        manifest = load_workspace_manifest(tenant / "workspace.toml")
+        staged = context / "tenant"
+        stage_publishable_dependency_workspace(manifest=manifest, destination_root=staged, committed=False)
+        catalogs.append(staged)
     requirements = []
     for catalog in catalogs:
+        derive_base_python_lock(staged_root=catalog, catalogs=base_catalogs, python_version=python_requirement)
         command(["uv", "lock", "--project", str(catalog), "--check", "--offline", "--no-config"])
         requirements.append(
             command(

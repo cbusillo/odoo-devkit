@@ -303,6 +303,10 @@ launchplane#2602.
 real build context, requires clean git worktrees for the repos it captures,
 pushes the resulting image, resolves the pushed digest, and emits a
 control-plane-compatible artifact manifest JSON file.
+Dependency consumers read the published base's baked Python catalog and derive
+staged support/tenant locks automatically, preserving source locks and genuine
+version conflicts. Local builds, addon CI and host normalization use the same
+resolver; see [image-owned versions](docs/tooling/workspace-cli.md#image-owned-python-versions).
 Runtime startup, upgrade and shell commands expose packaged addon groups under
 the configured project addon root, including the shared addons staged in
 `/opt/project/addons/shared`. An inherited explicit addon path therefore sees

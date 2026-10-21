@@ -33,8 +33,10 @@ from .artifact_provenance import (
     normalize_git_commit,
     normalize_repository_identity,
 )
+from .base_python import BasePythonCatalog, native_base_platform, read_base_python_catalogs
 from .dependency_workspace import (
     DependencyWorkspaceError,
+    derive_base_python_lock,
     require_staged_build_requirements_supplied,
     require_staged_dependency_workspace_current,
     stage_publishable_dependency_workspace,
@@ -451,6 +453,7 @@ class StagedArtifactContext:
     file_hashes: dict[str, str]
     support_lock_sha256: str
     tenant_lock_sha256: str
+    lock_derivation: dict[str, object] | None = None
 
 
 class RuntimeCommandError(ValueError):
@@ -555,6 +558,62 @@ def build_runtime(*, manifest: WorkspaceManifest, runtime_repo_path: Path, no_ca
         )
     )
     compose_command = compose_base_command(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file)
+    if manifest.build.base_runtime_image:
+        values = build_runtime_env_values(runtime_context=runtime_context)
+        values.update(manifest_build_values(manifest, required=True))
+        platform = native_base_platform()
+        for key in ("ODOO_BASE_RUNTIME_IMAGE", "ODOO_BASE_DEVTOOLS_IMAGE"):
+            repository, _ = split_image_reference(values[key])
+            values[key] = f"{repository}@{resolve_image_digest(values[key])}"
+        catalogs = read_base_python_catalogs(image=values["ODOO_BASE_RUNTIME_IMAGE"], platforms=(platform,))
+        state_root = runtime_repo_path / ".platform" / "dependencies"
+        state_root.mkdir(parents=True, exist_ok=True)
+        staged_root = Path(tempfile.mkdtemp(prefix="build-", dir=state_root))
+        shutil.copytree(runtime_repo_path / "docker", staged_root / "docker")
+        shutil.copytree(runtime_repo_path / "platform" / "config", staged_root / "platform" / "config")
+        shutil.copytree(runtime_repo_path / "docker" / "runtime-python", staged_root / "runtime")
+        stage_publishable_dependency_workspace(
+            manifest=manifest, destination_root=staged_root / "project", committed=False, catalogs=catalogs
+        )
+        derive_base_python_lock(
+            staged_root=staged_root / "runtime", catalogs=catalogs, python_version=manifest.workspace.python_version
+        )
+        (staged_root / "runtime" / DEPENDENCY_LAYOUT_MARKER_FILE).write_text("2\n", encoding="utf-8")
+        tenant_root = manifest.tenant_repo.resolve_path(manifest_directory=manifest.manifest_directory)
+        assert tenant_root is not None
+        shutil.copytree(tenant_root / "addons", staged_root / "addons", ignore=shutil.ignore_patterns("shared"))
+        shared_root = resolve_manifest_shared_addons_repo_path(manifest=manifest)
+        if shared_root is not None:
+            shutil.copytree(shared_root, staged_root / "addons" / "shared", ignore=shutil.ignore_patterns(".git", ".venv"))
+        for staged, source, lock_path in (
+            (staged_root / "runtime", runtime_repo_path, "docker/runtime-python/uv.lock"),
+            (staged_root / "project", tenant_root, "uv.lock"),
+            *(([(staged_root / "addons" / "shared", shared_root, None)]) if shared_root is not None else []),
+        ):
+            # Local sources may be dirty; this baseline attribution is never a release handoff.
+            commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip()
+            origin = subprocess.check_output(["git", "config", "--get", "remote.origin.url"], cwd=source, text=True).strip()
+            snapshot = GitSourceSnapshot("local", source, normalize_repository_identity(origin), commit)
+            write_dependency_source_marker(staged, source=snapshot, lock_path=lock_path)
+        services: dict[str, dict[str, object]] = {
+            "web": {
+                "build": {
+                    "context": str(staged_root),
+                    "dockerfile": "docker/Dockerfile",
+                    "target": values["COMPOSE_BUILD_TARGET"],
+                    "args": {key: values.get(key, "") for key in ARTIFACT_PUBLISH_BUILD_ARG_KEYS},
+                }
+            },
+        }
+        for service in ("web", "script-runner"):
+            services.setdefault(service, {})["volumes"] = [
+                f"{staged_root / 'project' / 'pyproject.toml'}:/opt/project/pyproject.toml:ro",
+                f"{staged_root / 'project' / 'uv.lock'}:/opt/project/uv.lock:ro",
+                f"{staged_root / 'runtime'}:/opt/runtime:ro",
+            ]
+        overlay_path = runtime_env_file.with_suffix(".dependencies.json")
+        overlay_path.write_text(json.dumps({"services": services}), encoding="utf-8")
+        compose_command = compose_base_command(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file)
     build_command = compose_command + ["build"]
     if no_cache:
         build_command.append("--no-cache")
@@ -656,6 +715,10 @@ def publish_runtime_artifact(
         "ODOO_BASE_RUNTIME_IMAGE": runtime_base_provenance.digest_reference,
         "ODOO_BASE_DEVTOOLS_IMAGE": devtools_base_provenance.digest_reference,
     }
+    try:
+        base_catalogs = read_base_python_catalogs(image=runtime_base_provenance.digest_reference, platforms=normalized_platforms)
+    except ValueError as error:
+        raise RuntimeCommandError(str(error)) from error
 
     build_environment = command_execution_env()
     github_token = resolve_github_token_for_build(runtime_values)
@@ -677,6 +740,7 @@ def publish_runtime_artifact(
             tenant_source=tenant_source,
             runtime_source=runtime_source,
             shared_addons_source=shared_addons_source,
+            catalogs=base_catalogs,
         )
         inventory_sources: list[dict[str, object]] = [
             {
@@ -871,6 +935,7 @@ def publish_runtime_artifact(
                 "support_lock_sha256": staged_context.support_lock_sha256,
                 "tenant_lock_sha256": staged_context.tenant_lock_sha256,
                 "dependency_provenance": dependency_provenance,
+                "base_python_lock_derivation": staged_context.lock_derivation,
             }
             check_output_file = None if output_file is None else output_file.expanduser().resolve()
             if check_output_file is not None:
@@ -901,6 +966,7 @@ def publish_runtime_artifact(
         dependency_provenance=dependency_provenance,
         odoo_version=runtime_values.get("ODOO_VERSION", ""),
         release_compatibility=release_inventory,
+        lock_derivation=staged_context.lock_derivation,
     )
 
     normalized_output_file = None if output_file is None else output_file.expanduser().resolve()
@@ -2512,6 +2578,7 @@ def stage_artifact_build_context(
     tenant_source: GitSourceSnapshot,
     runtime_source: GitSourceSnapshot,
     shared_addons_source: GitSourceSnapshot | None,
+    catalogs: tuple[BasePythonCatalog, ...] = (),
 ) -> StagedArtifactContext:
     tenant_repo_path = manifest.tenant_repo.resolve_path(manifest_directory=manifest.manifest_directory)
     if tenant_repo_path is None or not tenant_repo_path.exists():
@@ -2540,6 +2607,7 @@ def stage_artifact_build_context(
         destination_path=staged_context_root / "runtime",
         label="runtime Python dependency catalog",
     )
+    source_support_sha256 = sha256_file(staged_context_root / "runtime" / "uv.lock")
     try:
         stage_publishable_dependency_workspace(
             manifest=manifest,
@@ -2547,6 +2615,10 @@ def stage_artifact_build_context(
             tenant_commit=tenant_source.commit,
             shared_addons_commit=shared_addons_source.commit if shared_addons_source is not None else None,
         )
+        source_tenant_sha256 = sha256_file(staged_context_root / "project" / "uv.lock")
+        if catalogs:
+            for root in (staged_context_root / "runtime", staged_context_root / "project"):
+                derive_base_python_lock(staged_root=root, catalogs=catalogs, python_version=manifest.workspace.python_version)
     except DependencyWorkspaceError as error:
         raise RuntimeCommandError(str(error)) from error
     (staged_context_root / "runtime" / DEPENDENCY_LAYOUT_MARKER_FILE).write_text("2\n", encoding="utf-8")
@@ -2604,6 +2676,20 @@ def stage_artifact_build_context(
         file_hashes=snapshot_staged_artifact_files(staged_context_root),
         support_lock_sha256=sha256_file(support_lock_path),
         tenant_lock_sha256=sha256_file(tenant_lock_path),
+        lock_derivation=(
+            {
+                "source_support_lock_sha256": source_support_sha256,
+                "source_tenant_lock_sha256": source_tenant_sha256,
+                "effective_support_lock_sha256": sha256_file(support_lock_path),
+                "effective_tenant_lock_sha256": sha256_file(tenant_lock_path),
+                "catalogs": [
+                    {"image": catalog.image, "platform": catalog.platform, "requirements": list(catalog.requirements)}
+                    for catalog in catalogs
+                ],
+            }
+            if catalogs
+            else None
+        ),
     )
 
 
@@ -3389,6 +3475,7 @@ def build_runtime_artifact_manifest_payload(
     dependency_provenance: dict[str, object],
     odoo_version: str,
     release_compatibility: dict[str, object] | None = None,
+    lock_derivation: dict[str, object] | None = None,
 ) -> dict[str, object]:
     artifact_id = f"artifact-{context_name}-{image_digest.removeprefix('sha256:')[:16]}"
     build_flag_values = {
@@ -3396,6 +3483,8 @@ def build_runtime_artifact_manifest_payload(
         "odoo_version": odoo_version,
         "runtime_repo": runtime_repo_name,
     }
+    if lock_derivation is not None:
+        build_flag_values["base_python_lock_derivation"] = json.dumps(lock_derivation, sort_keys=True, separators=(",", ":"))
     normalized_selectors: list[dict[str, str]] = []
     for selector_entry in source_selector_entries:
         try:
@@ -3564,6 +3653,9 @@ def compose_base_command(*, runtime_repo_path: Path, runtime_env_file: Path) -> 
     optional_override_file = runtime_repo_path / "docker-compose.override.yml"
     if optional_override_file.exists():
         compose_files.append(optional_override_file)
+    dependency_overlay = runtime_env_file.with_suffix(".dependencies.json")
+    if dependency_overlay.exists():
+        compose_files.append(dependency_overlay)
     missing_files = [compose_file for compose_file in compose_files if not compose_file.exists()]
     if missing_files:
         missing_display = ", ".join(str(compose_file) for compose_file in missing_files)

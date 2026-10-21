@@ -129,7 +129,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-dir",
         type=Path,
         default=None,
-        help="Retain tenant-requirements.txt in this directory",
+        help="Retain the frozen export and, when a base is configured, a derived host workspace in an empty directory",
     )
     dependencies_normalize_parser.set_defaults(handler=_handle_dependencies_normalize)
 

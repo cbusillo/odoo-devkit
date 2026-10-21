@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 from odoo_devkit import dependency_workspace
+from odoo_devkit.base_python import BasePythonCatalog
 from odoo_devkit.cli import build_parser
 from odoo_devkit.dependency_workspace import (
     inspect_dependency_workspace,
@@ -764,6 +765,29 @@ class DependencyWorkspaceTests(unittest.TestCase):
             self.assertEqual(tomllib.loads(first_lock_bytes.decode())["requires-python"], f">={manifest.workspace.python_version}")
             self.assertEqual((tenant_repo_path / "uv.lock").read_bytes(), first_lock_bytes)
             self.assertEqual((output_directory / "tenant-requirements.txt").read_bytes(), first_export_bytes)
+
+    def test_base_normalization_retains_a_host_workspace_without_copying_generated_constraints_to_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            tenant = root / "tenant"
+            self._write_member_pyproject(tenant / "addons" / "tenant_addon", dependencies=("idna>=3",))
+            self._write_root_workspace(tenant_repo_path=tenant, members=("addons/tenant_addon",))
+            (tenant / "uv.lock").unlink()
+            subprocess.run(["uv", "lock", "--no-config"], cwd=tenant, check=True, capture_output=True)
+            self._commit_repo(tenant)
+            manifest = self._write_manifest(temp_root=root, tenant_repo_path=tenant)
+            source_metadata = (tenant / "pyproject.toml").read_bytes()
+            source_lock = (tenant / "uv.lock").read_bytes()
+            catalog = BasePythonCatalog("registry.invalid/base@sha256:" + "e" * 64, "linux/arm64", ("idna==3.10",))
+            output = root / "effective"
+            with mock.patch("odoo_devkit.dependency_workspace.manifest_base_python_catalogs", return_value=(catalog,)):
+                result = normalize_dependency_workspace(manifest=manifest, output_directory=output)
+            self.assertEqual((tenant / "pyproject.toml").read_bytes(), source_metadata)
+            self.assertEqual((tenant / "uv.lock").read_bytes(), source_lock)
+            self.assertNotEqual((output / "uv.lock").read_bytes(), source_lock)
+            self.assertIn(catalog.requirements[0], (output / "tenant-requirements.txt").read_text())
+            self.assertEqual(result.provenance["source_lock_sha256"], hashlib.sha256(source_lock).hexdigest())
+            subprocess.run(["uv", "sync", "--frozen", "--no-config"], cwd=output, check=True, capture_output=True)
 
     def test_normalize_is_idempotent_for_a_current_lock(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory_name:

@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 from urllib.parse import urlsplit
 
+from .base_python import PLATFORM_MACHINES, BasePythonCatalog
 from .manifest import WorkspaceManifest
 
 DependencyProjectOwner = Literal["tenant", "shared_addons"]
@@ -58,6 +61,67 @@ class DependencyWorkspaceError(ValueError):
     pass
 
 
+def derive_base_python_lock(*, staged_root: Path, catalogs: tuple[BasePythonCatalog, ...], python_version: str) -> None:
+    """Constrain a staged root and resolve from its source lock, without upgrades."""
+    if not catalogs:
+        raise DependencyWorkspaceError("Base-derived locking requires an image-owned Python catalog")
+    by_platform: dict[str, tuple[str, ...]] = {}
+    for catalog in catalogs:
+        previous = by_platform.setdefault(catalog.platform, catalog.requirements)
+        if previous != catalog.requirements:
+            raise DependencyWorkspaceError(f"Base Python catalogs disagree for {catalog.image} ({catalog.platform})")
+    payload = _load_pyproject(staged_root / "pyproject.toml")
+    config = payload.setdefault("tool", {}).setdefault("uv", {})
+    constraints = list(config.get("constraint-dependencies", []))
+    requirements = sorted({requirement for values in by_platform.values() for requirement in values})
+    for requirement in requirements:
+        selected = [platform for platform, values in by_platform.items() if requirement in values]
+        if len(selected) == len(by_platform):
+            constraints.append(requirement)
+        else:
+            markers = [f"platform_machine == '{machine}'" for platform in selected for machine in PLATFORM_MACHINES[platform]]
+            constraints.append(requirement + "; " + " or ".join(markers))
+    config["constraint-dependencies"] = list(dict.fromkeys(constraints))
+    # Only staged metadata is serialized. The source pyproject remains untouched.
+    (staged_root / "pyproject.toml").write_text(
+        "\n".join(f"{json.dumps(key)} = {_toml_value(value)}" for key, value in payload.items()) + "\n", encoding="utf-8"
+    )
+    try:
+        _run_uv_lock(staged_root=staged_root, python_version=python_version)
+    except DependencyWorkspaceError as error:
+        bases = ", ".join(f"{catalog.image} ({catalog.platform})" for catalog in catalogs)
+        raise DependencyWorkspaceError(f"Cannot derive dependency lock against base {bases}: {error}") from error
+
+
+def _toml_value(value: Any) -> str:
+    if isinstance(value, dict):
+        return "{" + ", ".join(f"{json.dumps(key)} = {_toml_value(item)}" for key, item in value.items()) + "}"
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
+    if isinstance(value, (str, int, float, bool)):
+        return json.dumps(value, ensure_ascii=False)
+    raise DependencyWorkspaceError(f"Unsupported staged dependency metadata value: {type(value).__name__}")
+
+
+def manifest_base_python_catalogs(manifest: WorkspaceManifest) -> tuple[BasePythonCatalog, ...]:
+    from .base_python import native_base_platform, read_base_python_catalogs
+    from .local_runtime import (
+        ensure_registry_auth_for_base_images,
+        manifest_build_values,
+        resolve_image_digest,
+        split_image_reference,
+    )
+
+    values = manifest_build_values(manifest)
+    image = values.get("ODOO_BASE_RUNTIME_IMAGE")
+    if not image:
+        return ()
+    ensure_registry_auth_for_base_images(values)
+    repository, _ = split_image_reference(image)
+    immutable = f"{repository}@{resolve_image_digest(image)}"
+    return read_base_python_catalogs(image=immutable, platforms=(native_base_platform(),))
+
+
 class DependencyNormalizationInput(TypedDict):
     owner: str
     path: str
@@ -92,6 +156,8 @@ class DependencyNormalizationProvenance(TypedDict):
     source: DependencyNormalizationSource
     tool: DependencyNormalizationTool
     artifacts: list[DependencyNormalizationArtifact]
+    base_python_catalogs: NotRequired[list[dict[str, object]]]
+    source_lock_sha256: NotRequired[str]
 
 
 @dataclass(frozen=True)
@@ -358,6 +424,7 @@ def normalize_dependency_workspace(
         tenant_repo_path=tenant_repo_path,
         project_inputs=project_inputs,
     )
+    base_catalogs = manifest_base_python_catalogs(manifest)
 
     with tempfile.TemporaryDirectory(prefix="odoo-dependency-normalize-") as temporary_directory_name:
         staged_root = Path(temporary_directory_name)
@@ -401,8 +468,28 @@ def normalize_dependency_workspace(
                 _atomic_write_bytes(path=tenant_lock_path, content=normalized_lock_bytes)
                 lock_replaced = True
             inspection = require_publishable_dependency_workspace(manifest=manifest)
+            if base_catalogs:
+                derive_base_python_lock(
+                    staged_root=staged_root, catalogs=base_catalogs, python_version=manifest.workspace.python_version
+                )
+                _write_frozen_dependency_export(staged_root=staged_root, export_path=export_path)
+                provenance["source_lock_sha256"] = hashlib.sha256(normalized_lock_bytes).hexdigest()
+                provenance["base_python_catalogs"] = [
+                    {"image": catalog.image, "platform": catalog.platform, "requirements": list(catalog.requirements)}
+                    for catalog in base_catalogs
+                ]
+                effective_artifacts: list[DependencyNormalizationArtifact] = [
+                    {"path": "uv.lock", "sha256": _sha256_file(staged_root / "uv.lock")},
+                    {"path": "tenant-requirements.txt", "sha256": _sha256_file(export_path)},
+                ]
+                provenance["artifacts"] = effective_artifacts
             if output_directory is not None:
-                retained_export_path = output_directory.expanduser().resolve() / "tenant-requirements.txt"
+                retained_root = output_directory.expanduser().resolve()
+                if base_catalogs:
+                    if retained_root.exists() and any(retained_root.iterdir()):
+                        raise DependencyWorkspaceError("Base-derived dependency output directory must be empty")
+                    shutil.copytree(staged_root, retained_root, dirs_exist_ok=True)
+                retained_export_path = retained_root / "tenant-requirements.txt"
                 _atomic_write_bytes(path=retained_export_path, content=export_path.read_bytes())
         except BaseException as error:
             if lock_replaced:
@@ -427,6 +514,8 @@ def stage_publishable_dependency_workspace(
     destination_root: Path,
     tenant_commit: str | None = None,
     shared_addons_commit: str | None = None,
+    catalogs: tuple[BasePythonCatalog, ...] = (),
+    committed: bool = True,
 ) -> DependencyWorkspaceInspection:
     inspection = require_publishable_dependency_workspace(manifest=manifest)
     tenant_repo_path = manifest.tenant_repo.resolve_path(manifest_directory=manifest.manifest_directory)
@@ -437,16 +526,20 @@ def stage_publishable_dependency_workspace(
     if destination_root.exists() and any(destination_root.iterdir()):
         raise DependencyWorkspaceError("Dependency workspace staging destination must be empty")
     destination_root.mkdir(parents=True, exist_ok=True)
-    source_commits = {
-        tenant_repo_path: tenant_commit or _git_head_commit(tenant_repo_path),
-        **(
-            {
-                shared_addons_repo_path: shared_addons_commit or _git_head_commit(shared_addons_repo_path),
-            }
-            if shared_addons_repo_path is not None
-            else {}
-        ),
-    }
+    source_commits = (
+        {
+            tenant_repo_path: tenant_commit or _git_head_commit(tenant_repo_path),
+            **(
+                {
+                    shared_addons_repo_path: shared_addons_commit or _git_head_commit(shared_addons_repo_path),
+                }
+                if shared_addons_repo_path is not None
+                else {}
+            ),
+        }
+        if committed
+        else None
+    )
     _stage_dependency_directory_layout(
         tenant_repo_path=tenant_repo_path,
         shared_addons_repo_path=shared_addons_repo_path,
@@ -463,6 +556,8 @@ def stage_publishable_dependency_workspace(
         staged_root=destination_root,
         source_commits=source_commits,
     )
+    if catalogs:
+        derive_base_python_lock(staged_root=destination_root, catalogs=catalogs, python_version=manifest.workspace.python_version)
     return inspection
 
 
@@ -1128,7 +1223,8 @@ def _uv_command_env() -> dict[str, str]:
     environment = {
         key: value
         for key, value in os.environ.items()
-        if not key.startswith(("PIP_", "UV_")) and key not in {"PYTHONPATH", "VIRTUAL_ENV"}
+        if not key.startswith(("PIP_", "UV_"))
+        and key not in {"PYTHONPATH", "VIRTUAL_ENV", "ADDON_CI_SOURCE_TOKEN", "ODOO_DEVKIT_RUNTIME_ENVIRONMENT_JSON"}
     }
     environment["UV_NO_PROGRESS"] = "1"
     return environment
