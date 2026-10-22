@@ -22,6 +22,7 @@ from odoo_devkit.dependency_workspace import (
     stage_publishable_dependency_workspace,
 )
 from odoo_devkit.manifest import WorkspaceManifest, load_workspace_manifest
+from tests.git_fixture import commit_fixture_repository, init_fixture_repository
 
 
 class DependencyWorkspaceTests(unittest.TestCase):
@@ -1078,11 +1079,8 @@ class DependencyWorkspaceTests(unittest.TestCase):
 
     @staticmethod
     def _commit_repo(repo_path: Path) -> None:
-        subprocess.run(["git", "init", "-q"], cwd=repo_path, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.email", "tests@example.invalid"], cwd=repo_path, check=True)
-        subprocess.run(["git", "config", "user.name", "Tests"], cwd=repo_path, check=True)
-        subprocess.run(["git", "add", "."], cwd=repo_path, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-q", "-m", "dependency workspace"], cwd=repo_path, check=True)
+        init_fixture_repository(repo_path)
+        commit_fixture_repository(repo_path, "dependency workspace")
 
     @staticmethod
     def _write_manifest(

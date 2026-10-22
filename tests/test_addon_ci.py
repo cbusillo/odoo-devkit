@@ -11,6 +11,7 @@ from odoo_devkit import addon_ci
 from odoo_devkit.addon_ci import command, discover_addons, fetch_source, test_result
 from odoo_devkit.base_python import BasePythonCatalog
 from odoo_devkit.dependency_workspace import derive_base_python_lock
+from tests.git_fixture import commit_fixture_repository, init_fixture_repository
 
 
 class AddonCiTests(unittest.TestCase):
@@ -70,14 +71,8 @@ attached_paths=[]
             (support / "README.md").write_text("fixture\n")
             subprocess.run(["uv", "lock", "--no-config"], cwd=tenant, check=True, capture_output=True)
             for checkout in (tenant, support):
-                for args in (
-                    ["git", "init", "-q"],
-                    ["git", "config", "user.name", "Fixture"],
-                    ["git", "config", "user.email", "fixture@example.invalid"],
-                    ["git", "add", "."],
-                    ["git", "commit", "-qm", "fixture"],
-                ):
-                    subprocess.run(args, cwd=checkout, check=True, capture_output=True)
+                init_fixture_repository(checkout)
+                commit_fixture_repository(checkout)
             original_command = addon_ci.command
             docker_calls = []
 

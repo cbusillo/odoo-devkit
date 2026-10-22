@@ -48,6 +48,7 @@ from odoo_devkit.runtime import (
     run_native_runtime_workflow,
 )
 from odoo_devkit.workspace import sync_workspace
+from tests.git_fixture import commit_fixture_repository, fixture_git_environment, init_fixture_repository
 
 
 class RuntimeCommandTests(unittest.TestCase):
@@ -872,7 +873,8 @@ attached_paths = ["sources/devkit"]
             )
 
             manifest = load_workspace_manifest(manifest_path)
-            result = sync_workspace(manifest=manifest, devkit_repo_path=devkit_repo_path)
+            with fixture_git_environment():
+                result = sync_workspace(manifest=manifest, devkit_repo_path=devkit_repo_path)
 
             materialized_runtime_repo_path = result.workspace_path / "sources" / "runtime"
             self.assertTrue(materialized_runtime_repo_path.exists())
@@ -4447,18 +4449,14 @@ install_modules = ["opw_custom"]
 
     @staticmethod
     def _initialize_git_repository(repo_path: Path) -> Path:
-        subprocess.run(["git", "init"], cwd=repo_path, check=True, capture_output=True)
-        subprocess.run(["git", "branch", "-m", "main"], cwd=repo_path, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.name", "Code"], cwd=repo_path, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.email", "code@example.com"], cwd=repo_path, check=True, capture_output=True)
+        init_fixture_repository(repo_path)
         subprocess.run(
             ["git", "remote", "add", "origin", f"git@github.com:example/{repo_path.name}.git"],
             cwd=repo_path,
             check=True,
             capture_output=True,
         )
-        subprocess.run(["git", "add", "."], cwd=repo_path, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-m", "initial"], cwd=repo_path, check=True, capture_output=True)
+        commit_fixture_repository(repo_path, "initial")
         return repo_path
 
     def _create_git_repo(self, repo_path: Path) -> Path:

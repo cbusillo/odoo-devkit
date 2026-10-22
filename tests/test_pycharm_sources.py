@@ -13,6 +13,7 @@ from xml.etree import ElementTree
 from odoo_devkit.cli import build_parser
 from odoo_devkit.manifest import load_workspace_manifest
 from odoo_devkit.pycharm_sources import prepare_odoo_sources
+from tests.git_fixture import init_fixture_repository
 
 
 def required_element(root: ElementTree.ElementTree | ElementTree.Element, path: str) -> ElementTree.Element:
@@ -29,10 +30,7 @@ class OdooSourcesTestCase(unittest.TestCase):
         self.project = self.root / "tenant"
         self.source = self.root / "odoo 19"
         for path in (self.project, self.source):
-            path.mkdir()
-            self.git(path, "init", "-q")
-            self.git(path, "config", "user.name", "Fixture")
-            self.git(path, "config", "user.email", "fixture@example.invalid")
+            init_fixture_repository(path)
         (self.source / "odoo").mkdir()
         (self.source / "odoo" / "addons" / "base").mkdir(parents=True)
         (self.source / "odoo" / "addons" / "base" / "__manifest__.py").write_text("{}\n")
