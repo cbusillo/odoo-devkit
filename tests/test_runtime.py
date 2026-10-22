@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+import types
 import unittest
 from collections.abc import Callable
 from dataclasses import replace
@@ -513,6 +514,25 @@ attached_paths = ["sources/devkit"]
                 self.remote_source_commit_verifier(repository="example/source-repo", commit=earlier_commit, label="source-repo")
                 with self.assertRaisesRegex(ValueError, "reachable from one of its branches or tags"):
                     self.remote_source_commit_verifier(repository="example/source-repo", commit=orphan_commit, label="source-repo")
+
+    def test_source_history_fetch_leaves_no_background_git_maintenance(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            origin_path = self._create_git_repo(Path(temporary_directory) / "source-repo")
+            commit = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=origin_path, check=True, capture_output=True, text=True
+            ).stdout.strip()
+            trace_path = Path(temporary_directory) / "git-trace.log"
+
+            contained = local_runtime.remote_branch_or_tag_contains_commit(
+                remote_url=str(origin_path),
+                commit=commit,
+                execution_env={**os.environ, "GIT_TRACE": str(trace_path)},
+            )
+
+            self.assertTrue(contained)
+            started_commands = [line for line in trace_path.read_text().splitlines() if "run_command:" in line]
+            self.assertTrue(started_commands)
+            self.assertFalse([line for line in started_commands if " maintenance " in line or " gc " in line])
 
     def test_clean_git_source_verifies_normalized_origin_and_commit(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -3505,35 +3525,62 @@ sources = [
                 run_shell.assert_not_called()
 
     def test_local_init_preserves_restored_login_despite_configured_bootstrap_password(self) -> None:
-        from docker.scripts import odoo_admin_password
-
         for instance in ("local", "prod"):
             odoo_env = mock.MagicMock()
             user = odoo_env["res.users"].sudo().with_context().search()
-
-            def run_shell(*, _environment: mock.MagicMock = odoo_env, **kwargs: object) -> None:
-                exec(str(kwargs["input_text"]), {"env": _environment})
-
-            with (
-                self.subTest(instance=instance),
-                mock.patch.dict(os.environ, {"ODOO_ADMIN_PASSWORD": "isolated-bootstrap-password"}),
-                mock.patch.dict(sys.modules, {"odoo_admin_password": odoo_admin_password}),
-                mock.patch.object(odoo_admin_password, "restored_logins_preserved", return_value=True),
-                mock.patch.object(sys, "path", [str(Path(__file__).resolve().parents[1] / "docker" / "scripts"), *sys.path]),
-                mock.patch.object(local_runtime, "compose_exec_with_input", side_effect=run_shell),
-                contextlib.redirect_stdout(io.StringIO()),
-            ):
-                local_runtime.apply_admin_password_if_configured(
-                    runtime_repo_path=Path("unused"),
-                    runtime_env_file=Path("unused"),
-                    runtime_selection=mock.Mock(database_name="fixture", instance_name=instance),
-                    stack_definition=mock.Mock(addons_path=("/odoo/addons",)),
-                    loaded_environment={"ODOO_ADMIN_PASSWORD": "isolated-bootstrap-password"},
-                )
+            user.with_user.return_value = user
+            user._check_credentials.side_effect = PermissionError
+            with self.subTest(instance=instance):
+                self._apply_local_admin_password(odoo_env, password="isolated-bootstrap-password", instance=instance, preserved=True)
             if instance == "local":
                 user.with_context().sudo().write.assert_not_called()
             else:
                 user.with_context().sudo().write.assert_called_once_with({"password": "isolated-bootstrap-password"})
+
+    def test_local_init_only_writes_when_configured_password_changes(self) -> None:
+        odoo_env = mock.MagicMock()
+        user = odoo_env["res.users"].sudo().with_context().search()
+        user.with_user.return_value = user
+        user.with_context.return_value = user
+        user.sudo.return_value = user
+        stored = {"password": "initial-password"}
+
+        def check_credentials(credential: dict[str, str], _request_environment: dict[str, bool]) -> None:
+            if credential["password"] != stored["password"]:
+                raise PermissionError
+
+        user._check_credentials.side_effect = check_credentials
+        user.write.side_effect = stored.update
+        for _ in range(2):
+            self._apply_local_admin_password(odoo_env, password="configured-password", instance="local", preserved=False)
+
+        user.write.assert_called_once_with({"password": "configured-password"})
+
+    @staticmethod
+    def _apply_local_admin_password(odoo_env: mock.MagicMock, *, password: str, instance: str, preserved: bool) -> None:
+        from docker.scripts import odoo_admin_password
+
+        exceptions = types.ModuleType("odoo.exceptions")
+        exceptions.__dict__["AccessDenied"] = PermissionError
+
+        def run_shell(**kwargs: object) -> None:
+            exec(str(kwargs["input_text"]), {"env": odoo_env})
+
+        with (
+            mock.patch.dict(os.environ, {"ODOO_ADMIN_PASSWORD": password}),
+            mock.patch.dict(sys.modules, {"odoo.exceptions": exceptions, "odoo_admin_password": odoo_admin_password}),
+            mock.patch.object(odoo_admin_password, "restored_logins_preserved", return_value=preserved),
+            mock.patch.object(sys, "path", [str(Path(__file__).resolve().parents[1] / "docker" / "scripts"), *sys.path]),
+            mock.patch.object(local_runtime, "compose_exec_with_input", side_effect=run_shell),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            local_runtime.apply_admin_password_if_configured(
+                runtime_repo_path=Path("unused"),
+                runtime_env_file=Path("unused"),
+                runtime_selection=mock.Mock(database_name="fixture", instance_name=instance),
+                stack_definition=mock.Mock(addons_path=("/odoo/addons",)),
+                loaded_environment={"ODOO_ADMIN_PASSWORD": password},
+            )
 
     def test_local_password_commands_forward_container_secrets_without_exposing_them(self) -> None:
         password = " \tdb 'quotes' \"double\" $variables `commands`\\slashes\t "
@@ -3642,8 +3689,12 @@ sources = [
                         elif name == "admin":
                             users = mock.MagicMock()
                             user = users.sudo.return_value.with_context.return_value.search.return_value
+                            user.with_user.return_value._check_credentials.side_effect = PermissionError
+                            exceptions = types.ModuleType("odoo.exceptions")
+                            exceptions.__dict__["AccessDenied"] = PermissionError
                             with (
                                 mock.patch.dict(os.environ, environment),
+                                mock.patch.dict(sys.modules, {"odoo.exceptions": exceptions}),
                                 mock.patch.object(
                                     sys, "path", [str(Path(__file__).resolve().parents[1] / "docker" / "scripts"), *sys.path]
                                 ),

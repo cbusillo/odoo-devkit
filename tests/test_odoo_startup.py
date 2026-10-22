@@ -691,6 +691,8 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
 
     @staticmethod
     def _execute_default_password_policy(settings: StartupSettings, users: _FakeUsers) -> None:
+        from docker.scripts import odoo_admin_password
+
         exceptions = types.ModuleType("odoo.exceptions")
         exceptions.__dict__["AccessDenied"] = PermissionError
 
@@ -699,7 +701,7 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
             exec(script, {"env": {"res.users": users}})
 
         with (
-            patch.dict(sys.modules, {"odoo.exceptions": exceptions}),
+            patch.dict(sys.modules, {"odoo.exceptions": exceptions, "odoo_admin_password": odoo_admin_password}),
             patch.object(odoo_startup, "_run_odoo_shell", side_effect=run_shell),
             redirect_stdout(io.StringIO()),
         ):

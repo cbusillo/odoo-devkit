@@ -23,9 +23,8 @@ from .runtime import (
     run_native_runtime_up,
     run_native_runtime_workflow,
 )
-from .scaffold import scaffold_tenant_overlay, scaffold_workspace_cockpit
+from .scaffold import scaffold_tenant_overlay
 from .workspace import clean_workspace, run_in_workspace, sync_workspace, workspace_status
-from .workspace_cockpit import load_workspace_cockpit_manifest, sync_workspace_cockpit, workspace_cockpit_status
 
 
 def main() -> None:
@@ -79,28 +78,6 @@ def build_parser() -> argparse.ArgumentParser:
     scaffold_parser.add_argument("--tenant", required=True)
     scaffold_parser.add_argument("--force", action="store_true")
     scaffold_parser.set_defaults(handler=_handle_workspace_scaffold_tenant_overlay)
-
-    cockpit_parser = workspace_subparsers.add_parser(
-        "scaffold-cockpit-root",
-        help="Copy the shared manual workspace-cockpit root starter into a target directory",
-    )
-    cockpit_parser.add_argument("--output-dir", type=Path, required=True)
-    cockpit_parser.add_argument("--force", action="store_true")
-    cockpit_parser.set_defaults(handler=_handle_workspace_scaffold_cockpit_root)
-
-    sync_cockpit_parser = workspace_subparsers.add_parser(
-        "sync-cockpit-root",
-        help="Regenerate a manual multi-repo cockpit root from workspace-cockpit.toml",
-    )
-    sync_cockpit_parser.add_argument("--config", type=Path, default=Path("workspace-cockpit.toml"))
-    sync_cockpit_parser.set_defaults(handler=_handle_workspace_sync_cockpit_root)
-
-    status_cockpit_parser = workspace_subparsers.add_parser(
-        "status-cockpit-root",
-        help="Report whether a manual cockpit root matches workspace-cockpit.toml",
-    )
-    status_cockpit_parser.add_argument("--config", type=Path, default=Path("workspace-cockpit.toml"))
-    status_cockpit_parser.set_defaults(handler=_handle_workspace_status_cockpit_root)
 
     run_parser = _add_manifest_argument(workspace_subparsers.add_parser("run", help="Run a command inside the workspace"))
     run_parser.add_argument("command", nargs=argparse.REMAINDER)
@@ -337,73 +314,6 @@ def _handle_workspace_scaffold_tenant_overlay(arguments: argparse.Namespace) -> 
                 "output_directory": str(result.output_directory),
                 "tenant": arguments.tenant,
                 "written_paths": [str(path) for path in result.written_paths],
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
-
-
-def _handle_workspace_scaffold_cockpit_root(arguments: argparse.Namespace) -> None:
-    result = scaffold_workspace_cockpit(
-        repo_root=_discover_repo_root(),
-        output_directory=arguments.output_dir.expanduser().resolve(),
-        force=arguments.force,
-    )
-    print(
-        json.dumps(
-            {
-                "output_directory": str(result.output_directory),
-                "written_paths": [str(path) for path in result.written_paths],
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
-
-
-def _handle_workspace_sync_cockpit_root(arguments: argparse.Namespace) -> None:
-    manifest_path = arguments.config.expanduser().resolve()
-    result = sync_workspace_cockpit(
-        manifest=load_workspace_cockpit_manifest(manifest_path),
-        output_directory=manifest_path.parent,
-        overwrite_existing=True,
-    )
-    print(
-        json.dumps(
-            {
-                "manifest_path": str(result.manifest_path),
-                "output_directory": str(result.output_directory),
-                "written_paths": [str(path) for path in result.written_paths],
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
-
-
-def _handle_workspace_status_cockpit_root(arguments: argparse.Namespace) -> None:
-    manifest_path = arguments.config.expanduser().resolve()
-    result = workspace_cockpit_status(
-        manifest=load_workspace_cockpit_manifest(manifest_path),
-        output_directory=manifest_path.parent,
-    )
-    print(
-        json.dumps(
-            {
-                "manifest_path": str(result.manifest_path),
-                "output_directory": str(result.output_directory),
-                "is_current": result.is_current,
-                "reserved_override_path": str(result.reserved_override_path),
-                "reserved_override_exists": result.reserved_override_exists,
-                "file_statuses": [
-                    {
-                        "path": str(file_status.path),
-                        "exists": file_status.exists,
-                        "matches_expected": file_status.matches_expected,
-                    }
-                    for file_status in result.file_statuses
-                ],
             },
             indent=2,
             sort_keys=True,

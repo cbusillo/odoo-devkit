@@ -1,6 +1,3 @@
-"""String readers shared by the workspace and cockpit manifests."""
-
-
 def read_required_string(source: dict[str, object], key: str) -> str:
     value = source.get(key)
     if not isinstance(value, str) or not value.strip():
