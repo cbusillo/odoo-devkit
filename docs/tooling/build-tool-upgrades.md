@@ -9,8 +9,8 @@ shared-addon projects retain exact `[build-system].requires` declarations so
 the publish provenance check can prove that every requested backend is present
 in either the support/runtime catalog or the tenant catalog.
 
-Dependabot monitors `docker/runtime-python` separately from the devkit root
-project. The `runtime-python-lock` CI job rejects catalog changes whose lock is
+Renovate updates `docker/runtime-python` along with the devkit root project
+([Renovate](renovate.md)). The `runtime-python-lock` CI job rejects catalog changes whose lock is
 not current.
 
 ## Tenant Synchronization
@@ -51,9 +51,9 @@ opens no pull request.
 ## Moving The Pin
 
 Each tenant's `workspace.toml` `[repos.devkit]` ref is its one devkit pin;
-`[repos.runtime]` names the same commit. Renovate moves it: a tenant
-`renovate.json` custom regex manager with the `git-refs` datasource tracks the
-head commit of devkit `main` and opens one pull request per tenant that
+`[repos.runtime]` names the same commit. Renovate moves it: the
+[devkit-pin preset](renovate.md), which each tenant's `renovate.json` extends,
+tracks the head commit of devkit `main` and opens one pull request per tenant that
 rewrites both refs to that exact commit. Until someone else pushes to its
 branch, Renovate updates the same pull request when `main` moves again. Tenant
 CI is the gate, and the merge train lands the pull request after an agent's
@@ -75,10 +75,9 @@ owns it until it lands: land it at that commit, and Renovate proposes any later
    to each tenant; never pin a pull-request head that may be replaced by
    squash or rebase merge.
 
-Tenant Dependabot may ignore centrally owned build tools only after the
-runtime-python Dependabot lane, lock validation, and synchronization path are
-operational. Security updates then originate from the central catalog and use
-the same downstream rollout.
+Tenant Renovate configs ignore centrally owned build tools such as Hatchling.
+Security updates for them originate from the central catalog and use the same
+downstream rollout.
 
 ## Recovery
 
