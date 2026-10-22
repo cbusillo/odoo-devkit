@@ -11,6 +11,7 @@ from unittest import mock
 
 import odoo_devkit.build_tool_sync as build_tool_sync_module
 from odoo_devkit.build_tool_sync import BuildToolSyncError, apply_build_tool_sync, plan_build_tool_sync
+from tests.git_fixture import init_fixture_repository
 
 
 class BuildToolSyncTest(unittest.TestCase):
@@ -335,9 +336,7 @@ class BuildToolSyncTest(unittest.TestCase):
         )
         BuildToolSyncTest._write_lock(devkit_root / "docker" / "runtime-python", "runtime", support_lock_packages or {})
         subprocess.run(["uv", "lock", "--offline", "--no-config"], cwd=tenant_root, check=True, capture_output=True, text=True)
-        subprocess.run(["git", "init", "--quiet"], cwd=devkit_root, check=True)
-        subprocess.run(["git", "config", "user.name", "Test"], cwd=devkit_root, check=True)
-        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=devkit_root, check=True)
+        init_fixture_repository(devkit_root)
         subprocess.run(["git", "add", "docker/runtime-python"], cwd=devkit_root, check=True)
         subprocess.run(["git", "commit", "--quiet", "-m", "fixture"], cwd=devkit_root, check=True)
         devkit_ref = subprocess.run(

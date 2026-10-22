@@ -17,6 +17,7 @@ from odoo_devkit.manifest import load_workspace_manifest
 from odoo_devkit.runtime_environment import RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR
 from odoo_devkit.workspace import clean_workspace, resolve_workspace_path, sync_workspace, workspace_status
 from odoo_devkit.workspace_surface import LOCAL_NOTES_PATH, RESERVED_OVERRIDE_PATH
+from tests.git_fixture import commit_fixture_repository, fixture_git_environment, init_fixture_repository
 
 
 class WorkspaceSyncTestCase(unittest.TestCase):
@@ -310,7 +311,8 @@ attached_paths = ["sources/shared-addons", "sources/devkit"]
             )
 
             manifest = load_workspace_manifest(manifest_path)
-            result = sync_workspace(manifest=manifest, devkit_repo_path=devkit_repo_path)
+            with fixture_git_environment():
+                result = sync_workspace(manifest=manifest, devkit_repo_path=devkit_repo_path)
 
             materialized_shared_addons_path = result.workspace_path / "sources" / "shared-addons"
             self.assertTrue(materialized_shared_addons_path.exists())
@@ -417,7 +419,8 @@ attached_paths = ["sources/devkit"]
             )
 
             manifest = load_workspace_manifest(manifest_path)
-            result = sync_workspace(manifest=manifest, devkit_repo_path=devkit_repo_path)
+            with fixture_git_environment():
+                result = sync_workspace(manifest=manifest, devkit_repo_path=devkit_repo_path)
 
             materialized_runtime_repo_path = result.workspace_path / "sources" / "runtime"
             self.assertTrue(materialized_runtime_repo_path.exists())
@@ -1001,11 +1004,7 @@ attached_paths = ["sources/devkit"]
 
     @staticmethod
     def _create_git_repo(repo_path: Path) -> Path:
-        repo_path.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["git", "init"], cwd=repo_path, check=True, capture_output=True)
-        subprocess.run(["git", "branch", "-m", "main"], cwd=repo_path, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.name", "Code"], cwd=repo_path, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.email", "code@example.com"], cwd=repo_path, check=True, capture_output=True)
+        init_fixture_repository(repo_path)
         (repo_path / "README.md").write_text(f"# {repo_path.name}\n", encoding="utf-8")
         (repo_path / "AGENTS.md").write_text(f"# {repo_path.name} guide\n", encoding="utf-8")
         (repo_path / "docs").mkdir(exist_ok=True)
@@ -1027,8 +1026,7 @@ attached_paths = ["sources/devkit"]
         )
         (repo_path / "addons").mkdir(exist_ok=True)
         (repo_path / "addons" / "shared").mkdir(parents=True, exist_ok=True)
-        subprocess.run(["git", "add", "."], cwd=repo_path, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-m", "initial"], cwd=repo_path, check=True, capture_output=True)
+        commit_fixture_repository(repo_path, "initial")
         return repo_path
 
 
