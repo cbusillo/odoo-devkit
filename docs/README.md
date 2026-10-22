@@ -20,6 +20,8 @@ lanes live in `launchplane`.
   runtime and publish source-input contract.
 - [tooling/build-tool-upgrades.md](tooling/build-tool-upgrades.md) for central
   build-tool ownership and atomic tenant pin synchronization.
+- [tooling/renovate.md](tooling/renovate.md) for the shared Renovate presets
+  every repository extends.
 - [tooling/consumer-build-checks.md](tooling/consumer-build-checks.md) for
   tenant-side production builds against a devkit PR commit before Ready.
 - [tooling/release-maintenance.md](tooling/release-maintenance.md) for artifact

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["github>cbusillo/odoo-devkit//renovate/default"],
+  "packageRules": [
+    {
+      "description": "Existing tenant database volumes use the legacy /var/lib/postgresql/data layout, so a Postgres major upgrade is explicit migration work.",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["postgres"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    }
+  ]
+}

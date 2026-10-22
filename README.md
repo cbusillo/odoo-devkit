@@ -273,8 +273,9 @@ Current runtime ownership is intentionally narrow and explicit:
 - A Postgres major-version bump is not a routine dependency refresh on this
   surface. Treat it as explicit migration work with a documented upgrade path
   for existing tenant data volumes.
-- Dependabot should not propose Postgres major upgrades automatically for the
-  root `docker-compose.yml`; those changes should be intentional operator work.
+- Renovate does not propose Postgres major upgrades for the root
+  `docker-compose.yml` (`renovate.json`); those changes are intentional
+  operator work.
 
 ## Testing
 

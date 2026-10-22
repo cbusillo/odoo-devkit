@@ -1,0 +1,34 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Shared Renovate setup for cbusillo repositories (Q657, cbusillo/odoo-devkit#248): weekly, minor and patch grouped, majors separate, no automerge.",
+  "extends": [
+    "config:recommended",
+    ":disableDependencyDashboard",
+    "group:allNonMajor",
+    "schedule:weekly"
+  ],
+  "timezone": "America/New_York",
+  "labels": ["dependencies"],
+  "prConcurrentLimit": 3,
+  "rebaseWhen": "conflicted",
+  "minimumReleaseAgeBehaviour": "timestamp-optional",
+  "packageRules": [
+    {
+      "matchUpdateTypes": ["minor", "patch"],
+      "minimumReleaseAge": "7 days"
+    },
+    {
+      "matchUpdateTypes": ["major"],
+      "minimumReleaseAge": "30 days"
+    },
+    {
+      "description": "A Python minor version is a runtime upgrade, so it gets its own pull request instead of blocking the routine group.",
+      "matchDepNames": ["python", "**/python"],
+      "matchUpdateTypes": ["minor"],
+      "groupName": "Python minor version"
+    }
+  ],
+  "prBodyNotes": [
+    "## Client test notes\n\nNothing for the Client to test: this updates dependencies with no intended behavior change. If an update here changes what the Client sees, the reviewing agent replaces this note before ready."
+  ]
+}
