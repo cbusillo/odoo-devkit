@@ -30,12 +30,6 @@ uv run platform workspace status --manifest /path/to/workspace.toml
 uv run platform workspace status --manifest /path/to/workspace.toml --check
 uv run platform workspace scaffold-tenant-overlay \
   --output-dir /path/to/repo --tenant opw
-uv run platform workspace scaffold-cockpit-root \
-  --output-dir /path/to/workspace-root
-uv run platform workspace sync-cockpit-root \
-  --config /path/to/workspace-root/workspace-cockpit.toml
-uv run platform workspace status-cockpit-root \
-  --config /path/to/workspace-root/workspace-cockpit.toml
 uv run platform workspace clean --manifest /path/to/workspace.toml
 uv run platform workspace run --manifest /path/to/workspace.toml -- pwd
 uv run platform dependencies inspect --manifest /path/to/workspace.toml
@@ -312,49 +306,6 @@ The layered installer's inherited-package refusal and final environment
 validation remain independent checks. Generated constraints are ordinary
 constraints, never overrides; they cannot make an explicit incompatible
 tenant or addon requirement acceptable.
-
-## `workspace scaffold-cockpit-root`
-
-Purpose
-
-- Copy the shared manual multi-repo cockpit-root starter into a target
-  directory.
-- Write `workspace-cockpit.toml` as the source of truth for that root.
-- Keep the repo map and section-level cockpit guidance in that config instead
-  of hand-maintaining root Markdown files.
-- Generate `AGENTS.md`, `docs/README.md`, and `docs/session-prompt.md` from
-  that config.
-- Point operators to optional `workspace.local.md` for supplemental non-secret
-  facts that must not be baked into generated shared docs.
-- Document `AGENTS.override.md` as reserved full-replacement input,
-  never the normal additive-notes path.
-- Keep non-repo workspace roots thin, link-heavy, and synced from
-  `odoo-devkit` instead of hand-maintaining the same entrypoint docs.
-
-## `workspace sync-cockpit-root`
-
-Purpose
-
-- Regenerate a manual multi-repo cockpit root from `workspace-cockpit.toml`.
-- Keep root entrypoint docs manifest-driven even when the cockpit is not a
-  tenant `workspace sync` surface.
-- Re-render both repo listings and section-level guidance bullets from the
-  tracked cockpit config.
-- Preserve local-only notes by linking to `workspace.local.md` instead of
-  copying implementation details into generated Markdown.
-
-## `workspace status-cockpit-root`
-
-Purpose
-
-- Report whether the generated cockpit entrypoint files exist.
-- Report whether those files still match the current `workspace-cockpit.toml`
-  render output.
-- Report the reserved root `AGENTS.override.md` and mark the cockpit non-current
-  when it would replace the canonical generated guide.
-- Give manual cockpit roots a native drift check before or after sync. A
-  completed status check exits 0 even when `is_current` is false; gate on the
-  reported `is_current` value.
 
 ## `workspace clean`
 

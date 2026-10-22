@@ -63,6 +63,7 @@ DEPENDENCY_SOURCE_REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_
 ENVIRONMENT_VARIABLE_NAME_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 ARTIFACT_SOURCE_ENV_KEYS = ("ODOO_ADDON_REPOSITORIES", "OPENUPGRADE_ADDON_REPOSITORY")
 SOURCE_GITHUB_TOKEN_ENV_KEYS = ("ODOO_DEVKIT_SOURCE_GITHUB_TOKEN", "ODOO_SOURCE_GITHUB_TOKEN")
+THROWAWAY_REPOSITORY_GIT_OPTIONS = ("-c", "maintenance.auto=false", "-c", "gc.auto=0")
 ARTIFACT_PUBLISH_RUNTIME_ENV_KEYS = (
     "ODOO_VERSION",
     "ODOO_BASE_RUNTIME_IMAGE",
@@ -3141,7 +3142,7 @@ def remote_branch_or_tag_contains_commit(*, remote_url: str, commit: str, execut
 
         def git(*arguments: str) -> subprocess.CompletedProcess[str]:
             return subprocess.run(
-                ["git", *arguments],
+                ["git", *THROWAWAY_REPOSITORY_GIT_OPTIONS, *arguments],
                 cwd=history_path,
                 capture_output=True,
                 text=True,
@@ -4102,7 +4103,7 @@ def apply_admin_password_if_configured(
         import sys
 
         sys.path.insert(0, '/volumes/scripts')
-        from odoo_admin_password import restored_logins_preserved
+        from odoo_admin_password import restored_logins_preserved, set_admin_password_if_changed
         from odoo_website_settings import PRODUCTION_INSTANCE_NAMES
 
         payload = json.loads(__PAYLOAD__)
@@ -4115,8 +4116,8 @@ def apply_admin_password_if_configured(
         elif payload['instance'].strip().lower() not in PRODUCTION_INSTANCE_NAMES and restored_logins_preserved(env.cr):
             print('restored_logins_preserved=true')
         else:
-            admin_user.with_context(no_reset_password=True).sudo().write({'password': os.environ['ODOO_ADMIN_PASSWORD']})
-            print("admin_password_updated=true")
+            updated = set_admin_password_if_changed(admin_user, os.environ['ODOO_ADMIN_PASSWORD'])
+            print(f"admin_password_updated={str(updated).lower()}")
             env.cr.commit()
         """
     ).replace("__PAYLOAD__", repr(json.dumps(script_payload)))
@@ -4144,41 +4145,18 @@ def assert_active_admin_password_is_not_default(
         database_user=loaded_environment.get("ODOO_DB_USER", "odoo"),
     )
     configured_admin_login = loaded_environment.get("ODOO_ADMIN_LOGIN", "").strip() or "admin"
-    login_names_to_check = ["admin"]
-    if configured_admin_login not in login_names_to_check:
-        login_names_to_check.append(configured_admin_login)
-    script_payload = {"logins": login_names_to_check}
     odoo_shell_script = textwrap.dedent(
         """
         import json
-        from odoo.exceptions import AccessDenied
+        import sys
 
-        payload = json.loads(__PAYLOAD__)
+        sys.path.insert(0, '/volumes/scripts')
+        from odoo_admin_password import assert_default_admin_password_inactive
 
-        for login_name in payload['logins']:
-            target_user = env['res.users'].sudo().with_context(active_test=False).search(
-                [('login', '=', login_name)],
-                limit=1,
-            )
-            if not target_user:
-                continue
-
-            authenticated = False
-            try:
-                auth_info = env['res.users'].sudo().authenticate(
-                    {'type': 'password', 'login': login_name, 'password': 'admin'},
-                    {'interactive': False},
-                )
-                authenticated = bool(auth_info)
-            except AccessDenied:
-                authenticated = False
-
-            if authenticated:
-                raise ValueError(f"Insecure configuration: active password for {login_name} is 'admin'.")
-
+        assert_default_admin_password_inactive(env, json.loads(__LOGIN__))
         print("admin_default_password_active=false")
         """
-    ).replace("__PAYLOAD__", repr(json.dumps(script_payload)))
+    ).replace("__LOGIN__", repr(json.dumps(configured_admin_login)))
     compose_exec_with_input(
         runtime_repo_path=runtime_repo_path,
         runtime_env_file=runtime_env_file,

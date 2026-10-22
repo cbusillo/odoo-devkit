@@ -2017,8 +2017,8 @@ with registry.cursor() as cr:
             script = textwrap.dedent("""
 import json
 from odoo import api, SUPERUSER_ID
-from odoo.exceptions import AccessDenied
 from odoo.modules.registry import Registry
+from odoo_admin_password import set_admin_password_if_changed
 
 payload = json.loads(__PAYLOAD__)
 registry = Registry(payload['db'])
@@ -2027,17 +2027,8 @@ with registry.cursor() as cr:
     admin = env['res.users'].sudo().search([('login', '=', payload['login'])], limit=1)
     if admin:
         if payload['set_password']:
-            # Odoo emails a security notice on every password write, so skip unchanged passwords.
-            try:
-                admin.with_user(admin)._check_credentials(
-                    {'type': 'password', 'password': payload['password']},
-                    {'interactive': True},
-                )
-            except AccessDenied:
-                admin.with_context(no_reset_password=True).sudo().write({'password': payload['password']})
-                print('admin_password_updated=true')
-            else:
-                print('admin_password_updated=false')
+            updated = set_admin_password_if_changed(admin, payload['password'])
+            print(f"admin_password_updated={str(updated).lower()}")
         if payload['set_email'] and admin.partner_id:
             admin.partner_id.sudo().write({'email': payload['email']})
     cr.commit()
@@ -2047,44 +2038,18 @@ with registry.cursor() as cr:
             self._run_odoo_shell(script, "admin hardening")
             self._reset_db_connection()
 
-        login_names_to_check = ["admin"]
-        if configured_admin_login not in login_names_to_check:
-            login_names_to_check.append(configured_admin_login)
-
-        policy_payload = {
-            "db": self.local.db_name,
-            "logins": login_names_to_check,
-        }
+        policy_payload = {"db": self.local.db_name, "login": configured_admin_login}
         policy_script = textwrap.dedent("""
 import json
 from odoo import api, SUPERUSER_ID
-from odoo.exceptions import AccessDenied
 from odoo.modules.registry import Registry
+from odoo_admin_password import assert_default_admin_password_inactive
 
 payload = json.loads(__PAYLOAD__)
 registry = Registry(payload['db'])
 with registry.cursor() as cr:
     env = api.Environment(cr, SUPERUSER_ID, {})
-    for login_name in payload['logins']:
-        target_user = env['res.users'].sudo().with_context(active_test=False).search(
-            [('login', '=', login_name)],
-            limit=1,
-        )
-        if not target_user:
-            continue
-
-        authenticated = False
-        try:
-            auth_info = env['res.users'].sudo().authenticate(
-                {'type': 'password', 'login': login_name, 'password': 'admin'},
-                {'interactive': False},
-            )
-            authenticated = bool(auth_info)
-        except AccessDenied:
-            authenticated = False
-
-        if authenticated:
-            raise ValueError(f"Insecure configuration: active password for {login_name} is 'admin'.")
+    assert_default_admin_password_inactive(env, payload['login'])
 """).replace("__PAYLOAD__", repr(json.dumps(policy_payload)))
         self._run_odoo_shell(policy_script, "admin password policy")
         self._reset_db_connection()

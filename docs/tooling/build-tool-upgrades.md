@@ -27,8 +27,7 @@ uv run python -m odoo_devkit.build_tool_sync \
 Add `--check` to exit nonzero when any synchronized value differs,
 `--check-build-tools` to ignore unrelated devkit-ref movement and fail only on
 centrally managed pin drift, or `--apply` to update the tenant's
-`workspace.toml` devkit/runtime refs, workflow `uses:` pins of the declared
-devkit repository at a full commit, matching addon build-tool pins and
+`workspace.toml` devkit/runtime refs, matching addon build-tool pins and
 support-owned lock versions as one transaction. Apply mode reparses every
 changed TOML file, verifies the exact catalog contract, and runs the tenant's
 offline uv lock check. Any failure restores every touched file.

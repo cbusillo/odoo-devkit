@@ -445,8 +445,7 @@ def _apply_admin_password_if_configured(settings: StartupSettings) -> None:
     }
     script = """
 import json
-from odoo_admin_password import restored_logins_preserved
-from odoo.exceptions import AccessDenied
+from odoo_admin_password import restored_logins_preserved, set_admin_password_if_changed
 
 payload = json.loads(__PAYLOAD__)
 admin_user = env['res.users'].sudo().with_context(active_test=False).search(
@@ -458,16 +457,8 @@ if not admin_user:
 elif payload['nonproduction'] and restored_logins_preserved(env.cr):
     print('restored_logins_preserved=true')
 else:
-    try:
-        admin_user.with_user(admin_user)._check_credentials(
-            {'type': 'password', 'password': payload['password']},
-            {'interactive': True},
-        )
-    except AccessDenied:
-        admin_user.with_context(no_reset_password=True).sudo().write({'password': payload['password']})
-        print('admin_password_updated=true')
-    else:
-        print('admin_password_updated=false')
+    updated = set_admin_password_if_changed(admin_user, payload['password'])
+    print(f"admin_password_updated={str(updated).lower()}")
     env.cr.commit()
 """.replace("__PAYLOAD__", repr(json.dumps(payload)))
     _run_odoo_shell(settings, script, label="admin hardening")
@@ -510,40 +501,13 @@ else:
 
 
 def _assert_active_admin_password_is_not_default(settings: StartupSettings) -> None:
-    login_names_to_check = ["admin"]
-    if settings.admin_login not in login_names_to_check:
-        login_names_to_check.append(settings.admin_login)
-
-    payload = {"logins": login_names_to_check}
     script = """
 import json
-from odoo.exceptions import AccessDenied
+from odoo_admin_password import assert_default_admin_password_inactive
 
-payload = json.loads(__PAYLOAD__)
-
-for login_name in payload['logins']:
-    target_user = env['res.users'].sudo().with_context(active_test=False).search(
-        [('login', '=', login_name)],
-        limit=1,
-    )
-    if not target_user:
-        continue
-
-    authenticated = False
-    try:
-        auth_info = env['res.users'].sudo().authenticate(
-            {'type': 'password', 'login': login_name, 'password': 'admin'},
-            {'interactive': False},
-        )
-        authenticated = bool(auth_info)
-    except AccessDenied:
-        authenticated = False
-
-    if authenticated:
-        raise ValueError(f"Insecure configuration: active password for {login_name} is 'admin'.")
-
+assert_default_admin_password_inactive(env, json.loads(__LOGIN__))
 print('admin_default_password_active=false')
-""".replace("__PAYLOAD__", repr(json.dumps(payload)))
+""".replace("__LOGIN__", repr(json.dumps(settings.admin_login)))
     _run_odoo_shell(settings, script, label="admin password policy")
 
 

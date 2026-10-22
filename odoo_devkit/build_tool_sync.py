@@ -96,21 +96,6 @@ def plan_build_tool_sync(*, tenant_root: Path, devkit_root: Path, devkit_ref: st
         rendered_files[workspace_path] = rendered_workspace
         changes.extend(workspace_changes)
 
-    devkit_repository = _workspace_devkit_repository(text=workspace_text, path=workspace_path)
-    workflows_root = tenant_root / ".github" / "workflows"
-    if devkit_repository and workflows_root.is_dir() and not workflows_root.is_symlink():
-        for workflow_path in sorted((*workflows_root.glob("*.yml"), *workflows_root.glob("*.yaml"))):
-            rendered_workflow, workflow_changes = _render_workflow_devkit_pins(
-                text=_read_regular_text(workflow_path),
-                path=workflow_path,
-                tenant_root=tenant_root,
-                devkit_repository=devkit_repository,
-                devkit_ref=devkit_ref,
-            )
-            if workflow_changes:
-                rendered_files[workflow_path] = rendered_workflow
-                changes.extend(workflow_changes)
-
     addons_root = _resolve_regular_directory(tenant_root / "addons", label="Tenant addons root")
     for pyproject_path in sorted(addons_root.rglob("pyproject.toml")):
         if _IGNORED_ADDON_PATH_PARTS.intersection(pyproject_path.relative_to(addons_root).parts):
@@ -317,45 +302,6 @@ def _render_workspace_refs(
                 )
             )
     _parse_toml_text(text=rendered, path=path)
-    return rendered, tuple(changes)
-
-
-def _workspace_devkit_repository(*, text: str, path: Path) -> str:
-    repositories = _parse_toml_text(text=text, path=path).get("repos", {})
-    devkit = repositories.get("devkit", {}) if isinstance(repositories, dict) else {}
-    repository = devkit.get("repository", "") if isinstance(devkit, dict) else ""
-    return repository.strip() if isinstance(repository, str) else ""
-
-
-def _render_workflow_devkit_pins(
-    *,
-    text: str,
-    path: Path,
-    tenant_root: Path,
-    devkit_repository: str,
-    devkit_ref: str,
-) -> tuple[str, tuple[BuildToolChange, ...]]:
-    # Workflows that run devkit actions pin the same commit as workspace.toml;
-    # leaving them behind runs the old support lock against the new tenant lock.
-    pattern = re.compile(
-        rf"(?m)^(?P<prefix>\s*(?:-\s*)?uses:\s*[\"']?){re.escape(devkit_repository)}"
-        r"(?P<action>(?:/[^@\s\"']*)?)@(?P<ref>[0-9a-f]{40})\b"
-    )
-    changes: list[BuildToolChange] = []
-
-    def replace(match: re.Match[str]) -> str:
-        if match.group("ref") != devkit_ref:
-            changes.append(
-                BuildToolChange(
-                    path=path.relative_to(tenant_root).as_posix(),
-                    kind=f"workflow.uses:{devkit_repository}{match.group('action')}",
-                    before=match.group("ref"),
-                    after=devkit_ref,
-                )
-            )
-        return f"{match.group('prefix')}{devkit_repository}{match.group('action')}@{devkit_ref}"
-
-    rendered = pattern.sub(replace, text)
     return rendered, tuple(changes)
 
 

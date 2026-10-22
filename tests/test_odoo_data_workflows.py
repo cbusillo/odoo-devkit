@@ -1721,6 +1721,8 @@ class EnsureAdminUserTests(unittest.TestCase):
 
     @staticmethod
     def _run_admin_hardening(runner: Any, environment: MagicMock) -> None:
+        from docker.scripts import odoo_admin_password
+
         odoo_module = types.ModuleType("odoo")
         odoo_module.__dict__.update(api=MagicMock(Environment=MagicMock(return_value=environment)), SUPERUSER_ID=1)
         exceptions = types.ModuleType("odoo.exceptions")
@@ -1735,7 +1737,12 @@ class EnsureAdminUserTests(unittest.TestCase):
         with (
             patch.dict(
                 sys.modules,
-                {"odoo": odoo_module, "odoo.exceptions": exceptions, "odoo.modules.registry": registry_module},
+                {
+                    "odoo": odoo_module,
+                    "odoo.exceptions": exceptions,
+                    "odoo.modules.registry": registry_module,
+                    "odoo_admin_password": odoo_admin_password,
+                },
             ),
             patch.object(runner, "_run_odoo_shell", side_effect=run_shell),
         ):

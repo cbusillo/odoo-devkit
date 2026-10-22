@@ -447,11 +447,13 @@ os.execv('/bin/bash', ['bash', '-c', command])
 
         def fault(_runner: workflows.OdooDataWorkflowRunner) -> Any:
             def forced_write(settings: startup.StartupSettings, script: str, *, label: str) -> None:
-                # Force the real credential check to deny only the comparison.
-                script = script.replace(
-                    "{'type': 'password', 'password': payload['password']}",
-                    "{'type': 'password', 'password': 'wrong-comparison'}",
-                )
+                if label == "admin hardening":
+                    unconditional_write = script.replace(
+                        "set_admin_password_if_changed(admin_user, payload['password'])",
+                        "admin_user.with_context(no_reset_password=True).sudo().write({'password': payload['password']})",
+                    )
+                    self.assertNotEqual(unconditional_write, script, "Planted fault no longer matches the startup script")
+                    script = unconditional_write
                 original_shell(settings, script, label=label)
 
             return patch.object(startup, "_run_odoo_shell", side_effect=forced_write)
