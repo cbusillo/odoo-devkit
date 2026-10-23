@@ -279,9 +279,20 @@ Current runtime ownership is intentionally narrow and explicit:
 
 ## Testing
 
+Use the [local/CI test contract](https://github.com/cbusillo/codex-skills/blob/HEAD/skills/github/references/config-schema.md#workflow-metadata).
+Locally, select the test file covering the changed behavior:
+
 ```bash
-uv run python -m unittest discover -s tests
+uv run python -m unittest discover -s tests -p 'test_runtime.py'
 ```
+
+Replace `test_runtime.py` with the relevant file; repeat for each affected
+module. Runtime environment, startup and data-workflow changes use their
+complete `test_runtime_environment_contract.py`, `test_odoo_startup.py` and
+`test_odoo_data_workflows.py` modules as applicable, plus modules found through
+the changed code's callers. Keep the metadata's format/lint gates and required
+inspection. CI runs `uv run python -m unittest discover -s tests`; live Odoo
+and tenant consumer-build checks retain their separate documented gates.
 
 For tenant repos that keep `instance = "local"` in the tracked manifest,
 `--instance testing` or `--instance prod` is not a shortcut for remote
