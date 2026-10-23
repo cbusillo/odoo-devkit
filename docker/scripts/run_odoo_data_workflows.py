@@ -674,34 +674,36 @@ class OdooDataWorkflowRunner:
 
     def _read_upstream_filestore_size_bytes(self) -> int | None:
         upstream = self._require_upstream()
-        ssh_parts = self._build_ssh_command()
-        ssh_command = shlex.join(ssh_parts)
-        remote_user = shlex.quote(upstream.user)
-        remote_host = shlex.quote(upstream.host)
-        remote_path = shlex.quote(str(upstream.filestore_path))
-        command = f'{ssh_command} {remote_user}@{remote_host} "du -sb {remote_path}"'
+        local_path = self._local_database_filestore_path()
+        command = [
+            "rsync",
+            "--dry-run",
+            "--stats",
+            "--archive",
+            "--out-format=",
+            "--no-human-readable",
+            "-e",
+            shlex.join(self._build_ssh_command()),
+            f"{upstream.user}@{upstream.host}:{str(upstream.filestore_path).rstrip('/')}/",
+            f"{local_path}/",
+        ]
         try:
             result = subprocess.run(
                 command,
-                shell=True,
-                env=self.os_env,
+                env={**self.os_env, "LC_ALL": "C"},
                 capture_output=True,
                 text=True,
                 check=True,
             )
-        except subprocess.CalledProcessError as command_error:
+        except (subprocess.CalledProcessError, OSError) as command_error:
             _logger.warning("Unable to estimate upstream filestore size: %s", command_error)
             return None
 
-        output = result.stdout.strip()
-        if not output:
-            _logger.warning("Unable to estimate upstream filestore size: empty response.")
+        size_match = re.search(r"^Total file size: ([0-9]+(?:,[0-9]{3})*) bytes$", result.stdout, re.MULTILINE)
+        if size_match is None:
+            _logger.warning("Unable to estimate upstream filestore size: missing rsync total.")
             return None
-        size_token = output.split()[0]
-        if not size_token.isdigit():
-            _logger.warning("Unable to estimate upstream filestore size: unexpected output '%s'.", output)
-            return None
-        return int(size_token)
+        return int(size_match[1].replace(",", ""))
 
     def _read_local_filestore_size_bytes(self) -> int:
         local_database_filestore_path = self._local_database_filestore_path()
@@ -802,10 +804,6 @@ class OdooDataWorkflowRunner:
 
     def capture_upstream_database(self, backup_path: Path) -> None:
         upstream = self._require_upstream()
-        remote_user = shlex.quote(upstream.user)
-        remote_host = shlex.quote(upstream.host)
-        upstream_db_user = shlex.quote(upstream.db_user)
-        upstream_db_name = shlex.quote(upstream.db_name)
         backup_path_quoted = shlex.quote(str(backup_path))
         ssh_parts = self._build_ssh_command()
         ssh_command = shlex.join(ssh_parts)
@@ -814,10 +812,12 @@ class OdooDataWorkflowRunner:
             upstream.host,
             self.local.db_name,
         )
-        dump_cmd = (
-            f'{ssh_command} {remote_user}@{remote_host} "cd /tmp && sudo -u {upstream_db_user} '
-            f'pg_dump -Fc {upstream_db_name}" > {backup_path_quoted}'
-        )
+        if upstream.user == "root":
+            remote_command = "cd /tmp && " + shlex.join(["sudo", "-u", upstream.db_user, "pg_dump", "-Fc", upstream.db_name])
+        else:
+            remote_command = shlex.join(["pg_dump", "-U", upstream.db_user, "-Fc", upstream.db_name])
+        destination = shlex.quote(f"{upstream.user}@{upstream.host}")
+        dump_cmd = f"{ssh_command} {destination} {shlex.quote(remote_command)} > {backup_path_quoted}"
         self.run_command(dump_cmd)
         self.run_command(f"pg_restore --file=/dev/null {backup_path_quoted}")
         _logger.info("Upstream database dump transferred and validated.")

@@ -520,6 +520,25 @@ Notes
   capture so the dump's space is reflected before replacement begins.
   Capture and validation now finish before
   filestore copying begins, increasing the time web is stopped for large restores.
+- `ODOO_UPSTREAM_USER` selects the SSH login. With `root`, the dump retains
+  the existing `sudo -u ODOO_UPSTREAM_DB_USER pg_dump -Fc` behavior. Other
+  logins run `pg_dump -U ODOO_UPSTREAM_DB_USER -Fc` directly, without sudo.
+  Configure that database role with read-only privileges and server-side
+  authentication for the SSH user. Devkit does not create users, grant privileges,
+  or deliver database passwords to the upstream host.
+  Restrict the upstream SSH key on the server to the exact dump and read-only
+  rsync of the configured filestore. Filestore capacity estimation uses an
+  rsync dry-run with statistics through that same read-only source, so the
+  key needs no remote `du` or general shell access. The real transfer pulls
+  from upstream; its `--delete` applies only to the local destination.
+  A forced-command wrapper must admit both rsync sender forms, the dry-run
+  and the transfer, while refusing receiver commands. With `rrsync -ro DIR`,
+  `ODOO_UPSTREAM_FILESTORE_PATH` names a path within that restricted directory;
+  use `/` when `DIR` is the exact source database's filestore. Do not reuse
+  its absolute host path unless the installed rrsync supports that mapping.
+  The existing best-effort behavior when size estimation is unavailable stays.
+  Use `DATA_WORKFLOW_SSH_KEY` for a dedicated identity. Provisioning upstream
+  access and changing hosted settings remain outside the local devkit commands.
 - Every upstream restore onto an instance that is not explicitly production
   (`PLATFORM_INSTANCE` `prod` or `production`) clears the production
   integration credentials and signing keys that the copy brought with it.
