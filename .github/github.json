@@ -20,7 +20,8 @@
       "default": "uv sync --locked"
     },
     "test": {
-      "default": "uv run python -m unittest discover -s tests",
+      "local": "uv run python -m unittest discover -s tests -p '{test_file}'",
+      "ci": "uv run python -m unittest discover -s tests",
       "runtimePythonLock": "uv lock --check --offline --no-config --project docker/runtime-python",
       "addonCiLock": "uv lock --check --offline --no-config --project docker/addon-tests",
       "liveOdoo": "uv run python -m odoo_devkit.addon_ci --image <community-devtools-image> --addons-root tests/live_odoo/addons --support-root <sparse-shared-addons-checkout> --devkit-checks --output <task-evidence-directory>"
