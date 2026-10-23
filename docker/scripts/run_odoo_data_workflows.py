@@ -675,7 +675,6 @@ class OdooDataWorkflowRunner:
     def _read_upstream_filestore_size_bytes(self) -> int | None:
         upstream = self._require_upstream()
         local_path = self._local_database_filestore_path()
-        local_path.mkdir(parents=True, exist_ok=True)
         command = [
             "rsync",
             "--dry-run",
