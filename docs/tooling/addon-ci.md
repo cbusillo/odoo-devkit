@@ -62,7 +62,7 @@ summary, zero tests, reported failures/errors, or nonzero Odoo exit fails the jo
 Callers upload evidence even when the run fails. Legacy callers may filter
 addon and test-input changes. Callers adopting `qualityGate.test.local` and
 `qualityGate.test.ci` run the complete suite for every source PR head and merge
-candidate under their supported trigger policy and the [local/CI test contract](https://github.com/cbusillo/codex-skills/blob/main/skills/github/references/config-schema.md#workflow-metadata).
+candidate under their supported trigger policy and the [local/CI test contract](https://github.com/cbusillo/codex-skills/blob/HEAD/skills/github/references/config-schema.md#workflow-metadata).
 
 Direct runner example, from an isolated devkit checkout (tenant declarations
 use the cross-checkout form described below):
@@ -84,16 +84,10 @@ uses only throwaway containers, never an installed runtime or Client data.
 
 Each caller retains its canonical runner invocation in `.github/github.json`
 under `qualityGate.test.addonOdoo` for the pinned action's validation. Adopted
-local/CI declarations can reference it; use the caller's focused `test.local`
-command and preparation instructions for local work. Export an absolute
-`ODOO_DEVKIT_REPO` and task-owned `ADDON_TEST_OUTPUT` before running the
-selected command. Tenant callers also export their intended
-`ODOO_SHARED_ADDONS_REPO`; shared-addon callers keep the support root at their
-current task worktree.
-Adopters require an absolute `ADDON_TEST_ROOT` selecting prepared owned-addon
-directories for local verification; follow the caller's preparation recipe.
-Only the raw legacy `addonOdoo` invocation defaults to all owned addons when
-that override is omitted. Adopted complete runs use `test.ci`.
+local/CI declarations can reference it. Use the caller's focused `test.local`
+and complete `test.ci` commands with the exported variables and fresh selection
+recipe in that caller's README. Legacy callers use `addonOdoo` with its declared
+defaults.
 
 Callers pass `command-metadata: source/.github/github.json` to the action and
 include metadata changes in any legacy workflow path filters; adopted callers
