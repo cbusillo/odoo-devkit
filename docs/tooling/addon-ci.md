@@ -61,8 +61,8 @@ seconds; the elapsed time is also reported in the Actions job summary. A missing
 summary, zero tests, reported failures/errors, or nonzero Odoo exit fails the job.
 Callers upload evidence even when the run fails. Legacy callers may filter
 addon and test-input changes. Callers adopting `qualityGate.test.local` and
-`qualityGate.test.ci` run the complete suite on every PR head, main push and
-train branch under the [local/CI test contract](https://github.com/cbusillo/codex-skills/blob/main/skills/github/references/config-schema.md#workflow-metadata).
+`qualityGate.test.ci` run the complete suite for every source PR head and merge
+candidate under their supported trigger policy and the [local/CI test contract](https://github.com/cbusillo/codex-skills/blob/main/skills/github/references/config-schema.md#workflow-metadata).
 
 Direct runner example, from an isolated devkit checkout (tenant declarations
 use the cross-checkout form described below):
