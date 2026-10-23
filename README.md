@@ -288,11 +288,14 @@ uv run python -m unittest discover -s tests -p 'test_runtime.py'
 
 Replace `test_runtime.py` with the relevant file; repeat for each affected
 module. Runtime environment, startup and data-workflow changes use their
-complete `test_runtime_environment_contract.py`, `test_odoo_startup.py` and
-`test_odoo_data_workflows.py` modules as applicable, plus modules found through
-the changed code's callers. Keep the metadata's format/lint gates and required
-inspection. CI runs `uv run python -m unittest discover -s tests`; live Odoo
-and tenant consumer-build checks retain their separate documented gates.
+complete `test_runtime_environment_contract.py`, `test_runtime_env_serialization.py`,
+`test_odoo_startup.py`, `test_odoo_data_workflows.py` and
+`test_docker_script_override_guards.py` modules as applicable. Addon CI credential
+handling uses `test_addon_ci.py`. Include modules found through the changed
+code's callers and tests importing those peers. Keep the metadata's format/lint
+gates and required inspection. CI runs `qualityGate.test.ci` from
+`.github/github.json`; live Odoo and tenant consumer-build checks retain their
+separate documented gates.
 
 For tenant repos that keep `instance = "local"` in the tracked manifest,
 `--instance testing` or `--instance prod` is not a shortcut for remote
