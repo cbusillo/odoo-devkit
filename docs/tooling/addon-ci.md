@@ -59,8 +59,10 @@ records selected modules, external source commits, requested image, the actual
 built test image's immutable ID, test count and elapsed
 seconds; the elapsed time is also reported in the Actions job summary. A missing
 summary, zero tests, reported failures/errors, or nonzero Odoo exit fails the job.
-Callers upload the evidence even when the run fails and apply path filters to
-addon and test-input changes, so docs-only changes do not run the suites.
+Callers upload evidence even when the run fails. Legacy callers may filter
+addon and test-input changes. Callers adopting `qualityGate.test.local` and
+`qualityGate.test.ci` run the complete suite for every source PR head and merge
+candidate under their supported trigger policy and the [local/CI test contract](https://github.com/cbusillo/codex-skills/blob/HEAD/skills/github/references/config-schema.md#workflow-metadata).
 
 Direct runner example, from an isolated devkit checkout (tenant declarations
 use the cross-checkout form described below):
@@ -77,23 +79,20 @@ Docker and uv are required. Choose an output directory on Developer-Artifacts
 on Chris-Studio; temporary build contexts stay beside that directory. The catalog's
 Python requirement is installed before offline lock checks. This runner
 uses only throwaway containers, never an installed runtime or Client data.
-Existing browser harnesses can still skip a broken suite;
-their failure propagation is tracked in shared-addons #40 and is separate from
-this runner's Odoo process/summary gate.
 
 ## Declared local command
 
-Each caller records its local invocation in `.github/github.json` under
-`qualityGate.test.addonOdoo`; READMEs and agent guides point there. Use
-`ODOO_DEVKIT_REPO` and `ODOO_SHARED_ADDONS_REPO` for external task worktrees,
-and set `ADDON_TEST_OUTPUT` to the task's evidence directory before running it.
-`ADDON_TEST_ROOT` can select a prepared directory containing one owned addon
-for focused local verification; keep its dependencies available through the
-support root. Omit that override to test all owned addons.
+Each caller retains its canonical runner invocation in `.github/github.json`
+under `qualityGate.test.addonOdoo` for the pinned action's validation. Adopted
+local/CI declarations can reference it. Use the caller's focused `test.local`
+and complete `test.ci` commands with the exported variables and fresh selection
+recipe in that caller's README. Legacy callers use `addonOdoo` with its declared
+defaults.
 
 Callers pass `command-metadata: source/.github/github.json` to the action and
-include metadata changes in their workflow path filters. Before creating test
-resources, the action runs `python -m odoo_devkit.addon_test_command` against
+include metadata changes in any legacy workflow path filters; adopted callers
+leave the complete CI gate unfiltered. Before creating test resources, the
+action runs `python -m odoo_devkit.addon_test_command` against
 that declaration. This linter requires the `uv --directory <devkit> run
 [--locked] python -m odoo_devkit.addon_ci` entrypoint and its required inputs,
 as a restricted single-line command, and rejects runtime updates, help-only
