@@ -4,6 +4,7 @@ import base64
 import importlib.util
 import json
 import os
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -59,6 +60,69 @@ else:
 
 
 class UpstreamRestoreFailureTests(unittest.TestCase):
+    def test_upstream_dump_uses_configured_role_without_privilege_escalation(self) -> None:
+        with self.restore_fixture() as (runner, root):
+            runner.upstream.db_user = "source_reader"
+            runner.upstream.db_name = "source with 'quotes'"
+            (root / "bin" / "ssh").write_text('#!/bin/sh\nfor command; do :; done\nexec /bin/sh -c "$command"\n')
+            dump = root / "bin" / "pg_dump"
+            dump.write_text(
+                '#!/bin/sh\n[ "$1" = -U ] && [ "$2" = "$FIXTURE_DB_ROLE" ] && '
+                '[ "$3" = -Fc ] && [ "$4" = "$FIXTURE_DB_NAME" ] || exit 77\nprintf "fixture archive"\n'
+            )
+            dump.chmod(0o755)
+            sudo = root / "bin" / "sudo"
+            sudo.write_text("#!/bin/sh\nexit 77\n")
+            sudo.chmod(0o755)
+            runner.os_env.update(FIXTURE_DB_ROLE=runner.upstream.db_user, FIXTURE_DB_NAME=runner.upstream.db_name)
+            backup = root / "captured dump"
+
+            runner.capture_upstream_database(backup)
+
+            self.assertEqual(backup.read_text(), "fixture archive")
+
+    def test_root_upstream_still_dumps_as_the_configured_os_user(self) -> None:
+        with self.restore_fixture() as (runner, root):
+            runner.upstream.user = "root"
+            (root / "bin" / "ssh").write_text('#!/bin/sh\nfor command; do :; done\nexec /bin/sh -c "$command"\n')
+            programs = {
+                "sudo": 'test "$1" = -u || exit 77\nexport FIXTURE_OS_USER="$2"\nshift 2\nexec "$@"\n',
+                "pg_dump": 'test "$FIXTURE_OS_USER" = "$FIXTURE_DB_ROLE" || exit 77\nprintf "fixture archive"\n',
+            }
+            for name, program in programs.items():
+                binary = root / "bin" / name
+                binary.write_text("#!/bin/sh\n" + program)
+                binary.chmod(0o755)
+            runner.os_env["FIXTURE_DB_ROLE"] = runner.upstream.db_user
+            backup = root / "captured dump"
+
+            runner.capture_upstream_database(backup)
+
+            self.assertEqual(backup.read_text(), "fixture archive")
+
+    def test_filestore_capacity_uses_a_read_only_rsync_pull(self) -> None:
+        with self.restore_fixture() as (runner, root):
+            arguments = root / "rsync-arguments"
+            binary = root / "bin" / "rsync"
+            binary.write_text(
+                '#!/bin/sh\nprintf "%s\\n" "$@" > "$FIXTURE_RSYNC_ARGUMENTS"\nprintf "Total file size: 12345 bytes\\n"\n'
+            )
+            binary.chmod(0o755)
+            runner.os_env["FIXTURE_RSYNC_ARGUMENTS"] = str(arguments)
+
+            self.assertEqual(runner._read_upstream_filestore_size_bytes(), 12345)
+
+            actual = arguments.read_text().splitlines()
+            self.assertIn("--dry-run", actual)
+            self.assertNotIn("--remove-source-files", actual)
+            self.assertEqual(actual[-2], f"{runner.upstream.user}@{runner.upstream.host}:{runner.upstream.filestore_path}/")
+            self.assertEqual(actual[-1], f"{runner._local_database_filestore_path()}/")
+            with patch.object(odoo_data_workflows.subprocess, "Popen") as popen:
+                odoo_data_workflows.OdooDataWorkflowRunner.overwrite_filestore(runner, None)
+            transfer = shlex.split(popen.call_args.args[0])
+            self.assertNotIn("--remove-source-files", transfer)
+            self.assertEqual(transfer[-2:], actual[-2:])
+
     @contextmanager
     def restore_fixture(
         self, *, ssh_status: int = 0, validation_status: int = 0, restore_status: int = 0
