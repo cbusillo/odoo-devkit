@@ -62,7 +62,7 @@ summary, zero tests, reported failures/errors, or nonzero Odoo exit fails the jo
 Callers upload evidence even when the run fails. Legacy callers may filter
 addon and test-input changes. Callers adopting `qualityGate.test.local` and
 `qualityGate.test.ci` run the complete suite on every PR head, main push and
-train branch, and require green current-head CI before checked ready.
+train branch under the [local/CI test contract](https://github.com/cbusillo/codex-skills/blob/main/skills/github/references/config-schema.md#workflow-metadata).
 
 Direct runner example, from an isolated devkit checkout (tenant declarations
 use the cross-checkout form described below):
@@ -87,14 +87,16 @@ under `qualityGate.test.addonOdoo` for the pinned action's validation. Adopted
 local/CI declarations can reference it; use the caller's focused `test.local`
 command and preparation instructions for local work. Use
 `ODOO_DEVKIT_REPO` and `ODOO_SHARED_ADDONS_REPO` for external task worktrees,
-and set `ADDON_TEST_OUTPUT` to the task's evidence directory before running it.
-`ADDON_TEST_ROOT` can select a prepared directory containing one owned addon
-for focused local verification; keep its dependencies available through the
-support root. Omit that override to test all owned addons.
+and set `ADDON_TEST_OUTPUT` to the task's evidence directory before running the selected command.
+Adopters require an absolute `ADDON_TEST_ROOT` selecting prepared owned-addon
+directories for local verification; follow the caller's preparation recipe.
+Only the raw legacy `addonOdoo` invocation defaults to all owned addons when
+that override is omitted. Adopted complete runs use `test.ci`.
 
 Callers pass `command-metadata: source/.github/github.json` to the action and
 include metadata changes in any legacy workflow path filters; adopted callers
-leave the complete CI gate unfiltered. Before creating test resources, the action runs `python -m odoo_devkit.addon_test_command` against
+leave the complete CI gate unfiltered. Before creating test resources, the
+action runs `python -m odoo_devkit.addon_test_command` against
 that declaration. This linter requires the `uv --directory <devkit> run
 [--locked] python -m odoo_devkit.addon_ci` entrypoint and its required inputs,
 as a restricted single-line command, and rejects runtime updates, help-only
