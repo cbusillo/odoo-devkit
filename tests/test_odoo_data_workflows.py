@@ -119,7 +119,8 @@ class UpstreamRestoreFailureTests(unittest.TestCase):
             self.assertEqual(actual[-1], f"{runner._local_database_filestore_path()}/")
             with patch.object(odoo_data_workflows.subprocess, "Popen") as popen:
                 odoo_data_workflows.OdooDataWorkflowRunner.overwrite_filestore(runner, None)
-            transfer = shlex.split(popen.call_args.args[0])
+            command = popen.call_args.args[0]
+            transfer = shlex.split(command) if isinstance(command, str) else command
             self.assertNotIn("--remove-source-files", transfer)
             self.assertEqual(transfer[-2:], actual[-2:])
 

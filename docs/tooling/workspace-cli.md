@@ -531,6 +531,11 @@ Notes
   rsync dry-run with statistics through that same read-only source, so the
   key needs no remote `du` or general shell access. The real transfer pulls
   from upstream; its `--delete` applies only to the local destination.
+  A forced-command wrapper must admit both rsync sender forms, the dry-run
+  and the transfer, while refusing receiver commands. With `rrsync -ro DIR`,
+  `ODOO_UPSTREAM_FILESTORE_PATH` names a path within that restricted directory;
+  use `/` when `DIR` is the exact source database's filestore. Do not reuse
+  its absolute host path unless the installed rrsync supports that mapping.
   The existing best-effort behavior when size estimation is unavailable stays.
   Use `DATA_WORKFLOW_SSH_KEY` for a dedicated identity. Provisioning upstream
   access and changing hosted settings remain outside the local devkit commands.

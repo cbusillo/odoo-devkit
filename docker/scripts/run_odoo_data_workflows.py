@@ -696,7 +696,7 @@ class OdooDataWorkflowRunner:
                 text=True,
                 check=True,
             )
-        except subprocess.CalledProcessError as command_error:
+        except (subprocess.CalledProcessError, OSError) as command_error:
             _logger.warning("Unable to estimate upstream filestore size: %s", command_error)
             return None
 
