@@ -60,6 +60,12 @@ else:
 
 
 class UpstreamRestoreFailureTests(unittest.TestCase):
+    def test_unavailable_rsync_estimate_preserves_best_effort_behavior(self) -> None:
+        with self.restore_fixture() as (runner, _root), patch.object(
+            odoo_data_workflows.subprocess, "run", side_effect=FileNotFoundError("rsync")
+        ):
+            self.assertIsNone(runner._read_upstream_filestore_size_bytes())
+
     def test_upstream_dump_uses_configured_role_without_privilege_escalation(self) -> None:
         with self.restore_fixture() as (runner, root):
             runner.upstream.db_user = "source_reader"
