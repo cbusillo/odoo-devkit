@@ -85,9 +85,11 @@ uses only throwaway containers, never an installed runtime or Client data.
 Each caller retains its canonical runner invocation in `.github/github.json`
 under `qualityGate.test.addonOdoo` for the pinned action's validation. Adopted
 local/CI declarations can reference it; use the caller's focused `test.local`
-command and preparation instructions for local work. Use
-`ODOO_DEVKIT_REPO` and `ODOO_SHARED_ADDONS_REPO` for external task worktrees,
-and set `ADDON_TEST_OUTPUT` to the task's evidence directory before running the selected command.
+command and preparation instructions for local work. Export an absolute
+`ODOO_DEVKIT_REPO` and task-owned `ADDON_TEST_OUTPUT` before running the
+selected command. Tenant callers also export their intended
+`ODOO_SHARED_ADDONS_REPO`; shared-addon callers keep the support root at their
+current task worktree.
 Adopters require an absolute `ADDON_TEST_ROOT` selecting prepared owned-addon
 directories for local verification; follow the caller's preparation recipe.
 Only the raw legacy `addonOdoo` invocation defaults to all owned addons when
