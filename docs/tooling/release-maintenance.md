@@ -165,3 +165,19 @@ exclusion diagnostic alone is not success evidence: callers require a successful
 exit, and production application also requires the matching post-commit digest.
 On historical images Launchplane also supplies the legacy indexing parameter
 with the same typed choice, preventing the older startup addon from re-enabling it.
+
+## Held scheduler startup
+
+After the native maintenance process commits credential stripping and overrides,
+Launchplane publishes its exact slot run marker. A separate cron container waits
+on that same marker and launches `run_odoo_startup.py -c <config> --scheduler
+--ready-file <marker-path> --ready-token <slot-token>`. Scheduler startup requires
+the matching SHA-256 token before any Odoo launch and checks it again after the
+existing database/workflow-lock waits. A missing or different marker refuses the
+launch. The release guard owns marker publication and writer fencing.
+
+This mode generates the process config and starts native Odoo with HTTP disabled,
+zero HTTP workers and one cron thread. It does not initialize modules, apply
+overrides, change administrator passwords or synchronize dependencies. Those
+steps belong to the already completed maintenance operation. This interface
+supplies no independent release or credential authority.

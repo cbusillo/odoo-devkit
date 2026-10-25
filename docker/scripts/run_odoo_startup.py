@@ -108,7 +108,15 @@ def _normalize_addons_path(first_item: str, raw_list: str) -> str:
 def _parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Bootstrap Odoo database and launch web server")
     parser.add_argument("-c", "--config", dest="config_path", required=True)
-    return parser.parse_args()
+    parser.add_argument("--scheduler", action="store_true")
+    parser.add_argument("--ready-file")
+    parser.add_argument("--ready-token")
+    arguments = parser.parse_args()
+    if arguments.scheduler and (not arguments.ready_file or not arguments.ready_token):
+        parser.error("scheduler requires --ready-file and --ready-token")
+    if not arguments.scheduler and (arguments.ready_file or arguments.ready_token):
+        parser.error("run marker options require --scheduler")
+    return arguments
 
 
 def _load_settings(argument_namespace: argparse.Namespace) -> StartupSettings:
@@ -551,10 +559,31 @@ def _wait_for_data_workflow_lock(settings: StartupSettings) -> None:
     print("[platform-startup] data workflow lock cleared; continuing startup", flush=True)
 
 
+def _require_scheduler_ready(arguments: argparse.Namespace) -> None:
+    if not re.fullmatch(r"[0-9a-f]{64}", arguments.ready_token or ""):
+        raise ValueError("scheduler run token is invalid")
+    if Path(arguments.ready_file).read_text().strip() != arguments.ready_token:
+        raise ValueError("scheduler is held until its committed run marker matches")
+
+
+def _launch_scheduler(settings: StartupSettings, arguments: argparse.Namespace) -> None:
+    _require_scheduler_ready(arguments)
+    _write_runtime_config(settings)
+    _wait_for_database(settings)
+    _wait_for_data_workflow_lock(settings)
+    _require_scheduler_ready(arguments)
+    command = _build_odoo_command(settings, stop_after_init=False)
+    command.extend(["--no-http", "--workers=0", "--max-cron-threads=1"])
+    os.execve(command[0], command, _odoo_environment(settings))
+
+
 def main() -> None:
     arguments = _parse_arguments()
     settings = _load_settings(arguments)
     _enforce_public_credential_preflight(settings)
+    if arguments.scheduler:
+        _launch_scheduler(settings, arguments)
+        return
     _write_runtime_config(settings)
     _wait_for_database(settings)
     _wait_for_data_workflow_lock(settings)
