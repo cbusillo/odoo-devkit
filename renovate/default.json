@@ -7,41 +7,29 @@
     "group:allNonMajor",
     "schedule:weekly"
   ],
+  "commitBody": "Renovate-Updates: [{{#each upgrades}}{{{toJSON (toObject 'depName' depName 'updateType' updateType 'currentVersion' currentVersion 'newVersion' newVersion 'currentValue' currentValue 'newValue' newValue 'currentDigest' currentDigest 'newDigest' newDigest)}}}{{#unless @last}},{{/unless}}{{/each}}]",
   "timezone": "America/New_York",
-  "labels": [
-    "dependencies"
-  ],
+  "labels": ["dependencies"],
   "prConcurrentLimit": 3,
   "rebaseWhen": "conflicted",
   "minimumReleaseAgeBehaviour": "timestamp-optional",
   "packageRules": [
     {
-      "matchUpdateTypes": [
-        "minor",
-        "patch"
-      ],
+      "matchUpdateTypes": ["minor", "patch"],
       "minimumReleaseAge": "7 days"
     },
     {
-      "matchUpdateTypes": [
-        "major"
-      ],
+      "matchUpdateTypes": ["major"],
       "minimumReleaseAge": "30 days"
     },
     {
       "description": "A Python minor version is a runtime upgrade, so it gets its own pull request instead of blocking the routine group.",
-      "matchDepNames": [
-        "python",
-        "**/python"
-      ],
-      "matchUpdateTypes": [
-        "minor"
-      ],
+      "matchDepNames": ["python", "**/python"],
+      "matchUpdateTypes": ["minor"],
       "groupName": "Python minor version"
     }
   ],
   "prBodyNotes": [
     "## Client test notes\n\nNothing for the Client to test: this updates dependencies with no intended behavior change. If an update here changes what the Client sees, the reviewing agent replaces this note before ready."
-  ],
-  "commitBody": "Renovate-Updates: [{{#each upgrades}}{{{toJSON (toObject 'depName' depName 'updateType' updateType 'currentVersion' currentVersion 'newVersion' newVersion 'currentValue' currentValue 'newValue' newValue 'currentDigest' currentDigest 'newDigest' newDigest)}}}{{#unless @last}},{{/unless}}{{/each}}]"
+  ]
 }
