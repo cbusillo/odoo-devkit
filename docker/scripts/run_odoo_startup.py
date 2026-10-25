@@ -581,7 +581,7 @@ def main() -> None:
     arguments = _parse_arguments()
     settings = _load_settings(arguments)
     _enforce_public_credential_preflight(settings)
-    if getattr(arguments, "scheduler", False):
+    if arguments.scheduler:
         _launch_scheduler(settings, arguments)
         return
     _write_runtime_config(settings)

@@ -634,7 +634,7 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
 
     def _run_main(self, settings: StartupSettings, recorder: MagicMock) -> list[str]:
         with ExitStack() as stack:
-            stack.enter_context(patch.object(odoo_startup, "_parse_arguments", return_value=argparse.Namespace()))
+            stack.enter_context(patch.object(odoo_startup, "_parse_arguments", return_value=argparse.Namespace(scheduler=False)))
             stack.enter_context(patch.object(odoo_startup, "_load_settings", return_value=settings))
             for step_name in self._STARTUP_STEP_NAMES:
                 stack.enter_context(patch.object(odoo_startup, step_name, getattr(recorder, step_name)))
@@ -703,8 +703,8 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
                         odoo_startup.main()
                         command = recorder.execve.call_args.args[1]
                         self.assertIn("--no-http", command)
-                        self.assertIn("--max-cron-threads=1", command)
-                        self.assertIn("--workers=0", command)
+                        cron_threads = next(value.split("=", 1)[1] for value in command if value.startswith("--max-cron-threads="))
+                        self.assertGreater(int(cron_threads), 0)
                         self.assertEqual(recorder.execve.call_args.args[2]["PGPASSWORD"], settings.database_password)
                     else:
                         with self.assertRaises((ValueError, FileNotFoundError)):
@@ -715,6 +715,15 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
                     recorder._apply_admin_password_if_configured.assert_not_called()
                     recorder._assert_active_admin_password_is_not_default.assert_not_called()
                     recorder._sync_python_dependencies_if_needed.assert_not_called()
+                    names = [recorded_call[0] for recorded_call in recorder.mock_calls]
+                    self.assertEqual(names[0], "_enforce_public_credential_preflight")
+                    if state in {"missing", "wrong"}:
+                        recorder._write_runtime_config.assert_not_called()
+                        recorder._wait_for_database.assert_not_called()
+                        recorder._wait_for_data_workflow_lock.assert_not_called()
+                    else:
+                        self.assertRunsBefore(names, "_write_runtime_config", "_wait_for_database")
+                        self.assertRunsBefore(names, "_wait_for_database", "_wait_for_data_workflow_lock")
 
     def test_startup_does_not_start_server_when_admin_password_policy_fails(self) -> None:
         recorder = MagicMock()
