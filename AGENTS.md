@@ -4,6 +4,12 @@ Treat this repo as the canonical home for the shared DX/runtime/bootstrap
 contract. It owns the rules that should be shared across tenants and surfaced
 into the generated workspace root.
 
+## What Odoo Devkit does
+
+Odoo Devkit assembles tenant-focused Odoo development workspaces from tracked manifests.
+It provides local runtime commands, workspace guidance, IDE setup, and artifact build inputs; Launchplane owns remote delivery.
+Evidence: [README.md](README.md).
+
 ## Start Here
 
 - Read the owner's [overall DIRECTION.md](https://github.com/cbusillo/direction/blob/HEAD/DIRECTION.md)
