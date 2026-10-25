@@ -333,3 +333,9 @@ beside `workspace.toml` by default, or the path in `[artifacts].inputs_file`),
 runtime and publish treat that file as the repo-owned source-input contract.
 Runtime and publish no longer fall back to `stack.toml` source selector
 fields.
+
+The shared `renovate/default.json` preset writes each update's type, versions,
+values and digests into a `Renovate-Updates` JSON commit trailer. Launchplane
+uses that immutable signed evidence for its existing dependency-update train
+admission. Renovate does not merge changes; majors and incomplete metadata
+remain for agent review.
