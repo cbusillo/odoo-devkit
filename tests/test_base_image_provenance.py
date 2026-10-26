@@ -80,6 +80,22 @@ class BaseImageProvenanceTests(unittest.TestCase):
             {f"{self.repository}@{self.digest}", *(f"{self.repository}@{descriptor['digest']}" for descriptor in self.descriptors)},
         )
 
+    def test_annotations_override_complete_inherited_config_identity(self) -> None:
+        inherited = {
+            "org.opencontainers.image.source": "https://github.com/example/inherited-base",
+            "org.opencontainers.image.revision": "f" * 40,
+        }
+        for config in self.configs.values():
+            config["config"]["Labels"] = inherited
+        provenance = self._resolve()
+        self.assertEqual(provenance.source_repository, self.source_repository)
+        self.assertEqual(provenance.source_ref, self.source_ref)
+
+    def test_generic_arm64_request_accepts_a_variant_descriptor(self) -> None:
+        self.descriptors[1]["platform"]["variant"] = "v8"
+        provenance = self._resolve()
+        self.assertEqual(provenance.source_ref, self.source_ref)
+
     def test_single_annotated_manifest_requires_its_actual_platform(self) -> None:
         provenance = self._resolve((self.platforms[0],), single=True)
         self.assertEqual(provenance.source_ref, self.source_ref)
@@ -108,13 +124,12 @@ class BaseImageProvenanceTests(unittest.TestCase):
     def test_partial_annotation_identity_never_falls_back_to_labels(self) -> None:
         for location in (self.index, self.manifests[self.descriptors[0]["digest"]]):
             with self.subTest(location=location):
-                original = copy.deepcopy(location["annotations"])
-                location["annotations"].pop("org.opencontainers.image.revision")
+                partial = copy.deepcopy(location["annotations"])
+                partial.pop("org.opencontainers.image.revision")
                 for config in self.configs.values():
                     config["config"]["Labels"] = copy.deepcopy(self.annotations)
-                with self.assertRaises(local_runtime.RuntimeCommandError):
+                with mock.patch.dict(location, {"annotations": partial}), self.assertRaises(local_runtime.RuntimeCommandError):
                     self._resolve()
-                location["annotations"] = original
 
     def test_index_and_platform_source_disagreement_is_rejected(self) -> None:
         for location in (self.index, self.manifests[self.descriptors[0]["digest"]]):
@@ -123,11 +138,11 @@ class BaseImageProvenanceTests(unittest.TestCase):
                 ("org.opencontainers.image.source", "https://github.com/example/other"),
             ):
                 with self.subTest(field=field, location=location):
-                    original = location["annotations"][field]
-                    location["annotations"][field] = value
-                    with self.assertRaises(local_runtime.RuntimeCommandError):
+                    with (
+                        mock.patch.dict(location["annotations"], {field: value}),
+                        self.assertRaises(local_runtime.RuntimeCommandError),
+                    ):
                         self._resolve()
-                    location["annotations"][field] = original
 
     def test_annotated_index_cannot_substitute_for_unidentified_child(self) -> None:
         self.manifests[self.descriptors[0]["digest"]].pop("annotations")
@@ -140,11 +155,11 @@ class BaseImageProvenanceTests(unittest.TestCase):
             ("org.opencontainers.image.source", "https://user:password@github.com/example/runtime"),
         ):
             with self.subTest(field=field):
-                original = self.index["annotations"][field]
-                self.index["annotations"][field] = value
-                with self.assertRaises(local_runtime.RuntimeCommandError):
+                with (
+                    mock.patch.dict(self.index["annotations"], {field: value}),
+                    self.assertRaises(local_runtime.RuntimeCommandError),
+                ):
                     self._resolve()
-                self.index["annotations"][field] = original
         self.descriptors[0]["digest"] = "mutable-tag"
         with self.assertRaises(local_runtime.RuntimeCommandError):
             self._resolve()

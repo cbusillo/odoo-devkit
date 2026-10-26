@@ -3376,7 +3376,7 @@ def resolve_base_image_provenance(
     metadata = _inspect_base_image_metadata(digest_reference, role, "--raw")
     if metadata.get("schemaVersion") != 2 or not required_platforms:
         raise RuntimeCommandError(f"Immutable {role} base image has invalid manifest metadata or target platforms.")
-    index_source = _base_image_source_pair(metadata.get("annotations"), role)
+    index_source = _base_image_source_pair(metadata.get("annotations"), f"{role} index {digest}")
     manifests = metadata.get("manifests")
     platform_configs: dict[str, object] | None = None
     if manifests is None:
@@ -3414,12 +3414,18 @@ def resolve_base_image_provenance(
     missing_platforms = set(required_platforms) - children.keys()
     if missing_platforms:
         raise RuntimeCommandError(f"Immutable {role} base image is missing target platforms: {sorted(missing_platforms)}")
-    child_sources = [_base_image_source_pair(child.get("annotations"), role) for child in children.values()]
+    child_sources = {
+        platform: _base_image_source_pair(child.get("annotations"), f"{role} {platform} manifest")
+        for platform, child in children.items()
+    }
     source_pairs: set[tuple[str, str]] = set()
-    if index_source is not None or any(source is not None for source in child_sources):
-        if any(source is None for source in child_sources):
-            raise RuntimeCommandError(f"Immutable {role} base image lacks source annotations on a target manifest.")
-        source_pairs.update(source for source in child_sources if source is not None)
+    if index_source is not None or any(source is not None for source in child_sources.values()):
+        unidentified_platforms = [platform for platform, source in child_sources.items() if source is None]
+        if unidentified_platforms:
+            raise RuntimeCommandError(
+                f"Immutable {role} base image lacks source annotations on target manifests: {unidentified_platforms}"
+            )
+        source_pairs.update(source for source in child_sources.values() if source is not None)
         if index_source is not None:
             source_pairs.add(index_source)
     else:
@@ -3433,7 +3439,9 @@ def resolve_base_image_provenance(
                 raise RuntimeCommandError(f"Immutable {role} base image lacks legacy source/revision labels for {platform}.")
             source_pairs.add(source)
     if len(source_pairs) != 1:
-        raise RuntimeCommandError(f"Immutable {role} base image source provenance differs across index or target platforms.")
+        raise RuntimeCommandError(
+            f"Immutable {role} base image source provenance differs across index or target platforms: {list(children)}"
+        )
     source_repository, source_ref = next(iter(source_pairs))
     return BaseImageProvenance(
         role=role,
