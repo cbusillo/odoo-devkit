@@ -1217,13 +1217,12 @@ def run_local_data_workflow(
                 "or run bootstrap intentionally."
             )
 
-    build_runtime(manifest=manifest, runtime_repo_path=runtime_repo_path, no_cache=False)
     compose_command = compose_base_command(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file)
 
-    database_up_command = compose_command + ["up", "-d", "--remove-orphans", "database"]
-    script_runner_up_command = compose_command + ["up", "-d", "--remove-orphans", "script-runner"]
+    database_up_command = compose_command + ["up", "-d", "--remove-orphans", "--no-build", "database"]
+    script_runner_up_command = compose_command + ["up", "-d", "--remove-orphans", "--no-build", "script-runner"]
     stop_web_command = compose_command + ["stop", "web"]
-    up_web_command = compose_command + ["up", "-d", "--remove-orphans", "web"]
+    up_web_command = compose_command + ["up", "-d", "--remove-orphans", "--no-build", "web"]
 
     run_command_best_effort(runtime_repo_path=runtime_repo_path, command=database_up_command)
     wait_for_compose_service(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file, service_name="database")

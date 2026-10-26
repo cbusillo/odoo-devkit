@@ -304,8 +304,12 @@ environment variables described below, then shell `GITHUB_TOKEN`/`GH_TOKEN`,
 then the existing local build credential lookup. The token goes to BuildKit as a secret, outside build arguments and
 generated build metadata. Tenant Python dependencies use the staged derived
 locks above; no separate local installer or hand-pinned source file is needed.
-Local bootstrap, restore and update use this same build before starting
-services. A build failure leaves the database and web service untouched.
+Local bootstrap, restore and update use the existing image and derived-lock
+overlay without rebuilding, so retrying a failed data operation does not
+require source or registry access. Before first use or after dependency/image
+changes, run `platform runtime build` or `platform runtime up --build` with
+the same manifest. A missing image fails instead of triggering an implicit
+build from an operator override.
 
 Local OpenUpgrade builds use the same strict frozen dependency install. Declare
 `openupgradelib` in owned addon metadata (including an exact VCS source when
