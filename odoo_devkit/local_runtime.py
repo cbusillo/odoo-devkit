@@ -3315,6 +3315,55 @@ def resolve_image_digest(image_reference: str) -> str:
     return digest_match.group(1).lower()
 
 
+def _inspect_base_image_metadata(digest_reference: str, role: str, *options: str) -> dict[str, object]:
+    result = subprocess.run(
+        ["docker", "buildx", "imagetools", "inspect", digest_reference, *options],
+        capture_output=True,
+        text=True,
+        env=command_execution_env(),
+    )
+    if result.returncode != 0:
+        details = clean_optional_value(result.stderr) or clean_optional_value(result.stdout)
+        raise RuntimeCommandError(
+            f"Unable to inspect immutable {role} base image metadata." + (f"\nDocker reported: {details}" if details else "")
+        )
+    try:
+        metadata = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeCommandError(f"Unable to parse immutable {role} base image metadata.") from error
+    if not isinstance(metadata, dict):
+        raise RuntimeCommandError(f"Immutable {role} base image metadata must be an object.")
+    return metadata
+
+
+def _base_image_source_pair(values: object, role: str) -> tuple[str, str] | None:
+    if values is None:
+        return None
+    if not isinstance(values, dict):
+        raise RuntimeCommandError(f"Immutable {role} base image has invalid provenance metadata.")
+    source_repository = values.get("org.opencontainers.image.source")
+    source_ref = values.get("org.opencontainers.image.revision")
+    if source_repository is None and source_ref is None:
+        return None
+    if not isinstance(source_repository, str) or not isinstance(source_ref, str):
+        raise RuntimeCommandError(f"Immutable {role} base image has incomplete source provenance.")
+    try:
+        return normalize_repository_identity(source_repository), normalize_git_commit(source_ref)
+    except ArtifactProvenanceError as error:
+        raise RuntimeCommandError(f"Immutable {role} base image has invalid source provenance.") from error
+
+
+def _base_image_platform_configs(digest_reference: str, role: str) -> dict[str, object]:
+    images = _inspect_base_image_metadata(digest_reference, role, "--format", "{{json .Image}}")
+    if isinstance(images.get("config"), dict) and isinstance(images.get("os"), str) and isinstance(images.get("architecture"), str):
+        single_platform = f"{images['os'].strip().lower()}/{images['architecture'].strip().lower()}"
+        variant = images.get("variant")
+        if isinstance(variant, str) and variant.strip():
+            single_platform += f"/{variant.strip().lower()}"
+        return {single_platform: images}
+    return images
+
+
 def resolve_base_image_provenance(
     *,
     image_reference: str,
@@ -3324,53 +3373,67 @@ def resolve_base_image_provenance(
     repository, tags = split_image_reference(image_reference)
     digest = resolve_image_digest(image_reference)
     digest_reference = f"{repository}@{digest}"
-    inspect_result = subprocess.run(
-        ["docker", "buildx", "imagetools", "inspect", digest_reference, "--format", "{{json .Image}}"],
-        capture_output=True,
-        text=True,
-        env=command_execution_env(),
-    )
-    if inspect_result.returncode != 0:
-        details = clean_optional_value(inspect_result.stderr) or clean_optional_value(inspect_result.stdout)
-        raise RuntimeCommandError(
-            f"Unable to inspect immutable {role} base image metadata." + (f"\nDocker reported: {details}" if details else "")
-        )
-    try:
-        images = json.loads(inspect_result.stdout)
-    except json.JSONDecodeError as error:
-        raise RuntimeCommandError(f"Unable to parse immutable {role} base image metadata.") from error
-    if not isinstance(images, dict):
-        raise RuntimeCommandError(f"Immutable {role} base image metadata must be platform-keyed.")
-    if isinstance(images.get("config"), dict) and isinstance(images.get("os"), str) and isinstance(images.get("architecture"), str):
-        single_platform = f"{images['os'].strip().lower()}/{images['architecture'].strip().lower()}"
-        variant = images.get("variant")
-        if isinstance(variant, str) and variant.strip():
-            single_platform += f"/{variant.strip().lower()}"
-        images = {single_platform: images}
-
-    source_pairs: set[tuple[str, str]] = set()
-    missing_platforms: list[str] = []
-    for platform in required_platforms:
-        image = images.get(platform)
-        if not isinstance(image, dict):
-            missing_platforms.append(platform)
-            continue
-        config = image.get("config")
-        labels = config.get("Labels") if isinstance(config, dict) else None
-        if not isinstance(labels, dict):
-            raise RuntimeCommandError(f"Immutable {role} base image lacks OCI labels for {platform}.")
-        source_repository = labels.get("org.opencontainers.image.source")
-        source_ref = labels.get("org.opencontainers.image.revision")
-        if not isinstance(source_repository, str) or not isinstance(source_ref, str):
-            raise RuntimeCommandError(f"Immutable {role} base image lacks source/revision labels for {platform}.")
-        try:
-            source_pairs.add((normalize_repository_identity(source_repository), normalize_git_commit(source_ref)))
-        except ArtifactProvenanceError as error:
-            raise RuntimeCommandError(f"Immutable {role} base image has invalid source provenance for {platform}.") from error
+    metadata = _inspect_base_image_metadata(digest_reference, role, "--raw")
+    if metadata.get("schemaVersion") != 2 or not required_platforms:
+        raise RuntimeCommandError(f"Immutable {role} base image has invalid manifest metadata or target platforms.")
+    index_source = _base_image_source_pair(metadata.get("annotations"), role)
+    manifests = metadata.get("manifests")
+    platform_configs: dict[str, object] | None = None
+    if manifests is None:
+        if not isinstance(metadata.get("config"), dict) or not isinstance(metadata.get("layers"), list):
+            raise RuntimeCommandError(f"Immutable {role} base image must be an image manifest or index.")
+        platform_configs = _base_image_platform_configs(digest_reference, role)
+        children = {platform: metadata for platform in required_platforms if platform in platform_configs}
+    else:
+        if not isinstance(manifests, list):
+            raise RuntimeCommandError(f"Immutable {role} base image index has invalid manifests.")
+        children: dict[str, dict[str, object]] = {}
+        for descriptor in manifests:
+            if not isinstance(descriptor, dict) or not isinstance(descriptor.get("platform"), dict):
+                continue
+            platform_data = descriptor["platform"]
+            platform = f"{platform_data.get('os', '')}/{platform_data.get('architecture', '')}"
+            variant = platform_data.get("variant")
+            if isinstance(variant, str) and f"{platform}/{variant}" in required_platforms:
+                platform += f"/{variant}"
+            if platform not in required_platforms:
+                continue
+            if platform in children:
+                raise RuntimeCommandError(f"Immutable {role} base image has ambiguous manifests for {platform}.")
+            child_digest = descriptor.get("digest")
+            if not isinstance(child_digest, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", child_digest) is None:
+                raise RuntimeCommandError(f"Immutable {role} base image has an invalid manifest digest for {platform}.")
+            child = _inspect_base_image_metadata(f"{repository}@{child_digest}", role, "--raw")
+            if (
+                child.get("schemaVersion") != 2
+                or not isinstance(child.get("config"), dict)
+                or not isinstance(child.get("layers"), list)
+            ):
+                raise RuntimeCommandError(f"Immutable {role} base image has an invalid image manifest for {platform}.")
+            children[platform] = child
+    missing_platforms = set(required_platforms) - children.keys()
     if missing_platforms:
         raise RuntimeCommandError(f"Immutable {role} base image is missing target platforms: {sorted(missing_platforms)}")
+    child_sources = [_base_image_source_pair(child.get("annotations"), role) for child in children.values()]
+    source_pairs: set[tuple[str, str]] = set()
+    if index_source is not None or any(source is not None for source in child_sources):
+        if any(source is None for source in child_sources):
+            raise RuntimeCommandError(f"Immutable {role} base image lacks source annotations on a target manifest.")
+        source_pairs.update(source for source in child_sources if source is not None)
+        if index_source is not None:
+            source_pairs.add(index_source)
+    else:
+        if platform_configs is None:
+            platform_configs = _base_image_platform_configs(digest_reference, role)
+        for platform in required_platforms:
+            image = platform_configs.get(platform)
+            config = image.get("config") if isinstance(image, dict) else None
+            source = _base_image_source_pair(config.get("Labels") if isinstance(config, dict) else None, role)
+            if source is None:
+                raise RuntimeCommandError(f"Immutable {role} base image lacks legacy source/revision labels for {platform}.")
+            source_pairs.add(source)
     if len(source_pairs) != 1:
-        raise RuntimeCommandError(f"Immutable {role} base image source provenance differs across target platforms.")
+        raise RuntimeCommandError(f"Immutable {role} base image source provenance differs across index or target platforms.")
     source_repository, source_ref = next(iter(source_pairs))
     return BaseImageProvenance(
         role=role,

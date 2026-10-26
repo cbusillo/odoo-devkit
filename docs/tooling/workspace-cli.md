@@ -677,7 +677,7 @@ Notes
   tenant/devkit/shared Git commits; stages only tracked regular files; hashes
   the exact support/runtime and tenant lock bytes; resolves configured addon
   selectors to exact Git SHAs; resolves both base images to immutable digests
-  and verifies their OCI source/revision labels; dry-runs the exact exported
+  and verifies their OCI index/platform source/revision annotations (or config labels on unannotated legacy bases); dry-runs the exact exported
   support and tenant requirements against each selected base-runtime platform's
   installed package constraints; then builds and pushes the requested artifact
   tag. Base-package overlap fails before Buildx starts instead of surfacing only

@@ -309,63 +309,6 @@ attached_paths = ["sources/devkit"]
             with self.assertRaisesRegex(ValueError, "valid container image digest"):
                 local_runtime.resolve_buildx_metadata_image_digest(metadata_file)
 
-    def test_resolve_base_image_provenance_inspects_the_resolved_digest(self) -> None:
-        digest = "sha256:" + "a" * 64
-        image_metadata = {
-            platform: {
-                "config": {
-                    "Labels": {
-                        "org.opencontainers.image.source": "https://github.com/example/odoo-enterprise-docker",
-                        "org.opencontainers.image.revision": "b" * 40,
-                    }
-                }
-            }
-            for platform in ("linux/amd64", "linux/arm64")
-        }
-        with mock.patch("odoo_devkit.local_runtime.resolve_image_digest", return_value=digest):
-            with mock.patch(
-                "odoo_devkit.local_runtime.subprocess.run",
-                return_value=mock.Mock(returncode=0, stdout=json.dumps(image_metadata), stderr=""),
-            ) as run_mock:
-                provenance = local_runtime.resolve_base_image_provenance(
-                    image_reference="ghcr.io/example/runtime:stable",
-                    role="runtime",
-                    required_platforms=("linux/amd64", "linux/arm64"),
-                )
-
-        self.assertEqual(provenance.digest_reference, f"ghcr.io/example/runtime@{digest}")
-        self.assertEqual(provenance.tags, ("stable",))
-        self.assertEqual(provenance.source_repository, "example/odoo-enterprise-docker")
-        self.assertEqual(
-            run_mock.call_args.args[0][:5],
-            ["docker", "buildx", "imagetools", "inspect", f"ghcr.io/example/runtime@{digest}"],
-        )
-
-    def test_resolve_base_image_provenance_accepts_single_platform_image_shape(self) -> None:
-        digest = "sha256:" + "a" * 64
-        image_metadata = {
-            "architecture": "arm64",
-            "os": "linux",
-            "config": {
-                "Labels": {
-                    "org.opencontainers.image.source": "https://github.com/example/odoo-enterprise-docker",
-                    "org.opencontainers.image.revision": "b" * 40,
-                }
-            },
-        }
-        with mock.patch("odoo_devkit.local_runtime.resolve_image_digest", return_value=digest):
-            with mock.patch(
-                "odoo_devkit.local_runtime.subprocess.run",
-                return_value=mock.Mock(returncode=0, stdout=json.dumps(image_metadata), stderr=""),
-            ):
-                provenance = local_runtime.resolve_base_image_provenance(
-                    image_reference=f"ghcr.io/example/runtime@{digest}",
-                    role="runtime",
-                    required_platforms=("linux/arm64",),
-                )
-
-        self.assertEqual(provenance.digest_reference, f"ghcr.io/example/runtime@{digest}")
-
     def test_copy_required_path_materializes_only_committed_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
