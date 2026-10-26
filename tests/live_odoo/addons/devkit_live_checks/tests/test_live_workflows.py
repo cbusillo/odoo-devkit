@@ -113,7 +113,7 @@ class TestLiveWorkflows(TransactionCase):
             },
         }
 
-    def test_planned_maintenance_single_registry_and_full_run_timing(self) -> None:
+    def test_planned_maintenance_reuses_process_and_reduces_registry_loads(self) -> None:
         timings = {}
         for mode in ("baseline", "planned"):
             with self.target() as runner:
@@ -131,8 +131,19 @@ class TestLiveWorkflows(TransactionCase):
                         ODOO_RELEASE_MODULE_PLAN_FILE=str(plan_file), ODOO_RELEASE_IMAGE=payload["release"]["candidate_image"]
                     )
                 logs = []
+                odoo_processes: list[list[str]] = []
+                odoo_executable = runner._odoo_shell_command()[0]
 
-                def observed(*args: Any, _logs: list[str] = logs, **kwargs: Any) -> Any:
+                def observed(
+                    *args: Any,
+                    _logs: list[str] = logs,
+                    _processes: list[list[str]] = odoo_processes,
+                    _odoo_executable: str = odoo_executable,
+                    **kwargs: Any,
+                ) -> Any:
+                    command = args[0]
+                    if command[0] == _odoo_executable and not {"--help", "-h"}.intersection(command):
+                        _processes.append(command)
                     kwargs["capture_output"] = True
                     try:
                         result = REAL_RUN(*args, **kwargs)
@@ -148,9 +159,25 @@ class TestLiveWorkflows(TransactionCase):
                 timings[mode] = {
                     "seconds": time.monotonic() - started,
                     "registry_loads": sum(log.count("Registry loaded in") for log in logs),
+                    "odoo_processes": len(odoo_processes),
+                    "module_update_passes": sum(log.count("updating modules list") for log in logs),
+                    "signaling_reloads": sum(log.count("Reloading the model registry after database signaling.") for log in logs),
                 }
                 if mode == "planned":
-                    self.assertEqual(timings[mode]["registry_loads"], 1, "Planned maintenance loaded multiple registries")
+                    registry_events = [
+                        line
+                        for log in logs
+                        for line in log.splitlines()
+                        if "Registry loaded in" in line or "updating modules list" in line or "Reloading the model registry" in line
+                    ]
+                    print("DEVKIT_MAINTENANCE_REGISTRY_EVENTS " + json.dumps(registry_events), flush=True)
+                    self.assertEqual(timings[mode]["odoo_processes"], 1, "Planned maintenance started multiple Odoo processes")
+                    self.assertEqual(timings[mode]["module_update_passes"], 1, "Planned maintenance repeated module updates")
+                    self.assertEqual(
+                        timings[mode]["registry_loads"],
+                        1 + timings[mode]["signaling_reloads"],
+                        "Planned maintenance loaded registries beyond native signaling finalization",
+                    )
                     self.assertEqual(runner.maintenance_receipt["update_modules"], ["ci_dependent_probe", "ci_probe"])
                     self.assertEqual(runner.maintenance_receipt["install_modules"], ["ci_boundary_install_probe"])
                     self.assert_password(runner)

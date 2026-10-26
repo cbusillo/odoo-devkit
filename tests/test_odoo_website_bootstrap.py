@@ -97,6 +97,26 @@ class FakeModel:
         return self.record
 
 
+class FakeModules(FakeModel):
+    def __init__(self, states: dict[str, str] | None = None) -> None:
+        super().__init__(record=FakeRecord(truthy=True))
+        self.states = (
+            states if states is not None else {"website": "installed", "website_sale": "installed", "cm_website": "installed"}
+        )
+
+    def search(self, domain: list[tuple[str, str, object]], *, limit: int = 1) -> FakeRecord:
+        super().search(domain, limit=limit)
+        if not self.record:
+            return self.record
+        for name, state in self.states.items():
+            values = {"name": name, "state": state}
+            if all(
+                values[field] == expected if operator == "=" else values[field] in expected for field, operator, expected in domain
+            ):
+                return self.record
+        return FakeRecord(truthy=False)
+
+
 class FakeConfigParameter:
     def __init__(self) -> None:
         self.values: dict[str, str] = {}
@@ -119,7 +139,7 @@ class FakeEnv:
         self.website = FakeRecord(fields=("name", "domain", "homepage_id", "homepage_url", "logo"))
         self.default_website = self.website
         self.config_parameter = FakeConfigParameter()
-        self.modules = FakeModel(record=FakeRecord(fields=(), truthy=True))
+        self.modules = FakeModules()
         self.pages = FakeModel(record=FakeRecord(fields=(), truthy=False))
         self.langs = FakeModel(record=FakeRecord(fields=(), truthy=False))
         self.refs: dict[str, FakeRecord] = {}
@@ -144,6 +164,19 @@ class FakeEnv:
 
 
 class WebsiteBootstrapHelperTests(unittest.TestCase):
+    def test_pending_website_stays_loaded_but_route_modules_require_installed(self) -> None:
+        for state in ("to upgrade", "to remove"):
+            with self.subTest(state=state):
+                env = FakeEnv()
+                env.modules.states["website"] = state
+                website_bootstrap.apply_website_bootstrap(env, {"website_bootstrap": {"name": "Loaded website"}})
+                self.assertEqual(env.website.name, "Loaded website")
+                env.modules.states["website_sale"] = state
+                with self.assertRaisesRegex(RuntimeError, "not installed"):
+                    website_bootstrap.apply_website_bootstrap(
+                        env, {"website_bootstrap": {"homepage_url": "/shop", "routes_source": {"module": "website_sale"}}}
+                    )
+
     def test_base_website_without_installed_addon_refuses_bootstrap(self) -> None:
         env = FakeEnv()
         env.modules.record = FakeRecord(truthy=False)

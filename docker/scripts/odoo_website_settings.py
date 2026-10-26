@@ -32,15 +32,14 @@ def write_string_parameter(parameters: Any, key: str, value: str) -> None:
     write(key, value)
 
 
-def module_is_installed(env: Any, module_name: object) -> bool:
-    normalized_module_name = str(module_name or "").strip()
-    if not normalized_module_name:
+def website_is_loaded(env: Any) -> bool:
+    if "website" not in env.registry:
         return False
     module = (
         env["ir.module.module"]
         .sudo()
         .search(
-            [("name", "=", normalized_module_name), ("state", "=", "installed")],
+            [("name", "=", "website"), ("state", "in", ("installed", "to upgrade", "to remove"))],
             limit=1,
         )
     )
@@ -69,7 +68,7 @@ def apply_website_settings(env: Any, payload: dict[str, object] | None, *, insta
     """
     raw = payload.get("website_settings") if payload else None
     production = instance.strip().lower() in PRODUCTION_INSTANCE_NAMES
-    if "website" not in env.registry or not module_is_installed(env, "website"):
+    if not website_is_loaded(env):
         if raw is not None:
             raise RuntimeError("Website settings require the installed website addon.")
         return
