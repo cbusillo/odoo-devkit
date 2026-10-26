@@ -552,6 +552,12 @@ def build_runtime(*, manifest: WorkspaceManifest, runtime_repo_path: Path, no_ca
             raise RuntimeCommandError(
                 f"Strict local builds do not support {key}; remove it and declare Python dependencies in locked tenant metadata, normalize, and rebuild."
             )
+    github_token = resolve_source_github_token(runtime_context.environment.merged_values) or resolve_github_token_for_build(
+        runtime_context.environment.merged_values
+    )
+    values, _ = resolve_artifact_runtime_source_repository_refs(
+        runtime_values={**values, "GITHUB_TOKEN": github_token or ""},
+    )
     write_runtime_odoo_conf_file(
         runtime_selection=runtime_context.selection,
         stack_definition=runtime_context.stack.stack_definition,
@@ -570,7 +576,6 @@ def build_runtime(*, manifest: WorkspaceManifest, runtime_repo_path: Path, no_ca
         values[key] = f"{repository}@{resolve_image_digest(values[key])}"
     catalogs = read_base_python_catalogs(image=values["ODOO_BASE_RUNTIME_IMAGE"], platforms=DEFAULT_ARTIFACT_IMAGE_PLATFORMS)
     build_environment = command_execution_env()
-    github_token = resolve_github_token_for_build(runtime_context.environment.merged_values)
     if github_token is not None:
         build_environment["GITHUB_TOKEN"] = github_token
     tenant_root = manifest.tenant_repo.resolve_path(manifest_directory=manifest.manifest_directory)

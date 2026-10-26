@@ -1456,15 +1456,19 @@ homepage = true
             self._configure_publish_runtime_payload(
                 instance="local",
                 environment={
-                    "GITHUB_TOKEN": "synthetic-build-token",
+                    "GITHUB_TOKEN": "",
                     "OPENUPGRADE_ENABLED": "True",
-                    "OPENUPGRADE_ADDON_REPOSITORY": "example/OpenUpgrade@" + "4" * 40,
+                    "OPENUPGRADE_ADDON_REPOSITORY": "example/OpenUpgrade@migration",
                 },
             )
             tenant_root = manifest.tenant_repo.resolve_path(manifest_directory=manifest.manifest_directory)
             assert manifest.runtime_repo is not None
             runtime_root = manifest.runtime_repo.resolve_path(manifest_directory=manifest.manifest_directory)
             assert tenant_root is not None and runtime_root is not None
+            (tenant_root / "artifact-inputs.toml").write_text(
+                'schema_version = 1\nsources = [{ repository = "example/addons", selector = "main" }]\n'
+            )
+            resolved_sources = {"example/addons": "3" * 40, "example/OpenUpgrade": "4" * 40}
             nested = tenant_root / "addons/opw_custom/static/src/shared/file.js"
             nested.parent.mkdir(parents=True)
             nested.write_text("export default 1;\n")
@@ -1478,9 +1482,14 @@ homepage = true
             for repo in (tenant_root, runtime_root):
                 subprocess.run(["git", "remote", "remove", "origin"], cwd=repo, check=True)
             (tenant_root / "addons/shared").symlink_to(root / "absent-shared", target_is_directory=True)
-            # Exercise the shipped stack through the build boundary, rather than asserting config text.
-            (runtime_root / "platform/stack.toml").write_bytes(
-                (Path(__file__).resolve().parents[1] / "platform/stack.toml").read_bytes()
+            (runtime_root / "platform/stack.toml").write_text(
+                "\n".join(
+                    'OPENUPGRADE_ADDON_REPOSITORY = "example/OpenUpgrade@migration"'
+                    if line.startswith("OPENUPGRADE_ADDON_REPOSITORY =")
+                    else line
+                    for line in (Path(__file__).resolve().parents[1] / "platform/stack.toml").read_text().splitlines()
+                )
+                + "\n"
             )
             source_lock = (tenant_root / "uv.lock").read_bytes()
             catalogs = tuple(
@@ -1496,12 +1505,30 @@ homepage = true
                 self.assertTrue((stage / "addons/opw_custom/static/src/shared/file.js").is_file())
                 self.assertFalse((stage / "addons/opw_custom/static/src/shared/ignored.private").exists())
                 self.assertEqual(environment_overrides["GITHUB_TOKEN"], "synthetic-build-token")
+                build = json.loads((stage / "compose.json").read_text())["services"]["web"]["build"]
+                self.assertEqual(
+                    build["args"]["ODOO_ADDON_REPOSITORIES"].split(","),
+                    [f"{repository}@{commit}" for repository, commit in resolved_sources.items()],
+                )
+                self.assertEqual(
+                    build["args"]["OPENUPGRADE_ADDON_REPOSITORY"], f"example/OpenUpgrade@{resolved_sources['example/OpenUpgrade']}"
+                )
+                self.assertNotIn("GITHUB_TOKEN", build["args"])
                 values = local_runtime.parse_env_file(runtime_values_path)
                 self.assertEqual(values["ODOO_PYTHON_SYNC_SKIP_ADDONS"], "")
                 self.assertNotIn("OPENUPGRADELIB_INSTALL_SPEC", values)
                 staged_locks.append((stage / "project/uv.lock").read_bytes())
 
             with (
+                mock.patch.dict(
+                    os.environ,
+                    dict.fromkeys((*local_runtime.SOURCE_GITHUB_TOKEN_ENV_KEYS, "GITHUB_TOKEN", "GH_TOKEN"), ""),
+                ),
+                mock.patch("odoo_devkit.local_runtime.resolve_ghcr_read_token", return_value="synthetic-registry-token"),
+                mock.patch(
+                    "odoo_devkit.local_runtime.resolve_source_repository_ref_to_git_sha",
+                    side_effect=lambda *, repository, **_kwargs: resolved_sources[repository],
+                ) as resolve_source,
                 mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_base_images"),
                 mock.patch("odoo_devkit.local_runtime.resolve_image_digest", return_value="sha256:" + "2" * 64),
                 mock.patch("odoo_devkit.local_runtime.read_base_python_catalogs", return_value=catalogs),
@@ -1512,8 +1539,14 @@ homepage = true
                 with self.assertRaises(local_runtime.RuntimeCommandError):
                     local_runtime.build_runtime(manifest=manifest, runtime_repo_path=runtime_root, no_cache=True)
                 self.assertFalse(overlay.exists())
+                self.assertEqual(
+                    {call.kwargs["github_token"] for call in resolve_source.call_args_list}, {"synthetic-registry-token"}
+                )
+                resolve_source.reset_mock()
                 command.side_effect = execute
-                local_runtime.build_runtime(manifest=manifest, runtime_repo_path=runtime_root, no_cache=True)
+                with mock.patch.dict(os.environ, {"ODOO_DEVKIT_SOURCE_GITHUB_TOKEN": "synthetic-build-token"}):
+                    local_runtime.build_runtime(manifest=manifest, runtime_repo_path=runtime_root, no_cache=True)
+                self.assertEqual({call.kwargs["github_token"] for call in resolve_source.call_args_list}, {"synthetic-build-token"})
             self.assertTrue(overlay.is_file())
             self.assertFalse(any((runtime_root / ".platform/dependencies").rglob("build-*")))
             tenant_source = local_runtime.GitSourceSnapshot(
