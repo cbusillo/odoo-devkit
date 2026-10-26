@@ -437,6 +437,14 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
         environment = run_mock.call_args.kwargs["env"]
         self.assertEqual(environment["PYTHONPATH"], "/volumes/scripts:/opt/custom")
 
+    def test_launch_environment_preserves_resolved_addons_over_inherited_paths(self) -> None:
+        settings = replace(self._settings(), addons_path="/fixture/addons,/fixture/addons/shared")
+
+        with patch.dict(os.environ, {"ODOO_ADDONS_PATH": "/fixture/addons"}, clear=True):
+            environment = odoo_startup._odoo_environment(settings)
+
+        self.assertEqual(environment["ODOO_ADDONS_PATH"], settings.addons_path)
+
     def test_odoo_shell_subprocess_prepends_runtime_scripts_to_pythonpath(self) -> None:
         settings = self._settings()
 

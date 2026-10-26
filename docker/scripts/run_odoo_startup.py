@@ -341,6 +341,7 @@ def _build_odoo_shell_command(settings: StartupSettings) -> list[str]:
 
 def _odoo_environment(settings: StartupSettings) -> dict[str, str]:
     environment = os.environ.copy()
+    environment["ODOO_ADDONS_PATH"] = settings.addons_path
     # Odoo's native environment option preserves whitespace that its conf reader trims.
     # Override even an inherited PGPASSWORD so every launch uses these settings.
     environment["PGPASSWORD"] = settings.database_password
