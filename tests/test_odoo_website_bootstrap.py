@@ -110,7 +110,7 @@ class FakeConfigParameter:
             return
         self.values[key] = value
 
-    def get_param(self, key: str, default: str = "") -> str:
+    def get_param(self, key: str, default: str | bool = False) -> str | bool:
         return self.values.get(key) or default
 
 
@@ -144,6 +144,12 @@ class FakeEnv:
 
 
 class WebsiteBootstrapHelperTests(unittest.TestCase):
+    def test_base_website_without_installed_addon_refuses_bootstrap(self) -> None:
+        env = FakeEnv()
+        env.modules.record = FakeRecord(truthy=False)
+        with self.assertRaisesRegex(RuntimeError, "website module is not installed"):
+            website_bootstrap.apply_website_bootstrap(env, {"website_bootstrap": {"name": "Unsupported"}})
+
     def test_attachment_binary_uses_encoded_content_instead_of_proxy_text(self) -> None:
         class BinaryAttachment:
             def to_base64(self) -> str:

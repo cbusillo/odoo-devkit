@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from odoo.tests import tagged
 from odoo.tests.common import TransactionCase
-from odoo_website_settings import INDEXING_PARAMETER, apply_website_settings
+from odoo_website_settings import INDEXING_PARAMETER, apply_website_settings, read_string_parameter
 
 
 @tagged("post_install", "-at_install")
@@ -42,7 +42,7 @@ class TestNativeWebsiteSettings(TransactionCase):
         self.assertFalse(website.google_analytics_key)
         self.assertFalse(website.cookies_bar)
         self.assertTrue(website.block_third_party_domains)
-        self.assertEqual(self.env["ir.config_parameter"].sudo().get_param(INDEXING_PARAMETER), "0")
+        self.assertEqual(read_string_parameter(self.env["ir.config_parameter"].sudo(), INDEXING_PARAMETER), "0")
 
     def test_native_readback_refuses_a_planted_noop_write(self) -> None:
         website = self.env["website"].create({"name": "Synthetic fault", "domain": "fault.example.test"})

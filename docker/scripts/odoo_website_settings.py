@@ -32,6 +32,21 @@ def write_string_parameter(parameters: Any, key: str, value: str) -> None:
     write(key, value)
 
 
+def module_is_installed(env: Any, module_name: object) -> bool:
+    normalized_module_name = str(module_name or "").strip()
+    if not normalized_module_name:
+        return False
+    module = (
+        env["ir.module.module"]
+        .sudo()
+        .search(
+            [("name", "=", normalized_module_name), ("state", "=", "installed")],
+            limit=1,
+        )
+    )
+    return bool(module)
+
+
 def exclude_collection(websites: Any, parameters: Any) -> None:
     for website in websites.search([]):
         if "google_analytics_key" not in website._fields:
@@ -54,9 +69,9 @@ def apply_website_settings(env: Any, payload: dict[str, object] | None, *, insta
     """
     raw = payload.get("website_settings") if payload else None
     production = instance.strip().lower() in PRODUCTION_INSTANCE_NAMES
-    if "website" not in env.registry:
+    if "website" not in env.registry or not module_is_installed(env, "website"):
         if raw is not None:
-            raise RuntimeError("Website settings require the native website model.")
+            raise RuntimeError("Website settings require the installed website addon.")
         return
     websites = env["website"].sudo()
     parameters = env["ir.config_parameter"].sudo()

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlparse
 
-from odoo_website_settings import read_string_parameter, write_string_parameter
+from odoo_website_settings import module_is_installed, read_string_parameter, write_string_parameter
 
 ODOO_INSTANCE_OVERRIDES_PAYLOAD_ENV_KEY = "ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64"
 LAUNCHPLANE_INSTANCE_OVERRIDES_REQUIRED_ENV_KEY = "LAUNCHPLANE_INSTANCE_OVERRIDES_REQUIRED"
@@ -339,21 +339,6 @@ def _homepage_values(website: Any, *, homepage_url: str, homepage_page: Any | No
     return values
 
 
-def _module_is_installed(env: Any, module_name: object) -> bool:
-    normalized_module_name = str(module_name or "").strip()
-    if not normalized_module_name:
-        return False
-    module = (
-        env["ir.module.module"]
-        .sudo()
-        .search(
-            [("name", "=", normalized_module_name), ("state", "=", "installed")],
-            limit=1,
-        )
-    )
-    return bool(module)
-
-
 def _resolve_bootstrap_logo_path(raw_logo_path: object) -> Path | None:
     logo_path = str(raw_logo_path or "").strip()
     if not logo_path:
@@ -406,7 +391,7 @@ def _verify_route(env: Any, website: Any, route_payload: dict[str, object], *, f
     if page:
         return page
     if module_name:
-        if not _module_is_installed(env, module_name):
+        if not module_is_installed(env, module_name):
             raise RuntimeError(f"Website bootstrap route {route_url!r} requires module {module_name!r}, but it is not installed.")
         print(f"Website bootstrap route {route_url} is delegated to installed module {module_name}.")
         return None
@@ -430,7 +415,7 @@ def apply_website_bootstrap(env: Any, parsed_payload: dict[str, object] | None) 
         raise RuntimeError("Odoo instance override payload field 'website_bootstrap' must be an object.")
     if not website_payload:
         return
-    if "website" not in env.registry:
+    if "website" not in env.registry or not module_is_installed(env, "website"):
         raise RuntimeError("Website bootstrap supplied, but the website module is not installed.")
 
     canonical_url = str(website_payload.get("canonical_url") or _payload_web_base_url(parsed_payload) or "").strip()

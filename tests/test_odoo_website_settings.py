@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import Mock, patch
 
-from tests.test_odoo_website_bootstrap import FakeRecord
+from tests.test_odoo_website_bootstrap import FakeModel, FakeRecord
 
 
 def load_consumer() -> types.ModuleType:
@@ -67,7 +67,7 @@ class Parameters:
         if self.persist:
             self.values[key] = value
 
-    def get_param(self, key: str, default: str = "") -> str:
+    def get_param(self, key: str, default: str | bool = False) -> str | bool:
         return self.values.get(key) or default
 
 
@@ -105,9 +105,15 @@ class Environment:
             ]
         )
         self.parameters = Parameters()
+        self.modules = FakeModel(record=FakeRecord(truthy=True))
 
     def __getitem__(self, key: str) -> Any:
-        return self.websites if key == "website" else self.parameters
+        return {
+            "website": self.websites,
+            "ir.config_parameter": self.parameters,
+            "launchplane.settings": self.parameters,
+            "ir.module.module": self.modules,
+        }[key]
 
 
 def settings() -> dict[str, object]:
@@ -123,6 +129,25 @@ def settings() -> dict[str, object]:
 
 
 class WebsiteSettingsTests(unittest.TestCase):
+    def test_base_website_without_installed_addon_skips_optional_settings(self) -> None:
+        env = Environment()
+        env.modules.record = FakeRecord(truthy=False)
+        env.websites.records[0]._fields = {"name", "domain"}
+        self.assertIsNone(consumer.apply_website_settings(env, None, instance="preview"))
+        self.assertFalse(env.websites.records[0].writes)
+
+    def test_explicit_website_settings_require_installed_addon(self) -> None:
+        env = Environment()
+        env.modules.record = FakeRecord(truthy=False)
+        with self.assertRaises(RuntimeError):
+            self.apply(env)
+
+    def test_installed_website_still_refuses_missing_analytics_field(self) -> None:
+        env = Environment()
+        env.websites.records[0]._fields = {"name", "domain"}
+        with self.assertRaisesRegex(RuntimeError, "analytics field is unavailable"):
+            consumer.apply_website_settings(env, None, instance="preview")
+
     def test_string_parameters_preserve_empty_and_literal_booleans_on_both_apis(self) -> None:
         for parameter_type in (Parameters, TypedParameters):
             parameters = parameter_type()
