@@ -67,8 +67,24 @@ class Parameters:
         if self.persist:
             self.values[key] = value
 
-    def get_param(self, key: str) -> str | None:
-        return self.values.get(key)
+    def get_param(self, key: str, default: str = "") -> str:
+        return self.values.get(key) or default
+
+
+class TypedParameters:
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+        self.persist = True
+
+    def sudo(self) -> TypedParameters:
+        return self
+
+    def get_str(self, key: str, default: str = "") -> str:
+        return self.values.get(key, default)
+
+    def set_str(self, key: str, value: str) -> None:
+        if self.persist:
+            self.values[key] = value
 
 
 class Environment:
@@ -107,6 +123,24 @@ def settings() -> dict[str, object]:
 
 
 class WebsiteSettingsTests(unittest.TestCase):
+    def test_string_parameters_preserve_empty_and_literal_booleans_on_both_apis(self) -> None:
+        for parameter_type in (Parameters, TypedParameters):
+            parameters = parameter_type()
+            self.assertEqual(consumer.read_string_parameter(parameters, "missing"), "")
+            for value in ("", "0", "False", "True"):
+                with self.subTest(api=parameter_type.__name__, value=value):
+                    consumer.write_string_parameter(parameters, "setting", value)
+                    self.assertEqual(consumer.read_string_parameter(parameters, "setting"), value)
+
+    def test_typed_parameters_apply_and_exclude_copied_collection(self) -> None:
+        env = Environment()
+        env.parameters = TypedParameters()
+        self.apply(env)
+        self.assertEqual(env.parameters.get_str(consumer.INDEXING_PARAMETER), "1")
+        consumer.apply_website_settings(env, None, instance="preview")
+        self.assertTrue(all(not website.google_analytics_key for website in env.websites.records))
+        self.assertEqual(env.parameters.get_str(consumer.INDEXING_PARAMETER), "0")
+
     def apply(self, env: Environment, values: dict[str, object] | None = None, *, instance: str = "prod") -> str:
         output = io.StringIO()
         with redirect_stdout(output):

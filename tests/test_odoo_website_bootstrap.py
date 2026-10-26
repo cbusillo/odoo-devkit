@@ -19,7 +19,8 @@ def _load_bootstrap_module() -> types.ModuleType:
         raise RuntimeError(f"Unable to load module from {module_path}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
+    with patch.object(sys, "path", [str(module_path.parent), *sys.path]):
+        spec.loader.exec_module(module)
     return module
 
 
@@ -109,8 +110,8 @@ class FakeConfigParameter:
             return
         self.values[key] = value
 
-    def get_param(self, key: str) -> str | None:
-        return self.values.get(key)
+    def get_param(self, key: str, default: str = "") -> str:
+        return self.values.get(key) or default
 
 
 class FakeEnv:
@@ -143,6 +144,26 @@ class FakeEnv:
 
 
 class WebsiteBootstrapHelperTests(unittest.TestCase):
+    def test_attachment_binary_uses_encoded_content_instead_of_proxy_text(self) -> None:
+        class BinaryAttachment:
+            def to_base64(self) -> str:
+                return "c3ludGhldGljLWxvZ28="
+
+            def __str__(self) -> str:
+                return "<attachment proxy>"
+
+        record = FakeRecord(fields=("logo",), values={"logo": BinaryAttachment()})
+        self.assertEqual(website_bootstrap._binary_field_value(record, "logo"), record.logo.to_base64())
+
+    def test_native_default_site_is_reused_when_legacy_reference_is_absent(self) -> None:
+        env = FakeEnv()
+        env.default_website = None
+        native_site = FakeRecord(fields=("name",))
+        env.refs["base.default_website"] = native_site
+        env.website_model = FakeModel(record=FakeRecord(truthy=False), fields=("name",))
+        website_bootstrap.apply_website_bootstrap(env, {"website_bootstrap": {"name": "Native default"}})
+        self.assertEqual(native_site.name, "Native default")
+
     def test_company_sender_is_set_on_selected_website_and_verified(self) -> None:
         env = FakeEnv()
         company = FakeRecord(fields=("email",), values={"email": False})
