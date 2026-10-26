@@ -299,7 +299,6 @@ class TestLiveWorkflows(TransactionCase):
         query(cls.source, "INSERT INTO ir_config_parameter (key,value) VALUES ('devkit.ci.origin','source')")
         query(cls.source, "UPDATE res_users SET password=%s WHERE login='admin'", (CRYPT.hash("synthetic-person-password"),))
         cls.attachment_bytes = b"synthetic attachment bytes\x00\xff"
-        encoded = base64.b64encode(cls.attachment_bytes).decode()
         run(
             ["/odoo/odoo-bin", "shell", "--config", str(cls.generated_config), "--database", cls.source, "--no-http"],
             input=(
@@ -307,7 +306,7 @@ class TestLiveWorkflows(TransactionCase):
                 "{'name':'Restored staff','login':'restored-staff','password':'synthetic-staff-password'},"
                 "{'name':'Archived staff','login':'archived-staff','password':'synthetic-archived-password','active':False}])\n"
                 "attachment = env['ir.attachment'].create({"
-                f"'name': 'devkit-ci-attachment', 'type': 'binary', 'datas': {encoded!r}"
+                f"'name': 'devkit-ci-attachment', 'type': 'binary', 'raw': {cls.attachment_bytes!r}"
                 "})\nassert attachment.store_fname\nenv.cr.commit()\n"
             ).encode(),
             env={**os.environ, **cls.environment},
@@ -518,8 +517,8 @@ os.execv('/bin/bash', ['bash', '-c', command])
         run(
             runner._odoo_shell_command(),
             input=(
-                "import base64\nattachment = env['ir.attachment'].search([('name', '=', 'devkit-ci-attachment')], limit=1)\n"
-                f"assert attachment and base64.b64decode(attachment.datas) == {self.attachment_bytes!r}\n"
+                "attachment = env['ir.attachment'].search([('name', '=', 'devkit-ci-attachment')], limit=1)\n"
+                f"assert attachment and bytes(attachment.raw) == {self.attachment_bytes!r}\n"
             ).encode(),
             env=runner.os_env,
         )
