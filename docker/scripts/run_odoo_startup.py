@@ -341,6 +341,7 @@ def _build_odoo_shell_command(settings: StartupSettings) -> list[str]:
 
 def _odoo_environment(settings: StartupSettings) -> dict[str, str]:
     environment = os.environ.copy()
+    environment["ODOO_ADDONS_PATH"] = settings.addons_path
     # Odoo's native environment option preserves whitespace that its conf reader trims.
     # Override even an inherited PGPASSWORD so every launch uses these settings.
     environment["PGPASSWORD"] = settings.database_password
@@ -531,6 +532,9 @@ def _run_initialization_if_needed(settings: StartupSettings) -> None:
     )
     initialize_command = _build_odoo_command(settings, initialize_modules=missing_modules, stop_after_init=True)
     subprocess.run(initialize_command, env=_odoo_environment(settings), check=True)
+    remaining_modules = _missing_required_modules(settings)
+    if remaining_modules:
+        raise RuntimeError(f"Database initialization did not install required modules: {','.join(remaining_modules)}")
 
 
 def _wait_for_data_workflow_lock(settings: StartupSettings) -> None:
