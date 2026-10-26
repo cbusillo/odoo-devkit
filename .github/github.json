@@ -37,6 +37,7 @@
     },
     "smoke": {
       "cli": "uv run platform --help",
+      "sourceValidation": "uv run platform workspace check-source --manifest <tenant-workspace.toml>",
       "workspaceSurface": "uv run platform workspace sync --manifest <proof-workspace.toml>"
     },
     "inspection": {

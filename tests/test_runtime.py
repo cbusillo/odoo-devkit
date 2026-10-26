@@ -1482,9 +1482,7 @@ homepage = true
                 with self.assertRaises(local_runtime.RuntimeCommandError):
                     local_runtime.build_runtime(manifest=manifest, runtime_repo_path=runtime_root, no_cache=True)
                 self.assertFalse(overlay.exists())
-                self.assertEqual(
-                    {call.kwargs["github_token"] for call in resolve_source.call_args_list}, {"synthetic-registry-token"}
-                )
+                self.assertEqual({call.kwargs["github_token"] for call in resolve_source.call_args_list}, {None})
                 resolve_source.reset_mock()
                 command.side_effect = execute
                 with mock.patch.dict(os.environ, {"ODOO_DEVKIT_SOURCE_GITHUB_TOKEN": "synthetic-build-token"}):

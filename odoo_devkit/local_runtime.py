@@ -552,9 +552,7 @@ def build_runtime(*, manifest: WorkspaceManifest, runtime_repo_path: Path, no_ca
             raise RuntimeCommandError(
                 f"Strict local builds do not support {key}; remove it and declare Python dependencies in locked tenant metadata, normalize, and rebuild."
             )
-    github_token = resolve_source_github_token(runtime_context.environment.merged_values) or resolve_github_token_for_build(
-        runtime_context.environment.merged_values
-    )
+    github_token = resolve_source_github_token(runtime_context.environment.merged_values)
     values, _ = resolve_artifact_runtime_source_repository_refs(
         runtime_values={**values, "GITHUB_TOKEN": github_token or ""},
     )
@@ -746,7 +744,7 @@ def publish_runtime_artifact(
         raise RuntimeCommandError(str(error)) from error
 
     build_environment = command_execution_env()
-    github_token = resolve_github_token_for_build(runtime_values)
+    github_token = source_github_token
     if github_token is not None:
         build_environment["GITHUB_TOKEN"] = github_token
 
@@ -3242,13 +3240,6 @@ def require_clean_git_commit(*, repo_path: Path, label: str) -> str:
     if replace_refs:
         raise RuntimeCommandError(f"Artifact publish rejects git replace refs for {label}: {replace_refs}")
     return head_commit
-
-
-def resolve_github_token_for_build(environment_values: dict[str, str]) -> str | None:
-    configured_token = clean_optional_value(environment_values.get("GITHUB_TOKEN"))
-    if configured_token:
-        return configured_token
-    return resolve_ghcr_read_token(environment_values)
 
 
 def ensure_registry_auth_for_image_push(

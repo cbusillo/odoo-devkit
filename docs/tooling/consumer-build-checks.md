@@ -1,5 +1,50 @@
 # Tenant Consumer-Build Checks
 
+## Source-only PR screening
+
+After checking out the tenant, devkit and shared addons at the consumer's
+declared revisions, a secretless PR can invoke:
+
+```bash
+uv --directory ../odoo-devkit run --locked platform workspace check-source \
+  --manifest "$PWD/workspace.toml" --related-repo-root "$PWD"
+```
+
+`--related-repo-root` resolves relative devkit/runtime/shared paths from that
+directory; omit it when the manifest's paths already match the checkouts.
+The command never runs workspace sync. Missing required local checkouts fail.
+Setup may download devkit's public Python dependencies; validation itself uses
+only local Git metadata and offline uv lock checking and frozen export.
+It requires the complete `[build]` declaration, validates every declared
+artifact source (including context/instance overrides) without resolving it,
+and checks the tenant/shared dependency workspace and tracked Python/XML
+syntax without importing code or writing bytecode. It does not run Odoo or
+addon suites, resolve private refs, read runtime environment payloads, log in,
+or inspect/pull/build/publish images. Keep existing repository-specific Node,
+SCSS and helper checks alongside it.
+
+Success prints screening JSON with `validation = "source-only"` and
+`full_build_required = true`. There is no artifact-manifest output option or
+deployable image. Keep the production manifest complete, including private
+inputs; this command defers their resolution rather than removing them.
+`runtime publish` and `runtime check-artifact` still require every intended
+input and fail on missing private sources, base images or build/test errors.
+Source authentication comes only from the source-token resolver; a registry
+read or publish token is never substituted for it.
+
+Consumer rollout is gated by the deployed Launchplane admission guard from
+[launchplane#5035](https://github.com/cbusillo/launchplane/pull/5035), not its
+source merge alone. Confirm it is active before enabling source-only workflow
+success. Secretless screening cannot replace full Build and applicable addon
+tests on the exact trusted train candidate. Preserve ordinary trusted PR
+previews and main's immutable artifact publication. A trusted run missing
+private inputs must fail rather than selecting screening automatically.
+Recheck repository merge methods and CODEOWNERS; any original-PR landing route
+needs full Build coverage on its constructed candidate through the canonical
+train push before source-only admission is enabled.
+
+## Full production consumer build
+
 A devkit PR is checked against tenant `main` before the preparing agent posts
 `Ready for the merge train`. The tenant runs the check with its existing source
 and base-image read access. The agent dispatches and watches through the

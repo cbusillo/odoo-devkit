@@ -42,6 +42,7 @@ in `launchplane`, not in branch-oriented `odoo-devkit` commands.
 uv run platform workspace sync --manifest /path/to/workspace.toml
 uv run platform workspace status --manifest /path/to/workspace.toml
 uv run platform workspace status --manifest /path/to/workspace.toml --check
+uv run platform workspace check-source --manifest /path/to/workspace.toml
 uv run platform workspace scaffold-tenant-overlay \
   --output-dir /path/to/repo --tenant opw
 uv run platform workspace clean --manifest /path/to/workspace.toml
@@ -278,6 +279,13 @@ Current runtime ownership is intentionally narrow and explicit:
   operator work.
 
 ## Testing
+
+Secretless tenant PRs can use `platform workspace check-source`; see the
+[source-only validation contract](docs/tooling/consumer-build-checks.md#source-only-pr-screening).
+It checks declared inputs, the tenant/shared dependency workspace and frozen
+export, and tracked Python/XML syntax without fetching sources or images. It
+emits screening JSON only. Full private-input builds and addon tests still run
+on the trusted merge-train candidate before landing.
 
 Use the [local/CI test contract](https://github.com/cbusillo/codex-skills/blob/HEAD/skills/github/references/config-schema.md#workflow-metadata).
 Locally, select the test file covering the changed behavior:

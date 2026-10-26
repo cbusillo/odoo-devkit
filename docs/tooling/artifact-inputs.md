@@ -205,6 +205,10 @@ specific until a second real driver/runtime path proves a rename is worth it.
 
 ## Working rule
 
+- Secretless screening validates declarations with
+  [`platform workspace check-source`](consumer-build-checks.md#source-only-pr-screening).
+  Keep all sources declared; private ref resolution and image compatibility
+  remain the trusted full build's job before landing.
 - If a repo needs publish-time source selection, add or edit
   `artifact-inputs.toml` in that repo.
 - Do not put source selector intent back into `stack.toml` as a convenience
