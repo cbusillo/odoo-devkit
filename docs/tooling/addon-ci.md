@@ -109,6 +109,9 @@ the checked-out devkit scripts read-only and uses the real `launchplane_settings
 addon from the workflow's pinned shared-addons revision. The source commit is
 included in the uploaded evidence. It runs when runtime scripts, test inputs,
 the runner or its workflow change, including on merge-train branches.
+Both Odoo 19 and 20 run the same safety fixtures, with each series' pinned
+shared-addon source. Fixture versions are series-neutral; `--odoo-version`
+selects and verifies the intended runtime before the tests run.
 
 The suite creates an Odoo source database containing only synthetic records and
 clones a fresh target for each check. It verifies public startup rejects an
@@ -153,6 +156,7 @@ and `test_support`:
 ```bash
 uv run python -m odoo_devkit.addon_ci \
   --image <community-devtools-image> \
+  --odoo-version <selected-odoo-series> \
   --addons-root tests/live_odoo/addons \
   --support-root /path/to/shared-addons \
   --devkit-checks \

@@ -26,13 +26,23 @@ jobs:
   devkit-live-checks:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - series: '19.0'
+            image: ghcr.io/cbusillo/odoo-docker@sha256:bd8b212b09f9a5e197663d08f758cb8bf3df459cc52012d41f3a91f6b09315c2
+            shared_ref: 5dcf55162eca8cbcc026789e6cb4f0c79f7c8733
+          - series: '20.0'
+            image: ghcr.io/cbusillo/odoo-docker@sha256:4c36271cc8ad71c865d00b772131d020e5c1a3109666fb6bf464f62df531fd8e
+            shared_ref: 158bec70b8c216a47d6f86510dcad8c769db6d19
     steps:
       - uses: actions/checkout@v7
       - name: Checkout the real settings addon and its test loader
         uses: actions/checkout@v7
         with:
           repository: cbusillo/odoo-shared-addons
-          ref: 5dcf55162eca8cbcc026789e6cb4f0c79f7c8733
+          ref: ${{ matrix.shared_ref }}
           path: .ci-support
           sparse-checkout: |
             launchplane_settings
@@ -45,7 +55,8 @@ jobs:
       - name: Run live checks and planted faults on throwaway databases
         run: >-
           uv run --locked python -m odoo_devkit.addon_ci
-          --image ghcr.io/cbusillo/odoo-docker:19.0-devtools
+          --image ${{ matrix.image }}
+          --odoo-version ${{ matrix.series }}
           --addons-root tests/live_odoo/addons
           --support-root .ci-support
           --devkit-checks
@@ -55,6 +66,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: devkit-live-checks
+          name: devkit-live-checks-${{ matrix.series }}
           path: ci-evidence
           if-no-files-found: error

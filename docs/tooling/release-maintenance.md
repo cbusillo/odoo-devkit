@@ -68,8 +68,10 @@ JSON including defaults). The release hashes that normalized representation,
 rather than the earlier producer JSON. Inputs contain provenance and module
 plans, never secret values.
 
-The single-registry runner supports the repository's Odoo 19 image API. Artifact
-and runtime graph resolution use exposed addon paths and Odoo's first-path
+The planned runner supports Odoo 19 and 20 with one maintenance process and one
+module-update pass. Odoo 20 can rebuild a clean registry after the update commits;
+the live checks allow at most one native finalization reload and require fewer registry
+loads than the baseline. Artifact and runtime graph resolution use exposed addon paths and Odoo's first-path
 precedence. The receipt includes Odoo's own `updated_modules` evidence; module
 metadata timestamps alone are not proof of an upgrade.
 

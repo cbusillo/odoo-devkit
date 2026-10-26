@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlparse
 
+from odoo_website_settings import read_string_parameter, website_is_loaded, write_string_parameter
+
 ODOO_INSTANCE_OVERRIDES_PAYLOAD_ENV_KEY = "ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64"
 LAUNCHPLANE_INSTANCE_OVERRIDES_REQUIRED_ENV_KEY = "LAUNCHPLANE_INSTANCE_OVERRIDES_REQUIRED"
 LAUNCHPLANE_WEBSITE_BOOTSTRAP_REQUIRED_ENV_KEY = "LAUNCHPLANE_WEBSITE_BOOTSTRAP_REQUIRED"
@@ -134,6 +136,8 @@ def _record_id(record: Any) -> object:
 
 def _binary_field_value(record: Any, field_name: str) -> str:
     value = _field_value(record, field_name)
+    if callable(to_base64 := getattr(value, "to_base64", None)):
+        value = to_base64()
     if isinstance(value, bytes):
         return value.decode("ascii")
     return "" if value is None else str(value)
@@ -173,16 +177,11 @@ def _field_record_matches(record: Any, field_name: str, expected_record: Any) ->
 
 
 def _config_parameter_value(env: Any, key: str) -> str:
-    parameter_model = env["ir.config_parameter"].sudo()
-    get_param = getattr(parameter_model, "get_param", None)
-    if not callable(get_param):
-        raise RuntimeError(f"Website bootstrap cannot verify config parameter {key!r}; get_param is unavailable.")
-    value = get_param(key)
-    return "" if value is None else str(value)
+    return read_string_parameter(env["ir.config_parameter"].sudo(), key)
 
 
 def _set_config_parameter(env: Any, key: str, value: str) -> None:
-    env["ir.config_parameter"].sudo().set_param(key, value)
+    write_string_parameter(env["ir.config_parameter"].sudo(), key, value)
     actual_value = _config_parameter_value(env, key)
     if actual_value != value:
         raise RuntimeError(
@@ -431,7 +430,7 @@ def apply_website_bootstrap(env: Any, parsed_payload: dict[str, object] | None) 
         raise RuntimeError("Odoo instance override payload field 'website_bootstrap' must be an object.")
     if not website_payload:
         return
-    if "website" not in env.registry:
+    if not website_is_loaded(env):
         raise RuntimeError("Website bootstrap supplied, but the website module is not installed.")
 
     canonical_url = str(website_payload.get("canonical_url") or _payload_web_base_url(parsed_payload) or "").strip()
@@ -442,7 +441,9 @@ def apply_website_bootstrap(env: Any, parsed_payload: dict[str, object] | None) 
     primary_page_xmlid_found = bool(primary_page)
     if primary_page_xmlid and not primary_page:
         raise RuntimeError(f"Website bootstrap primary page XML ID not found: {primary_page_xmlid}")
-    default_website = env.ref("website.default_website", raise_if_not_found=False)
+    default_website = env.ref("base.default_website", raise_if_not_found=False) or env.ref(
+        "website.default_website", raise_if_not_found=False
+    )
 
     website_model = env["website"].sudo()
     website = _select_website(

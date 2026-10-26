@@ -6,11 +6,27 @@ from unittest.mock import patch
 
 from odoo.tests import tagged
 from odoo.tests.common import TransactionCase
-from odoo_website_settings import INDEXING_PARAMETER, apply_website_settings
+from odoo_website_settings import INDEXING_PARAMETER, apply_website_settings, read_string_parameter, write_string_parameter
 
 
 @tagged("post_install", "-at_install")
 class TestNativeWebsiteSettings(TransactionCase):
+    def test_every_loaded_website_state_excludes_copied_collection(self) -> None:
+        module = self.env["ir.module.module"].search([("name", "=", "website")])
+        original_state = module.state
+        parameters = self.env["ir.config_parameter"].sudo()
+        website = self.env["website"].create({"name": "Synthetic pending website"})
+        try:
+            for state in ("installed", "to upgrade", "to remove"):
+                module.state = state
+                website.google_analytics_key = "G-SYNTHETIC"
+                write_string_parameter(parameters, INDEXING_PARAMETER, "1")
+                apply_website_settings(self.env, None, instance="preview")
+                self.assertFalse(website.google_analytics_key)
+                self.assertEqual(read_string_parameter(parameters, INDEXING_PARAMETER), "0")
+        finally:
+            module.state = original_state
+
     def test_native_fields_bootstrap_domain_and_collection_only_rollback(self) -> None:
         website = self.env["website"].create({"name": "Synthetic website", "domain": "settings.example.test"})
         settings = {
@@ -42,7 +58,7 @@ class TestNativeWebsiteSettings(TransactionCase):
         self.assertFalse(website.google_analytics_key)
         self.assertFalse(website.cookies_bar)
         self.assertTrue(website.block_third_party_domains)
-        self.assertEqual(self.env["ir.config_parameter"].sudo().get_param(INDEXING_PARAMETER), "0")
+        self.assertEqual(read_string_parameter(self.env["ir.config_parameter"].sudo(), INDEXING_PARAMETER), "0")
 
     def test_native_readback_refuses_a_planted_noop_write(self) -> None:
         website = self.env["website"].create({"name": "Synthetic fault", "domain": "fault.example.test"})

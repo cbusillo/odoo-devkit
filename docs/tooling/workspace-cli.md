@@ -407,7 +407,14 @@ Notes
   file format does not reject other instance keys. Data workflows and startup apply bootstrap
   state idempotently after modules are installed, verify required public website
   identity fields before reporting success, and avoid hard-coded tenant
-  defaults. Page-backed bootstrap also binds discovered `website.page` records,
+  defaults. The shared settings consumer supports native string parameters on
+  Odoo 19 and 20, preserving empty values and literal boolean strings. Bootstrap
+  reuses the native default website in either version and compares encoded logo
+  content through the native attachment interface. Nonproduction analytics and
+  indexing exclusion still runs without an optional settings payload, including
+  while the loaded website addon is scheduled for upgrade or removal. A base-only
+  website model does not enable website settings or bootstrap on its own.
+  Page-backed bootstrap also binds discovered `website.page` records,
   their website-specific views when available, and route readback markers to the
   selected website so post-deploy proof can distinguish payload rendering from
   public website identity persistence.

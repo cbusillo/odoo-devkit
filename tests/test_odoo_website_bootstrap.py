@@ -19,7 +19,8 @@ def _load_bootstrap_module() -> types.ModuleType:
         raise RuntimeError(f"Unable to load module from {module_path}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
+    with patch.object(sys, "path", [str(module_path.parent), *sys.path]):
+        spec.loader.exec_module(module)
     return module
 
 
@@ -96,6 +97,26 @@ class FakeModel:
         return self.record
 
 
+class FakeModules(FakeModel):
+    def __init__(self, states: dict[str, str] | None = None) -> None:
+        super().__init__(record=FakeRecord(truthy=True))
+        self.states = (
+            states if states is not None else {"website": "installed", "website_sale": "installed", "cm_website": "installed"}
+        )
+
+    def search(self, domain: list[tuple[str, str, object]], *, limit: int = 1) -> FakeRecord:
+        super().search(domain, limit=limit)
+        if not self.record:
+            return self.record
+        for name, state in self.states.items():
+            values = {"name": name, "state": state}
+            if all(
+                values[field] == expected if operator == "=" else values[field] in expected for field, operator, expected in domain
+            ):
+                return self.record
+        return FakeRecord(truthy=False)
+
+
 class FakeConfigParameter:
     def __init__(self) -> None:
         self.values: dict[str, str] = {}
@@ -109,8 +130,8 @@ class FakeConfigParameter:
             return
         self.values[key] = value
 
-    def get_param(self, key: str) -> str | None:
-        return self.values.get(key)
+    def get_param(self, key: str, default: str | bool = False) -> str | bool:
+        return self.values.get(key) or default
 
 
 class FakeEnv:
@@ -118,7 +139,7 @@ class FakeEnv:
         self.website = FakeRecord(fields=("name", "domain", "homepage_id", "homepage_url", "logo"))
         self.default_website = self.website
         self.config_parameter = FakeConfigParameter()
-        self.modules = FakeModel(record=FakeRecord(fields=(), truthy=True))
+        self.modules = FakeModules()
         self.pages = FakeModel(record=FakeRecord(fields=(), truthy=False))
         self.langs = FakeModel(record=FakeRecord(fields=(), truthy=False))
         self.refs: dict[str, FakeRecord] = {}
@@ -143,6 +164,45 @@ class FakeEnv:
 
 
 class WebsiteBootstrapHelperTests(unittest.TestCase):
+    def test_pending_website_stays_loaded_but_route_modules_require_installed(self) -> None:
+        for state in ("to upgrade", "to remove"):
+            with self.subTest(state=state):
+                env = FakeEnv()
+                env.modules.states["website"] = state
+                website_bootstrap.apply_website_bootstrap(env, {"website_bootstrap": {"name": "Loaded website"}})
+                self.assertEqual(env.website.name, "Loaded website")
+                env.modules.states["website_sale"] = state
+                with self.assertRaisesRegex(RuntimeError, "not installed"):
+                    website_bootstrap.apply_website_bootstrap(
+                        env, {"website_bootstrap": {"homepage_url": "/shop", "routes_source": {"module": "website_sale"}}}
+                    )
+
+    def test_base_website_without_installed_addon_refuses_bootstrap(self) -> None:
+        env = FakeEnv()
+        env.modules.record = FakeRecord(truthy=False)
+        with self.assertRaisesRegex(RuntimeError, "website module is not installed"):
+            website_bootstrap.apply_website_bootstrap(env, {"website_bootstrap": {"name": "Unsupported"}})
+
+    def test_attachment_binary_uses_encoded_content_instead_of_proxy_text(self) -> None:
+        class BinaryAttachment:
+            def to_base64(self) -> str:
+                return "c3ludGhldGljLWxvZ28="
+
+            def __str__(self) -> str:
+                return "<attachment proxy>"
+
+        record = FakeRecord(fields=("logo",), values={"logo": BinaryAttachment()})
+        self.assertEqual(website_bootstrap._binary_field_value(record, "logo"), record.logo.to_base64())
+
+    def test_native_default_site_is_reused_when_legacy_reference_is_absent(self) -> None:
+        env = FakeEnv()
+        env.default_website = None
+        native_site = FakeRecord(fields=("name",))
+        env.refs["base.default_website"] = native_site
+        env.website_model = FakeModel(record=FakeRecord(truthy=False), fields=("name",))
+        website_bootstrap.apply_website_bootstrap(env, {"website_bootstrap": {"name": "Native default"}})
+        self.assertEqual(native_site.name, "Native default")
+
     def test_company_sender_is_set_on_selected_website_and_verified(self) -> None:
         env = FakeEnv()
         company = FakeRecord(fields=("email",), values={"email": False})
