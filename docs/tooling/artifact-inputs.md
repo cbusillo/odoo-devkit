@@ -97,8 +97,10 @@ dependency evidence are cleared before the staged artifact inputs are copied,
 so base-image residue cannot survive into the final image.
 
 Both configured base images are resolved to registry digests before the build,
-and their OCI source/revision labels must agree across every requested
-platform. After Buildx pushes the artifact, devkit extracts dependency evidence
+and their OCI source/revision annotations must agree between the index and
+every requested platform manifest. Unannotated legacy bases retain their
+config-label provenance contract; incomplete annotations never fall back to
+labels. After Buildx pushes the artifact, devkit extracts dependency evidence
 from the resulting immutable image digest—not from the mutable tag—and emits
 Launchplane artifact-manifest schema v2.
 
