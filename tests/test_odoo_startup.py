@@ -424,6 +424,29 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
 
         odoo_startup._enforce_public_credential_preflight(settings)
 
+    def test_initialization_rejects_success_exit_with_a_required_module_missing(self) -> None:
+        settings = self._settings()
+
+        with (
+            patch.object(odoo_startup, "_database_exists", return_value=True),
+            patch.object(odoo_startup, "_installed_module_names", return_value={"base"}),
+            patch.object(odoo_startup.subprocess, "run"),
+            redirect_stdout(io.StringIO()),
+            self.assertRaisesRegex(RuntimeError, settings.install_modules[0]),
+        ):
+            odoo_startup._run_initialization_if_needed(settings)
+
+    def test_initialization_accepts_required_modules_installed_by_the_command(self) -> None:
+        settings = self._settings()
+
+        with (
+            patch.object(odoo_startup, "_database_exists", return_value=True),
+            patch.object(odoo_startup, "_installed_module_names", side_effect=[{"base"}, {"base", *settings.install_modules}]),
+            patch.object(odoo_startup.subprocess, "run"),
+            redirect_stdout(io.StringIO()),
+        ):
+            odoo_startup._run_initialization_if_needed(settings)
+
     def test_odoo_shell_subprocess_can_import_runtime_script_helpers(self) -> None:
         settings = self._settings()
 
@@ -473,7 +496,7 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
         recorder = MagicMock()
         with (
             patch.dict(os.environ, values, clear=True),
-            patch.object(odoo_startup, "_missing_required_modules", return_value=("base",)),
+            patch.object(odoo_startup, "_missing_required_modules", side_effect=[("base",), ()]),
             patch.object(odoo_startup.subprocess, "run", recorder.run),
             redirect_stdout(io.StringIO()),
         ):
@@ -506,7 +529,7 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
         recorder = MagicMock()
         with (
             patch.dict(os.environ, {"PGPASSWORD": "stale-password"}, clear=True),
-            patch.object(odoo_startup, "_missing_required_modules", return_value=("base",)),
+            patch.object(odoo_startup, "_missing_required_modules", side_effect=[("base",), ()]),
             patch.object(odoo_startup.subprocess, "run", recorder.run),
             redirect_stdout(io.StringIO()),
         ):

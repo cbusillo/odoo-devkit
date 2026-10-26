@@ -388,6 +388,9 @@ Notes
   at a different `origin` than the manifest declares.
 - Startup carries its resolved addon paths into the image wrapper environment,
   keeping packaged shared addon groups visible to initialization, shell and web.
+  After initialization it reads back the requested installed modules and stops
+  before serving if Odoo ignored a missing addon. Correct the declared addon
+  inputs or paths, then run the same startup command again.
 - Keep the runtime repo explicit in the manifest. Tenant scaffolds point
   `[repos.runtime]` at the sibling `odoo-devkit` checkout so the same tracked
   manifest can keep `instance = "local"` by default while artifact publish can
