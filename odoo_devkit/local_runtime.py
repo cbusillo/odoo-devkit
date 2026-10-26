@@ -1217,8 +1217,8 @@ def run_local_data_workflow(
                 "or run bootstrap intentionally."
             )
 
+    build_runtime(manifest=manifest, runtime_repo_path=runtime_repo_path, no_cache=False)
     compose_command = compose_base_command(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file)
-    run_command(runtime_repo_path=runtime_repo_path, command=compose_command + ["build", "web"])
 
     database_up_command = compose_command + ["up", "-d", "--remove-orphans", "database"]
     script_runner_up_command = compose_command + ["up", "-d", "--remove-orphans", "script-runner"]
@@ -2908,13 +2908,13 @@ def parse_artifact_source_repository_entries(
         repository_name, separator, repository_ref = candidate_entry.rpartition("@")
         if not separator or not repository_name.strip() or not repository_ref.strip():
             raise RuntimeCommandError(
-                f"Artifact publish requires addon repositories to use '<repo>@<ref>' form. Received: {candidate_entry}"
+                f"Artifact build requires addon repositories to use '<repo>@<ref>' form. Received: {candidate_entry}"
             )
         normalized_repository = repository_name.strip()
         normalized_ref = repository_ref.strip()
         if require_exact_shas and not GIT_SHA_PATTERN.fullmatch(normalized_ref):
             raise RuntimeCommandError(
-                f"Artifact publish requires addon repositories to use exact git SHAs. Received: {candidate_entry}"
+                f"Artifact build requires addon repositories to use exact git SHAs. Received: {candidate_entry}"
             )
         normalized_entry = (normalized_repository, normalized_ref)
         if normalized_entry in seen_entries:
@@ -2991,19 +2991,19 @@ def resolve_source_repository_ref_to_git_sha(*, repository: str, ref: str, githu
     if ls_remote_result.returncode != 0:
         details = clean_optional_value(ls_remote_result.stderr) or clean_optional_value(ls_remote_result.stdout)
         raise RuntimeCommandError(
-            "Artifact publish could not resolve addon repository ref "
+            "Artifact build could not resolve addon repository ref "
             f"{normalized_repository}@{normalized_ref}." + (f"\nGit reported: {details}" if details else "")
         )
     resolved_shas = tuple(line.split("\t", 1)[0].strip() for line in ls_remote_result.stdout.splitlines() if line.strip())
     unique_resolved_shas = tuple(dict.fromkeys(resolved_shas))
     if not unique_resolved_shas:
         raise RuntimeCommandError(
-            "Artifact publish requires addon repository selectors to resolve to an exact git SHA. "
+            "Artifact build requires addon repository selectors to resolve to an exact git SHA. "
             f"No remote ref matched {normalized_repository}@{normalized_ref}."
         )
     if len(unique_resolved_shas) != 1 or not GIT_SHA_PATTERN.fullmatch(unique_resolved_shas[0]):
         raise RuntimeCommandError(
-            "Artifact publish requires addon repository selectors to resolve unambiguously to one git SHA. "
+            "Artifact build requires addon repository selectors to resolve unambiguously to one git SHA. "
             f"Received matches for {normalized_repository}@{normalized_ref}: {', '.join(unique_resolved_shas)}"
         )
     return unique_resolved_shas[0]

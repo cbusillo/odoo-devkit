@@ -300,10 +300,12 @@ worktree needs no operator-local `docker-compose.override.yml`. External addon
 and OpenUpgrade selectors resolve to exact commits through the publish resolver
 before Docker runs. Resolution and BuildKit source fetching use the same
 transient source token: configured `GITHUB_TOKEN`, then the source-token
-environment variables described below, then the existing local build credential
-lookup. The token goes to BuildKit as a secret, outside build arguments and
+environment variables described below, then shell `GITHUB_TOKEN`/`GH_TOKEN`,
+then the existing local build credential lookup. The token goes to BuildKit as a secret, outside build arguments and
 generated build metadata. Tenant Python dependencies use the staged derived
 locks above; no separate local installer or hand-pinned source file is needed.
+Local bootstrap, restore and update use this same build before starting
+services. A build failure leaves the database and web service untouched.
 
 Local OpenUpgrade builds use the same strict frozen dependency install. Declare
 `openupgradelib` in owned addon metadata (including an exact VCS source when

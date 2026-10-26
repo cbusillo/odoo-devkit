@@ -3197,14 +3197,17 @@ sources = [
             manifest_path = self._write_manifest(tenant_repo_path=tenant_repo_path, runtime_repo_path=runtime_repo_path)
             manifest = load_workspace_manifest(manifest_path)
 
-            with mock.patch("odoo_devkit.local_runtime.subprocess.run") as run_mock:
+            with (
+                mock.patch("odoo_devkit.local_runtime.build_runtime") as build,
+                mock.patch("odoo_devkit.local_runtime.subprocess.run") as run_mock,
+            ):
                 run_mock.side_effect = self._runtime_data_workflow_side_effect()
                 with contextlib.redirect_stdout(io.StringIO()):
                     exit_code = run_native_runtime_workflow(manifest=manifest, workflow="update")
 
             self.assertEqual(exit_code, 0)
             commands = [call.kwargs.get("args", call.args[0]) for call in run_mock.call_args_list]
-            self.assertTrue(any(command[-2:] == ["build", "web"] for command in commands))
+            build.assert_called_once_with(manifest=manifest, runtime_repo_path=runtime_repo_path.resolve(), no_cache=False)
             self.assertTrue(any(command[-4:] == ["up", "-d", "--remove-orphans", "database"] for command in commands))
             self.assertTrue(any(command[-4:] == ["up", "-d", "--remove-orphans", "script-runner"] for command in commands))
             update_command = next(command for command in commands if "/volumes/scripts/run_odoo_data_workflows.py" in command)
@@ -3221,12 +3224,16 @@ sources = [
             manifest_path = self._write_manifest(tenant_repo_path=tenant_repo_path, runtime_repo_path=runtime_repo_path)
             manifest = load_workspace_manifest(manifest_path)
 
-            with mock.patch("odoo_devkit.local_runtime.subprocess.run") as run_mock:
+            with (
+                mock.patch("odoo_devkit.local_runtime.build_runtime") as build,
+                mock.patch("odoo_devkit.local_runtime.subprocess.run") as run_mock,
+            ):
                 run_mock.side_effect = self._runtime_data_workflow_side_effect()
                 with contextlib.redirect_stdout(io.StringIO()):
                     exit_code = run_native_runtime_workflow(manifest=manifest, workflow="bootstrap")
 
             self.assertEqual(exit_code, 0)
+            build.assert_called_once_with(manifest=manifest, runtime_repo_path=runtime_repo_path.resolve(), no_cache=False)
             commands = [call.kwargs.get("args", call.args[0]) for call in run_mock.call_args_list]
             bootstrap_command = next(command for command in commands if "/volumes/scripts/run_odoo_data_workflows.py" in command)
             self.assertIn("BOOTSTRAP=1", bootstrap_command)
@@ -3242,18 +3249,53 @@ sources = [
             manifest_path = self._write_manifest(tenant_repo_path=tenant_repo_path, runtime_repo_path=runtime_repo_path)
             manifest = load_workspace_manifest(manifest_path)
 
-            with mock.patch("odoo_devkit.local_runtime.subprocess.run") as run_mock:
+            with (
+                mock.patch("odoo_devkit.local_runtime.build_runtime") as build,
+                mock.patch("odoo_devkit.local_runtime.subprocess.run") as run_mock,
+            ):
                 run_mock.side_effect = self._runtime_data_workflow_side_effect()
                 with contextlib.redirect_stdout(io.StringIO()):
                     exit_code = run_native_runtime_restore(manifest=manifest)
 
             self.assertEqual(exit_code, 0)
+            build.assert_called_once_with(manifest=manifest, runtime_repo_path=runtime_repo_path.resolve(), no_cache=False)
             commands = [call.kwargs.get("args", call.args[0]) for call in run_mock.call_args_list]
             restore_command = next(command for command in commands if "/volumes/scripts/run_odoo_data_workflows.py" in command)
             self.assertNotIn("UPDATE_ONLY=1", restore_command)
             self.assertNotIn("BOOTSTRAP=1", restore_command)
             self.assertTrue(any(command[-2:] == ["stop", "web"] for command in commands))
             self.assertTrue(any(command[-4:] == ["up", "-d", "--remove-orphans", "web"] for command in commands))
+
+    def test_local_data_workflows_stop_before_services_when_staged_build_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            manifest, _ = self._prepare_artifact_check(Path(temporary))
+            self._configure_publish_runtime_payload(
+                instance="local",
+                environment={
+                    "ODOO_UPSTREAM_HOST": "source.invalid",
+                    "ODOO_UPSTREAM_USER": "synthetic",
+                    "ODOO_UPSTREAM_DB_NAME": "synthetic",
+                    "ODOO_UPSTREAM_DB_USER": "synthetic",
+                    "ODOO_UPSTREAM_FILESTORE_PATH": "/synthetic/filestore",
+                },
+            )
+            assert manifest.runtime_repo is not None
+            runtime = manifest.runtime_repo.resolve_path(manifest_directory=manifest.manifest_directory)
+            assert runtime is not None
+            for bootstrap, update_only in ((True, False), (False, True), (False, False)):
+                with (
+                    self.subTest(bootstrap=bootstrap, update_only=update_only),
+                    mock.patch("odoo_devkit.local_runtime.build_runtime", side_effect=ValueError("staged build failed")),
+                    mock.patch("odoo_devkit.local_runtime.run_command") as command,
+                    mock.patch(
+                        "odoo_devkit.local_runtime.run_command_best_effort", side_effect=AssertionError("service before build")
+                    ),
+                    self.assertRaisesRegex(ValueError, "staged build failed"),
+                ):
+                    local_runtime.run_local_data_workflow(
+                        manifest=manifest, runtime_repo_path=runtime, bootstrap=bootstrap, update_only=update_only, no_sanitize=False
+                    )
+                command.assert_not_called()
 
     def test_native_runtime_data_workflows_forward_literal_secrets(self) -> None:
         passwords = (
@@ -3327,6 +3369,7 @@ sources = [
                         },
                     ),
                     mock.patch("odoo_devkit.local_runtime.subprocess.run", side_effect=run_side_effect) as run_mock,
+                    mock.patch("odoo_devkit.local_runtime.build_runtime"),
                     contextlib.redirect_stdout(output),
                 ):
                     if fail:
@@ -3406,6 +3449,7 @@ sources = [
                 with (
                     mock.patch.dict(os.environ, {local_runtime.RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR: payload}),
                     mock.patch("odoo_devkit.local_runtime.subprocess.run", side_effect=fail_runner) as run_mock,
+                    mock.patch("odoo_devkit.local_runtime.build_runtime"),
                     mock.patch("odoo_devkit.local_runtime.normalize_local_filestore_permissions") as normalize,
                     self.assertRaises(ValueError),
                 ):
@@ -3473,12 +3517,15 @@ sources = [
                     )
                     return mock.Mock(returncode=error_code) if failing else on_success(command, **kwargs)
 
-                with mock.patch(
-                    "odoo_devkit.local_runtime.subprocess.run",
-                    side_effect=partial(
-                        run_side_effect, stage_to_fail=failure_stage, error_code=failure_code, on_success=successful_command
-                    ),
-                ) as run_mock:
+                with (
+                    mock.patch("odoo_devkit.local_runtime.build_runtime"),
+                    mock.patch(
+                        "odoo_devkit.local_runtime.subprocess.run",
+                        side_effect=partial(
+                            run_side_effect, stage_to_fail=failure_stage, error_code=failure_code, on_success=successful_command
+                        ),
+                    ) as run_mock,
+                ):
                     with (
                         contextlib.redirect_stdout(io.StringIO()),
                         self.assertRaisesRegex(ValueError, f"Command failed \\({failure_code}\\)") as failure,
