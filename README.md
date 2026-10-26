@@ -42,6 +42,7 @@ in `launchplane`, not in branch-oriented `odoo-devkit` commands.
 uv run platform workspace sync --manifest /path/to/workspace.toml
 uv run platform workspace status --manifest /path/to/workspace.toml
 uv run platform workspace status --manifest /path/to/workspace.toml --check
+uv run platform workspace check-source --manifest /path/to/workspace.toml
 uv run platform workspace scaffold-tenant-overlay \
   --output-dir /path/to/repo --tenant opw
 uv run platform workspace clean --manifest /path/to/workspace.toml
@@ -278,6 +279,9 @@ Current runtime ownership is intentionally narrow and explicit:
   operator work.
 
 ## Testing
+
+For secretless tenant PRs, use the
+[source-only validation command](docs/tooling/consumer-build-checks.md#source-only-pr-screening).
 
 Use the [local/CI test contract](https://github.com/cbusillo/codex-skills/blob/HEAD/skills/github/references/config-schema.md#workflow-metadata).
 Locally, select the test file covering the changed behavior:

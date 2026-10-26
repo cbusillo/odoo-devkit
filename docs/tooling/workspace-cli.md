@@ -301,7 +301,8 @@ and OpenUpgrade selectors resolve to exact commits through the publish resolver
 before Docker runs. Resolution and BuildKit source fetching use the same
 transient source token: configured `GITHUB_TOKEN`, then the source-token
 environment variables described below, then shell `GITHUB_TOKEN`/`GH_TOKEN`,
-then the existing local build credential lookup. The token goes to BuildKit as a secret, outside build arguments and
+then the existing local `gh auth token` lookup. Registry credentials are not
+source credentials. The token goes to BuildKit as a secret, outside build arguments and
 generated build metadata. Tenant Python dependencies use the staged derived
 locks above; no separate local installer or hand-pinned source file is needed.
 Local bootstrap, restore, update, init and OpenUpgrade use the existing image

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -24,6 +25,7 @@ from .runtime import (
     run_native_runtime_workflow,
 )
 from .scaffold import scaffold_tenant_overlay
+from .source_validation import check_workspace_source
 from .workspace import clean_workspace, run_in_workspace, sync_workspace, workspace_status
 
 
@@ -45,6 +47,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     sync_parser = _add_manifest_argument(workspace_subparsers.add_parser("sync", help="Assemble or refresh a workspace"))
     sync_parser.set_defaults(handler=_handle_workspace_sync)
+
+    source_parser = _add_manifest_argument(
+        workspace_subparsers.add_parser("check-source", help="Validate source inputs offline without building an artifact")
+    )
+    source_parser.set_defaults(handler=_handle_workspace_check_source)
 
     ide_parser = _add_manifest_argument(
         workspace_subparsers.add_parser("prepare-ide", help="Attach pinned Odoo sources to the exact tenant PyCharm project")
@@ -270,6 +277,16 @@ def _handle_workspace_sync(arguments: argparse.Namespace) -> None:
         "attached_paths": [str(path) for path in result.attached_paths],
         "run_configuration_paths": [str(path) for path in result.run_configuration_paths],
     }
+    print(json.dumps(summary, indent=2, sort_keys=True))
+
+
+def _handle_workspace_check_source(arguments: argparse.Namespace) -> None:
+    try:
+        summary = check_workspace_source(
+            manifest=_load_manifest(arguments.manifest, related_repo_root=getattr(arguments, "related_repo_root", None))
+        )
+    except (ValueError, OSError, subprocess.CalledProcessError) as error:
+        raise SystemExit(str(error)) from error
     print(json.dumps(summary, indent=2, sort_keys=True))
 
 

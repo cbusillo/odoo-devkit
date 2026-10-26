@@ -522,6 +522,14 @@ def prepare_dependency_workspace(*, manifest: WorkspaceManifest, output_director
     return inspection
 
 
+def check_source_dependency_workspace(*, manifest: WorkspaceManifest) -> DependencyWorkspaceInspection:
+    with tempfile.TemporaryDirectory(prefix="odoo-source-dependencies-") as temporary:
+        staged = Path(temporary)
+        inspection = stage_publishable_dependency_workspace(manifest=manifest, destination_root=staged, committed=False)
+        _write_frozen_dependency_export(staged_root=staged, export_path=staged / "requirements.txt")
+    return inspection
+
+
 def stage_publishable_dependency_workspace(
     *,
     manifest: WorkspaceManifest,
@@ -1206,21 +1214,23 @@ def _run_uv_lock(*, staged_root: Path, python_version: str) -> None:
         raise DependencyWorkspaceError(f"Dependency workspace normalization failed: {message}")
 
 
+def _frozen_dependency_export_command(export_path: Path) -> list[str]:
+    return [
+        "uv",
+        "export",
+        "--frozen",
+        "--offline",
+        "--all-packages",
+        "--no-emit-workspace",
+        "--no-default-groups",
+        "--no-config",
+        "--output-file",
+        export_path.name,
+    ]
+
+
 def _write_frozen_dependency_export(*, staged_root: Path, export_path: Path) -> None:
-    result = _run_uv(
-        [
-            "uv",
-            "export",
-            "--frozen",
-            "--all-packages",
-            "--no-emit-workspace",
-            "--no-default-groups",
-            "--no-config",
-            "--output-file",
-            export_path.name,
-        ],
-        cwd=staged_root,
-    )
+    result = _run_uv(_frozen_dependency_export_command(export_path), cwd=staged_root)
     if result.returncode != 0 or not export_path.is_file():
         message = result.stderr.strip() or result.stdout.strip() or "uv export failed"
         raise DependencyWorkspaceError(f"Frozen dependency export failed: {message}")
@@ -1321,17 +1331,7 @@ def _normalization_provenance(
             "command": "platform dependencies normalize",
             "uv_version": _uv_version(),
             "lock_arguments": ["uv", "lock", "--python", manifest.workspace.python_version, "--no-config"],
-            "export_arguments": [
-                "uv",
-                "export",
-                "--frozen",
-                "--all-packages",
-                "--no-emit-workspace",
-                "--no-default-groups",
-                "--no-config",
-                "--output-file",
-                "tenant-requirements.txt",
-            ],
+            "export_arguments": _frozen_dependency_export_command(export_path),
         },
         "artifacts": [
             {"path": "uv.lock", "sha256": _sha256_file(normalized_lock_path)},
