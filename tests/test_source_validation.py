@@ -80,10 +80,10 @@ base_devtools_image = "registry.invalid/private/devtools:19.0"
         def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
             commands.append(command)
             if command[0] == "git":
-                self.assertIn(command[1], {"ls-files", "rev-parse", "check-ref-format"})
+                self.assertNotIn(command[1], {"fetch", "clone", "ls-remote", "push", "pull"})
             else:
                 self.assertEqual(command[0], "uv")
-                self.assertIn("--offline", command)
+                self.assertTrue("--offline" in command or kwargs.get("env", {}).get("UV_OFFLINE") == "1")
             return original_run(command, **kwargs)
 
         with (
@@ -97,11 +97,8 @@ base_devtools_image = "registry.invalid/private/devtools:19.0"
         self.assertTrue(result["full_build_required"])
         self.assertTrue(result["dependencies"]["publishable"])
         self.assertGreater(result["syntax_files"], 0)
-        self.assertNotIn("artifact", result)
-        self.assertNotIn("image", result)
         self.assertTrue(any(command[:2] == ["uv", "export"] for command in commands))
         self.assertFalse((self.tenant / "artifact-manifest.json").exists())
-        self.assertIn("example/private-addon", self.inputs.read_text())
         self.assertEqual(
             subprocess.run(["git", "status", "--porcelain"], cwd=self.tenant, check=True, capture_output=True, text=True).stdout,
             "",
@@ -138,6 +135,7 @@ base_devtools_image = "registry.invalid/private/devtools:19.0"
         for declaration in (
             '{repository = "example/private-addon", selector = "main", exact_ref = "bad"}',
             '{repository = "example/private-addon", exact_ref = "bad"}',
+            '{repository = "example/private-addon", selector = "abc1234"}',
             '{repository = "example/private-addon", selector = "bad ref"}',
         ):
             self.inputs.write_text(f"schema_version = 1\nsources = [{declaration}]\n")

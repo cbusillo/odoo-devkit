@@ -1468,6 +1468,7 @@ homepage = true
                     dict.fromkeys((*local_runtime.SOURCE_GITHUB_TOKEN_ENV_KEYS, "GITHUB_TOKEN", "GH_TOKEN"), ""),
                 ),
                 mock.patch("odoo_devkit.local_runtime.resolve_ghcr_read_token", return_value="synthetic-registry-token"),
+                mock.patch("odoo_devkit.local_runtime.resolve_gh_auth_token", return_value="synthetic-local-source-token"),
                 mock.patch(
                     "odoo_devkit.local_runtime.resolve_source_repository_ref_to_git_sha",
                     side_effect=lambda *, repository, **_kwargs: resolved_sources[repository],
@@ -1482,7 +1483,9 @@ homepage = true
                 with self.assertRaises(local_runtime.RuntimeCommandError):
                     local_runtime.build_runtime(manifest=manifest, runtime_repo_path=runtime_root, no_cache=True)
                 self.assertFalse(overlay.exists())
-                self.assertEqual({call.kwargs["github_token"] for call in resolve_source.call_args_list}, {None})
+                self.assertEqual(
+                    {call.kwargs["github_token"] for call in resolve_source.call_args_list}, {"synthetic-local-source-token"}
+                )
                 resolve_source.reset_mock()
                 command.side_effect = execute
                 with mock.patch.dict(os.environ, {"ODOO_DEVKIT_SOURCE_GITHUB_TOKEN": "synthetic-build-token"}):

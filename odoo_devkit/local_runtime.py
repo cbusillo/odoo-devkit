@@ -552,7 +552,7 @@ def build_runtime(*, manifest: WorkspaceManifest, runtime_repo_path: Path, no_ca
             raise RuntimeCommandError(
                 f"Strict local builds do not support {key}; remove it and declare Python dependencies in locked tenant metadata, normalize, and rebuild."
             )
-    github_token = resolve_source_github_token(runtime_context.environment.merged_values)
+    github_token = resolve_source_github_token(runtime_context.environment.merged_values) or resolve_gh_auth_token()
     values, _ = resolve_artifact_runtime_source_repository_refs(
         runtime_values={**values, "GITHUB_TOKEN": github_token or ""},
     )

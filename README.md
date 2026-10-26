@@ -280,12 +280,8 @@ Current runtime ownership is intentionally narrow and explicit:
 
 ## Testing
 
-Secretless tenant PRs can use `platform workspace check-source`; see the
-[source-only validation contract](docs/tooling/consumer-build-checks.md#source-only-pr-screening).
-It checks declared inputs, the tenant/shared dependency workspace and frozen
-export, and tracked Python/XML syntax without fetching sources or images. It
-emits screening JSON only. Full private-input builds and addon tests still run
-on the trusted merge-train candidate before landing.
+For secretless tenant PRs, use the
+[source-only validation command](docs/tooling/consumer-build-checks.md#source-only-pr-screening).
 
 Use the [local/CI test contract](https://github.com/cbusillo/codex-skills/blob/HEAD/skills/github/references/config-schema.md#workflow-metadata).
 Locally, select the test file covering the changed behavior:

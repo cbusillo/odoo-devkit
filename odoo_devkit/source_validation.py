@@ -7,7 +7,7 @@ from xml.etree import ElementTree
 from .artifact_inputs import load_artifact_inputs_definition
 from .artifact_provenance import normalize_git_commit, normalize_repository_identity
 from .dependency_workspace import check_source_dependency_workspace
-from .local_runtime import manifest_build_values, resolve_manifest_shared_addons_repo_path
+from .local_runtime import GIT_SHA_PATTERN, manifest_build_values, resolve_manifest_shared_addons_repo_path
 from .manifest import WorkspaceManifest
 
 
@@ -45,8 +45,9 @@ def _check_source_declarations(manifest: WorkspaceManifest) -> int:
             sources.extend(instance.sources_add)
     for source in sources:
         normalize_repository_identity(source.repository)
-        if source.exact_ref:
-            normalize_git_commit(source.exact_ref)
+        exact_ref = source.exact_ref or (source.selector if GIT_SHA_PATTERN.fullmatch(source.selector or "") else None)
+        if exact_ref:
+            normalize_git_commit(exact_ref)
             continue
         result = subprocess.run(["git", "check-ref-format", f"refs/heads/{source.selector}"], capture_output=True, text=True)
         if result.returncode:
