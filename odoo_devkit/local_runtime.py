@@ -1143,7 +1143,7 @@ def run_openupgrade_workflow(*, manifest: WorkspaceManifest, runtime_repo_path: 
         instance_name=manifest.runtime.instance,
     )
     compose_command = compose_base_command(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file)
-    up_script_runner_command = compose_command + ["up", "-d", "script-runner"]
+    up_script_runner_command = compose_command + ["up", "-d", "--no-build", "script-runner"]
     openupgrade_exec_command = compose_command + [
         "exec",
         "-T",
@@ -3799,7 +3799,7 @@ def compose_exec_with_input(
 
 def compose_up_script_runner(*, runtime_repo_path: Path, runtime_env_file: Path) -> None:
     compose_command = compose_base_command(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file)
-    run_command(runtime_repo_path=runtime_repo_path, command=compose_command + ["up", "-d", "script-runner"])
+    run_command(runtime_repo_path=runtime_repo_path, command=compose_command + ["up", "-d", "--no-build", "script-runner"])
 
 
 def stream_runtime_logs(
@@ -4058,7 +4058,7 @@ def run_with_web_temporarily_stopped(
 ) -> None:
     compose_command = compose_base_command(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file)
     stop_web_command = compose_command + ["stop", "web"]
-    up_web_command = compose_command + ["up", "-d", "web"]
+    up_web_command = compose_command + ["up", "-d", "--no-build", "web"]
     run_command(runtime_repo_path=runtime_repo_path, command=stop_web_command)
     try:
         operation()

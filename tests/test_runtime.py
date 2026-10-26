@@ -3159,10 +3159,13 @@ sources = [
 
             self.assertEqual(exit_code, 0)
             commands = [call.kwargs.get("args", call.args[0]) for call in run_mock.call_args_list]
+            for command in commands:
+                if "up" in command:
+                    self.assertIn("--no-build", command)
             self.assertIn([*commands[0][:-2], "stop", "web"], commands)
-            self.assertTrue(any(command[-3:] == ["up", "-d", "script-runner"] for command in commands))
+            self.assertTrue(any(command[-4:] == ["up", "-d", "--no-build", "script-runner"] for command in commands))
             self.assertTrue(any("/odoo/odoo-bin" in command for command in commands))
-            self.assertTrue(any(command[-3:] == ["up", "-d", "web"] for command in commands))
+            self.assertTrue(any(command[-4:] == ["up", "-d", "--no-build", "web"] for command in commands))
 
     def test_native_runtime_workflow_runs_openupgrade_natively(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -3183,9 +3186,12 @@ sources = [
 
             self.assertEqual(exit_code, 0)
             commands = [call.kwargs.get("args", call.args[0]) for call in run_mock.call_args_list]
-            self.assertTrue(any(command[-3:] == ["up", "-d", "script-runner"] for command in commands))
+            for command in commands:
+                if "up" in command:
+                    self.assertIn("--no-build", command)
+            self.assertTrue(any(command[-4:] == ["up", "-d", "--no-build", "script-runner"] for command in commands))
             self.assertTrue(any("/volumes/scripts/run_openupgrade.py" in command for command in commands))
-            self.assertTrue(any(command[-3:] == ["up", "-d", "web"] for command in commands))
+            self.assertTrue(any(command[-4:] == ["up", "-d", "--no-build", "web"] for command in commands))
 
     def test_native_runtime_workflow_runs_update_natively_for_local_instance(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
