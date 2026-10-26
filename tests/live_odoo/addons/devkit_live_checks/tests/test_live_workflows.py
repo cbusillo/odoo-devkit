@@ -173,6 +173,7 @@ class TestLiveWorkflows(TransactionCase):
                     print("DEVKIT_MAINTENANCE_REGISTRY_EVENTS " + json.dumps(registry_events), flush=True)
                     self.assertEqual(timings[mode]["odoo_processes"], 1, "Planned maintenance started multiple Odoo processes")
                     self.assertEqual(timings[mode]["module_update_passes"], 1, "Planned maintenance repeated module updates")
+                    self.assertLessEqual(timings[mode]["signaling_reloads"], 1, "Planned maintenance repeated native finalization")
                     self.assertEqual(
                         timings[mode]["registry_loads"],
                         1 + timings[mode]["signaling_reloads"],

@@ -70,7 +70,7 @@ plans, never secret values.
 
 The planned runner supports Odoo 19 and 20 with one maintenance process and one
 module-update pass. Odoo 20 can rebuild a clean registry after the update commits;
-the live checks account for that native signaling and still require fewer registry
+the live checks allow at most one native finalization reload and require fewer registry
 loads than the baseline. Artifact and runtime graph resolution use exposed addon paths and Odoo's first-path
 precedence. The receipt includes Odoo's own `updated_modules` evidence; module
 metadata timestamps alone are not proof of an upgrade.
