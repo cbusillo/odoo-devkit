@@ -1456,15 +1456,19 @@ homepage = true
             self._configure_publish_runtime_payload(
                 instance="local",
                 environment={
-                    "GITHUB_TOKEN": "synthetic-build-token",
+                    "GITHUB_TOKEN": "",
                     "OPENUPGRADE_ENABLED": "True",
-                    "OPENUPGRADE_ADDON_REPOSITORY": "example/OpenUpgrade@" + "4" * 40,
+                    "OPENUPGRADE_ADDON_REPOSITORY": "example/OpenUpgrade@migration",
                 },
             )
             tenant_root = manifest.tenant_repo.resolve_path(manifest_directory=manifest.manifest_directory)
             assert manifest.runtime_repo is not None
             runtime_root = manifest.runtime_repo.resolve_path(manifest_directory=manifest.manifest_directory)
             assert tenant_root is not None and runtime_root is not None
+            (tenant_root / "artifact-inputs.toml").write_text(
+                'schema_version = 1\nsources = [{ repository = "example/addons", selector = "main" }]\n'
+            )
+            resolved_sources = {"example/addons": "3" * 40, "example/OpenUpgrade": "4" * 40}
             nested = tenant_root / "addons/opw_custom/static/src/shared/file.js"
             nested.parent.mkdir(parents=True)
             nested.write_text("export default 1;\n")
@@ -1478,9 +1482,14 @@ homepage = true
             for repo in (tenant_root, runtime_root):
                 subprocess.run(["git", "remote", "remove", "origin"], cwd=repo, check=True)
             (tenant_root / "addons/shared").symlink_to(root / "absent-shared", target_is_directory=True)
-            # Exercise the shipped stack through the build boundary, rather than asserting config text.
-            (runtime_root / "platform/stack.toml").write_bytes(
-                (Path(__file__).resolve().parents[1] / "platform/stack.toml").read_bytes()
+            (runtime_root / "platform/stack.toml").write_text(
+                "\n".join(
+                    'OPENUPGRADE_ADDON_REPOSITORY = "example/OpenUpgrade@migration"'
+                    if line.startswith("OPENUPGRADE_ADDON_REPOSITORY =")
+                    else line
+                    for line in (Path(__file__).resolve().parents[1] / "platform/stack.toml").read_text().splitlines()
+                )
+                + "\n"
             )
             source_lock = (tenant_root / "uv.lock").read_bytes()
             catalogs = tuple(
@@ -1496,12 +1505,30 @@ homepage = true
                 self.assertTrue((stage / "addons/opw_custom/static/src/shared/file.js").is_file())
                 self.assertFalse((stage / "addons/opw_custom/static/src/shared/ignored.private").exists())
                 self.assertEqual(environment_overrides["GITHUB_TOKEN"], "synthetic-build-token")
+                build = json.loads((stage / "compose.json").read_text())["services"]["web"]["build"]
+                self.assertEqual(
+                    build["args"]["ODOO_ADDON_REPOSITORIES"].split(","),
+                    [f"{repository}@{commit}" for repository, commit in resolved_sources.items()],
+                )
+                self.assertEqual(
+                    build["args"]["OPENUPGRADE_ADDON_REPOSITORY"], f"example/OpenUpgrade@{resolved_sources['example/OpenUpgrade']}"
+                )
+                self.assertNotIn("GITHUB_TOKEN", build["args"])
                 values = local_runtime.parse_env_file(runtime_values_path)
                 self.assertEqual(values["ODOO_PYTHON_SYNC_SKIP_ADDONS"], "")
                 self.assertNotIn("OPENUPGRADELIB_INSTALL_SPEC", values)
                 staged_locks.append((stage / "project/uv.lock").read_bytes())
 
             with (
+                mock.patch.dict(
+                    os.environ,
+                    dict.fromkeys((*local_runtime.SOURCE_GITHUB_TOKEN_ENV_KEYS, "GITHUB_TOKEN", "GH_TOKEN"), ""),
+                ),
+                mock.patch("odoo_devkit.local_runtime.resolve_ghcr_read_token", return_value="synthetic-registry-token"),
+                mock.patch(
+                    "odoo_devkit.local_runtime.resolve_source_repository_ref_to_git_sha",
+                    side_effect=lambda *, repository, **_kwargs: resolved_sources[repository],
+                ) as resolve_source,
                 mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_base_images"),
                 mock.patch("odoo_devkit.local_runtime.resolve_image_digest", return_value="sha256:" + "2" * 64),
                 mock.patch("odoo_devkit.local_runtime.read_base_python_catalogs", return_value=catalogs),
@@ -1512,8 +1539,14 @@ homepage = true
                 with self.assertRaises(local_runtime.RuntimeCommandError):
                     local_runtime.build_runtime(manifest=manifest, runtime_repo_path=runtime_root, no_cache=True)
                 self.assertFalse(overlay.exists())
+                self.assertEqual(
+                    {call.kwargs["github_token"] for call in resolve_source.call_args_list}, {"synthetic-registry-token"}
+                )
+                resolve_source.reset_mock()
                 command.side_effect = execute
-                local_runtime.build_runtime(manifest=manifest, runtime_repo_path=runtime_root, no_cache=True)
+                with mock.patch.dict(os.environ, {"ODOO_DEVKIT_SOURCE_GITHUB_TOKEN": "synthetic-build-token"}):
+                    local_runtime.build_runtime(manifest=manifest, runtime_repo_path=runtime_root, no_cache=True)
+                self.assertEqual({call.kwargs["github_token"] for call in resolve_source.call_args_list}, {"synthetic-build-token"})
             self.assertTrue(overlay.is_file())
             self.assertFalse(any((runtime_root / ".platform/dependencies").rglob("build-*")))
             tenant_source = local_runtime.GitSourceSnapshot(
@@ -3126,10 +3159,13 @@ sources = [
 
             self.assertEqual(exit_code, 0)
             commands = [call.kwargs.get("args", call.args[0]) for call in run_mock.call_args_list]
+            for command in commands:
+                if "up" in command:
+                    self.assertIn("--no-build", command)
             self.assertIn([*commands[0][:-2], "stop", "web"], commands)
-            self.assertTrue(any(command[-3:] == ["up", "-d", "script-runner"] for command in commands))
+            self.assertTrue(any(command[-4:] == ["up", "-d", "--no-build", "script-runner"] for command in commands))
             self.assertTrue(any("/odoo/odoo-bin" in command for command in commands))
-            self.assertTrue(any(command[-3:] == ["up", "-d", "web"] for command in commands))
+            self.assertTrue(any(command[-4:] == ["up", "-d", "--no-build", "web"] for command in commands))
 
     def test_native_runtime_workflow_runs_openupgrade_natively(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -3150,9 +3186,12 @@ sources = [
 
             self.assertEqual(exit_code, 0)
             commands = [call.kwargs.get("args", call.args[0]) for call in run_mock.call_args_list]
-            self.assertTrue(any(command[-3:] == ["up", "-d", "script-runner"] for command in commands))
+            for command in commands:
+                if "up" in command:
+                    self.assertIn("--no-build", command)
+            self.assertTrue(any(command[-4:] == ["up", "-d", "--no-build", "script-runner"] for command in commands))
             self.assertTrue(any("/volumes/scripts/run_openupgrade.py" in command for command in commands))
-            self.assertTrue(any(command[-3:] == ["up", "-d", "web"] for command in commands))
+            self.assertTrue(any(command[-4:] == ["up", "-d", "--no-build", "web"] for command in commands))
 
     def test_native_runtime_workflow_runs_update_natively_for_local_instance(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -3161,9 +3200,14 @@ sources = [
             runtime_repo_path = temp_root / "runtime-repo"
             tenant_repo_path.mkdir(parents=True, exist_ok=True)
             self._write_runtime_repo(runtime_repo_path)
-            manifest_path = self._write_manifest(tenant_repo_path=tenant_repo_path, runtime_repo_path=runtime_repo_path)
+            manifest_path = self._write_manifest(
+                tenant_repo_path=tenant_repo_path, runtime_repo_path=runtime_repo_path, build_inputs=True
+            )
             manifest = load_workspace_manifest(manifest_path)
 
+            overlay = runtime_repo_path / ".platform/env/opw.local.dependencies.json"
+            overlay.parent.mkdir(parents=True)
+            overlay.write_text(json.dumps({"services": {"web": {"volumes": ["/synthetic/uv.lock:/opt/project/uv.lock:ro"]}}}))
             with mock.patch("odoo_devkit.local_runtime.subprocess.run") as run_mock:
                 run_mock.side_effect = self._runtime_data_workflow_side_effect()
                 with contextlib.redirect_stdout(io.StringIO()):
@@ -3171,9 +3215,15 @@ sources = [
 
             self.assertEqual(exit_code, 0)
             commands = [call.kwargs.get("args", call.args[0]) for call in run_mock.call_args_list]
-            self.assertTrue(any(command[-2:] == ["build", "web"] for command in commands))
-            self.assertTrue(any(command[-4:] == ["up", "-d", "--remove-orphans", "database"] for command in commands))
-            self.assertTrue(any(command[-4:] == ["up", "-d", "--remove-orphans", "script-runner"] for command in commands))
+            self.assertFalse(any("build" in command for command in commands))
+            self.assertTrue(any(command[-5:] == ["up", "-d", "--remove-orphans", "--no-build", "database"] for command in commands))
+            self.assertTrue(
+                any(command[-5:] == ["up", "-d", "--remove-orphans", "--no-build", "script-runner"] for command in commands)
+            )
+            for command in commands:
+                if "up" in command:
+                    self.assertIn("--no-build", command)
+                    self.assertIn(str(overlay.resolve()), command)
             update_command = next(command for command in commands if "/volumes/scripts/run_odoo_data_workflows.py" in command)
             self.assertIn("UPDATE_ONLY=1", update_command)
             self.assertIn("--update-only", update_command)
@@ -3195,6 +3245,10 @@ sources = [
 
             self.assertEqual(exit_code, 0)
             commands = [call.kwargs.get("args", call.args[0]) for call in run_mock.call_args_list]
+            self.assertFalse(any("build" in command for command in commands))
+            for command in commands:
+                if "up" in command:
+                    self.assertIn("--no-build", command)
             bootstrap_command = next(command for command in commands if "/volumes/scripts/run_odoo_data_workflows.py" in command)
             self.assertIn("BOOTSTRAP=1", bootstrap_command)
             self.assertIn("--bootstrap", bootstrap_command)
@@ -3216,11 +3270,15 @@ sources = [
 
             self.assertEqual(exit_code, 0)
             commands = [call.kwargs.get("args", call.args[0]) for call in run_mock.call_args_list]
+            self.assertFalse(any("build" in command for command in commands))
+            for command in commands:
+                if "up" in command:
+                    self.assertIn("--no-build", command)
             restore_command = next(command for command in commands if "/volumes/scripts/run_odoo_data_workflows.py" in command)
             self.assertNotIn("UPDATE_ONLY=1", restore_command)
             self.assertNotIn("BOOTSTRAP=1", restore_command)
             self.assertTrue(any(command[-2:] == ["stop", "web"] for command in commands))
-            self.assertTrue(any(command[-4:] == ["up", "-d", "--remove-orphans", "web"] for command in commands))
+            self.assertTrue(any(command[-5:] == ["up", "-d", "--remove-orphans", "--no-build", "web"] for command in commands))
 
     def test_native_runtime_data_workflows_forward_literal_secrets(self) -> None:
         passwords = (
@@ -3366,7 +3424,7 @@ sources = [
                 def fail_runner(
                     command: list[str], *, successful_command: Callable[..., mock.Mock] = successful_run, **kwargs: object
                 ) -> mock.Mock:
-                    if command[-4:] == ["up", "-d", "--remove-orphans", "script-runner"]:
+                    if command[-5:] == ["up", "-d", "--remove-orphans", "--no-build", "script-runner"]:
                         return mock.Mock(returncode=1)
                     return successful_command(command, **kwargs)
 
@@ -3380,7 +3438,7 @@ sources = [
                 normalize.assert_not_called()
                 commands = [call.args[0] for call in run_mock.call_args_list]
                 if ssh_path == "/synthetic/keys":
-                    self.assertEqual(commands[-1][-4:], ["up", "-d", "--remove-orphans", "script-runner"])
+                    self.assertEqual(commands[-1][-5:], ["up", "-d", "--remove-orphans", "--no-build", "script-runner"])
                 else:
                     self.assertEqual(commands, [])
                 self.assertFalse(any(local_runtime.DATA_WORKFLOW_SCRIPT in command for command in commands))

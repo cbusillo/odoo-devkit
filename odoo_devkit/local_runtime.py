@@ -552,6 +552,12 @@ def build_runtime(*, manifest: WorkspaceManifest, runtime_repo_path: Path, no_ca
             raise RuntimeCommandError(
                 f"Strict local builds do not support {key}; remove it and declare Python dependencies in locked tenant metadata, normalize, and rebuild."
             )
+    github_token = resolve_source_github_token(runtime_context.environment.merged_values) or resolve_github_token_for_build(
+        runtime_context.environment.merged_values
+    )
+    values, _ = resolve_artifact_runtime_source_repository_refs(
+        runtime_values={**values, "GITHUB_TOKEN": github_token or ""},
+    )
     write_runtime_odoo_conf_file(
         runtime_selection=runtime_context.selection,
         stack_definition=runtime_context.stack.stack_definition,
@@ -570,7 +576,6 @@ def build_runtime(*, manifest: WorkspaceManifest, runtime_repo_path: Path, no_ca
         values[key] = f"{repository}@{resolve_image_digest(values[key])}"
     catalogs = read_base_python_catalogs(image=values["ODOO_BASE_RUNTIME_IMAGE"], platforms=DEFAULT_ARTIFACT_IMAGE_PLATFORMS)
     build_environment = command_execution_env()
-    github_token = resolve_github_token_for_build(runtime_context.environment.merged_values)
     if github_token is not None:
         build_environment["GITHUB_TOKEN"] = github_token
     tenant_root = manifest.tenant_repo.resolve_path(manifest_directory=manifest.manifest_directory)
@@ -1138,7 +1143,7 @@ def run_openupgrade_workflow(*, manifest: WorkspaceManifest, runtime_repo_path: 
         instance_name=manifest.runtime.instance,
     )
     compose_command = compose_base_command(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file)
-    up_script_runner_command = compose_command + ["up", "-d", "script-runner"]
+    up_script_runner_command = compose_command + ["up", "-d", "--no-build", "script-runner"]
     openupgrade_exec_command = compose_command + [
         "exec",
         "-T",
@@ -1213,12 +1218,11 @@ def run_local_data_workflow(
             )
 
     compose_command = compose_base_command(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file)
-    run_command(runtime_repo_path=runtime_repo_path, command=compose_command + ["build", "web"])
 
-    database_up_command = compose_command + ["up", "-d", "--remove-orphans", "database"]
-    script_runner_up_command = compose_command + ["up", "-d", "--remove-orphans", "script-runner"]
+    database_up_command = compose_command + ["up", "-d", "--remove-orphans", "--no-build", "database"]
+    script_runner_up_command = compose_command + ["up", "-d", "--remove-orphans", "--no-build", "script-runner"]
     stop_web_command = compose_command + ["stop", "web"]
-    up_web_command = compose_command + ["up", "-d", "--remove-orphans", "web"]
+    up_web_command = compose_command + ["up", "-d", "--remove-orphans", "--no-build", "web"]
 
     run_command_best_effort(runtime_repo_path=runtime_repo_path, command=database_up_command)
     wait_for_compose_service(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file, service_name="database")
@@ -2903,13 +2907,13 @@ def parse_artifact_source_repository_entries(
         repository_name, separator, repository_ref = candidate_entry.rpartition("@")
         if not separator or not repository_name.strip() or not repository_ref.strip():
             raise RuntimeCommandError(
-                f"Artifact publish requires addon repositories to use '<repo>@<ref>' form. Received: {candidate_entry}"
+                f"Artifact build requires addon repositories to use '<repo>@<ref>' form. Received: {candidate_entry}"
             )
         normalized_repository = repository_name.strip()
         normalized_ref = repository_ref.strip()
         if require_exact_shas and not GIT_SHA_PATTERN.fullmatch(normalized_ref):
             raise RuntimeCommandError(
-                f"Artifact publish requires addon repositories to use exact git SHAs. Received: {candidate_entry}"
+                f"Artifact build requires addon repositories to use exact git SHAs. Received: {candidate_entry}"
             )
         normalized_entry = (normalized_repository, normalized_ref)
         if normalized_entry in seen_entries:
@@ -2986,19 +2990,19 @@ def resolve_source_repository_ref_to_git_sha(*, repository: str, ref: str, githu
     if ls_remote_result.returncode != 0:
         details = clean_optional_value(ls_remote_result.stderr) or clean_optional_value(ls_remote_result.stdout)
         raise RuntimeCommandError(
-            "Artifact publish could not resolve addon repository ref "
+            "Artifact build could not resolve addon repository ref "
             f"{normalized_repository}@{normalized_ref}." + (f"\nGit reported: {details}" if details else "")
         )
     resolved_shas = tuple(line.split("\t", 1)[0].strip() for line in ls_remote_result.stdout.splitlines() if line.strip())
     unique_resolved_shas = tuple(dict.fromkeys(resolved_shas))
     if not unique_resolved_shas:
         raise RuntimeCommandError(
-            "Artifact publish requires addon repository selectors to resolve to an exact git SHA. "
+            "Artifact build requires addon repository selectors to resolve to an exact git SHA. "
             f"No remote ref matched {normalized_repository}@{normalized_ref}."
         )
     if len(unique_resolved_shas) != 1 or not GIT_SHA_PATTERN.fullmatch(unique_resolved_shas[0]):
         raise RuntimeCommandError(
-            "Artifact publish requires addon repository selectors to resolve unambiguously to one git SHA. "
+            "Artifact build requires addon repository selectors to resolve unambiguously to one git SHA. "
             f"Received matches for {normalized_repository}@{normalized_ref}: {', '.join(unique_resolved_shas)}"
         )
     return unique_resolved_shas[0]
@@ -3795,7 +3799,7 @@ def compose_exec_with_input(
 
 def compose_up_script_runner(*, runtime_repo_path: Path, runtime_env_file: Path) -> None:
     compose_command = compose_base_command(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file)
-    run_command(runtime_repo_path=runtime_repo_path, command=compose_command + ["up", "-d", "script-runner"])
+    run_command(runtime_repo_path=runtime_repo_path, command=compose_command + ["up", "-d", "--no-build", "script-runner"])
 
 
 def stream_runtime_logs(
@@ -4054,7 +4058,7 @@ def run_with_web_temporarily_stopped(
 ) -> None:
     compose_command = compose_base_command(runtime_repo_path=runtime_repo_path, runtime_env_file=runtime_env_file)
     stop_web_command = compose_command + ["stop", "web"]
-    up_web_command = compose_command + ["up", "-d", "web"]
+    up_web_command = compose_command + ["up", "-d", "--no-build", "web"]
     run_command(runtime_repo_path=runtime_repo_path, command=stop_web_command)
     try:
         operation()
