@@ -1224,23 +1224,18 @@ class OdooDataWorkflowRunner:
             connection_.commit()
         _logger.info("Cleared production integration credentials and regenerated signing keys on the restored copy.")
 
-    def _payment_provider_activation(self, cursor: Any) -> tuple[str, str | bool] | None:
+    def _payment_provider_activations(self, cursor: Any) -> dict[str, str | bool]:
         columns = self._table_columns(cursor, "payment_provider")
-        for column, disabled_value in (("state", "disabled"), ("active", False)):
-            if column in columns:
-                return column, disabled_value
-        return None
+        return {column: value for column, value in {"state": "disabled", "active": False}.items() if column in columns}
 
     def _disable_payment_providers(self, cursor: Any) -> None:
-        if (activation := self._payment_provider_activation(cursor)) is None:
-            return
-        column, disabled_value = activation
-        cursor.execute(
-            sql.SQL("UPDATE payment_provider SET {column} = %s WHERE {column} <> %s AND code NOT IN ({providers})").format(
-                column=sql.Identifier(column), providers=sql.SQL(", ".join(["%s"] * len(LOCAL_PAYMENT_PROVIDER_CODES)))
-            ),
-            (disabled_value, disabled_value, *LOCAL_PAYMENT_PROVIDER_CODES),
-        )
+        for column, disabled_value in self._payment_provider_activations(cursor).items():
+            cursor.execute(
+                sql.SQL(
+                    "UPDATE payment_provider SET {column} = %s WHERE {column} IS DISTINCT FROM %s AND code NOT IN ({providers})"
+                ).format(column=sql.Identifier(column), providers=sql.SQL(", ".join(["%s"] * len(LOCAL_PAYMENT_PROVIDER_CODES)))),
+                (disabled_value, disabled_value, *LOCAL_PAYMENT_PROVIDER_CODES),
+            )
 
     @staticmethod
     def _clear_credential_column(cursor: Any, table: str, column: str) -> None:
@@ -1350,14 +1345,21 @@ class OdooDataWorkflowRunner:
         _logger.info("Read-back confirmed no restored production credential remains.")
 
     def _enabled_remote_payment_providers(self, cursor: Any) -> int:
-        if (activation := self._payment_provider_activation(cursor)) is None:
+        if not (activations := self._payment_provider_activations(cursor)):
             return 0
-        column, disabled_value = activation
+        predicates = []
+        values = []
+        for column, disabled_value in activations.items():
+            if disabled_value is False:
+                predicates.append(sql.Identifier(column))
+            else:
+                predicates.append(sql.SQL("{column} IS DISTINCT FROM %s").format(column=sql.Identifier(column)))
+                values.append(disabled_value)
         cursor.execute(
-            sql.SQL("SELECT count(*) FROM payment_provider WHERE {column} <> %s AND code NOT IN ({providers})").format(
-                column=sql.Identifier(column), providers=sql.SQL(", ".join(["%s"] * len(LOCAL_PAYMENT_PROVIDER_CODES)))
+            sql.SQL("SELECT count(*) FROM payment_provider WHERE ({enabled}) AND code NOT IN ({providers})").format(
+                enabled=sql.SQL(" OR ").join(predicates), providers=sql.SQL(", ".join(["%s"] * len(LOCAL_PAYMENT_PROVIDER_CODES)))
             ),
-            (disabled_value, *LOCAL_PAYMENT_PROVIDER_CODES),
+            (*values, *LOCAL_PAYMENT_PROVIDER_CODES),
         )
         return cursor.fetchone()[0]
 

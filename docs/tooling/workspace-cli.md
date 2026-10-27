@@ -587,7 +587,9 @@ Notes
   back on cannot reach the production databases. It disables every payment
   provider that reaches a remote service (anything but `none`, `custom` and
   `demo`). Odoo 19 providers enter the disabled state, including providers in
-  test mode; Odoo 20 providers become inactive. It blanks the providers'
+  test mode; Odoo 20 providers become inactive. Copies retaining both schema
+  fields have both disabled, and readback rejects either enabled field.
+  It blanks the providers'
   credential fields. It deactivates every incoming mail server and blanks its
   password and its Gmail or Outlook OAuth tokens. It also deletes the Gmail
   and Outlook OAuth app client secrets (`google_gmail_client_secret` and

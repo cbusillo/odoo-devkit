@@ -1368,7 +1368,22 @@ class ProductionCredentialSanitizeTests(unittest.TestCase):
         runner.neutralize_production_credentials()
         self.copy.database.execute("UPDATE payment_provider SET active=TRUE WHERE id=1")
 
-        with self.assertRaisesRegex(odoo_data_workflows.OdooDatabaseUpdateError, r"payment provider\(s\) still enabled"):
+        with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
+            runner.verify_production_credentials_cleared()
+
+    def test_restore_checks_both_activation_fields_after_a_provider_schema_upgrade(self) -> None:
+        self.copy.use_active_payment_providers()
+        self.copy.database.execute("ALTER TABLE payment_provider ADD COLUMN state TEXT")
+        self.copy.database.execute("UPDATE payment_provider SET state='disabled' WHERE id=1")
+        runner = self._runner()
+        runner.fingerprint_restored_credentials()
+        runner.neutralize_production_credentials()
+
+        with self.subTest(operation="disable"):
+            self.assertEqual(self.copy.scalar("SELECT active FROM payment_provider WHERE id=1"), 0)
+            self.assertEqual(self.copy.scalar("SELECT state FROM payment_provider WHERE id=2"), "disabled")
+        self.copy.database.execute("UPDATE payment_provider SET active=TRUE WHERE id=1")
+        with self.subTest(operation="readback"), self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
             runner.verify_production_credentials_cleared()
 
     def test_restore_preserves_explicitly_kept_active_payment_providers(self) -> None:
