@@ -1224,13 +1224,22 @@ class OdooDataWorkflowRunner:
             connection_.commit()
         _logger.info("Cleared production integration credentials and regenerated signing keys on the restored copy.")
 
+    def _payment_provider_activation(self, cursor: Any) -> tuple[str, str | bool] | None:
+        columns = self._table_columns(cursor, "payment_provider")
+        for column, disabled_value in (("state", "disabled"), ("active", False)):
+            if column in columns:
+                return column, disabled_value
+        return None
+
     def _disable_payment_providers(self, cursor: Any) -> None:
-        if "state" not in self._table_columns(cursor, "payment_provider"):
+        if (activation := self._payment_provider_activation(cursor)) is None:
             return
-        placeholders = ", ".join(["%s"] * len(LOCAL_PAYMENT_PROVIDER_CODES))
+        column, disabled_value = activation
         cursor.execute(
-            f"UPDATE payment_provider SET state = 'disabled' WHERE state <> 'disabled' AND code NOT IN ({placeholders})",
-            LOCAL_PAYMENT_PROVIDER_CODES,
+            sql.SQL("UPDATE payment_provider SET {column} = %s WHERE {column} <> %s AND code NOT IN ({providers})").format(
+                column=sql.Identifier(column), providers=sql.SQL(", ".join(["%s"] * len(LOCAL_PAYMENT_PROVIDER_CODES)))
+            ),
+            (disabled_value, disabled_value, *LOCAL_PAYMENT_PROVIDER_CODES),
         )
 
     @staticmethod
@@ -1341,12 +1350,14 @@ class OdooDataWorkflowRunner:
         _logger.info("Read-back confirmed no restored production credential remains.")
 
     def _enabled_remote_payment_providers(self, cursor: Any) -> int:
-        if "state" not in self._table_columns(cursor, "payment_provider"):
+        if (activation := self._payment_provider_activation(cursor)) is None:
             return 0
-        placeholders = ", ".join(["%s"] * len(LOCAL_PAYMENT_PROVIDER_CODES))
+        column, disabled_value = activation
         cursor.execute(
-            f"SELECT count(*) FROM payment_provider WHERE state <> 'disabled' AND code NOT IN ({placeholders})",
-            LOCAL_PAYMENT_PROVIDER_CODES,
+            sql.SQL("SELECT count(*) FROM payment_provider WHERE {column} <> %s AND code NOT IN ({providers})").format(
+                column=sql.Identifier(column), providers=sql.SQL(", ".join(["%s"] * len(LOCAL_PAYMENT_PROVIDER_CODES)))
+            ),
+            (disabled_value, *LOCAL_PAYMENT_PROVIDER_CODES),
         )
         return cursor.fetchone()[0]
 

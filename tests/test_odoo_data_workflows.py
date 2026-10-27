@@ -1215,6 +1215,14 @@ class _RestoredProductionCopy:
     def payment_providers(self) -> list[tuple]:
         return self.database.execute("SELECT * FROM payment_provider ORDER BY id").fetchall()
 
+    def use_active_payment_providers(self) -> None:
+        self.database.execute("ALTER TABLE payment_provider DROP COLUMN state")
+        self.database.execute("ALTER TABLE payment_provider ADD COLUMN active BOOLEAN NOT NULL DEFAULT TRUE")
+        self.database.execute("DELETE FROM information_schema.columns WHERE table_name='payment_provider' AND column_name='state'")
+        self.database.execute("INSERT INTO information_schema.columns VALUES ('payment_provider', 'active', 'NO', 'boolean')")
+        for code in odoo_data_workflows.LOCAL_PAYMENT_PROVIDER_CODES:
+            self.database.execute("INSERT INTO payment_provider (code) VALUES (?)", (code,))
+
 
 class _ParamstyleCursor:
     """Runs the workflow's psycopg2-style (%s) SQL against SQLite."""
@@ -1339,6 +1347,40 @@ class ProductionCredentialSanitizeTests(unittest.TestCase):
         runner.neutralize_production_credentials()
 
         self.assertNotEqual(self.copy.parameters()["database.secret"], first_secret)
+
+    def test_restore_disables_active_remote_payment_providers_and_preserves_local_providers(self) -> None:
+        self.copy.use_active_payment_providers()
+        runner = self._runner()
+
+        runner.fingerprint_restored_credentials()
+        runner.neutralize_production_credentials()
+        runner.verify_production_credentials_cleared()
+
+        for code, active in self.copy.database.execute("SELECT code, active FROM payment_provider"):
+            with self.subTest(code=code):
+                self.assertEqual(bool(active), code in odoo_data_workflows.LOCAL_PAYMENT_PROVIDER_CODES)
+        self.assertEqual(self.copy.scalar("SELECT count(*) FROM payment_provider WHERE stripe_secret_key IS NOT NULL"), 0)
+
+    def test_readback_rejects_reactivated_remote_payment_provider_without_credentials(self) -> None:
+        self.copy.use_active_payment_providers()
+        runner = self._runner()
+        runner.fingerprint_restored_credentials()
+        runner.neutralize_production_credentials()
+        self.copy.database.execute("UPDATE payment_provider SET active=TRUE WHERE id=1")
+
+        with self.assertRaisesRegex(odoo_data_workflows.OdooDatabaseUpdateError, r"payment provider\(s\) still enabled"):
+            runner.verify_production_credentials_cleared()
+
+    def test_restore_preserves_explicitly_kept_active_payment_providers(self) -> None:
+        self.copy.use_active_payment_providers()
+        runner = self._runner(ODOO_RESTORE_KEPT_INTEGRATIONS="payment")
+        before = self.copy.payment_providers()
+
+        runner.fingerprint_restored_credentials()
+        runner.neutralize_production_credentials()
+        runner.verify_production_credentials_cleared()
+
+        self.assertEqual(self.copy.payment_providers(), before)
 
     def test_empty_or_missing_instance_is_treated_as_non_production(self) -> None:
         for platform_instance in ("", "  ", None, "staging-unknown"):
