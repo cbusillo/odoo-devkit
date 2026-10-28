@@ -302,6 +302,36 @@ class CoreReferenceTests(unittest.TestCase):
             self.apply()
         self.assertEqual(self.snapshot(), before)
 
+    def test_data_only_acl_refuses_active_or_inactive_module_grouped_siblings(self) -> None:
+        self.connection.execute("INSERT INTO ir_model VALUES (31,'res.partner')")
+        self.connection.execute("INSERT INTO ir_model_access VALUES (14,31,'Retained read',67,1,1,0,0,0)")
+        self.xmlid("fixture", "contact_access", "ir.model.access", 14, True)
+        self.connection.execute("INSERT INTO ir_rule VALUES (29,31,'Source portal limit',?,1,1,0,0,0)", ("[('id','=',9)]",))
+        self.connection.execute("INSERT INTO rule_group_rel VALUES (29,10)")
+        self.xmlid("base", "portal_limit", "ir.rule", 29, False)
+        self.connection.execute("INSERT INTO ir_module_module VALUES ('base','installed','19.0.1.0')")
+        for active in (True, False):
+            self.connection.execute("UPDATE ir_rule SET active=?", (active,))
+            before = self.snapshot()
+            with self.subTest(active=active):
+                with self.assertRaises(RuntimeError) as refusal:
+                    self.apply()
+                self.assertIn("fixture.contact_access", str(refusal.exception))
+                self.assertIn("base.portal_limit", str(refusal.exception))
+                self.assertEqual(self.snapshot(), before)
+        self.connection.execute("UPDATE ir_model_access SET perm_read=0,perm_write=1")
+        plan = bridge.plan_access_transition(bridge.read_access_policies(self.cursor))
+        self.assertEqual(len(plan.converted), 1)
+        self.assertEqual(plan.converted[0].source.identifier, 14)
+
+    def test_nameless_data_only_rule_refuses_before_bridge_writes(self) -> None:
+        self.connection.execute("INSERT INTO ir_model VALUES (31,'res.partner')")
+        self.connection.execute("INSERT INTO ir_rule VALUES (23,31,NULL,'[]',1,1,0,0,0)")
+        before = self.snapshot()
+        with self.assertRaises(RuntimeError):
+            self.apply()
+        self.assertEqual(self.snapshot(), before)
+
     def bank_form(self, state: str = "installed") -> int:
         self.connection.execute(
             "CREATE TABLE ir_ui_view (id INTEGER PRIMARY KEY, model TEXT, inherit_id INTEGER, mode TEXT, arch_db TEXT, "

@@ -20,6 +20,7 @@ class RevertOperation(Exception):
 class TestAccessTransition(TransactionCase):
     def setUp(self) -> None:
         super().setUp()
+        self.assertTrue(self.env.registry.ready)
         internal = self.env.ref("base.group_user")
         self.groups = {
             name: self.env["res.groups"].create({"name": name, "implied_ids": [Command.link(internal.id)]})
@@ -166,12 +167,72 @@ class TestAccessTransition(TransactionCase):
         self.assertFalse(self.decide("writer", "blocked", "read"))
         self.assertTrue(self.decide("writer", "allowed", "read"))
 
-    def test_grouped_policy_refusal_does_not_change_native_policies(self) -> None:
-        model_name = "ir.access" if "ir.access" in self.env.registry else "ir.rule"
-        before = self.env[model_name].search([]).read(["name", "active"])
+    def test_legacy_hook_refuses_grouped_policy_before_bridge_writes(self) -> None:
+        if "ir.access" in self.env.registry:
+            self.skipTest("Legacy SQL refusal is exercised by native 19")
         grouped = self.source[-1]._replace(groups=(self.groups["reader"].id,))
         sibling = grouped._replace(identifier=grouped.identifier + 1, groups=(self.groups["writer"].id,))
+        records = self.install_policies((grouped, sibling))
+        for name, policy, module in (
+            ("retained_rule", grouped, "access_transition_fixture"),
+            ("source_sibling", sibling, "access_transition_probe"),
+        ):
+            self.env["ir.model.data"].create(
+                {
+                    "module": module,
+                    "name": name,
+                    "model": policy.source_model,
+                    "res_id": records[(policy.source_model, policy.identifier)].id,
+                    "noupdate": True,
+                }
+            )
+        self.env.flush_all()
+        self.env.cr.execute("SELECT id,module,name,model,res_id,noupdate FROM ir_model_data ORDER BY id")
+        aliases = self.env.cr.fetchall()
+        self.env.cr.execute("SELECT id,arch_db,arch_prev,arch_updated FROM ir_ui_view ORDER BY id")
+        views = self.env.cr.fetchall()
+        with self.assertRaises(RuntimeError) as refusal:
+            bridge.migrate(self.env.cr, "19.0.1.0")
+        self.assertIn("access_transition_fixture.retained_rule", str(refusal.exception))
+        self.assertIn("access_transition_probe.source_sibling", str(refusal.exception))
+        self.env.cr.execute("SELECT id,module,name,model,res_id,noupdate FROM ir_model_data ORDER BY id")
+        self.assertEqual(self.env.cr.fetchall(), aliases)
+        self.env.cr.execute("SELECT id,arch_db,arch_prev,arch_updated FROM ir_ui_view ORDER BY id")
+        self.assertEqual(self.env.cr.fetchall(), views)
+
+    def test_custom_acl_cannot_bypass_module_grouped_rule(self) -> None:
+        reader_acl = self.source[0]._replace(source_owned=True)
+        grouped = bridge.AccessPolicy(
+            "ir.rule",
+            5,
+            "Source-owned own records",
+            MODEL,
+            (self.groups["reader"].id,),
+            "r",
+            "[('user_id','=',user.id)]",
+            True,
+            (),
+            (),
+            True,
+        )
+        custom_acl = self.source[1]._replace(operation="r")
+        if "ir.access" in self.env.registry:
+            self.env["ir.access"].create(
+                {
+                    "name": grouped.name,
+                    "model_id": self.env["ir.model"]._get(MODEL).id,
+                    "group_id": self.groups["reader"].id,
+                    "operation": "r",
+                    "domain": grouped.domain,
+                }
+            )
+        else:
+            self.install_policies((reader_acl, grouped, custom_acl))
+        self.records["own"] = self.env[MODEL].create(
+            {"name": "Combined own", "user_id": self.users["combined"].id, "company_id": self.companies[0].id}
+        )
+        self.assertTrue(self.decide("combined", "own", "read"))
+        self.assertFalse(self.decide("combined", "allowed", "read"))
         for active in (True, False):
             with self.subTest(active=active), self.assertRaises(RuntimeError):
-                bridge.plan_access_transition(self.source[:-1] + (grouped._replace(active=active), sibling))
-        self.assertEqual(self.env[model_name].search([]).read(["name", "active"]), before)
+                bridge.plan_access_transition((reader_acl, grouped._replace(active=active), custom_acl))

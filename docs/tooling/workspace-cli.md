@@ -635,9 +635,14 @@ Notes
   does not turn them into permissions or freeze sibling policy copies. Data-only
   policies targeting the merged security models, policies with no operations,
   groupless permissions without verified native group coverage, missing models,
-  and dangling aliases or group references also refuse. Resolve a refused policy
+  nameless policies, and dangling aliases or group references also refuse.
+  A data-only ACL also refuses if any active or inactive grouped rule applies to
+  the same model and operation, including module-owned rules in other groups;
+  a plain permission could bypass their native domains. Resolve a refused policy
   through an explicit native policy/reference mapping and the native rights oracle;
   deleting it or resetting module metadata is not a supported workaround.
+  For dangling metadata, use an intact validated source or establish an explicit
+  alias mapping to a surviving policy; the bridge never recreates a missing row.
   The bounded planner retains group-bound ACLs and global rules, including inactive
   state and protected aliases, for native validation. It keeps module-owned policies
   separate for their source mapping. Planning does not apply these representations

@@ -21,7 +21,7 @@ class Reference(NamedTuple):
 class AccessPolicy(NamedTuple):
     source_model: str
     identifier: int
-    name: str
+    name: str | None
     model: str | None
     groups: tuple[int, ...]
     operation: str
@@ -108,6 +108,18 @@ def _policy_label(policy: AccessPolicy) -> str:
     return f"{policy.source_model}:{policy.identifier} ({aliases}; {policy.name})"
 
 
+def _grouped_siblings(policy: AccessPolicy, policies: tuple[AccessPolicy, ...]) -> tuple[AccessPolicy, ...]:
+    return tuple(
+        sibling
+        for sibling in policies
+        if sibling.source_model == "ir.rule"
+        and (sibling.source_model, sibling.identifier) != (policy.source_model, policy.identifier)
+        and sibling.groups
+        and sibling.model == policy.model
+        and set(sibling.operation) & set(policy.operation)
+    )
+
+
 def plan_access_transition(policies: tuple[AccessPolicy, ...]) -> AccessPlan:
     converted = []
     source_owned = []
@@ -120,6 +132,9 @@ def plan_access_transition(policies: tuple[AccessPolicy, ...]) -> AccessPlan:
         if policy.source_owned:
             source_owned.append(policy)
             continue
+        if not policy.name:
+            refusals.append(f"{label}: nameless policy has no qualified native name mapping")
+            continue
         if policy.model in {"ir.model.access", "ir.rule", "ir.access"}:
             refusals.append(f"{label}: merged security-model policy requires an explicit reference mapping")
             continue
@@ -130,20 +145,17 @@ def plan_access_transition(policies: tuple[AccessPolicy, ...]) -> AccessPlan:
             if not policy.groups:
                 refusals.append(f"{label}: groupless permission requires verified native everyone-group coverage")
                 continue
+            siblings = _grouped_siblings(policy, policies)
+            if siblings:
+                related = "; ".join(_policy_label(sibling) for sibling in siblings)
+                refusals.append(f"{label}: plain permission would bypass grouped policies: {related}")
+                continue
             converted.append(NativeAccess(policy, policy.groups[0], policy.operation, ""))
             continue
         if not policy.groups:
             converted.append(NativeAccess(policy, None, policy.operation, policy.domain))
             continue
-        siblings = [
-            sibling
-            for sibling in policies
-            if sibling.source_model == "ir.rule"
-            and sibling.identifier != policy.identifier
-            and sibling.groups
-            and sibling.model == policy.model
-            and set(sibling.operation) & set(policy.operation)
-        ]
+        siblings = _grouped_siblings(policy, policies)
         related = "; ".join(_policy_label(sibling) for sibling in siblings)
         reason = "grouped restriction requires a qualified native mapping"
         if siblings:
