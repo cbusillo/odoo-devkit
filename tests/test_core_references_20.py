@@ -48,6 +48,7 @@ class CoreReferenceTests(unittest.TestCase):
             "CREATE TABLE website (id INTEGER PRIMARY KEY, name TEXT, domain TEXT, company_id INTEGER);"
             "CREATE TABLE ir_module_module (name TEXT PRIMARY KEY, state TEXT, latest_version TEXT);"
             "CREATE TABLE ir_model (id INTEGER PRIMARY KEY, model TEXT);"
+            "CREATE TABLE ir_model_inherit (model_id INTEGER, parent_id INTEGER, parent_field_id INTEGER);"
             "CREATE TABLE ir_rule (id INTEGER PRIMARY KEY, model_id INTEGER, name TEXT, domain_force TEXT, active BOOLEAN, "
             "perm_read BOOLEAN, perm_write BOOLEAN, perm_create BOOLEAN, perm_unlink BOOLEAN);"
             "CREATE TABLE ir_model_access (id INTEGER PRIMARY KEY, model_id INTEGER, name TEXT, group_id INTEGER, active BOOLEAN, "
@@ -330,6 +331,18 @@ class CoreReferenceTests(unittest.TestCase):
         before = self.snapshot()
         with self.assertRaises(RuntimeError):
             self.apply()
+        self.assertEqual(self.snapshot(), before)
+
+    def test_delegated_parent_requires_native_permission_and_rule_mapping(self) -> None:
+        self.connection.executemany("INSERT INTO ir_model VALUES (?,?)", ((31, "fixture.child"), (32, "res.partner")))
+        self.connection.execute("INSERT INTO ir_model_inherit VALUES (31,32,71)")
+        self.connection.execute("INSERT INTO ir_model_access VALUES (14,31,'Retained child read',67,1,1,0,0,0)")
+        self.xmlid("fixture", "child_read", "ir.model.access", 14, True)
+        before = self.snapshot()
+        with self.assertRaises(RuntimeError) as refusal:
+            self.apply()
+        self.assertIn("fixture.child_read", str(refusal.exception))
+        self.assertIn("res.partner", str(refusal.exception))
         self.assertEqual(self.snapshot(), before)
 
     def bank_form(self, state: str = "installed") -> int:

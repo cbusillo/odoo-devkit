@@ -30,6 +30,7 @@ class AccessPolicy(NamedTuple):
     aliases: tuple[str, ...]
     protected_aliases: tuple[str, ...]
     source_owned: bool
+    delegated_parents: tuple[str, ...] = ()
 
 
 class NativeAccess(NamedTuple):
@@ -60,6 +61,17 @@ def read_access_policies(cr: Any) -> tuple[AccessPolicy, ...]:
     groups: dict[int, list[int]] = {}
     for identifier, group in cr.fetchall():
         groups.setdefault(identifier, []).append(group)
+    cr.execute(
+        "SELECT child.model, parent.model FROM ir_model_inherit inheritance "
+        "LEFT JOIN ir_model child ON child.id = inheritance.model_id "
+        "LEFT JOIN ir_model parent ON parent.id = inheritance.parent_id "
+        "WHERE inheritance.parent_field_id IS NOT NULL ORDER BY child.model, parent.model"
+    )
+    delegated_parents: dict[str, list[str]] = {}
+    for child, parent in cr.fetchall():
+        if not child or not parent:
+            raise RuntimeError("Source delegated inheritance has a missing model identity")
+        delegated_parents.setdefault(child, []).append(parent)
     cr.execute(
         "SELECT access.id, access.name, model.model, access.active, access.perm_create, access.perm_read, "
         "access.perm_write, access.perm_unlink, access.group_id FROM ir_model_access access "
@@ -93,6 +105,7 @@ def read_access_policies(cr: Any) -> tuple[AccessPolicy, ...]:
                     tuple(f"{module}.{alias}" for module, alias, _ in references),
                     tuple(f"{module}.{alias}" for module, alias, protected in references if protected),
                     any(module in source_modules for module, _, _ in references),
+                    tuple(delegated_parents.get(model, ())),
                 )
             )
     if aliases:
@@ -134,6 +147,9 @@ def plan_access_transition(policies: tuple[AccessPolicy, ...]) -> AccessPlan:
             continue
         if not policy.name:
             refusals.append(f"{label}: nameless policy has no qualified native name mapping")
+            continue
+        if policy.delegated_parents:
+            refusals.append(f"{label}: delegated parents require native permission/rule mapping: {policy.delegated_parents}")
             continue
         if policy.model in {"ir.model.access", "ir.rule", "ir.access"}:
             refusals.append(f"{label}: merged security-model policy requires an explicit reference mapping")

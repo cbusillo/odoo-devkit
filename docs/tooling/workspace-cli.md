@@ -643,6 +643,8 @@ Notes
   deleting it or resetting module metadata is not a supported workaround.
   For dangling metadata, use an intact validated source or establish an explicit
   alias mapping to a surviving policy; the bridge never recreates a missing row.
+  Data-only policies on delegated-inheritance models also refuse until the parent
+  permissions and rules have an explicit native mapping.
   The bounded planner retains group-bound ACLs and global rules, including inactive
   state and protected aliases, for native validation. It keeps module-owned policies
   separate for their source mapping. Planning does not apply these representations
