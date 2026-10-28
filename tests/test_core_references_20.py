@@ -204,7 +204,7 @@ class CoreReferenceTests(unittest.TestCase):
                 bridge.migrate(self.cursor, version)
             self.assertEqual(self.snapshot(), before)
 
-    def bank_form(self) -> int:
+    def bank_form(self, state: str = "installed") -> int:
         self.connection.execute(
             "CREATE TABLE ir_ui_view (id INTEGER PRIMARY KEY, model TEXT, inherit_id INTEGER, mode TEXT, arch_db TEXT, "
             "arch_prev TEXT, arch_updated BOOLEAN, active BOOLEAN, priority INTEGER, write_uid INTEGER)"
@@ -225,7 +225,7 @@ class CoreReferenceTests(unittest.TestCase):
         ).lastrowid
         self.xmlid("account", "view_partner_bank_form_inherit_account", "ir.ui.view", child, False)
         self.xmlid("custom", "retained_bank", "ir.ui.view", child, True)
-        self.connection.execute("INSERT INTO ir_module_module VALUES ('account','installed','19.0.1.0')")
+        self.connection.execute("INSERT INTO ir_module_module VALUES ('account',?,'19.0.1.0')", (state,))
         return child
 
     def bank_snapshot(self) -> list[tuple]:
@@ -252,6 +252,8 @@ class CoreReferenceTests(unittest.TestCase):
         child = self.bank_form()
         changes = (
             ("UPDATE ir_model_data SET noupdate=1 WHERE module='account'", ()),
+            ("UPDATE ir_model_data SET noupdate=1 WHERE module='base' AND name='view_partner_bank_form'", ()),
+            ("DELETE FROM ir_model_data WHERE module='base' AND name='view_partner_bank_form'", ()),
             ("DELETE FROM ir_model_data WHERE module='account'", ()),
             ("UPDATE ir_model_data SET model='wrong' WHERE module='account'", ()),
             ("UPDATE ir_model_data SET res_id=-1 WHERE module='account'", ()),
@@ -270,6 +272,12 @@ class CoreReferenceTests(unittest.TestCase):
                 self.assertEqual(self.bank_snapshot(), rows)
                 self.connection.execute("ROLLBACK TO bank")
                 self.connection.execute("RELEASE bank")
+
+    def test_uninstalled_account_leaves_its_bank_view_unchanged(self) -> None:
+        self.bank_form(state="uninstalled")
+        before = self.bank_snapshot()
+        self.apply()
+        self.assertEqual(self.bank_snapshot(), before)
 
     def test_missing_duplicate_and_mixed_language_selectors_refuse_without_effects(self) -> None:
         child = self.bank_form()
