@@ -1,0 +1,177 @@
+from __future__ import annotations
+
+from typing import Any
+
+import prepare_core_references_20 as bridge
+from odoo import Command
+from odoo.exceptions import AccessError
+from odoo.tests import tagged
+from odoo.tests.common import TransactionCase
+
+MODEL = "access.transition.probe"
+MODES = {"c": "create", "r": "read", "u": "write", "d": "unlink"}
+
+
+class RevertOperation(Exception):
+    pass
+
+
+@tagged("post_install", "-at_install")
+class TestAccessTransition(TransactionCase):
+    def setUp(self) -> None:
+        super().setUp()
+        internal = self.env.ref("base.group_user")
+        self.groups = {
+            name: self.env["res.groups"].create({"name": name, "implied_ids": [Command.link(internal.id)]})
+            for name in ("reader", "writer")
+        }
+        self.groups.update(portal=self.env.ref("base.group_portal"), public=self.env.ref("base.group_public"))
+        self.companies = self.env.company | self.env["res.company"].create({"name": "Access second company"})
+        group_field = "group_ids" if "group_ids" in self.env["res.users"]._fields else "groups_id"
+        memberships = self.groups | {"combined": self.groups["reader"] | self.groups["writer"], "ungranted": internal}
+        self.users = {
+            role: self.env["res.users"]
+            .with_context(no_reset_password=True)
+            .create(
+                {
+                    "name": role,
+                    "login": "access-transition-" + role,
+                    group_field: [Command.set(groups.ids)],
+                    "company_id": self.companies[0].id,
+                    "company_ids": [Command.set(self.companies.ids)],
+                }
+            )
+            for role, groups in memberships.items()
+        }
+        self.source = tuple(
+            bridge.AccessPolicy("ir.model.access", index, role, MODEL, (self.groups[role].id,), operations, "", True, (), (), False)
+            for index, (role, operations) in enumerate((("reader", "r"), ("writer", "crud"), ("portal", "r"), ("public", "r")), 1)
+        ) + (
+            bridge.AccessPolicy(
+                "ir.rule", 1, "Company limit", MODEL, (), "crud", "[('company_id','in',company_ids)]", True, (), (), False
+            ),
+            bridge.AccessPolicy(
+                "ir.rule", 2, "Blocked marker", MODEL, (), "crud", "[('marker','!=','blocked')]", True, (), (), False
+            ),
+        )
+        self.records = {
+            "allowed": self.env[MODEL].create(
+                {"name": "Allowed", "user_id": self.users["writer"].id, "company_id": self.companies[0].id}
+            ),
+            "other_company": self.env[MODEL].create(
+                {"name": "Second", "user_id": self.users["writer"].id, "company_id": self.companies[1].id}
+            ),
+            "blocked": self.env[MODEL].create(
+                {"name": "Blocked", "user_id": self.users["writer"].id, "company_id": self.companies[0].id, "marker": "blocked"}
+            ),
+        }
+
+    def install_policies(self, policies: tuple[bridge.AccessPolicy, ...]) -> dict[tuple[str, int], Any]:
+        model_id = self.env["ir.model"]._get(MODEL).id
+        records = {}
+        if "ir.access" in self.env.registry:
+            plan = bridge.plan_access_transition(policies)
+            self.assertFalse(plan.source_owned)
+            for target in plan.converted:
+                records[(target.source.source_model, target.source.identifier)] = self.env["ir.access"].create(
+                    {
+                        "name": target.source.name,
+                        "model_id": model_id,
+                        "active": target.source.active,
+                        "operation": target.operation,
+                        "group_id": target.group_id or False,
+                        "domain": target.domain,
+                    }
+                )
+            return records
+        for policy in policies:
+            values = {"name": policy.name, "model_id": model_id, "active": policy.active}
+            values.update({"perm_" + mode: operation in policy.operation for operation, mode in MODES.items()})
+            if policy.source_model == "ir.model.access":
+                values["group_id"] = policy.groups[0] if policy.groups else False
+            else:
+                values.update(groups=[Command.set(policy.groups)], domain_force=policy.domain)
+            records[(policy.source_model, policy.identifier)] = self.env[policy.source_model].create(values)
+        return records
+
+    def decide(self, role: str, record_name: str, operation: str, *, both_companies: bool = False) -> bool:
+        user = self.users[role]
+        model = (
+            self.env[MODEL]
+            .with_user(user)
+            .with_context(allowed_company_ids=self.companies.ids if both_companies else self.companies[0].ids)
+        )
+        self.assertFalse(model.env.su)
+        self.assertNotEqual(model.env.uid, 1)
+        target = model.browse(self.records[record_name].id)
+        try:
+            with self.env.cr.savepoint():
+                if operation == "read":
+                    allowed = bool(target.read(["name"]))
+                elif operation == "search":
+                    allowed = target.id in model.search([("id", "=", target.id)]).ids
+                elif operation == "write":
+                    allowed = target.write({"name": "Changed"})
+                elif operation == "unlink":
+                    allowed = target.unlink()
+                else:
+                    allowed = bool(
+                        model.create(
+                            {
+                                "name": "Created",
+                                "user_id": user.id,
+                                "company_id": self.records[record_name].company_id.id,
+                                "marker": self.records[record_name].marker,
+                            }
+                        )
+                    )
+                raise RevertOperation()
+        except RevertOperation:
+            return bool(allowed)
+        except AccessError:
+            return False
+
+    def test_native_plain_permissions_and_global_restrictions(self) -> None:
+        self.install_policies(self.source)
+        for role in self.users:
+            for operation in ("read", "search", "write", "unlink", "create"):
+                permitted = role in {"writer", "combined"} or (role != "ungranted" and operation in {"read", "search"})
+                with self.subTest(role=role, operation=operation):
+                    self.assertEqual(self.decide(role, "allowed", operation), permitted)
+                    self.assertFalse(self.decide(role, "blocked", operation))
+                    self.assertFalse(self.decide(role, "other_company", operation))
+                    self.assertEqual(self.decide(role, "other_company", operation, both_companies=True), permitted)
+
+    def test_inactive_acl_activation_and_group_membership_invalidate_cached_decisions(self) -> None:
+        inactive = bridge.AccessPolicy(
+            "ir.model.access", 17, "Inactive write", MODEL, (self.groups["reader"].id,), "u", "", False, (), (), False
+        )
+        records = self.install_policies(self.source + (inactive,))
+        self.assertFalse(self.decide("reader", "allowed", "write"))
+        records[(inactive.source_model, inactive.identifier)].write({"active": True})
+        self.assertTrue(self.decide("reader", "allowed", "write"))
+        user = self.users["ungranted"]
+        group_field = "group_ids" if "group_ids" in user._fields else "groups_id"
+        self.assertFalse(self.decide("ungranted", "allowed", "read"))
+        user.write({group_field: [Command.link(self.groups["reader"].id)]})
+        self.assertTrue(self.decide("ungranted", "allowed", "read"))
+        user.write({group_field: [Command.unlink(self.groups["reader"].id)]})
+        self.assertFalse(self.decide("ungranted", "allowed", "read"))
+
+    def test_inactive_global_rule_activation(self) -> None:
+        inactive = self.source[-1]._replace(active=False)
+        records = self.install_policies(self.source[:-1] + (inactive,))
+        self.assertTrue(self.decide("writer", "blocked", "read"))
+        records[(inactive.source_model, inactive.identifier)].write({"active": True})
+        self.assertFalse(self.decide("writer", "blocked", "read"))
+        self.assertTrue(self.decide("writer", "allowed", "read"))
+
+    def test_grouped_policy_refusal_does_not_change_native_policies(self) -> None:
+        model_name = "ir.access" if "ir.access" in self.env.registry else "ir.rule"
+        before = self.env[model_name].search([]).read(["name", "active"])
+        grouped = self.source[-1]._replace(groups=(self.groups["reader"].id,))
+        sibling = grouped._replace(identifier=grouped.identifier + 1, groups=(self.groups["writer"].id,))
+        for active in (True, False):
+            with self.subTest(active=active), self.assertRaises(RuntimeError):
+                bridge.plan_access_transition(self.source[:-1] + (grouped._replace(active=active), sibling))
+        self.assertEqual(self.env[model_name].search([]).read(["name", "active"]), before)

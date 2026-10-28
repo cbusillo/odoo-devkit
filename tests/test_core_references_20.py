@@ -47,6 +47,14 @@ class CoreReferenceTests(unittest.TestCase):
             "CREATE TABLE res_country_state (id INTEGER PRIMARY KEY, country_id INTEGER, code TEXT, name TEXT, write_uid INTEGER);"
             "CREATE TABLE website (id INTEGER PRIMARY KEY, name TEXT, domain TEXT, company_id INTEGER);"
             "CREATE TABLE ir_module_module (name TEXT PRIMARY KEY, state TEXT, latest_version TEXT);"
+            "CREATE TABLE ir_model (id INTEGER PRIMARY KEY, model TEXT);"
+            "CREATE TABLE ir_rule (id INTEGER PRIMARY KEY, model_id INTEGER, name TEXT, domain_force TEXT, active BOOLEAN, "
+            "perm_read BOOLEAN, perm_write BOOLEAN, perm_create BOOLEAN, perm_unlink BOOLEAN);"
+            "CREATE TABLE ir_model_access (id INTEGER PRIMARY KEY, model_id INTEGER, name TEXT, group_id INTEGER, active BOOLEAN, "
+            "perm_read BOOLEAN, perm_write BOOLEAN, perm_create BOOLEAN, perm_unlink BOOLEAN);"
+            "CREATE TABLE rule_group_rel (rule_group_id INTEGER, group_id INTEGER);"
+            "CREATE TABLE res_groups (id INTEGER PRIMARY KEY);"
+            "INSERT INTO res_groups VALUES (10),(67);"
             "CREATE TABLE res_partner (id INTEGER PRIMARY KEY, state_id INTEGER REFERENCES res_country_state(id));"
             "CREATE TABLE carrier_state_rel (carrier_id INTEGER, state_id INTEGER REFERENCES res_country_state(id));"
             "PRAGMA foreign_keys=ON;"
@@ -203,6 +211,96 @@ class CoreReferenceTests(unittest.TestCase):
             with self.subTest(version=version), self.assertRaises(RuntimeError):
                 bridge.migrate(self.cursor, version)
             self.assertEqual(self.snapshot(), before)
+
+    def test_data_only_grouped_rule_refuses_with_siblings_before_any_bridge_write(self) -> None:
+        self.connection.execute("INSERT INTO ir_model VALUES (31,'res.partner')")
+        self.connection.execute("INSERT INTO ir_rule VALUES (23,31,'Retained contact limit',?,1,1,0,0,0)", ("[('id','=',7)]",))
+        self.connection.execute("INSERT INTO ir_rule VALUES (29,31,'Source portal limit',?,1,1,0,0,0)", ("[('id','=',9)]",))
+        self.connection.executemany("INSERT INTO rule_group_rel VALUES (?,?)", ((23, 67), (29, 10)))
+        self.xmlid("fixture", "contact_limit", "ir.rule", 23, True)
+        self.xmlid("base", "portal_limit", "ir.rule", 29, False)
+        self.connection.execute("INSERT INTO ir_module_module VALUES ('base','installed','19.0.1.0')")
+        before = self.snapshot()
+        policies = self.connection.execute("SELECT * FROM ir_rule").fetchall()
+        with self.assertRaises(RuntimeError) as refusal:
+            self.apply()
+        self.assertIn("fixture.contact_limit", str(refusal.exception))
+        self.assertIn("base.portal_limit", str(refusal.exception))
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.connection.execute("SELECT * FROM ir_rule").fetchall(), policies)
+
+    def test_data_only_access_plan_retains_inactive_acl_and_global_rule(self) -> None:
+        self.connection.execute("INSERT INTO ir_model VALUES (31,'res.partner')")
+        self.connection.execute("INSERT INTO ir_model_access VALUES (14,31,'Retained write',67,0,0,1,0,0)")
+        domain = "[('company_id','in',company_ids)]"
+        self.connection.execute("INSERT INTO ir_rule VALUES (23,31,'Retained company',?,0,1,1,0,0)", (domain,))
+        self.xmlid("fixture", "write_access", "ir.model.access", 14, True)
+        self.xmlid("fixture", "company_limit", "ir.rule", 23, True)
+        plan = bridge.plan_access_transition(bridge.read_access_policies(self.cursor))
+        self.assertEqual(len(plan.converted), 2)
+        self.assertFalse(plan.source_owned)
+        access, rule = plan.converted
+        self.assertEqual(
+            (access.source.identifier, access.source.model, access.source.aliases), (14, "res.partner", ("fixture.write_access",))
+        )
+        self.assertFalse(access.source.active)
+        self.assertEqual((access.group_id, access.operation, access.domain), (67, "u", ""))
+        self.assertFalse(rule.source.active)
+        self.assertIsNone(rule.group_id)
+        self.assertEqual(rule.domain, domain)
+        self.assertEqual(rule.operation, "ru")
+
+    def test_access_refusals_are_aggregated_and_unowned_policies_are_not_dropped(self) -> None:
+        self.connection.execute("INSERT INTO ir_model VALUES (31,'res.partner')")
+        self.connection.execute("INSERT INTO ir_model_access VALUES (14,31,'No operations',67,1,0,0,0,0)")
+        self.connection.execute("INSERT INTO ir_model_access VALUES (16,31,'Unrestricted role',NULL,1,1,0,0,0)")
+        before = self.connection.execute("SELECT * FROM ir_model_access").fetchall()
+        with self.assertRaises(RuntimeError) as refusal:
+            bridge.plan_access_transition(bridge.read_access_policies(self.cursor))
+        self.assertIn("ir.model.access:14", str(refusal.exception))
+        self.assertIn("ir.model.access:16", str(refusal.exception))
+        self.assertEqual(self.connection.execute("SELECT * FROM ir_model_access").fetchall(), before)
+
+    def test_unowned_acl_is_planned_and_module_owned_policy_requires_its_source_mapping(self) -> None:
+        self.connection.execute("INSERT INTO ir_model VALUES (31,'res.partner')")
+        self.connection.executemany("INSERT INTO ir_model_access VALUES (?,31,'Retained read',67,1,1,0,0,0)", ((14,), (16,)))
+        self.xmlid("base", "source_owned", "ir.model.access", 16, False)
+        self.xmlid("fixture", "protected_alias", "ir.model.access", 16, True)
+        self.connection.execute("INSERT INTO ir_module_module VALUES ('base','to upgrade','19.0.1.0')")
+        plan = bridge.plan_access_transition(bridge.read_access_policies(self.cursor))
+        self.assertEqual([record.source.identifier for record in plan.converted], [14])
+        self.assertFalse(plan.converted[0].source.aliases)
+        self.assertEqual([record.identifier for record in plan.source_owned], [16])
+        self.assertEqual(plan.source_owned[0].protected_aliases, ("fixture.protected_alias",))
+
+    def test_dangling_policy_alias_or_group_relation_refuses_before_any_bridge_write(self) -> None:
+        for statement in (
+            "INSERT INTO ir_model_data(module,name,model,res_id,noupdate) VALUES ('fixture','missing','ir.rule',93,1)",
+            "INSERT INTO rule_group_rel VALUES (93,67)",
+        ):
+            with self.subTest(statement=statement):
+                self.connection.execute("SAVEPOINT dangling")
+                self.connection.execute(statement)
+                before = self.snapshot()
+                with self.assertRaises(RuntimeError):
+                    self.apply()
+                self.assertEqual(self.snapshot(), before)
+                self.connection.execute("ROLLBACK TO dangling")
+                self.connection.execute("RELEASE dangling")
+
+    def test_missing_group_and_merged_security_model_refuse(self) -> None:
+        self.connection.execute("INSERT INTO ir_model VALUES (31,'ir.rule')")
+        self.connection.execute("INSERT INTO ir_model_access VALUES (14,31,'Retained security policy',67,1,1,0,0,0)")
+        before = self.snapshot()
+        with self.assertRaises(RuntimeError):
+            self.apply()
+        self.assertEqual(self.snapshot(), before)
+        self.connection.execute("UPDATE ir_model SET model='res.partner'")
+        self.connection.execute("DELETE FROM res_groups WHERE id=67")
+        before = self.snapshot()
+        with self.assertRaises(RuntimeError):
+            self.apply()
+        self.assertEqual(self.snapshot(), before)
 
     def bank_form(self, state: str = "installed") -> int:
         self.connection.execute(

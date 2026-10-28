@@ -18,6 +18,142 @@ class Reference(NamedTuple):
     noupdate: bool
 
 
+class AccessPolicy(NamedTuple):
+    source_model: str
+    identifier: int
+    name: str
+    model: str | None
+    groups: tuple[int, ...]
+    operation: str
+    domain: str
+    active: bool
+    aliases: tuple[str, ...]
+    protected_aliases: tuple[str, ...]
+    source_owned: bool
+
+
+class NativeAccess(NamedTuple):
+    source: AccessPolicy
+    group_id: int | None
+    operation: str
+    domain: str
+
+
+class AccessPlan(NamedTuple):
+    converted: tuple[NativeAccess, ...]
+    source_owned: tuple[AccessPolicy, ...]
+
+
+def read_access_policies(cr: Any) -> tuple[AccessPolicy, ...]:
+    cr.execute("SELECT name FROM ir_module_module WHERE state IN ('installed', 'to upgrade')")
+    source_modules = {row[0] for row in cr.fetchall()}
+    cr.execute(
+        "SELECT model, res_id, module, name, noupdate FROM ir_model_data "
+        "WHERE model IN ('ir.model.access', 'ir.rule') ORDER BY module, name"
+    )
+    aliases: dict[tuple[str, int], list[tuple[str, str, bool]]] = {}
+    for model, identifier, module, name, protected in cr.fetchall():
+        aliases.setdefault((model, identifier), []).append((module, name, protected))
+    cr.execute("SELECT id FROM res_groups")
+    existing_groups = {row[0] for row in cr.fetchall()}
+    cr.execute("SELECT rule_group_id, group_id FROM rule_group_rel ORDER BY rule_group_id, group_id")
+    groups: dict[int, list[int]] = {}
+    for identifier, group in cr.fetchall():
+        groups.setdefault(identifier, []).append(group)
+    cr.execute(
+        "SELECT access.id, access.name, model.model, access.active, access.perm_create, access.perm_read, "
+        "access.perm_write, access.perm_unlink, access.group_id FROM ir_model_access access "
+        "LEFT JOIN ir_model model ON model.id = access.model_id ORDER BY access.id"
+    )
+    access_rows = cr.fetchall()
+    cr.execute(
+        "SELECT rule.id, rule.name, model.model, rule.active, rule.perm_create, rule.perm_read, "
+        "rule.perm_write, rule.perm_unlink, rule.domain_force FROM ir_rule rule "
+        "LEFT JOIN ir_model model ON model.id = rule.model_id ORDER BY rule.id"
+    )
+    rule_rows = cr.fetchall()
+    policies = []
+    for source_model, rows in (("ir.model.access", access_rows), ("ir.rule", rule_rows)):
+        for identifier, name, model, active, create, read, write, unlink, extra in rows:
+            references = aliases.pop((source_model, identifier), [])
+            policy_groups = tuple(groups.pop(identifier, ())) if source_model == "ir.rule" else (() if extra is None else (extra,))
+            missing_groups = set(policy_groups) - existing_groups
+            if missing_groups:
+                raise RuntimeError(f"Source {source_model}:{identifier} references missing groups: {sorted(missing_groups)}")
+            policies.append(
+                AccessPolicy(
+                    source_model,
+                    identifier,
+                    name,
+                    model,
+                    policy_groups,
+                    "".join(operation for operation, enabled in zip("crud", (create, read, write, unlink), strict=True) if enabled),
+                    (extra or "") if source_model == "ir.rule" else "",
+                    bool(active),
+                    tuple(f"{module}.{alias}" for module, alias, _ in references),
+                    tuple(f"{module}.{alias}" for module, alias, protected in references if protected),
+                    any(module in source_modules for module, _, _ in references),
+                )
+            )
+    if aliases:
+        dangling = sorted(f"{module}.{name}" for references in aliases.values() for module, name, _ in references)
+        raise RuntimeError(f"Dangling source access references: {', '.join(dangling)}")
+    if groups:
+        raise RuntimeError(f"Dangling source rule-group references: {sorted(groups)}")
+    return tuple(policies)
+
+
+def _policy_label(policy: AccessPolicy) -> str:
+    aliases = ", ".join(policy.aliases) if policy.aliases else "unowned"
+    return f"{policy.source_model}:{policy.identifier} ({aliases}; {policy.name})"
+
+
+def plan_access_transition(policies: tuple[AccessPolicy, ...]) -> AccessPlan:
+    converted = []
+    source_owned = []
+    refusals = []
+    for policy in policies:
+        label = _policy_label(policy)
+        if not policy.model:
+            refusals.append(f"{label}: target model identity is missing")
+            continue
+        if policy.source_owned:
+            source_owned.append(policy)
+            continue
+        if policy.model in {"ir.model.access", "ir.rule", "ir.access"}:
+            refusals.append(f"{label}: merged security-model policy requires an explicit reference mapping")
+            continue
+        if not policy.operation:
+            refusals.append(f"{label}: policy with no operations has no qualified native representation")
+            continue
+        if policy.source_model == "ir.model.access":
+            if not policy.groups:
+                refusals.append(f"{label}: groupless permission requires verified native everyone-group coverage")
+                continue
+            converted.append(NativeAccess(policy, policy.groups[0], policy.operation, ""))
+            continue
+        if not policy.groups:
+            converted.append(NativeAccess(policy, None, policy.operation, policy.domain))
+            continue
+        siblings = [
+            sibling
+            for sibling in policies
+            if sibling.source_model == "ir.rule"
+            and sibling.identifier != policy.identifier
+            and sibling.groups
+            and sibling.model == policy.model
+            and set(sibling.operation) & set(policy.operation)
+        ]
+        related = "; ".join(_policy_label(sibling) for sibling in siblings)
+        reason = "grouped restriction requires a qualified native mapping"
+        if siblings:
+            reason = f"grouped restriction depends on sibling policies: {related}; stored sibling copies are not admitted"
+        refusals.append(f"{label}: {reason}")
+    if refusals:
+        raise RuntimeError("Unsupported native access transition:\n" + "\n".join(refusals))
+    return AccessPlan(tuple(converted), tuple(source_owned))
+
+
 def _reference(cr: Any, module: str, name: str) -> Reference | None:
     cr.execute("SELECT model, res_id, noupdate FROM ir_model_data WHERE module = %s AND name = %s FOR UPDATE", (module, name))
     rows = cr.fetchall()
@@ -112,6 +248,7 @@ def migrate(cr: Any, version: str | None) -> None:
         return
     if major != "19":
         raise RuntimeError("Core reference preparation requires a native 19-to-20 crossing")
+    plan_access_transition(read_access_policies(cr))
     state = _state_source(cr)
     website = _website_source(cr)
     state_target = _check_target(cr, TARGET_STATE, state, protect=state.noupdate)

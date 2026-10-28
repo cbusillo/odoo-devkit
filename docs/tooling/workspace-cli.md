@@ -629,6 +629,19 @@ Notes
   unsupported inheritance and absent, duplicate or mixed selectors refuse before
   any bridge write. Replay is unchanged. Account's later native update owns its
   full target architecture and validation; this step does not migrate bank data.
+  Before any bridge write, the access preflight inventories legacy ACLs, rules,
+  aliases and rule-group references. Retained data-only or unowned grouped rules
+  refuse with their identities and overlapping same-operation siblings; the bridge
+  does not turn them into permissions or freeze sibling policy copies. Data-only
+  policies targeting the merged security models, policies with no operations,
+  groupless permissions without verified native group coverage, missing models,
+  and dangling aliases or group references also refuse. Resolve a refused policy
+  through an explicit native policy/reference mapping and the native rights oracle;
+  deleting it or resetting module metadata is not a supported workaround.
+  The bounded planner retains group-bound ACLs and global rules, including inactive
+  state and protected aliases, for native validation. It keeps module-owned policies
+  separate for their source mapping. Planning does not apply these representations
+  or qualify an access conversion; the actual security import remains unqualified.
   Same-major 20 updates do nothing in this bridge. Its qualification ends at
   the reference/base-data boundary; security conversion, later cleanup,
   tenant hooks and a completed major-version migration need their own proof.
