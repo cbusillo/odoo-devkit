@@ -655,8 +655,12 @@ Notes
   deleting it or resetting module metadata is not a supported workaround.
   For dangling metadata, use an intact validated source or establish an explicit
   alias mapping to a surviving policy; the bridge never recreates a missing row.
-  Policies with no operations, nameless policies, policies targeting merged
-  security models, groupless permissions and policies on delegated-inheritance
+  Data-only zero ACLs retain their groups, active state and aliases in the plan.
+  A grouped zero ACL uses a native false permission; a groupless one uses a true
+  global restriction. Native applicability flags do not represent legacy grant bits.
+  Source-owned zero policies and zero-operation rules still require an explicit
+  owner or domain-data mapping. Nameless policies, policies targeting merged
+  security models, nonzero groupless permissions and policies on delegated-inheritance
   models refuse regardless of source ownership. Their flags, parent semantics and
   usable record/reference lifecycle need an explicit native representation; native
   module deletion or backup-only retention does not preserve them.

@@ -159,6 +159,40 @@ class TestAccessTransition(TransactionCase):
         user.write({group_field: [Command.unlink(self.groups["reader"].id)]})
         self.assertFalse(self.decide("ungranted", "allowed", "read"))
 
+    def test_data_only_zero_acls_leave_native_record_and_model_decisions_unchanged(self) -> None:
+        self.install_policies(self.source)
+
+        def observations() -> dict[tuple, bool]:
+            result = {
+                (role, record, operation, both): self.decide(role, record, operation, both_companies=both)
+                for role in self.users
+                for record in self.records
+                for operation in (*MODES.values(), "search")
+                for both in (False, True)
+            }
+            for role, user in self.users.items():
+                model = self.env[MODEL].with_user(user)
+                self.assertFalse(model.env.su)
+                self.assertNotEqual(model.env.uid, SUPERUSER_ID)
+                for operation in MODES.values():
+                    result[role, "model", operation] = model.has_access(operation)
+            return result
+
+        baseline = observations()
+        start = max(policy.identifier for policy in self.source) + 1
+        zeros = tuple(
+            bridge.AccessPolicy("ir.model.access", index, "Retained zero permission", MODEL, groups, "", "", True, (), (), False)
+            for index, groups in enumerate(((), *((group.id,) for group in self.groups.values())), start)
+        )
+        records = self.install_policies(zeros)
+        self.assertEqual(observations(), baseline)
+        for record in records.values():
+            record.active = False
+        self.assertEqual(observations(), baseline)
+        for record in records.values():
+            record.active = True
+        self.assertEqual(observations(), baseline)
+
     def test_inactive_global_rule_activation(self) -> None:
         inactive = self.source[-1]._replace(active=False)
         records = self.install_policies(self.source[:-1] + (inactive,))

@@ -327,13 +327,14 @@ class CoreReferenceTests(unittest.TestCase):
 
     def test_access_refusals_are_aggregated_and_unowned_policies_are_not_dropped(self) -> None:
         self.connection.execute("INSERT INTO ir_model VALUES (31,'res.partner')")
-        self.connection.execute("INSERT INTO ir_model_access VALUES (14,31,'No operations',67,1,0,0,0,0)")
+        self.connection.execute("INSERT INTO ir_model_access VALUES (14,31,NULL,67,1,1,0,0,0)")
         self.connection.execute("INSERT INTO ir_model_access VALUES (16,31,'Unrestricted role',NULL,1,1,0,0,0)")
         before = self.connection.execute("SELECT * FROM ir_model_access").fetchall()
+        policies = bridge.read_access_policies(self.cursor)
         with self.assertRaises(RuntimeError) as refusal:
-            bridge.plan_access_transition(bridge.read_access_policies(self.cursor))
-        self.assertIn("ir.model.access:14", str(refusal.exception))
-        self.assertIn("ir.model.access:16", str(refusal.exception))
+            bridge.plan_access_transition(policies)
+        for policy in policies:
+            self.assertIn(f"{policy.source_model}:{policy.identifier}", str(refusal.exception))
         self.assertEqual(self.connection.execute("SELECT * FROM ir_model_access").fetchall(), before)
 
     def test_unowned_acl_is_planned_and_module_owned_policy_requires_its_source_mapping(self) -> None:
@@ -347,6 +348,26 @@ class CoreReferenceTests(unittest.TestCase):
         self.assertFalse(plan.converted[0].source.aliases)
         self.assertEqual([record.identifier for record in plan.source_owned], [16])
         self.assertEqual(plan.source_owned[0].protected_aliases, ("fixture.protected_alias",))
+
+    def test_data_only_zero_acls_keep_references_and_remain_unapplied(self) -> None:
+        self.connection.execute("INSERT INTO ir_model VALUES (31,'res.partner')")
+        self.connection.execute("INSERT INTO ir_model_access VALUES (14,31,'Retained zero operations',67,1,0,0,0,0)")
+        self.xmlid("__custom__", "retained_zero", "ir.model.access", 14, True)
+        for group in (None, 67):
+            for active in (False, True):
+                with self.subTest(group=group, active=active):
+                    self.connection.execute("UPDATE ir_model_access SET group_id=?,active=? WHERE id=14", (group, active))
+                    before = self.snapshot()
+                    policies = bridge.read_access_policies(self.cursor)
+                    plan = bridge.plan_access_transition(policies)
+                    self.assertEqual(len(plan.converted), len(policies))
+                    self.assertFalse(plan.source_owned)
+                    self.assertEqual(plan.converted[0].source, policies[0])
+                    self.assertEqual(plan.converted[0].group_id, group)
+                    with self.assertRaises(RuntimeError) as refusal:
+                        self.apply()
+                    self.assertIn(policies[0].aliases[0], str(refusal.exception))
+                    self.assertEqual(self.snapshot(), before)
 
     def test_source_owned_zero_operation_policies_refuse_before_bridge_writes(self) -> None:
         self.connection.execute("INSERT INTO ir_model VALUES (31,'res.partner')")
@@ -381,6 +402,19 @@ class CoreReferenceTests(unittest.TestCase):
         self.connection.execute("UPDATE ir_model_access SET perm_read=1 WHERE id=14")
         plan = bridge.plan_access_transition(bridge.read_access_policies(self.cursor))
         self.assertEqual({policy.identifier for policy in plan.source_owned}, {14, 16})
+
+    def test_zero_rule_keeps_its_unused_domain_and_refuses_mapping(self) -> None:
+        self.connection.execute("INSERT INTO ir_model VALUES (31,'res.partner')")
+        self.connection.execute(
+            "INSERT INTO ir_rule VALUES (23,31,'Retained unused domain',?,1,0,0,0,0)", ("[('name','=','retained')]",)
+        )
+        self.xmlid("__custom__", "retained_zero_rule", "ir.rule", 23, True)
+        policies = bridge.read_access_policies(self.cursor)
+        before = self.snapshot()
+        with self.assertRaises(RuntimeError) as refusal:
+            bridge.plan_access_transition(policies)
+        self.assertIn(policies[0].aliases[0], str(refusal.exception))
+        self.assertEqual(self.snapshot(), before)
 
     def test_source_owned_shapes_require_the_same_explicit_native_mapping(self) -> None:
         self.connection.executemany("INSERT INTO ir_model VALUES (?,?)", ((31, "fixture.child"), (32, "res.partner")))
