@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -20,13 +21,19 @@ class Cursor:
         self.cursor = connection.cursor()
 
     def execute(self, query: str, parameters: tuple = ()) -> Any:
-        return self.cursor.execute(query.replace("%s", "?").replace(" FOR UPDATE", ""), parameters)
+        return self.cursor.execute(query.replace("%s", "?").replace(" FOR UPDATE", "").replace("::jsonb", ""), parameters)
 
     def fetchone(self) -> Any:
         return self.cursor.fetchone()
 
     def fetchall(self) -> list[tuple]:
-        return self.cursor.fetchall()
+        return [
+            tuple(
+                json.loads(value) if column[0] == "arch_db" else value
+                for column, value in zip(self.cursor.description, row, strict=True)
+            )
+            for row in self.cursor.fetchall()
+        ]
 
 
 class CoreReferenceTests(unittest.TestCase):
@@ -196,6 +203,94 @@ class CoreReferenceTests(unittest.TestCase):
             with self.subTest(version=version), self.assertRaises(RuntimeError):
                 bridge.migrate(self.cursor, version)
             self.assertEqual(self.snapshot(), before)
+
+    def bank_form(self, state: str = "installed") -> int:
+        self.connection.execute(
+            "CREATE TABLE ir_ui_view (id INTEGER PRIMARY KEY, model TEXT, inherit_id INTEGER, mode TEXT, arch_db TEXT, "
+            "arch_prev TEXT, arch_updated BOOLEAN, active BOOLEAN, priority INTEGER, write_uid INTEGER)"
+        )
+        parent = self.connection.execute("INSERT INTO ir_ui_view(model) VALUES ('res.partner.bank')").lastrowid
+        self.xmlid("base", "view_partner_bank_form", "ir.ui.view", parent, False)
+        child = self.connection.execute(
+            "INSERT INTO ir_ui_view VALUES (NULL,'res.partner.bank',?,'primary',?,'Retained history',1,1,14,71)",
+            (
+                parent,
+                json.dumps(
+                    {
+                        "en_US": f"<data><xpath {bridge.BANK_SELECTOR_19}/><separator string='Custom'/></data>",
+                        "fr_FR": f"<data><xpath {bridge.BANK_SELECTOR_19}/><separator string='Personnalise'/></data>",
+                    }
+                ),
+            ),
+        ).lastrowid
+        self.xmlid("account", "view_partner_bank_form_inherit_account", "ir.ui.view", child, False)
+        self.xmlid("custom", "retained_bank", "ir.ui.view", child, True)
+        self.connection.execute("INSERT INTO ir_module_module VALUES ('account',?,'19.0.1.0')", (state,))
+        return child
+
+    def bank_snapshot(self) -> list[tuple]:
+        return self.connection.execute("SELECT * FROM ir_ui_view ORDER BY id").fetchall()
+
+    def test_bank_selector_transition_preserves_custom_languages_metadata_and_replay(self) -> None:
+        child = self.bank_form()
+        before = self.bank_snapshot()
+        aliases = self.connection.execute("SELECT * FROM ir_model_data WHERE model='ir.ui.view'").fetchall()
+        self.apply()
+        after = self.bank_snapshot()
+        self.assertEqual(after[0], before[0])
+        self.assertEqual(after[1][:4] + after[1][5:], before[1][:4] + before[1][5:])
+        for language, arch in json.loads(before[1][4]).items():
+            self.assertEqual(json.loads(after[1][4])[language], arch.replace(bridge.BANK_SELECTOR_19, bridge.BANK_SELECTOR_20))
+        self.assertEqual(self.connection.execute("SELECT * FROM ir_model_data WHERE model='ir.ui.view'").fetchall(), aliases)
+        self.assertEqual(self.connection.execute("SELECT id FROM ir_ui_view WHERE inherit_id IS NOT NULL").fetchone()[0], child)
+        first = self.snapshot()
+        self.apply()
+        self.assertEqual(self.bank_snapshot(), after)
+        self.assertEqual(self.snapshot(), first)
+
+    def test_unsupported_bank_sources_refuse_before_any_effect(self) -> None:
+        child = self.bank_form()
+        changes = (
+            ("UPDATE ir_model_data SET noupdate=1 WHERE module='account'", ()),
+            ("UPDATE ir_model_data SET noupdate=1 WHERE module='base' AND name='view_partner_bank_form'", ()),
+            ("DELETE FROM ir_model_data WHERE module='base' AND name='view_partner_bank_form'", ()),
+            ("DELETE FROM ir_model_data WHERE module='account'", ()),
+            ("UPDATE ir_model_data SET model='wrong' WHERE module='account'", ()),
+            ("UPDATE ir_model_data SET res_id=-1 WHERE module='account'", ()),
+            ("UPDATE ir_ui_view SET inherit_id=NULL WHERE id=?", (child,)),
+            ("UPDATE ir_ui_view SET mode='extension' WHERE id=?", (child,)),
+            ("UPDATE ir_ui_view SET model='wrong' WHERE id=?", (child,)),
+        )
+        for statement, parameters in changes:
+            with self.subTest(statement=statement):
+                self.connection.execute("SAVEPOINT bank")
+                self.connection.execute(statement, parameters)
+                before, rows = self.snapshot(), self.bank_snapshot()
+                with self.assertRaises(RuntimeError):
+                    self.apply()
+                self.assertEqual(self.snapshot(), before)
+                self.assertEqual(self.bank_snapshot(), rows)
+                self.connection.execute("ROLLBACK TO bank")
+                self.connection.execute("RELEASE bank")
+
+    def test_uninstalled_account_leaves_its_bank_view_unchanged(self) -> None:
+        self.bank_form(state="uninstalled")
+        before = self.bank_snapshot()
+        self.apply()
+        self.assertEqual(self.bank_snapshot(), before)
+
+    def test_missing_duplicate_and_mixed_language_selectors_refuse_without_effects(self) -> None:
+        child = self.bank_form()
+        old = f"<data><xpath {bridge.BANK_SELECTOR_19}/></data>"
+        new = old.replace(bridge.BANK_SELECTOR_19, bridge.BANK_SELECTOR_20)
+        for architectures in ({}, {"en_US": "<data/>"}, {"en_US": old + old}, {"en_US": old + new}, {"en_US": old, "fr_FR": new}):
+            with self.subTest(architectures=architectures):
+                self.connection.execute("UPDATE ir_ui_view SET arch_db=? WHERE id=?", (json.dumps(architectures), child))
+                before, rows = self.snapshot(), self.bank_snapshot()
+                with self.assertRaises(RuntimeError):
+                    self.apply()
+                self.assertEqual(self.snapshot(), before)
+                self.assertEqual(self.bank_snapshot(), rows)
 
 
 if __name__ == "__main__":

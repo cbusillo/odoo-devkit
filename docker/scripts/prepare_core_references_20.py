@@ -1,4 +1,5 @@
 import csv
+import json
 import logging
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -6,6 +7,8 @@ from typing import Any, NamedTuple
 SOURCE_STATE = "state_in_or"
 TARGET_STATE = "state_in_od"
 STATE_DATA_FILE = Path("/odoo/odoo/addons/base/data/res.country.state.csv")
+BANK_SELECTOR_19 = "expr=\"//field[@name='acc_number']\""
+BANK_SELECTOR_20 = "expr=\"//field[@name='account_number']\""
 _logger = logging.getLogger(__name__)
 
 
@@ -79,6 +82,30 @@ def _bind_target(cr: Any, name: str, source: Reference) -> None:
     _logger.info("Bound core reference base.%s to preserved %s row %s", name, source.model, source.record_id)
 
 
+def _bank_form_source(cr: Any) -> tuple[int, dict[str, str]] | None:
+    cr.execute("SELECT state FROM ir_module_module WHERE name = 'account'")
+    installed = cr.fetchone()
+    if installed is None or installed[0] not in {"installed", "to upgrade"}:
+        return None
+    source = _require_source(cr, "account", "view_partner_bank_form_inherit_account", "ir.ui.view")
+    parent = _require_source(cr, "base", "view_partner_bank_form", "ir.ui.view")
+    cr.execute("SELECT model, inherit_id, mode, arch_db FROM ir_ui_view WHERE id = %s FOR UPDATE", (source.record_id,))
+    rows = cr.fetchall()
+    if source.noupdate or parent.noupdate or len(rows) != 1 or rows[0][:3] != ("res.partner.bank", parent.record_id, "primary"):
+        raise RuntimeError("Unsupported account bank form ownership or inheritance")
+    architectures = rows[0][3]
+    if not architectures or not isinstance(architectures, dict) or any(not isinstance(arch, str) for arch in architectures.values()):
+        raise RuntimeError("Unsupported account bank form architecture")
+    counts = {(arch.count(BANK_SELECTOR_19), arch.count(BANK_SELECTOR_20)) for arch in architectures.values()}
+    if counts == {(0, 1)}:
+        return None
+    if counts != {(1, 0)}:
+        raise RuntimeError("Ambiguous account bank form selectors or mixed language transition")
+    return source.record_id, {
+        language: arch.replace(BANK_SELECTOR_19, BANK_SELECTOR_20, 1) for language, arch in architectures.items()
+    }
+
+
 def migrate(cr: Any, version: str | None) -> None:
     major = (version or "").split(".", 1)[0]
     if major == "20":
@@ -89,7 +116,12 @@ def migrate(cr: Any, version: str | None) -> None:
     website = _website_source(cr)
     state_target = _check_target(cr, TARGET_STATE, state, protect=state.noupdate)
     website_target = _check_target(cr, "default_website", website, protect=True) if website is not None else None
+    bank_form = _bank_form_source(cr)
     if state_target is None:
         _bind_target(cr, TARGET_STATE, state)
     if website is not None and website_target is None:
         _bind_target(cr, "default_website", website)
+    if bank_form is not None:
+        record_id, architectures = bank_form
+        cr.execute("UPDATE ir_ui_view SET arch_db = %s::jsonb WHERE id = %s", (json.dumps(architectures), record_id))
+        _logger.info("Retargeted account.view_partner_bank_form_inherit_account on preserved ir.ui.view row %s", record_id)
