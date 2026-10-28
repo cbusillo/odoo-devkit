@@ -1,3 +1,4 @@
+import ast
 import csv
 import json
 import logging
@@ -38,6 +39,7 @@ class NativeAccess(NamedTuple):
     group_id: int | None
     operation: str
     domain: str
+    dependencies: tuple[AccessPolicy, ...] = ()
 
 
 class AccessPlan(NamedTuple):
@@ -133,8 +135,65 @@ def _grouped_siblings(policy: AccessPolicy, policies: tuple[AccessPolicy, ...]) 
     )
 
 
+def _membership(groups: tuple[int, ...]) -> str:
+    if not groups or any(type(group) is not int or group <= 0 for group in groups):
+        raise ValueError("grouped policy has an unsupported group identity")
+    return "(" + " or ".join(f"{group} in user.all_group_ids.ids" for group in sorted(set(groups))) + ")"
+
+
+def _domain_operand(policy: AccessPolicy) -> str:
+    expression = ast.parse(policy.domain or "[]", mode="eval").body
+    if not isinstance(expression, (ast.List, ast.Tuple)):
+        raise ValueError(f"domain requires a literal sequence: {_policy_label(policy)}")
+    if not expression.elts:
+        return "[(1, '=', 1)]"
+    tokens = []
+    expected = 1
+    for item in expression.elts:
+        if expected == 0:
+            tokens.insert(0, ast.Constant(value="&"))
+            expected = 1
+        tokens.append(item)
+        if isinstance(item, ast.Constant) and item.value in ("|", "&", "!"):
+            expected += 0 if item.value == "!" else 1
+            continue
+        if (
+            not isinstance(item, (ast.Tuple, ast.List))
+            or len(item.elts) != 3
+            or not isinstance(item.elts[0], ast.Constant)
+            or not isinstance(item.elts[1], ast.Constant)
+            or not isinstance(item.elts[1].value, str)
+            or not isinstance(item.elts[0].value, (str, int))
+        ):
+            raise ValueError(f"domain has an unsupported branch: {_policy_label(policy)}")
+        expected -= 1
+    if expected:
+        raise ValueError(f"domain has missing operands: {_policy_label(policy)}")
+    return ast.unparse(ast.List(elts=tokens, ctx=ast.Load()))
+
+
+def _compile_grouped_rule(policy: AccessPolicy, policies: tuple[AccessPolicy, ...]) -> NativeAccess:
+    siblings = _grouped_siblings(policy, policies)
+    dependencies = tuple(sorted((policy, *siblings), key=lambda item: item.identifier))
+    if siblings and any(not item.active for item in dependencies):
+        raise ValueError("grouped policy activation interacts with a sibling")
+    domains = set()
+    for operation in policy.operation:
+        branches = [
+            f"({_domain_operand(item)} if {_membership(item.groups)} else [(0, '=', 1)])"
+            for item in dependencies
+            if operation in item.operation
+        ]
+        expression = repr(["|"] * (len(branches) - 1)) + " + " + " + ".join(branches)
+        domains.add(f"(({expression}) if {_membership(policy.groups)} else [])")
+    if len(domains) != 1:
+        raise ValueError("grouped operations require different destination domains and cannot retain one policy row")
+    return NativeAccess(policy, None, policy.operation, domains.pop(), dependencies)
+
+
 def plan_access_transition(policies: tuple[AccessPolicy, ...]) -> AccessPlan:
-    converted = []
+    converted: dict[tuple[str, int], NativeAccess] = {}
+    permissions = []
     source_owned = []
     refusals = []
     for policy in policies:
@@ -161,25 +220,49 @@ def plan_access_transition(policies: tuple[AccessPolicy, ...]) -> AccessPlan:
             source_owned.append(policy)
             continue
         if policy.source_model == "ir.model.access":
-            siblings = _grouped_siblings(policy, policies)
-            if siblings:
-                related = "; ".join(_policy_label(sibling) for sibling in siblings)
-                refusals.append(f"{label}: plain permission would bypass grouped policies: {related}")
-                continue
-            converted.append(NativeAccess(policy, policy.groups[0], policy.operation, ""))
+            permissions.append(policy)
             continue
         if not policy.groups:
-            converted.append(NativeAccess(policy, None, policy.operation, policy.domain))
+            converted[policy.source_model, policy.identifier] = NativeAccess(policy, None, policy.operation, policy.domain)
             continue
         siblings = _grouped_siblings(policy, policies)
         related = "; ".join(_policy_label(sibling) for sibling in siblings)
-        reason = "grouped restriction requires a qualified native mapping"
-        if siblings:
-            reason = f"grouped restriction depends on sibling policies: {related}; stored sibling copies are not admitted"
-        refusals.append(f"{label}: {reason}")
+        try:
+            converted[policy.source_model, policy.identifier] = _compile_grouped_rule(policy, policies)
+        except (ValueError, SyntaxError) as error:
+            refusals.append(f"{label}: {error}; sibling policies: {related or 'none'}")
+    restrictions = tuple(converted.values())
+    for policy in permissions:
+        siblings = _grouped_siblings(policy, policies)
+        covering = tuple(
+            item.source
+            for item in restrictions
+            if item.source.source_model == "ir.rule"
+            and item.source.active
+            and item.source.model == policy.model
+            and policy.groups[0] in item.source.groups
+        )
+        uncovered = {
+            operation
+            for sibling in siblings
+            for operation in set(sibling.operation) & set(policy.operation)
+            if not any(operation in rule.operation for rule in covering)
+        }
+        if uncovered:
+            related = "; ".join(_policy_label(sibling) for sibling in siblings)
+            refusals.append(f"{_policy_label(policy)}: plain permission would bypass grouped policies: {related}")
+            continue
+        converted[policy.source_model, policy.identifier] = NativeAccess(policy, policy.groups[0], policy.operation, "", covering)
     if refusals:
         raise RuntimeError("Unsupported native access transition:\n" + "\n".join(refusals))
-    return AccessPlan(tuple(converted), tuple(source_owned))
+    return AccessPlan(
+        tuple(
+            converted[policy.source_model, policy.identifier]
+            for policy in policies
+            if (policy.source_model, policy.identifier) in converted
+        ),
+        tuple(source_owned),
+    )
 
 
 def _reference(cr: Any, module: str, name: str) -> Reference | None:

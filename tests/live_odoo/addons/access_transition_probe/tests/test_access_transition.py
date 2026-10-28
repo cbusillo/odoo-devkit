@@ -167,6 +167,55 @@ class TestAccessTransition(TransactionCase):
         self.assertFalse(self.decide("writer", "blocked", "read"))
         self.assertTrue(self.decide("writer", "allowed", "read"))
 
+    def test_compiled_grouped_union_preserves_ordinary_rights_and_cached_membership(self) -> None:
+        reader = bridge.AccessPolicy(
+            "ir.rule",
+            31,
+            "Reader own records",
+            MODEL,
+            (self.groups["reader"].id,),
+            "crud",
+            "[('user_id','=',user.id)]",
+            True,
+            (),
+            (),
+            False,
+        )
+        writer = reader._replace(
+            identifier=32,
+            name="Writer open records",
+            groups=(self.groups["writer"].id,),
+            domain="[('marker','!=','reader_only'), ('marker','!=','blocked')]",
+        )
+        inactive = self.source[0]._replace(identifier=33, name="Retained inactive update", operation="u", active=False)
+        records = self.install_policies((self.source[0], self.source[1], *self.source[-2:], reader, writer, inactive))
+        for name, role in (("reader_own", "reader"), ("combined_own", "combined")):
+            self.records[name] = self.env[MODEL].create(
+                {"name": name, "user_id": self.users[role].id, "company_id": self.companies[0].id, "marker": "reader_only"}
+            )
+        visible = {"reader": {"reader_own"}, "writer": {"allowed"}, "combined": {"allowed", "combined_own"}}
+        for role in self.users:
+            for name in self.records:
+                for operation in ("read", "search", "write", "unlink", "create"):
+                    expected = name in visible.get(role, set())
+                    if operation not in {"read", "search"}:
+                        expected = expected and role in {"writer", "combined"}
+                    if operation == "create":
+                        expected = role in {"writer", "combined"} and name not in {"blocked", "other_company"}
+                        expected = expected and (role == "combined" or name == "allowed")
+                    with self.subTest(role=role, record=name, operation=operation):
+                        self.assertEqual(self.decide(role, name, operation), expected)
+        self.assertFalse(self.decide("reader", "reader_own", "write"))
+        records[(inactive.source_model, inactive.identifier)].write({"active": True})
+        self.assertTrue(self.decide("reader", "reader_own", "write"))
+        self.assertFalse(self.decide("reader", "allowed", "write"))
+        group_field = "group_ids" if "group_ids" in self.users["combined"]._fields else "groups_id"
+        self.users["combined"].write({group_field: [Command.unlink(self.groups["reader"].id)]})
+        self.assertTrue(self.decide("combined", "allowed", "read"))
+        self.assertFalse(self.decide("combined", "combined_own", "read"))
+        self.users["combined"].write({group_field: [Command.link(self.groups["reader"].id)]})
+        self.assertTrue(self.decide("combined", "combined_own", "read"))
+
     def test_legacy_hook_refuses_grouped_policy_before_bridge_writes(self) -> None:
         if "ir.access" in self.env.registry:
             self.skipTest("Legacy SQL refusal is exercised by native 19")

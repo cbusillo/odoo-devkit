@@ -630,13 +630,23 @@ Notes
   any bridge write. Replay is unchanged. Account's later native update owns its
   full target architecture and validation; this step does not migrate bank data.
   Before any bridge write, the access preflight inventories legacy ACLs, rules,
-  aliases and rule-group references. Retained data-only or unowned grouped rules
-  refuse with their identities and overlapping same-operation siblings; the bridge
-  does not turn them into permissions or freeze sibling policy copies. Missing
-  models and dangling aliases or group references also refuse.
-  A data-only ACL also refuses if any active or inactive grouped rule applies to
-  the same model and operation, including module-owned rules in other groups;
-  a plain permission could bypass their native domains. Resolve a refused policy
+  aliases and rule-group references. The bounded planner represents data-only or
+  unowned grouped rules as one native global restriction, conditional on the
+  original groups, containing the union of their overlapping grouped siblings.
+  Each branch is conditional on that sibling's groups. It records the complete
+  frozen source policies, including domains, groups, aliases and active state,
+  as dependencies. Source-owned siblings stay with their source mapping; they do
+  not become extra converted rows. Later sibling edits require explicit review
+  of the converted policy because they do not update its frozen copies.
+  Activation interactions, operations needing different destination domains,
+  unsupported domain sequence shapes and invalid group identities refuse with
+  the source and sibling identities. Empty branches remain true and implicit
+  conjunctions stay inside their union operand. Missing models and dangling
+  aliases or group references also refuse.
+  A data-only ACL with overlapping grouped rules requires an active compiled
+  restriction covering its exact group for every intersecting operation;
+  implied membership is not guessed. Otherwise a plain permission could bypass
+  native domains, so it refuses and lists those siblings. Resolve a refused policy
   through an explicit native policy/reference mapping and the native rights oracle;
   deleting it or resetting module metadata is not a supported workaround.
   For dangling metadata, use an intact validated source or establish an explicit
@@ -648,8 +658,11 @@ Notes
   module deletion or backup-only retention does not preserve them.
   The bounded planner retains group-bound ACLs and global rules, including inactive
   state and protected aliases, for native validation. It keeps module-owned policies
-  separate for their source mapping. Planning does not apply these representations
-  or qualify an access conversion. The preflight first lists unsupported shapes.
+  separate for their source mapping. Every embedded domain branch and group
+  reference still requires validation against the native target before any
+  policy application; validating only the current user's conditional branch
+  is insufficient. Planning does not apply these representations or qualify an
+  access conversion. The preflight first lists unsupported shapes.
   If all shapes are plannable, the migration hook still refuses and lists those
   policies until application is qualified, before any bridge write. Every real
   19 crossing therefore currently refuses before the reference and bank steps;

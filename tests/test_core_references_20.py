@@ -219,7 +219,7 @@ class CoreReferenceTests(unittest.TestCase):
                 bridge.migrate(self.cursor, version)
             self.assertEqual(self.snapshot(), before)
 
-    def test_data_only_grouped_rule_refuses_with_siblings_before_any_bridge_write(self) -> None:
+    def test_data_only_grouped_rule_records_frozen_siblings_without_applying_any_bridge_write(self) -> None:
         self.connection.execute("INSERT INTO ir_model VALUES (31,'res.partner')")
         self.connection.execute("INSERT INTO ir_rule VALUES (23,31,'Retained contact limit',?,1,1,0,0,0)", ("[('id','=',7)]",))
         self.connection.execute("INSERT INTO ir_rule VALUES (29,31,'Source portal limit',?,1,1,0,0,0)", ("[('id','=',9)]",))
@@ -228,11 +228,77 @@ class CoreReferenceTests(unittest.TestCase):
         self.xmlid("base", "portal_limit", "ir.rule", 29, False)
         self.connection.execute("INSERT INTO ir_module_module VALUES ('base','installed','19.0.1.0')")
         before = self.snapshot()
+        plan = bridge.plan_access_transition(bridge.read_access_policies(self.cursor))
+        restriction = plan.converted[0]
+        self.assertIsNone(restriction.group_id)
+        self.assertEqual(restriction.source.aliases, ("fixture.contact_limit",))
+        self.assertEqual({policy.identifier for policy in restriction.dependencies}, {23, 29})
+        self.assertEqual([policy.identifier for policy in plan.source_owned], [29])
+        self.assertEqual(self.snapshot(), before)
         with self.assertRaises(RuntimeError) as refusal:
             self.apply()
         self.assertIn("fixture.contact_limit", str(refusal.exception))
         self.assertIn("base.portal_limit", str(refusal.exception))
         self.assertEqual(self.snapshot(), before)
+
+    def test_grouped_rule_domain_branches_preserve_empty_domains_and_membership(self) -> None:
+        from types import SimpleNamespace
+
+        source = bridge.AccessPolicy("ir.rule", 23, "Custom limit", "res.partner", (67,), "r", "[('id','=',7)]", True, (), (), False)
+        sibling = source._replace(identifier=29, groups=(10,), domain="[]", source_owned=True)
+        plan = bridge.plan_access_transition((source, sibling))
+        restriction = plan.converted[0]
+        for groups, expected in (
+            ((), []),
+            ((10,), []),
+            ((67,), ["|", ("id", "=", 7), (0, "=", 1)]),
+            ((67, 10), ["|", ("id", "=", 7), (1, "=", 1)]),
+        ):
+            with self.subTest(groups=groups):
+                user = SimpleNamespace(all_group_ids=SimpleNamespace(ids=groups))
+                self.assertEqual(eval(restriction.domain, {"__builtins__": {}, "user": user}), expected)
+        sibling = sibling._replace(domain="[('id','!=',8), ('id','!=',9)]")
+        restriction = bridge.plan_access_transition((source, sibling)).converted[0]
+        user = SimpleNamespace(all_group_ids=SimpleNamespace(ids=(67, 10)))
+        self.assertEqual(
+            eval(restriction.domain, {"__builtins__": {}, "user": user}),
+            ["|", ("id", "=", 7), "&", ("id", "!=", 8), ("id", "!=", 9)],
+        )
+
+    def test_grouped_rule_unsupported_interactions_list_source_and_dependencies(self) -> None:
+        source = bridge.AccessPolicy(
+            "ir.rule", 23, "Custom limit", "res.partner", (67,), "ru", "[('id','=',7)]", True, ("fixture.limit",), (), False
+        )
+        sibling = source._replace(identifier=29, groups=(10,), aliases=("base.limit",), source_owned=True)
+        for changed_source, changed_sibling in (
+            (source, sibling._replace(active=False)),
+            (source._replace(active=False), sibling),
+            (source, sibling._replace(operation="r")),
+            (source, sibling._replace(domain="False")),
+            (source, sibling._replace(domain="[] if user.id else [('id','=',7)]")),
+            (source, sibling._replace(domain="[*user.domains]")),
+            (source, sibling._replace(domain="['|', ('id','=',7)]")),
+        ):
+            with self.subTest(source=changed_source, sibling=changed_sibling), self.assertRaises(RuntimeError) as refusal:
+                bridge.plan_access_transition((changed_source, changed_sibling))
+            self.assertIn("fixture.limit", str(refusal.exception))
+            self.assertIn("base.limit", str(refusal.exception))
+
+    def test_acl_admission_requires_an_active_compiled_rule_covering_every_intersecting_operation(self) -> None:
+        access = bridge.AccessPolicy("ir.model.access", 14, "Custom read", "res.partner", (67,), "r", "", True, (), (), False)
+        source = access._replace(source_model="ir.rule", identifier=23, domain="[('id','=',7)]")
+        sibling = source._replace(identifier=29, groups=(10,), source_owned=True)
+        plan = bridge.plan_access_transition((access, source, sibling))
+        self.assertEqual([policy.source.identifier for policy in plan.converted], [14, 23])
+        self.assertEqual(plan.converted[0].domain, "")
+        self.assertEqual([policy.identifier for policy in plan.converted[0].dependencies], [23])
+        for changed_access, changed_source, changed_sibling in (
+            (access._replace(groups=(11,)), source, sibling),
+            (access._replace(operation="ru"), source, sibling._replace(operation="ru")),
+            (access, source._replace(active=False), sibling),
+        ):
+            with self.subTest(access=changed_access, source=changed_source), self.assertRaises(RuntimeError):
+                bridge.plan_access_transition((changed_access, changed_source, changed_sibling))
 
     def test_data_only_access_plan_retains_inactive_acl_and_global_rule(self) -> None:
         self.connection.execute("INSERT INTO ir_model VALUES (31,'res.partner')")
