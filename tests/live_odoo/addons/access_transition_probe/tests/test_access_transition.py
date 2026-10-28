@@ -276,6 +276,7 @@ class TestAccessTransition(TransactionCase):
         access = self.env.cr.fetchall()
         with self.assertRaises(RuntimeError) as refusal:
             bridge.migrate(self.env.cr, "19.0.1.0")
+        self.assertIn("access_transition_fixture.retained_rule", str(refusal.exception))
         self.assertIn("access_transition_probe.source_no_operations", str(refusal.exception))
         self.env.cr.execute("SELECT id,module,name,model,res_id,noupdate FROM ir_model_data ORDER BY id")
         self.assertEqual(self.env.cr.fetchall(), aliases)

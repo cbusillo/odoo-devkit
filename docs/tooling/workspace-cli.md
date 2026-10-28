@@ -665,7 +665,10 @@ Notes
   separate for their source mapping. Every embedded domain branch and group
   reference still requires validation against the native target before any
   policy application; validating only the current user's conditional branch
-  is insufficient. Planning does not apply these representations or qualify an
+  is insufficient. Source-owned siblings also need a qualified native permission
+  carrying their domain; a native restriction could narrow the copied union.
+  The separate native delegated-parent oracle records upstream behavior for its
+  held mapping and does not admit delegated policies. Planning does not apply these representations or qualify an
   access conversion. The preflight first lists unsupported shapes.
   If all shapes are plannable, the migration hook still refuses and lists those
   policies until application is qualified, before any bridge write. Every real
