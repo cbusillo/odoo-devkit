@@ -47,7 +47,7 @@ class AccessPlan(NamedTuple):
 
 def read_access_policies(cr: Any) -> tuple[AccessPolicy, ...]:
     cr.execute("SELECT name FROM ir_module_module WHERE state IN ('installed', 'to upgrade')")
-    source_modules = {row[0] for row in cr.fetchall()}
+    source_modules = {row[0] for row in cr.fetchall()} - {"__export__", "__custom__", "studio_customization"}
     cr.execute(
         "SELECT model, res_id, module, name, noupdate FROM ir_model_data "
         "WHERE model IN ('ir.model.access', 'ir.rule') ORDER BY module, name"

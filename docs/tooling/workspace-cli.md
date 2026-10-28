@@ -649,6 +649,8 @@ Notes
   state and protected aliases, for native validation. It keeps module-owned policies
   separate for their source mapping. Planning does not apply these representations
   or qualify an access conversion; the actual security import remains unqualified.
+  Exported, custom and Studio policy aliases remain data-only even when their
+  customization module is installed.
   Same-major 20 updates do nothing in this bridge. Its qualification ends at
   the reference/base-data boundary; security conversion, later cleanup,
   tenant hooks and a completed major-version migration need their own proof.

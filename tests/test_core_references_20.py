@@ -345,6 +345,26 @@ class CoreReferenceTests(unittest.TestCase):
         self.assertIn("res.partner", str(refusal.exception))
         self.assertEqual(self.snapshot(), before)
 
+    def test_installed_customization_modules_do_not_hide_unsafe_data_only_acl(self) -> None:
+        self.connection.execute("INSERT INTO ir_model VALUES (31,'res.partner')")
+        self.connection.execute("INSERT INTO ir_model_access VALUES (14,31,'Retained read',67,1,1,0,0,0)")
+        self.connection.execute("INSERT INTO ir_rule VALUES (29,31,'Source portal limit','[]',1,1,0,0,0)")
+        self.connection.execute("INSERT INTO rule_group_rel VALUES (29,10)")
+        self.xmlid("base", "portal_limit", "ir.rule", 29, False)
+        self.connection.execute("INSERT INTO ir_module_module VALUES ('base','installed','19.0.1.0')")
+        for module in ("studio_customization", "__export__", "__custom__"):
+            with self.subTest(module=module):
+                self.connection.execute("SAVEPOINT customized")
+                self.xmlid(module, "retained_read", "ir.model.access", 14, True)
+                self.connection.execute("INSERT INTO ir_module_module VALUES (?,'installed','19.0.1.0')", (module,))
+                before = self.snapshot()
+                with self.assertRaises(RuntimeError) as refusal:
+                    self.apply()
+                self.assertIn(module + ".retained_read", str(refusal.exception))
+                self.assertEqual(self.snapshot(), before)
+                self.connection.execute("ROLLBACK TO customized")
+                self.connection.execute("RELEASE customized")
+
     def bank_form(self, state: str = "installed") -> int:
         self.connection.execute(
             "CREATE TABLE ir_ui_view (id INTEGER PRIMARY KEY, model TEXT, inherit_id INTEGER, mode TEXT, arch_db TEXT, "

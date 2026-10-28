@@ -233,6 +233,40 @@ class TestAccessTransition(TransactionCase):
         )
         self.assertTrue(self.decide("combined", "own", "read"))
         self.assertFalse(self.decide("combined", "allowed", "read"))
+        if "ir.access" in self.env.registry:
+            try:
+                with self.env.cr.savepoint():
+                    self.env["ir.access"].create(
+                        {
+                            "name": "Unsafe plain custom ACL",
+                            "model_id": self.env["ir.model"]._get(MODEL).id,
+                            "group_id": self.groups["writer"].id,
+                            "operation": "r",
+                        }
+                    )
+                    self.assertTrue(self.decide("combined", "allowed", "read"))
+                    raise RevertOperation()
+            except RevertOperation:
+                self.assertFalse(self.decide("combined", "allowed", "read"))
         for active in (True, False):
             with self.subTest(active=active), self.assertRaises(RuntimeError):
                 bridge.plan_access_transition((reader_acl, grouped._replace(active=active), custom_acl))
+
+    def test_global_parent_rule_restricts_delegated_children(self) -> None:
+        self.install_policies(self.source)
+        model = self.env["access.transition.child"]
+        model_id = self.env["ir.model"]._get(model._name).id
+        values = {"name": "Source-owned child permission", "model_id": model_id, "group_id": self.groups["writer"].id}
+        if "ir.access" in self.env.registry:
+            self.env["ir.access"].create(values | {"operation": "crud"})
+        else:
+            self.env["ir.model.access"].create(values | {"perm_" + mode: True for mode in MODES.values()})
+        children = {name: model.create({"parent_id": self.records[name].id}) for name in ("allowed", "blocked")}
+        ordinary = model.with_user(self.users["writer"]).with_context(allowed_company_ids=self.companies[0].ids)
+        self.assertFalse(ordinary.env.su)
+        self.assertNotEqual(ordinary.env.uid, 1)
+        self.assertTrue(ordinary.browse(children["allowed"].id).read(["name"]))
+        self.assertTrue(ordinary.search([("id", "=", children["allowed"].id)]))
+        with self.assertRaises(AccessError):
+            ordinary.browse(children["blocked"].id).read(["name"])
+        self.assertFalse(ordinary.search([("id", "=", children["blocked"].id)]))
