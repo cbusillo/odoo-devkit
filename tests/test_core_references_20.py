@@ -241,7 +241,7 @@ class CoreReferenceTests(unittest.TestCase):
         self.connection.execute("DROP TABLE ir_rule")
         before = list(self.connection.iterdump())
         with self.assertRaises(RuntimeError) as refusal:
-            bridge.finish_access_transition(self.cursor, "19.0.1.3")
+            bridge.ensure_no_legacy_access_residue(self.cursor)
         self.assertIn("fixture.retained_rule", str(refusal.exception))
         self.assertEqual(list(self.connection.iterdump()), before)
 
@@ -261,7 +261,7 @@ class CoreReferenceTests(unittest.TestCase):
         bridge.migrate(self.cursor, "20.0.1.3")
         self.assertEqual(list(self.connection.iterdump()), before)
 
-    def test_same_major_is_noop_and_other_crossings_refuse(self) -> None:
+    def test_clean_same_major_replay_is_noop_and_other_crossings_refuse(self) -> None:
         before = self.snapshot()
         bridge.migrate(self.cursor, "20.0.1.3")
         self.assertEqual(self.snapshot(), before)

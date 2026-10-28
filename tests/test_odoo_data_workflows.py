@@ -2225,6 +2225,20 @@ class CredentialBoundaryTests(unittest.TestCase):
         self.assertTrue(self.hooks)
         self.assertLess(self.events.index("commit"), self.events.index(self.hooks[0]))
 
+    def test_partial_twenty_access_residue_prevents_every_maintenance_hook(self) -> None:
+        with sqlite3.connect(self.path) as database:
+            database.execute("CREATE TABLE ir_module_module(name TEXT,latest_version TEXT)")
+            database.execute("INSERT INTO ir_module_module VALUES ('base','20.0.1.3')")
+            database.execute("INSERT INTO ir_model_data(module,name,model,res_id) VALUES ('fixture','retained_rule','ir.rule',14)")
+            before = list(database.iterdump())
+        self.tables.add("ir_module_module")
+        with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError) as refusal:
+            self.run_maintenance()
+        self.assertIn("fixture.retained_rule", str(refusal.exception))
+        self.assertEqual(self.hooks, [])
+        with sqlite3.connect(self.path) as database:
+            self.assertEqual(list(database.iterdump()), before)
+
     def test_restore_persists_login_preservation_before_registry_and_maintenance_keeps_it(self) -> None:
         self.runner.prepare_credentials_before_registry(restored_copy=True)
         self.runner.prepare_credentials_before_registry()

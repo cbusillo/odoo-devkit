@@ -29,6 +29,7 @@ from odoo_release_plan import load_plan, resolve_plan, verify_image_declaration
 from odoo_website_bootstrap import load_instance_override_payload, require_launchplane_payloads_if_configured
 from odoo_website_settings import PRODUCTION_INSTANCE_NAMES
 from passlib.context import CryptContext
+from prepare_core_references_20 import ensure_native_access_replay
 from psycopg2 import sql
 from psycopg2.extensions import connection
 from pydantic import Field, SecretStr, ValidationError, field_validator
@@ -1692,6 +1693,11 @@ class OdooDataWorkflowRunner:
         """
         conn = self.connect_to_db()
         try:
+            with conn.cursor() as cursor:
+                try:
+                    ensure_native_access_replay(cursor)
+                except RuntimeError as error:
+                    raise OdooDatabaseUpdateError(str(error)) from error
             parameters = self._pre_registry_parameter_overrides()
             if restored_copy:
                 self.fingerprint_restored_credentials()

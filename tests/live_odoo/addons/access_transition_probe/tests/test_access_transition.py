@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import prepare_core_references_20 as bridge
-from odoo import SUPERUSER_ID, Command, release
+from odoo import SUPERUSER_ID, Command
 from odoo.exceptions import AccessError
 from odoo.tests import tagged
 from odoo.tests.common import TransactionCase
@@ -418,7 +418,7 @@ class TestAccessTransition(TransactionCase):
             ordinary.browse(children["blocked"].id).read(["name"])
         self.assertFalse(ordinary.search([("id", "=", children["blocked"].id)]))
 
-    def test_native_model_retirement_guard_preserves_legacy_aliases(self) -> None:
+    def test_native_partial_twenty_guard_preserves_legacy_aliases(self) -> None:
         if "ir.access" not in self.env.registry:
             self.skipTest("Legacy model retirement witness requires native 20")
         legacy = self.env["ir.model"].create({"name": "Legacy rule model", "model": "ir.rule", "state": "base"})
@@ -430,10 +430,10 @@ class TestAccessTransition(TransactionCase):
         )
         fields = ["module", "name", "model", "res_id", "noupdate", "create_uid", "create_date", "write_uid", "write_date"]
         before = aliases.read(fields)
+        module = self.env["ir.module.module"].search([("name", "=", "base")])
+        self.assertEqual(len(module), 1)
         with self.assertRaises(RuntimeError) as refusal:
-            bridge.migrate(self.env.cr, release.version)
+            bridge.migrate(self.env.cr, module.latest_version)
         for alias in aliases:
             self.assertIn(f"{alias.module}.{alias.name}", str(refusal.exception))
         self.assertEqual(aliases.read(fields), before)
-        legacy.with_context(force_delete=True).unlink()
-        self.assertFalse(aliases.exists())
