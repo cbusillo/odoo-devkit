@@ -437,3 +437,11 @@ class TestAccessTransition(TransactionCase):
         for alias in aliases:
             self.assertIn(f"{alias.module}.{alias.name}", str(refusal.exception))
         self.assertEqual(aliases.read(fields), before)
+
+    def test_stored_policy_extension_is_refused_before_inventory(self) -> None:
+        with self.assertRaises(RevertOperation), self.env.cr.savepoint():
+            self.env.cr.execute("ALTER TABLE ir_model_data ADD COLUMN x_access_preservation_probe TEXT")
+            with self.assertRaises(RuntimeError) as refusal:
+                bridge.read_access_policies(self.env.cr)
+            self.assertIn("ir_model_data.x_access_preservation_probe", str(refusal.exception))
+            raise RevertOperation

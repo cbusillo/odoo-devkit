@@ -630,7 +630,7 @@ Notes
   any bridge write. Replay is unchanged. Account's later native update owns its
   full target architecture and validation; this step does not migrate bank data.
   Before any bridge write, the access preflight inventories legacy ACLs, rules,
-  aliases and rule-group references and lists unsupported policies. Every
+  aliases, stored policy columns and rule-group references and lists unsupported policies. Every
   nonempty 19 crossing currently refuses until native policy application and
   reference preservation are qualified. Resolve reported policies through an explicit native mapping and
   the native rights oracle, preserving their records and references. Deleting
@@ -638,9 +638,13 @@ Notes
   Planned grouped conversions retain frozen sibling dependencies. Later sibling,
   domain, checkbox and group-deletion changes require their own native review;
   current qualification does not establish preservation through those changes.
-  The packaged native base end script refuses any surviving legacy policy,
-  alias or rule-group reference before native model cleanup. A same-major 20
-  invocation also refuses legacy residue before loading; a partially upgraded
+  Unknown stored columns refuse with their names; policy and alias audit fields,
+  nullable protection flags and the stored global-rule flag remain in the inventory.
+  The native base end script checks surviving legacy policies, aliases,
+  rule-group edges and the verified cleanup consumers: related fields, actions,
+  attachments and mail records. It is a final tripwire, after native module
+  commits. The shared SQL preparation also checks this residue before any
+  native registry starts on an already-20 database; a partially upgraded
   database must be restored from its original, not resumed. A clean native 20
   replay makes no bridge writes. Earlier reference and bank
   qualification does not qualify this combined access crossing. Security conversion,

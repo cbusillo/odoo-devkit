@@ -50,6 +50,7 @@ class AccessPolicy(NamedTuple):
     delegated_parents: tuple[str, ...] = ()
     audit: PolicyAudit | None = None
     alias_records: tuple[PolicyAlias, ...] = ()
+    global_rule: bool | None = None
 
 
 class NativeAccess(NamedTuple):
@@ -65,7 +66,29 @@ class AccessPlan(NamedTuple):
     source_owned: tuple[AccessPolicy, ...]
 
 
+def ensure_supported_policy_columns(cr: Any) -> None:
+    audit = {"create_uid", "create_date", "write_uid", "write_date"}
+    policy = {"id", "model_id", "name", "active", "perm_create", "perm_read", "perm_write", "perm_unlink"} | audit
+    supported = {
+        "ir_model_data": {"id", "module", "name", "model", "res_id", "noupdate"} | audit,
+        "ir_model_access": policy | {"group_id"},
+        "ir_rule": policy | {"domain_force", "global"},
+        "rule_group_rel": {"rule_group_id", "group_id"},
+    }
+    cr.execute(
+        "SELECT relation.relname, attribute.attname FROM pg_attribute attribute "
+        "JOIN pg_class relation ON relation.oid = attribute.attrelid "
+        "WHERE attribute.attrelid IN (SELECT to_regclass(name) FROM unnest(%s::text[]) AS name) "
+        "AND attribute.attnum > 0 AND NOT attribute.attisdropped ORDER BY relation.relname, attribute.attname",
+        (list(supported),),
+    )
+    unsupported = [f"{table}.{column}" for table, column in cr.fetchall() if column not in supported[table]]
+    if unsupported:
+        raise RuntimeError("Unsupported stored access metadata: " + ", ".join(unsupported))
+
+
 def read_access_policies(cr: Any) -> tuple[AccessPolicy, ...]:
+    ensure_supported_policy_columns(cr)
     cr.execute("SELECT name FROM ir_module_module WHERE state IN ('installed', 'to upgrade')")
     source_modules = {row[0] for row in cr.fetchall()} - {"__export__", "__custom__", "studio_customization"}
     cr.execute(
@@ -95,20 +118,21 @@ def read_access_policies(cr: Any) -> tuple[AccessPolicy, ...]:
     cr.execute(
         "SELECT access.id, access.name, model.model, access.active, access.perm_create, access.perm_read, "
         "access.perm_write, access.perm_unlink, access.group_id, "
-        "access.create_uid, access.create_date, access.write_uid, access.write_date FROM ir_model_access access "
+        "access.create_uid, access.create_date, access.write_uid, access.write_date, NULL FROM ir_model_access access "
         "LEFT JOIN ir_model model ON model.id = access.model_id ORDER BY access.id"
     )
     access_rows = cr.fetchall()
     cr.execute(
         "SELECT rule.id, rule.name, model.model, rule.active, rule.perm_create, rule.perm_read, "
         "rule.perm_write, rule.perm_unlink, rule.domain_force, "
-        "rule.create_uid, rule.create_date, rule.write_uid, rule.write_date FROM ir_rule rule "
+        "rule.create_uid, rule.create_date, rule.write_uid, rule.write_date, rule.global FROM ir_rule rule "
         "LEFT JOIN ir_model model ON model.id = rule.model_id ORDER BY rule.id"
     )
     rule_rows = cr.fetchall()
     policies = []
     for source_model, rows in (("ir.model.access", access_rows), ("ir.rule", rule_rows)):
-        for identifier, name, model, active, create, read, write, unlink, extra, *audit in rows:
+        for identifier, name, model, active, create, read, write, unlink, extra, *metadata in rows:
+            *audit, global_rule = metadata
             references = aliases.pop((source_model, identifier), [])
             policy_groups = tuple(groups.pop(identifier, ())) if source_model == "ir.rule" else (() if extra is None else (extra,))
             missing_groups = set(policy_groups) - existing_groups
@@ -130,6 +154,7 @@ def read_access_policies(cr: Any) -> tuple[AccessPolicy, ...]:
                     tuple(delegated_parents.get(model, ())),
                     PolicyAudit(*audit),
                     tuple(references),
+                    global_rule,
                 )
             )
     if aliases:
@@ -155,11 +180,63 @@ def ensure_native_access_replay(cr: Any) -> None:
     ensure_no_legacy_access_residue(cr)
 
 
+def read_legacy_cleanup_consumers(cr: Any) -> tuple[str, ...]:
+    retired = ("ir.model.access", "ir.rule")
+    queries = (
+        (
+            "ir_model_fields",
+            "SELECT id, relation FROM ir_model_fields WHERE relation IN (%s, %s) "
+            "UNION SELECT id, model FROM ir_model_fields WHERE model IN (%s, %s) AND state = 'manual'",
+            retired + retired,
+        ),
+        ("ir_attachment", "SELECT id, res_model FROM ir_attachment WHERE res_model IN (%s, %s)", retired),
+        ("mail_activity_type", "SELECT id, res_model FROM mail_activity_type WHERE res_model IN (%s, %s)", retired),
+        ("mail_followers", "SELECT id, res_model FROM mail_followers WHERE res_model IN (%s, %s)", retired),
+        ("mail_message", "SELECT id, model FROM mail_message WHERE model IN (%s, %s)", retired),
+        (
+            "mail_activity",
+            "SELECT activity.id, model.model FROM mail_activity activity "
+            "JOIN ir_model model ON model.id = activity.res_model_id WHERE model.model IN (%s, %s)",
+            retired,
+        ),
+        (
+            "ir_act_server",
+            "SELECT action.id, model.model FROM ir_act_server action "
+            "JOIN ir_model model ON model.id = action.model_id WHERE model.model IN (%s, %s)",
+            retired,
+        ),
+        (
+            "ir_cron",
+            "SELECT cron.id, model.model FROM ir_cron cron "
+            "JOIN ir_act_server action ON action.id = cron.ir_actions_server_id "
+            "JOIN ir_model model ON model.id = action.model_id WHERE model.model IN (%s, %s)",
+            retired,
+        ),
+        (
+            "ir_model_data",
+            "SELECT data.id, data.module || '.' || data.name FROM ir_model_data data "
+            "JOIN ir_model model ON model.id = data.res_id "
+            "WHERE data.model = 'ir.model' AND model.model IN (%s, %s)",
+            retired,
+        ),
+    )
+    consumers = []
+    for table, query, parameters in queries:
+        cr.execute("SELECT to_regclass(%s)", (table,))
+        if not cr.fetchone()[0]:
+            continue
+        cr.execute(query, parameters)
+        consumers.extend(f"{table}:{identifier} ({model})" for identifier, model in cr.fetchall())
+    return tuple(consumers)
+
+
 def ensure_no_legacy_access_residue(cr: Any) -> None:
     cr.execute(
         "SELECT to_regclass('ir_model_data'), to_regclass('ir_model_access'), to_regclass('ir_rule'), to_regclass('rule_group_rel')"
     )
     alias_table, access_table, rule_table, group_table = cr.fetchone()
+    if access_table or rule_table or group_table:
+        ensure_supported_policy_columns(cr)
     references: dict[tuple[str, int | None], list[str]] = {}
     if alias_table:
         cr.execute(
@@ -183,13 +260,14 @@ def ensure_no_legacy_access_residue(cr: Any) -> None:
         cr.execute("SELECT rule_group_id, group_id FROM rule_group_rel ORDER BY rule_group_id, group_id")
         for identifier, group in cr.fetchall():
             references.setdefault(("ir.rule", identifier), []).append(f"group:{group}")
-    if references:
-        pending = (
-            f"{model}:{identifier} ({', '.join(aliases) or 'unowned'}; {names.get((model, identifier))})"
-            for (model, identifier), aliases in sorted(
-                references.items(), key=lambda item: (item[0][0], item[0][1] is None, item[0][1])
-            )
-        )
+    pending = [
+        f"{model}:{identifier} ({', '.join(aliases) or 'unowned'}; {names.get((model, identifier))})"
+        for (model, identifier), aliases in sorted(references.items(), key=lambda item: (item[0][0], item[0][1] is None, item[0][1]))
+    ]
+    cr.execute("SELECT to_regclass('ir_model')")
+    if cr.fetchone()[0]:
+        pending.extend(read_legacy_cleanup_consumers(cr))
+    if pending:
         raise RuntimeError("Legacy access policies or references must not reach native cleanup:\n" + "\n".join(pending))
 
 
