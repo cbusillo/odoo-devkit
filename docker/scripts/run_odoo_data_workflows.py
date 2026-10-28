@@ -2192,7 +2192,7 @@ with registry.cursor() as cr:
         # database, then explicitly construct the updating registry exactly once.
         command.append("--database=")
         command += ["--max-cron-threads=0"]
-        if self.local.openupgrade_enabled:
+        if self.local.openupgrade_enabled and not self._is_native_20_upgrade():
             command += ["--load", "base,web,openupgrade_framework"]
         if resolved["install_modules"]:
             command += ["-i", ",".join(resolved["install_modules"])]
@@ -2604,7 +2604,7 @@ with registry.cursor() as cr:
             "--no-http",
         ]
         cmd_parts += self._odoo_runtime_connection_flags()
-        if self.local.openupgrade_enabled:
+        if self.local.openupgrade_enabled and not self._is_native_20_upgrade():
             cmd_parts += ["--load", "base,web,openupgrade_framework"]
         if to_install:
             cmd_parts += ["-i", ",".join(to_install)]
@@ -2624,7 +2624,7 @@ with registry.cursor() as cr:
         finally:
             self._reset_db_connection()
 
-    def _resolve_openupgrade_assets(self) -> tuple[list[Path], Path]:
+    def _resolve_openupgrade_assets(self, *, require_framework: bool = True) -> tuple[list[Path], Path | None]:
         addons_paths = self._resolve_addons_paths()
         scripts_paths: list[Path] = []
         explicit_scripts_path: Path | None = self.local.openupgrade_scripts_path
@@ -2662,7 +2662,7 @@ with registry.cursor() as cr:
                 "OpenUpgrade scripts not found. Ensure openupgrade_scripts is in the addons path "
                 "or available under an OpenUpgrade repo directory.",
             )
-        if framework_path is None:
+        if require_framework and framework_path is None:
             raise OdooRestorerError(
                 "OpenUpgrade framework not found. Ensure openupgrade_framework is in the addons path.",
             )
@@ -2680,7 +2680,15 @@ with registry.cursor() as cr:
                 module_names.append(entry.name)
         return sorted(module_names)
 
+    def _openupgrade_target_version(self) -> str:
+        return (self.local.openupgrade_target_version or self.local.odoo_version or "").strip()
+
+    def _is_native_20_upgrade(self) -> bool:
+        return self._openupgrade_target_version().split(".", 1)[0] == "20"
+
     def reset_openupgrade_versions(self) -> list[str]:
+        if self._is_native_20_upgrade():
+            raise OdooRestorerError("Native Odoo 20 upgrades preserve installed module versions; omit --reset-versions.")
         scripts_paths, _ = self._resolve_openupgrade_assets()
         module_names: list[str] = []
         for scripts_path in scripts_paths:
@@ -2711,8 +2719,9 @@ with registry.cursor() as cr:
         if not self.local.openupgrade_enabled:
             return
 
-        scripts_paths, _ = self._resolve_openupgrade_assets()
-        target_version = (self.local.openupgrade_target_version or self.local.odoo_version or "").strip()
+        target_version = self._openupgrade_target_version()
+        native_20 = self._is_native_20_upgrade()
+        scripts_paths, _ = self._resolve_openupgrade_assets(require_framework=not native_20)
         if target_version:
             self.os_env["OPENUPGRADE_TARGET_VERSION"] = target_version
 
@@ -2729,10 +2738,13 @@ with registry.cursor() as cr:
             "--update",
             "all",
             "--load",
-            "base,web,openupgrade_framework",
+            "base,web" if native_20 else "base,web,openupgrade_framework",
             "--upgrade-path",
             ",".join(str(path) for path in scripts_paths),
         ]
+        if native_20:
+            reference_script = Path(__file__).with_name("prepare_core_references_20.py")
+            cmd_parts += ["--pre-upgrade-scripts", shlex.quote(str(reference_script))]
         cmd_parts += self._odoo_runtime_connection_flags()
 
         generated_config_path = "/volumes/config/_generated.conf"
@@ -2750,7 +2762,7 @@ with registry.cursor() as cr:
             self._reset_db_connection()
 
     def _should_refresh_website_after_openupgrade(self) -> bool:
-        target_version = (self.local.openupgrade_target_version or self.local.odoo_version or "").strip()
+        target_version = self._openupgrade_target_version()
         if not target_version:
             return False
         major_version = target_version.split(".", 1)[0]
