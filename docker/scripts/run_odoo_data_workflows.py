@@ -2192,7 +2192,7 @@ with registry.cursor() as cr:
         # database, then explicitly construct the updating registry exactly once.
         command.append("--database=")
         command += ["--max-cron-threads=0"]
-        if self.local.openupgrade_enabled:
+        if self.local.openupgrade_enabled and not self._is_native_20_upgrade():
             command += ["--load", "base,web,openupgrade_framework"]
         if resolved["install_modules"]:
             command += ["-i", ",".join(resolved["install_modules"])]
@@ -2604,7 +2604,7 @@ with registry.cursor() as cr:
             "--no-http",
         ]
         cmd_parts += self._odoo_runtime_connection_flags()
-        if self.local.openupgrade_enabled:
+        if self.local.openupgrade_enabled and not self._is_native_20_upgrade():
             cmd_parts += ["--load", "base,web,openupgrade_framework"]
         if to_install:
             cmd_parts += ["-i", ",".join(to_install)]

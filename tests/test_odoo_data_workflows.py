@@ -652,6 +652,64 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
                 else:
                     run_command.assert_not_called()
 
+    def test_module_maintenance_loads_framework_only_for_legacy_upgrade_targets(self) -> None:
+        for target, runtime, legacy in (("19.0", "20.0", True), ("20.0", "19.0", False), (None, "20.0", False)):
+            with self.subTest(target=target, runtime=runtime):
+                settings = self._local_settings()
+                settings.openupgrade_enabled = True
+                settings.openupgrade_target_version = target
+                settings.odoo_version = runtime
+                runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
+                connection = MagicMock()
+                connection.cursor.return_value.__enter__.return_value.fetchall.return_value = [("cm_website", "installed")]
+                runner.local.db_conn = connection
+                with patch.object(runner, "run_command") as run_command:
+                    runner._apply_module_updates(
+                        ["cm_website"],
+                        modules_source_label="test",
+                        local_module_paths={"cm_website": Path("/addons/cm_website")},
+                    )
+                command = shlex.split(run_command.call_args.args[0])
+                modules = command[command.index("--load") + 1].split(",") if "--load" in command else []
+                self.assertEqual("openupgrade_framework" in modules, legacy)
+                self.assertIsNone(runner.local.db_conn)
+
+    def test_planned_maintenance_selects_legacy_framework_after_credential_fence(self) -> None:
+        events: list[str] = []
+        for target, runtime, legacy in (("19.0", "20.0", True), ("20.0", "19.0", False), (None, "20.0", False)):
+            with self.subTest(target=target, runtime=runtime):
+                events.clear()
+                settings = self._local_settings()
+                settings.openupgrade_enabled = True
+                settings.openupgrade_target_version = target
+                settings.odoo_version = runtime
+                runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
+                resolved = {"install_modules": [], "update_modules": ["cm_website"]}
+
+                def fail_process(command: list[str], **_kwargs: Any) -> None:
+                    self.assertEqual(events, ["credentials", "preflight"])
+                    raise subprocess.CalledProcessError(1, command)
+
+                with (
+                    patch.object(
+                        odoo_data_workflows, "load_plan", return_value={"candidate_manifest": {"release_compatibility": {}}}
+                    ),
+                    patch.object(odoo_data_workflows, "verify_image_declaration"),
+                    patch.object(odoo_data_workflows, "resolve_plan", return_value=resolved),
+                    patch.object(runner, "_module_states_by_name", return_value={}),
+                    patch.object(runner, "release_module_graph", return_value={}),
+                    patch.object(runner, "module_update_witnesses", return_value={}),
+                    patch.object(runner, "prepare_credentials_before_registry", side_effect=lambda: events.append("credentials")),
+                    patch.object(runner, "_ensure_odoo_shell_preflight", side_effect=lambda: events.append("preflight")),
+                    patch.object(runner, "_odoo_shell_command", return_value=["odoo", "shell", "-d", settings.db_name]),
+                    patch.object(odoo_data_workflows.subprocess, "run", side_effect=fail_process) as run_process,
+                ):
+                    with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
+                        runner.run_planned_post_deploy_maintenance(Path("/fixture/plan.json"))
+                command = run_process.call_args.args[0]
+                modules = command[command.index("--load") + 1].split(",") if "--load" in command else []
+                self.assertEqual("openupgrade_framework" in modules, legacy)
+
     def test_module_update_releases_metadata_connection_before_odoo_command(self) -> None:
         runner = odoo_data_workflows.OdooDataWorkflowRunner(self._local_settings(), upstream=None, env_file=None)
         connection = MagicMock()

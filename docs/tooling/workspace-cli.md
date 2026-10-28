@@ -606,7 +606,8 @@ Notes
   uses native `base,web` loading and selects its SQL-only
   `prepare_core_references_20.py` with native `--pre-upgrade-scripts`.
   It retains the discovered upgrade roots; it does not load the Odoo 19
-  OpenUpgrade framework or reset module states or versions. Other targets
+  OpenUpgrade framework or reset module states or versions. Subsequent addon
+  maintenance and release-plan shells also skip that framework. Other targets
   retain their existing OpenUpgrade selection. Native 20 rejects
   `--reset-versions` before asset discovery or database access; run it without
   that flag to preserve the installed versions.
