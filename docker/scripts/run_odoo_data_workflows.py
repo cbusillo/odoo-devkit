@@ -2715,6 +2715,7 @@ with registry.cursor() as cr:
         target_version = (self.local.openupgrade_target_version or self.local.odoo_version or "").strip()
         if target_version:
             self.os_env["OPENUPGRADE_TARGET_VERSION"] = target_version
+        native_20 = target_version.split(".", 1)[0] == "20"
 
         odoo_bin = "/odoo/odoo-bin"
         if not Path(odoo_bin).exists():
@@ -2729,10 +2730,13 @@ with registry.cursor() as cr:
             "--update",
             "all",
             "--load",
-            "base,web,openupgrade_framework",
+            "base,web" if native_20 else "base,web,openupgrade_framework",
             "--upgrade-path",
             ",".join(str(path) for path in scripts_paths),
         ]
+        if native_20:
+            reference_script = Path(__file__).with_name("prepare_core_references_20.py")
+            cmd_parts += ["--pre-upgrade-scripts", shlex.quote(str(reference_script))]
         cmd_parts += self._odoo_runtime_connection_flags()
 
         generated_config_path = "/volumes/config/_generated.conf"
