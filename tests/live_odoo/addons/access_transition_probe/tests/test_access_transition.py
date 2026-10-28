@@ -195,10 +195,13 @@ class TestAccessTransition(TransactionCase):
         self.assertEqual(observations(), baseline)
         zero = next(policy for policy in zeros if policy.groups == (internal.id,))
         target = records[zero.source_model, zero.identifier]
-        with self.env.cr.savepoint() as checkpoint:
-            target.write({"domain": ""} if "ir.access" in self.env.registry else {"perm_read": True})
+        native_20 = "ir.access" in self.env.registry
+        original = {"domain": target.domain} if native_20 else {"perm_read": target.perm_read}
+        target.write({"domain": ""} if native_20 else {"perm_read": True})
+        try:
             self.assertTrue(self.decide("ungranted", "allowed", "read"))
-            checkpoint.rollback()
+        finally:
+            target.write(original)
         self.assertEqual(observations(), baseline)
 
     def test_inactive_global_rule_activation(self) -> None:
