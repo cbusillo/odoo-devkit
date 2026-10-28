@@ -629,27 +629,25 @@ Notes
   unsupported inheritance and absent, duplicate or mixed selectors refuse before
   any bridge write. Replay is unchanged. Account's later native update owns its
   full target architecture and validation; this step does not migrate bank data.
-  Before any bridge write, the access preflight inventories legacy ACLs, rules,
-  aliases, stored policy columns and rule-group references and lists unsupported policies. Every
-  nonempty 19 crossing currently refuses until native policy application and
-  reference preservation are qualified. Resolve reported policies through an explicit native mapping and
-  the native rights oracle, preserving their records and references. Deleting
-  a policy or resetting module metadata is not a supported workaround.
-  Planned grouped conversions retain frozen sibling dependencies. Later sibling,
-  domain, checkbox and group-deletion changes require their own native review;
-  current qualification does not establish preservation through those changes.
-  Unknown stored columns refuse with their names; policy and alias audit fields,
-  nullable protection flags and the stored global-rule flag remain in the inventory.
-  The native base end script checks surviving legacy policies, aliases,
-  rule-group edges and the verified cleanup consumers: related fields, actions,
-  attachments and mail records. It is a final tripwire, after native module
-  commits. The shared SQL preparation also checks this residue before any
-  native registry starts on an already-20 database; a partially upgraded
-  database must be restored from its original, not resumed. A clean native 20
-  replay makes no bridge writes. Earlier reference and bank
-  qualification does not qualify this combined access crossing. Security conversion,
-  later cleanup, tenant hooks and a completed major-version migration need their
-  own proof.
+  Before any bridge write, the access preflight inventories legacy policies,
+  aliases, audit/protection/global metadata and rule-group edges. Unknown stored
+  columns and unsupported conversions refuse with their identities. Every
+  nonempty 19 crossing currently refuses until native application and reference
+  preservation are qualified. An explicit native mapping and rights oracle must
+  preserve the records and references; deleting policies or resetting module
+  metadata is not a workaround. Grouped plans retain frozen sibling dependencies,
+  without qualifying later sibling, domain, checkbox or group-deletion changes.
+  The base end script is a final tripwire after module commits. It lists residue,
+  related reflection, catalog-discovered incoming FKs to retired models/fields/views
+  regardless of delete action, and the verified model-name cleanup consumers.
+  Full installed ORM and serialized-reference coverage still needs qualification.
+  Workflow SQL preparation guards partial native-20 schemas independently of the
+  base version string. Web/scheduler startup and local initialization use a shared
+  read-only preflight against the actual runtime major; older native runtimes and
+  absent databases retain their normal path. Explicit native upgrade still owns
+  the 19 pre-upgrade crossing. Restore a partial 20 database from its original;
+  a clean 20 replay makes no bridge writes. Earlier bank/reference proof does not
+  qualify policy application, later cleanup, tenant hooks or a complete migration.
   This selection does not replace the restored-copy credential boundary or
   authorize a Client data run.
 - Before post-deploy maintenance, update-only work or any restored-copy Odoo

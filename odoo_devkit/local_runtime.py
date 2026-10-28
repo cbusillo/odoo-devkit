@@ -1095,6 +1095,12 @@ def run_init_workflow(*, manifest: WorkspaceManifest, runtime_repo_path: Path) -
             runtime_repo_path=runtime_repo_path,
             runtime_env_file=runtime_env_file,
             container_service="script-runner",
+            container_command=with_odoo_database_password(["python3", "/volumes/scripts/prepare_core_references_20.py"]),
+        )
+        compose_exec(
+            runtime_repo_path=runtime_repo_path,
+            runtime_env_file=runtime_env_file,
+            container_service="script-runner",
             container_command=with_odoo_database_password(init_command),
         )
         apply_admin_password_if_configured(

@@ -26,6 +26,7 @@ import psycopg2
 from odoo_addon_paths import expand_addon_paths
 from odoo_admin_password import validate_admin_password
 from odoo_website_settings import PRODUCTION_INSTANCE_NAMES
+from prepare_core_references_20 import prepare_native_access_startup
 
 RUNTIME_OPTION_MAP: tuple[tuple[str, str], ...] = (
     ("ODOO_PROXY_MODE", "proxy_mode"),
@@ -537,6 +538,16 @@ def _run_initialization_if_needed(settings: StartupSettings) -> None:
         raise RuntimeError(f"Database initialization did not install required modules: {','.join(remaining_modules)}")
 
 
+def _assert_native_access_startup(settings: StartupSettings) -> None:
+    prepare_native_access_startup(
+        database=settings.database_name,
+        host=settings.database_host,
+        port=settings.database_port,
+        user=settings.database_user,
+        password=settings.database_password,
+    )
+
+
 def _wait_for_data_workflow_lock(settings: StartupSettings) -> None:
     if not settings.data_workflow_lock_file:
         return
@@ -576,6 +587,7 @@ def _launch_scheduler(settings: StartupSettings, arguments: argparse.Namespace) 
     _wait_for_database(settings)
     _wait_for_data_workflow_lock(settings)
     _require_scheduler_ready(arguments)
+    _assert_native_access_startup(settings)
     command = _build_odoo_command(settings, stop_after_init=False)
     command.extend(["--no-http", "--workers=0", "--max-cron-threads=1"])
     os.execve(command[0], command, _odoo_environment(settings))
@@ -591,6 +603,7 @@ def main() -> None:
     _write_runtime_config(settings)
     _wait_for_database(settings)
     _wait_for_data_workflow_lock(settings)
+    _assert_native_access_startup(settings)
     _sync_python_dependencies_if_needed(settings)
     _run_initialization_if_needed(settings)
     _apply_environment_overrides_if_available(settings)

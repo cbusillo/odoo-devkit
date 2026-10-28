@@ -3137,6 +3137,26 @@ sources = [
             self.assertTrue(any("/volumes/scripts/run_openupgrade.py" in command for command in commands))
             self.assertTrue(any(command[-4:] == ["up", "-d", "--no-build", "web"] for command in commands))
 
+    def test_local_init_stops_before_native_process_when_access_preflight_refuses(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tenant, runtime = root / "tenant", root / "runtime"
+            tenant.mkdir()
+            self._write_runtime_repo(runtime)
+            manifest = load_workspace_manifest(self._write_manifest(tenant_repo_path=tenant, runtime_repo_path=runtime))
+            with contextlib.redirect_stdout(io.StringIO()):
+                run_native_runtime_select(manifest=manifest)
+
+            def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+                if "/volumes/scripts/prepare_core_references_20.py" in command:
+                    return subprocess.CompletedProcess(command, 1, stdout="", stderr="Unmapped access reference")
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            with mock.patch.object(local_runtime.subprocess, "run", side_effect=run) as process:
+                with self.assertRaises(ValueError), contextlib.redirect_stdout(io.StringIO()):
+                    run_native_runtime_workflow(manifest=manifest, workflow="init")
+            self.assertFalse(any("/odoo/odoo-bin" in call.args[0] for call in process.call_args_list))
+
     def test_native_runtime_workflow_runs_update_natively_for_local_instance(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)
@@ -3687,7 +3707,7 @@ sources = [
                         self.assertEqual(forwarded_input, input_script)
                         if name == "psql":
                             self.assertEqual(arguments[-3:], ["-c", "select 'quoted value'", "--set=name=$literal"])
-                        elif name == "init":
+                        elif name == "init" and "/odoo/odoo-bin" in arguments:
                             self.assertIn("--stop-after-init", arguments)
                             self.assertIn(context.selection.database_name, arguments)
                         elif name == "admin":

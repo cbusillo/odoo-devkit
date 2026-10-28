@@ -656,6 +656,7 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
         "_write_runtime_config",
         "_wait_for_database",
         "_wait_for_data_workflow_lock",
+        "_assert_native_access_startup",
         "_sync_python_dependencies_if_needed",
         "_run_initialization_if_needed",
         "_apply_environment_overrides_if_available",
@@ -710,6 +711,27 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
             self._run_main(self._settings(platform_instance="testing"), recorder)
 
         self.assertEqual([recorded_call[0] for recorded_call in recorder.mock_calls], ["_enforce_public_credential_preflight"])
+
+    def test_native_access_refusal_stops_web_and_scheduler_before_any_registry_child(self) -> None:
+        for scheduler in (False, True):
+            with self.subTest(scheduler=scheduler), ExitStack() as stack:
+                recorder = MagicMock()
+                failure = RuntimeError("Unmapped access reference")
+                recorder._assert_native_access_startup.side_effect = failure
+                arguments = argparse.Namespace(scheduler=scheduler)
+                stack.enter_context(patch.object(odoo_startup, "_parse_arguments", return_value=arguments))
+                stack.enter_context(patch.object(odoo_startup, "_load_settings", return_value=self._settings()))
+                stack.enter_context(patch.object(odoo_startup, "_require_scheduler_ready"))
+                for name in dict.fromkeys((*self._STARTUP_STEP_NAMES, "_assert_native_access_startup")):
+                    stack.enter_context(patch.object(odoo_startup, name, getattr(recorder, name), create=True))
+                stack.enter_context(patch.object(odoo_startup.os, "execve", recorder.execve))
+                with self.assertRaises(RuntimeError) as refused:
+                    odoo_startup.main()
+                self.assertIs(refused.exception, failure)
+                recorder._run_initialization_if_needed.assert_not_called()
+                recorder._apply_environment_overrides_if_available.assert_not_called()
+                recorder._apply_admin_password_if_configured.assert_not_called()
+                recorder.execve.assert_not_called()
 
     def test_scheduler_requires_committed_marker_and_never_repeats_startup_writes(self) -> None:
         with TemporaryDirectory() as directory:

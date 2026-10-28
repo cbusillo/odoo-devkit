@@ -4,11 +4,13 @@ import importlib.util
 import json
 import runpy
 import sqlite3
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / "docker" / "scripts" / "prepare_core_references_20.py"
 spec = importlib.util.spec_from_file_location("core_references_20", SCRIPT)
@@ -273,6 +275,18 @@ class CoreReferenceTests(unittest.TestCase):
         self.assertIn("ir.rule:14", str(refusal.exception))
         self.assertEqual(self.snapshot(), before)
 
+    def test_native_access_schema_fences_residue_despite_a_legacy_or_saas_base_version(self) -> None:
+        self.connection.execute("CREATE TABLE ir_access (id INTEGER PRIMARY KEY)")
+        self.xmlid("fixture", "retained_rule", "ir.rule", 14, True)
+        for version in ("19.0.1.0", "saas~20.0.1.0", "20.0.1.0"):
+            with self.subTest(version=version):
+                self.connection.execute("INSERT OR REPLACE INTO ir_module_module VALUES ('base','installed',?)", (version,))
+                before = list(self.connection.iterdump())
+                with self.assertRaises(RuntimeError) as refusal:
+                    bridge.ensure_native_access_replay(self.cursor)
+                self.assertIn("fixture.retained_rule", str(refusal.exception))
+                self.assertEqual(list(self.connection.iterdump()), before)
+
     def test_cleanup_guard_keeps_aliases_even_without_legacy_tables(self) -> None:
         self.xmlid("fixture", "retained_rule", "ir.rule", 14, True)
         self.connection.execute("DROP TABLE ir_model_access")
@@ -372,6 +386,40 @@ class CoreReferenceTests(unittest.TestCase):
             bridge.ensure_no_legacy_access_residue(self.cursor)
         self.assertIn("base.model_ir_rule", str(refusal.exception))
         self.assertEqual(self.snapshot(), before)
+
+    def test_actual_runtime_startup_preserves_normal_legacy_and_fresh_paths_but_refuses_partial_twenty(self) -> None:
+        cases = (
+            (18, True, True),
+            (19, True, True),
+            (20, False, False),
+            (20, True, False),
+            (20, True, True),
+            ("unknown", True, False),
+        )
+        for major, database_exists, legacy in cases:
+            with self.subTest(major=major, database_exists=database_exists, legacy=legacy):
+                self.connection.execute("SAVEPOINT startup")
+                if legacy:
+                    self.connection.execute("INSERT INTO ir_model VALUES (31,'ir.rule')")
+                    self.xmlid("fixture", "retained_rule", "ir.rule", 14, True)
+                before = self.snapshot()
+                server, connection = MagicMock(), MagicMock()
+                server.cursor.return_value.__enter__.return_value.fetchone.return_value = (1,) if database_exists else None
+                connection.cursor.return_value.__enter__.return_value = self.cursor
+                postgres = SimpleNamespace(connect=MagicMock(side_effect=(server, connection)))
+                odoo = SimpleNamespace(release=SimpleNamespace(version_info=(major,)))
+                with patch.dict(sys.modules, {"psycopg2": postgres, "odoo": odoo}):
+                    arguments = dict(database="fixture", host="db", port=5432, user="fixture", password="synthetic")
+                    if type(major) is not int or (major >= 20 and database_exists and legacy):
+                        with self.assertRaises(RuntimeError):
+                            bridge.prepare_native_access_startup(**arguments)
+                    else:
+                        bridge.prepare_native_access_startup(**arguments)
+                if type(major) is int and major < 20:
+                    postgres.connect.assert_not_called()
+                self.assertEqual(self.snapshot(), before)
+                self.connection.execute("ROLLBACK TO startup")
+                self.connection.execute("RELEASE startup")
 
     def test_native_end_hook_refuses_before_legacy_alias_cleanup(self) -> None:
         self.xmlid("__custom__", "retained_rule", "ir.rule", 14, True)

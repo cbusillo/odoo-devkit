@@ -2,6 +2,8 @@ import ast
 import csv
 import json
 import logging
+import os
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -64,6 +66,28 @@ class NativeAccess(NamedTuple):
 class AccessPlan(NamedTuple):
     converted: tuple[NativeAccess, ...]
     source_owned: tuple[AccessPolicy, ...]
+
+
+def prepare_native_access_startup(*, database: str, host: str, port: int, user: str, password: str) -> None:
+    import psycopg2
+    from odoo import release
+
+    major = release.version_info[0]
+    if type(major) is not int or major < 1:
+        raise RuntimeError(f"Unsupported native access startup runtime: {major}")
+    if major < 20:
+        return
+    connection_values = {"host": host, "port": port, "user": user, "password": password}
+    with closing(psycopg2.connect(dbname="postgres", **connection_values)) as server:
+        server.set_session(readonly=True)
+        with server.cursor() as cursor:
+            cursor.execute("SELECT 1 FROM pg_database WHERE datname = %s", (database,))
+            if cursor.fetchone() is None:
+                return
+    with closing(psycopg2.connect(dbname=database, **connection_values)) as connection:
+        connection.set_session(readonly=True)
+        with connection.cursor() as cursor:
+            ensure_no_legacy_access_residue(cursor)
 
 
 def ensure_supported_policy_columns(cr: Any) -> None:
@@ -171,8 +195,9 @@ def _policy_label(policy: AccessPolicy) -> str:
 
 
 def ensure_native_access_replay(cr: Any) -> None:
-    cr.execute("SELECT to_regclass('ir_module_module')")
-    if cr.fetchone()[0]:
+    cr.execute("SELECT to_regclass('ir_access'), to_regclass('ir_module_module')")
+    native_access, modules = cr.fetchone()
+    if not native_access and modules:
         cr.execute("SELECT latest_version FROM ir_module_module WHERE name = 'base'")
         installed = cr.fetchone()
         if installed and installed[0] and installed[0].split(".", 1)[0] != "20":
@@ -585,3 +610,13 @@ def migrate(cr: Any, version: str | None) -> None:
         record_id, architectures = bank_form
         cr.execute("UPDATE ir_ui_view SET arch_db = %s::jsonb WHERE id = %s", (json.dumps(architectures), record_id))
         _logger.info("Retargeted account.view_partner_bank_form_inherit_account on preserved ir.ui.view row %s", record_id)
+
+
+if __name__ == "__main__":
+    prepare_native_access_startup(
+        database=os.environ["ODOO_DB_NAME"],
+        host=os.environ.get("ODOO_DB_HOST", "database"),
+        port=int(os.environ.get("ODOO_DB_PORT", "5432")),
+        user=os.environ.get("ODOO_DB_USER", "odoo"),
+        password=os.environ.get("ODOO_DB_PASSWORD", ""),
+    )
