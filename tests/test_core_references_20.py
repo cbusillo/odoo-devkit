@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import runpy
 import sqlite3
 import sys
@@ -48,14 +49,15 @@ class Cursor:
                         + table.replace('"', '""')
                         + '" WHERE "'
                         + foreign_key[3].replace('"', '""')
-                        + '" IN (SELECT value FROM json_each(?))'
+                        + '" IN (SELECT value FROM json_each(%s))'
                     )
                     references.append((table, name, 1, 1, foreign_key[4], selection))
             if not references:
                 return self.cursor.execute("SELECT NULL,NULL,NULL,NULL,NULL,NULL WHERE 0")
             return self.cursor.execute(" UNION ALL ".join("SELECT ?,?,?,?,?,?" for _ in references), sum(references, ()))
-        if "json_each(?)" in query:
-            return self.cursor.execute(query, (json.dumps(parameters[0]),))
+        if "json_each(" in query:
+            translated = re.sub(r"%%|%s", lambda match: "%" if match[0] == "%%" else "?", query)
+            return self.cursor.execute(translated, (json.dumps(parameters[0]),))
         if "FROM pg_attribute" in query:
             columns = [
                 (table, row[1])
@@ -366,14 +368,14 @@ class CoreReferenceTests(unittest.TestCase):
                 with self.subTest(table=table, delete_action=delete_action):
                     self.connection.execute("SAVEPOINT consumer")
                     self.connection.execute(
-                        "CREATE TABLE third_party_reference (id INTEGER PRIMARY KEY, target INTEGER "
+                        'CREATE TABLE "third_party%source_reference" (id INTEGER PRIMARY KEY, target INTEGER '
                         "REFERENCES " + table + "(id) ON DELETE " + delete_action + ")"
                     )
-                    self.connection.execute("INSERT INTO third_party_reference VALUES (23,?)", (identifier,))
+                    self.connection.execute('INSERT INTO "third_party%source_reference" VALUES (23,?)', (identifier,))
                     before = list(self.connection.iterdump())
                     with self.assertRaises(RuntimeError) as refusal:
                         bridge.ensure_no_legacy_access_residue(self.cursor)
-                    self.assertIn("third_party_reference:23", str(refusal.exception))
+                    self.assertIn("third_party%source_reference:23", str(refusal.exception))
                     self.assertEqual(list(self.connection.iterdump()), before)
                     self.connection.execute("ROLLBACK TO consumer")
                     self.connection.execute("RELEASE consumer")

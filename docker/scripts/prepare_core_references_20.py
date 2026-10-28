@@ -247,7 +247,8 @@ def read_incoming_cleanup_references(cr: Any) -> tuple[str, ...]:
             if source_count != 1 or target_count != 1 or column != "id":
                 consumers.append(f"{source} ({constraint}; unsupported composite or non-id reference to {table})")
                 continue
-            cr.execute(selection, (identifiers,))
+            selection_prefix, selection_suffix = selection.rsplit("%s", 1)
+            cr.execute(selection_prefix.replace("%", "%%") + "%s" + selection_suffix, (identifiers,))
             count, affected = cr.fetchone()
             if count:
                 consumers.extend(f"{source}:{identifier} ({constraint}; references {table})" for identifier in affected)

@@ -453,15 +453,15 @@ class TestAccessTransition(TransactionCase):
         self.env.flush_all()
         with self.assertRaises(RevertOperation), self.env.cr.savepoint():
             self.env.cr.execute(
-                "CREATE TABLE access_transition_reference (id INTEGER PRIMARY KEY, "
+                'CREATE TABLE "access%transition_reference" (id INTEGER PRIMARY KEY, '
                 "target INTEGER REFERENCES ir_model(id) ON DELETE SET NULL)"
             )
-            self.env.cr.execute("INSERT INTO access_transition_reference VALUES (14, %s)", (legacy.id,))
-            self.env.cr.execute("SELECT * FROM access_transition_reference")
+            self.env.cr.execute('INSERT INTO "access%%transition_reference" VALUES (14, %s)', (legacy.id,))
+            self.env.cr.execute('SELECT * FROM "access%transition_reference"')
             before = self.env.cr.fetchall()
             with self.assertRaises(RuntimeError) as refusal:
                 bridge.ensure_no_legacy_access_residue(self.env.cr)
-            self.assertIn("access_transition_reference:14", str(refusal.exception))
-            self.env.cr.execute("SELECT * FROM access_transition_reference")
+            self.assertIn("access%transition_reference:14", str(refusal.exception))
+            self.env.cr.execute('SELECT * FROM "access%transition_reference"')
             self.assertEqual(self.env.cr.fetchall(), before)
             raise RevertOperation
