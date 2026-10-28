@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import prepare_core_references_20 as bridge
-from odoo import Command
+from odoo import SUPERUSER_ID, Command
 from odoo.exceptions import AccessError
 from odoo.tests import tagged
 from odoo.tests.common import TransactionCase
@@ -103,7 +103,7 @@ class TestAccessTransition(TransactionCase):
             .with_context(allowed_company_ids=self.companies.ids if both_companies else self.companies[0].ids)
         )
         self.assertFalse(model.env.su)
-        self.assertNotEqual(model.env.uid, 1)
+        self.assertNotEqual(model.env.uid, SUPERUSER_ID)
         target = model.browse(self.records[record_name].id)
         try:
             with self.env.cr.savepoint():
@@ -185,36 +185,66 @@ class TestAccessTransition(TransactionCase):
             identifier=32,
             name="Writer open records",
             groups=(self.groups["writer"].id,),
-            domain="[('marker','!=','reader_only'), ('marker','!=','blocked')]",
+            domain="\n  [('marker','!=','reader_only'), ('marker','!=','blocked')]\n",
         )
-        inactive = self.source[0]._replace(identifier=33, name="Retained inactive update", operation="u", active=False)
-        records = self.install_policies((self.source[0], self.source[1], *self.source[-2:], reader, writer, inactive))
         for name, role in (("reader_own", "reader"), ("combined_own", "combined")):
             self.records[name] = self.env[MODEL].create(
                 {"name": name, "user_id": self.users[role].id, "company_id": self.companies[0].id, "marker": "reader_only"}
             )
-        visible = {"reader": {"reader_own"}, "writer": {"allowed"}, "combined": {"allowed", "combined_own"}}
-        for role in self.users:
-            for name in self.records:
-                for operation in ("read", "search", "write", "unlink", "create"):
-                    expected = name in visible.get(role, set())
-                    if operation not in {"read", "search"}:
-                        expected = expected and role in {"writer", "combined"}
-                    if operation == "create":
-                        expected = role in {"writer", "combined"} and name not in {"blocked", "other_company"}
-                        expected = expected and (role == "combined" or name == "allowed")
-                    with self.subTest(role=role, record=name, operation=operation):
-                        self.assertEqual(self.decide(role, name, operation), expected)
-        self.assertFalse(self.decide("reader", "reader_own", "write"))
-        records[(inactive.source_model, inactive.identifier)].write({"active": True})
-        self.assertTrue(self.decide("reader", "reader_own", "write"))
+        for unrestricted in (False, True):
+            with self.env.cr.savepoint() as scenario:
+                sibling = writer._replace(domain="[]") if unrestricted else writer
+                self.install_policies(
+                    (self.source[0]._replace(operation="crud"), self.source[1], *self.source[-2:], reader, sibling)
+                )
+                visible = {"reader": {"reader_own"}, "writer": {"allowed"}, "combined": {"allowed", "combined_own"}}
+                if unrestricted:
+                    for role in ("writer", "combined"):
+                        visible[role] = {"allowed", "reader_own", "combined_own"}
+                for role in self.users:
+                    for name in self.records:
+                        for operation in ("read", "search", "write", "unlink", "create"):
+                            expected = name in visible.get(role, set())
+                            if operation == "create":
+                                expected = role in {"reader", "writer", "combined"} and name not in {"blocked", "other_company"}
+                                expected = expected and (role != "writer" or unrestricted or name == "allowed")
+                            with self.subTest(unrestricted=unrestricted, role=role, record=name, operation=operation):
+                                self.assertEqual(self.decide(role, name, operation), expected)
+                group_field = "group_ids" if "group_ids" in self.users["combined"]._fields else "groups_id"
+                self.users["combined"].write({group_field: [Command.unlink(self.groups["reader"].id)]})
+                self.assertTrue(self.decide("combined", "allowed", "read"))
+                self.assertEqual(self.decide("combined", "combined_own", "read"), unrestricted)
+                self.users["combined"].write({group_field: [Command.link(self.groups["reader"].id)]})
+                self.assertTrue(self.decide("combined", "combined_own", "read"))
+                scenario.rollback()
+
+    def test_read_grouped_union_does_not_restrict_reactivated_write_acl(self) -> None:
+        reader = bridge.AccessPolicy(
+            "ir.rule",
+            31,
+            "Reader own records",
+            MODEL,
+            (self.groups["reader"].id,),
+            "r",
+            "[('user_id','=',user.id)]",
+            True,
+            (),
+            (),
+            False,
+        )
+        writer = reader._replace(identifier=32, groups=(self.groups["writer"].id,), domain="[('marker','!=','blocked')]")
+        inactive = self.source[0]._replace(identifier=33, name="Retained inactive update", operation="u", active=False)
+        records = self.install_policies(
+            (self.source[0], self.source[1]._replace(operation="r"), *self.source[-2:], reader, writer, inactive)
+        )
+        self.assertFalse(self.decide("reader", "allowed", "read"))
         self.assertFalse(self.decide("reader", "allowed", "write"))
-        group_field = "group_ids" if "group_ids" in self.users["combined"]._fields else "groups_id"
-        self.users["combined"].write({group_field: [Command.unlink(self.groups["reader"].id)]})
-        self.assertTrue(self.decide("combined", "allowed", "read"))
-        self.assertFalse(self.decide("combined", "combined_own", "read"))
-        self.users["combined"].write({group_field: [Command.link(self.groups["reader"].id)]})
-        self.assertTrue(self.decide("combined", "combined_own", "read"))
+        records[(inactive.source_model, inactive.identifier)].write({"active": True})
+        self.assertTrue(self.decide("reader", "allowed", "write"))
+        self.assertFalse(self.decide("reader", "allowed", "read"))
+        self.assertFalse(self.decide("reader", "blocked", "write"))
+        self.assertFalse(self.decide("reader", "other_company", "write"))
+        self.assertFalse(self.decide("writer", "allowed", "write"))
 
     def test_legacy_hook_refuses_grouped_policy_before_bridge_writes(self) -> None:
         if "ir.access" in self.env.registry:
@@ -237,28 +267,22 @@ class TestAccessTransition(TransactionCase):
                     "noupdate": True,
                 }
             )
-        for nonempty in (False, True):
-            if nonempty:
-                records[(empty.source_model, empty.identifier)].write({"perm_read": True})
-            self.env.flush_all()
-            self.env.cr.execute("SELECT id,module,name,model,res_id,noupdate FROM ir_model_data ORDER BY id")
-            aliases = self.env.cr.fetchall()
-            self.env.cr.execute("SELECT id,arch_db,arch_prev,arch_updated FROM ir_ui_view ORDER BY id")
-            views = self.env.cr.fetchall()
-            self.env.cr.execute("SELECT * FROM ir_model_access ORDER BY id")
-            access = self.env.cr.fetchall()
-            with self.assertRaises(RuntimeError) as refusal:
-                bridge.migrate(self.env.cr, "19.0.1.0")
-            if nonempty:
-                self.assertIn("access_transition_fixture.retained_rule", str(refusal.exception))
-                self.assertIn("access_transition_probe.source_sibling", str(refusal.exception))
-            self.assertIn("access_transition_probe.source_no_operations", str(refusal.exception))
-            self.env.cr.execute("SELECT id,module,name,model,res_id,noupdate FROM ir_model_data ORDER BY id")
-            self.assertEqual(self.env.cr.fetchall(), aliases)
-            self.env.cr.execute("SELECT id,arch_db,arch_prev,arch_updated FROM ir_ui_view ORDER BY id")
-            self.assertEqual(self.env.cr.fetchall(), views)
-            self.env.cr.execute("SELECT * FROM ir_model_access ORDER BY id")
-            self.assertEqual(self.env.cr.fetchall(), access)
+        self.env.flush_all()
+        self.env.cr.execute("SELECT id,module,name,model,res_id,noupdate FROM ir_model_data ORDER BY id")
+        aliases = self.env.cr.fetchall()
+        self.env.cr.execute("SELECT id,arch_db,arch_prev,arch_updated FROM ir_ui_view ORDER BY id")
+        views = self.env.cr.fetchall()
+        self.env.cr.execute("SELECT * FROM ir_model_access ORDER BY id")
+        access = self.env.cr.fetchall()
+        with self.assertRaises(RuntimeError) as refusal:
+            bridge.migrate(self.env.cr, "19.0.1.0")
+        self.assertIn("access_transition_probe.source_no_operations", str(refusal.exception))
+        self.env.cr.execute("SELECT id,module,name,model,res_id,noupdate FROM ir_model_data ORDER BY id")
+        self.assertEqual(self.env.cr.fetchall(), aliases)
+        self.env.cr.execute("SELECT id,arch_db,arch_prev,arch_updated FROM ir_ui_view ORDER BY id")
+        self.assertEqual(self.env.cr.fetchall(), views)
+        self.env.cr.execute("SELECT * FROM ir_model_access ORDER BY id")
+        self.assertEqual(self.env.cr.fetchall(), access)
 
     def test_custom_acl_cannot_bypass_module_grouped_rule(self) -> None:
         reader_acl = self.source[0]._replace(source_owned=True)
@@ -312,6 +336,23 @@ class TestAccessTransition(TransactionCase):
             with self.subTest(active=active), self.assertRaises(RuntimeError):
                 bridge.plan_access_transition((reader_acl, grouped._replace(active=active), custom_acl))
 
+        custom_rule = grouped._replace(identifier=6, name="Data-only union", source_owned=False, domain="[]")
+        if "ir.access" in self.env.registry:
+            self.env["ir.access"].create(
+                {
+                    "name": custom_rule.name,
+                    "model_id": self.env["ir.model"]._get(MODEL).id,
+                    "operation": custom_rule.operation,
+                    "domain": "[]",
+                }
+            )
+            self.assertFalse(self.decide("combined", "allowed", "read"))
+        else:
+            self.install_policies((custom_rule,))
+            self.assertTrue(self.decide("combined", "allowed", "read"))
+        with self.assertRaises(RuntimeError):
+            bridge.plan_access_transition((reader_acl, grouped, custom_rule))
+
     def test_global_parent_rule_restricts_delegated_children(self) -> None:
         self.install_policies(self.source)
         model = self.env["access.transition.child"]
@@ -324,7 +365,7 @@ class TestAccessTransition(TransactionCase):
         children = {name: model.create({"parent_id": self.records[name].id}) for name in ("allowed", "blocked")}
         ordinary = model.with_user(self.users["writer"]).with_context(allowed_company_ids=self.companies[0].ids)
         self.assertFalse(ordinary.env.su)
-        self.assertNotEqual(ordinary.env.uid, 1)
+        self.assertNotEqual(ordinary.env.uid, SUPERUSER_ID)
         self.assertTrue(ordinary.browse(children["allowed"].id).read(["name"]))
         self.assertTrue(ordinary.search([("id", "=", children["allowed"].id)]))
         with self.assertRaises(AccessError):

@@ -142,7 +142,7 @@ def _membership(groups: tuple[int, ...]) -> str:
 
 
 def _domain_operand(policy: AccessPolicy) -> str:
-    expression = ast.parse(policy.domain or "[]", mode="eval").body
+    expression = ast.parse(policy.domain.strip() or "[]", mode="eval").body
     if not isinstance(expression, (ast.List, ast.Tuple)):
         raise ValueError(f"domain requires a literal sequence: {_policy_label(policy)}")
     if not expression.elts:
@@ -175,6 +175,28 @@ def _domain_operand(policy: AccessPolicy) -> str:
 def _compile_grouped_rule(policy: AccessPolicy, policies: tuple[AccessPolicy, ...]) -> NativeAccess:
     siblings = _grouped_siblings(policy, policies)
     dependencies = tuple(sorted((policy, *siblings), key=lambda item: item.identifier))
+    permissions = tuple(item for item in policies if item.source_model == "ir.model.access" and item.model == policy.model)
+    plain = tuple(
+        item
+        for item in permissions
+        if not item.source_owned
+        and item.active
+        and item.name
+        and not item.delegated_parents
+        and set(item.groups) & set(policy.groups)
+        and set(item.operation) & set(policy.operation)
+    )
+    uncovered = [
+        (group, operation)
+        for group in policy.groups
+        for operation in policy.operation
+        if not any(group in item.groups and operation in item.operation for item in plain)
+    ]
+    if uncovered:
+        related = "; ".join(_policy_label(item) for item in permissions)
+        raise ValueError(
+            f"grouped restriction lacks plain data-only permissions for {uncovered}; source permissions: {related or 'none'}"
+        )
     if siblings and any(not item.active for item in dependencies):
         raise ValueError("grouped policy activation interacts with a sibling")
     domains = set()
@@ -188,7 +210,7 @@ def _compile_grouped_rule(policy: AccessPolicy, policies: tuple[AccessPolicy, ..
         domains.add(f"(({expression}) if {_membership(policy.groups)} else [])")
     if len(domains) != 1:
         raise ValueError("grouped operations require different destination domains and cannot retain one policy row")
-    return NativeAccess(policy, None, policy.operation, domains.pop(), dependencies)
+    return NativeAccess(policy, None, policy.operation, domains.pop(), dependencies + plain)
 
 
 def plan_access_transition(policies: tuple[AccessPolicy, ...]) -> AccessPlan:

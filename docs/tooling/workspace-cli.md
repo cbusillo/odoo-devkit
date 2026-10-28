@@ -638,6 +638,10 @@ Notes
   as dependencies. Source-owned siblings stay with their source mapping; they do
   not become extra converted rows. Later sibling edits require explicit review
   of the converted policy because they do not update its frozen copies.
+  Each original group and operation also needs an active data-only plain
+  permission, recorded as a dependency. Source-owned domain permissions alone
+  could discard the extra branch allowed by the old union, so those mappings
+  refuse with their source permissions and siblings pending qualification.
   Activation interactions, operations needing different destination domains,
   unsupported domain sequence shapes and invalid group identities refuse with
   the source and sibling identities. Empty branches remain true and implicit

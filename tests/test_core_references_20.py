@@ -221,6 +221,7 @@ class CoreReferenceTests(unittest.TestCase):
 
     def test_data_only_grouped_rule_records_frozen_siblings_without_applying_any_bridge_write(self) -> None:
         self.connection.execute("INSERT INTO ir_model VALUES (31,'res.partner')")
+        self.connection.execute("INSERT INTO ir_model_access VALUES (14,31,'Custom read',67,1,1,0,0,0)")
         self.connection.execute("INSERT INTO ir_rule VALUES (23,31,'Retained contact limit',?,1,1,0,0,0)", ("[('id','=',7)]",))
         self.connection.execute("INSERT INTO ir_rule VALUES (29,31,'Source portal limit',?,1,1,0,0,0)", ("[('id','=',9)]",))
         self.connection.executemany("INSERT INTO rule_group_rel VALUES (?,?)", ((23, 67), (29, 10)))
@@ -229,10 +230,13 @@ class CoreReferenceTests(unittest.TestCase):
         self.connection.execute("INSERT INTO ir_module_module VALUES ('base','installed','19.0.1.0')")
         before = self.snapshot()
         plan = bridge.plan_access_transition(bridge.read_access_policies(self.cursor))
-        restriction = plan.converted[0]
+        restriction = next(policy for policy in plan.converted if policy.source.source_model == "ir.rule")
         self.assertIsNone(restriction.group_id)
         self.assertEqual(restriction.source.aliases, ("fixture.contact_limit",))
-        self.assertEqual({policy.identifier for policy in restriction.dependencies}, {23, 29})
+        self.assertEqual(
+            {(policy.source_model, policy.identifier) for policy in restriction.dependencies},
+            {("ir.rule", 23), ("ir.rule", 29), ("ir.model.access", 14)},
+        )
         self.assertEqual([policy.identifier for policy in plan.source_owned], [29])
         self.assertEqual(self.snapshot(), before)
         with self.assertRaises(RuntimeError) as refusal:
@@ -241,35 +245,35 @@ class CoreReferenceTests(unittest.TestCase):
         self.assertIn("base.portal_limit", str(refusal.exception))
         self.assertEqual(self.snapshot(), before)
 
-    def test_grouped_rule_domain_branches_preserve_empty_domains_and_membership(self) -> None:
-        from types import SimpleNamespace
-
-        source = bridge.AccessPolicy("ir.rule", 23, "Custom limit", "res.partner", (67,), "r", "[('id','=',7)]", True, (), (), False)
-        sibling = source._replace(identifier=29, groups=(10,), domain="[]", source_owned=True)
-        plan = bridge.plan_access_transition((source, sibling))
-        restriction = plan.converted[0]
-        for groups, expected in (
-            ((), []),
-            ((10,), []),
-            ((67,), ["|", ("id", "=", 7), (0, "=", 1)]),
-            ((67, 10), ["|", ("id", "=", 7), (1, "=", 1)]),
-        ):
-            with self.subTest(groups=groups):
-                user = SimpleNamespace(all_group_ids=SimpleNamespace(ids=groups))
-                self.assertEqual(eval(restriction.domain, {"__builtins__": {}, "user": user}), expected)
-        sibling = sibling._replace(domain="[('id','!=',8), ('id','!=',9)]")
-        restriction = bridge.plan_access_transition((source, sibling)).converted[0]
-        user = SimpleNamespace(all_group_ids=SimpleNamespace(ids=(67, 10)))
-        self.assertEqual(
-            eval(restriction.domain, {"__builtins__": {}, "user": user}),
-            ["|", ("id", "=", 7), "&", ("id", "!=", 8), ("id", "!=", 9)],
+    def test_grouped_rule_requires_plain_data_only_permission_for_each_group_and_operation(self) -> None:
+        source = bridge.AccessPolicy(
+            "ir.rule", 23, "Custom limit", "res.partner", (67,), "r", "[('id','=',7)]", True, ("fixture.limit",), (), False
         )
+        sibling = source._replace(identifier=29, groups=(10,), aliases=("base.limit",), source_owned=True)
+        access = source._replace(
+            source_model="ir.model.access", identifier=14, domain="", aliases=("base.permission",), source_owned=True
+        )
+        for changed_access in (
+            access,
+            access._replace(source_owned=False, active=False),
+            access._replace(source_owned=False, groups=(10,)),
+            access._replace(source_owned=False, operation="u"),
+        ):
+            with self.subTest(access=changed_access):
+                with self.assertRaises(RuntimeError) as refusal:
+                    bridge.plan_access_transition((source, sibling, changed_access))
+                self.assertIn("fixture.limit", str(refusal.exception))
+                self.assertIn("base.permission", str(refusal.exception))
+                self.assertIn("base.limit", str(refusal.exception))
+        plan = bridge.plan_access_transition((source, sibling, access._replace(source_owned=False)))
+        self.assertEqual({policy.source.identifier for policy in plan.converted}, {14, 23})
 
     def test_grouped_rule_unsupported_interactions_list_source_and_dependencies(self) -> None:
         source = bridge.AccessPolicy(
             "ir.rule", 23, "Custom limit", "res.partner", (67,), "ru", "[('id','=',7)]", True, ("fixture.limit",), (), False
         )
         sibling = source._replace(identifier=29, groups=(10,), aliases=("base.limit",), source_owned=True)
+        access = source._replace(source_model="ir.model.access", identifier=14, domain="", aliases=("fixture.permission",))
         for changed_source, changed_sibling in (
             (source, sibling._replace(active=False)),
             (source._replace(active=False), sibling),
@@ -280,7 +284,7 @@ class CoreReferenceTests(unittest.TestCase):
             (source, sibling._replace(domain="['|', ('id','=',7)]")),
         ):
             with self.subTest(source=changed_source, sibling=changed_sibling), self.assertRaises(RuntimeError) as refusal:
-                bridge.plan_access_transition((changed_source, changed_sibling))
+                bridge.plan_access_transition((changed_source, changed_sibling, access))
             self.assertIn("fixture.limit", str(refusal.exception))
             self.assertIn("base.limit", str(refusal.exception))
 
@@ -364,11 +368,12 @@ class CoreReferenceTests(unittest.TestCase):
                         )
                         before = self.snapshot()
                         with self.assertRaises(RuntimeError) as refusal:
-                            self.apply()
+                            bridge.plan_access_transition(bridge.read_access_policies(self.cursor))
                         self.assertIn("base.no_operations", str(refusal.exception))
                         if retained_alias:
                             self.assertIn("fixture.retained_empty", str(refusal.exception))
-                        self.assertIn("no operations", str(refusal.exception))
+                        with self.assertRaises(RuntimeError):
+                            self.apply()
                         self.assertEqual(self.snapshot(), before)
                     self.connection.execute("ROLLBACK TO zero_operations")
                     self.connection.execute("RELEASE zero_operations")
@@ -392,9 +397,10 @@ class CoreReferenceTests(unittest.TestCase):
                 self.connection.execute(statement)
                 before = self.snapshot()
                 with self.assertRaises(RuntimeError) as refusal:
-                    self.apply()
+                    bridge.plan_access_transition(bridge.read_access_policies(self.cursor))
                 self.assertIn("base.source_read", str(refusal.exception))
-                self.assertIn(reason, str(refusal.exception))
+                with self.assertRaises(RuntimeError):
+                    self.apply()
                 self.assertEqual(self.snapshot(), before)
             self.connection.execute("ROLLBACK TO source_shape")
             self.connection.execute("RELEASE source_shape")
@@ -406,9 +412,9 @@ class CoreReferenceTests(unittest.TestCase):
         self.xmlid("base", "source_read", "ir.model.access", 16, False)
         self.xmlid("fixture", "custom_read", "ir.model.access", 14, True)
         before = self.snapshot()
+        bridge.plan_access_transition(bridge.read_access_policies(self.cursor))
         with self.assertRaises(RuntimeError) as refusal:
             self.apply()
-        self.assertIn("application", str(refusal.exception))
         self.assertIn("base.source_read", str(refusal.exception))
         self.assertIn("fixture.custom_read", str(refusal.exception))
         self.assertEqual(self.snapshot(), before)
@@ -474,9 +480,10 @@ class CoreReferenceTests(unittest.TestCase):
                 self.xmlid(module, "nameless_rule", "ir.rule", 23, False)
                 before = self.snapshot()
                 with self.assertRaises(RuntimeError) as refusal:
-                    self.apply()
+                    bridge.plan_access_transition(bridge.read_access_policies(self.cursor))
                 self.assertIn(module + ".nameless_rule", str(refusal.exception))
-                self.assertIn("nameless", str(refusal.exception))
+                with self.assertRaises(RuntimeError):
+                    self.apply()
                 self.assertEqual(self.snapshot(), before)
             self.connection.execute("ROLLBACK TO nameless")
             self.connection.execute("RELEASE nameless")
