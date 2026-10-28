@@ -717,6 +717,23 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
         self.assertIsNone(runner.local.db_conn)
         connection.close.assert_called_once_with()
 
+    def test_native_20_refuses_version_reset_before_assets_or_database_access(self) -> None:
+        for target, runtime in (("20.0", None), (None, "20.0")):
+            with self.subTest(target=target, runtime=runtime):
+                settings = self._local_settings()
+                settings.openupgrade_target_version = target
+                settings.odoo_version = runtime
+                runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
+                with (
+                    patch.object(runner, "_resolve_openupgrade_assets", return_value=([Path("/scripts")], None)) as assets,
+                    patch.object(runner, "_collect_openupgrade_modules", return_value=["base"]),
+                    patch.object(runner, "connect_to_db") as connect,
+                ):
+                    with self.assertRaises(odoo_data_workflows.OdooRestorerError):
+                        runner.reset_openupgrade_versions()
+                    assets.assert_not_called()
+                    connect.assert_not_called()
+
     def test_native_20_uses_migration_roots_without_requiring_the_legacy_framework(self) -> None:
         settings = self._local_settings()
         settings.openupgrade_enabled = True

@@ -601,12 +601,15 @@ Notes
   push; Odoo generates new VAPID keys on demand. It regenerates
   `database.secret`. `database.uuid` is kept: it identifies the database,
   authenticates nothing, and Odoo's own neutralize keeps it too.
-- For an explicit OpenUpgrade target of `20.0`, the existing packaged runner
+- For an OpenUpgrade target in major 20, selected from the explicit target
+  or `ODOO_VERSION`, the existing packaged runner
   uses native `base,web` loading and selects its SQL-only
   `prepare_core_references_20.py` with native `--pre-upgrade-scripts`.
   It retains the discovered upgrade roots; it does not load the Odoo 19
   OpenUpgrade framework or reset module states or versions. Other targets
-  retain their existing OpenUpgrade selection.
+  retain their existing OpenUpgrade selection. Native 20 rejects
+  `--reset-versions` before asset discovery or database access; run it without
+  that flag to preserve the installed versions.
   The bridge resolves `base.state_in_or` from the source database and adds
   `base.state_in_od` on that same state row, checking the running target's
   own state CSV and the source country binding. With an installed Website,

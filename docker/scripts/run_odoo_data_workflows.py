@@ -2680,7 +2680,15 @@ with registry.cursor() as cr:
                 module_names.append(entry.name)
         return sorted(module_names)
 
+    def _openupgrade_target_version(self) -> str:
+        return (self.local.openupgrade_target_version or self.local.odoo_version or "").strip()
+
+    def _is_native_20_upgrade(self) -> bool:
+        return self._openupgrade_target_version().split(".", 1)[0] == "20"
+
     def reset_openupgrade_versions(self) -> list[str]:
+        if self._is_native_20_upgrade():
+            raise OdooRestorerError("Native Odoo 20 upgrades preserve installed module versions; omit --reset-versions.")
         scripts_paths, _ = self._resolve_openupgrade_assets()
         module_names: list[str] = []
         for scripts_path in scripts_paths:
@@ -2711,8 +2719,8 @@ with registry.cursor() as cr:
         if not self.local.openupgrade_enabled:
             return
 
-        target_version = (self.local.openupgrade_target_version or self.local.odoo_version or "").strip()
-        native_20 = target_version.split(".", 1)[0] == "20"
+        target_version = self._openupgrade_target_version()
+        native_20 = self._is_native_20_upgrade()
         scripts_paths, _ = self._resolve_openupgrade_assets(require_framework=not native_20)
         if target_version:
             self.os_env["OPENUPGRADE_TARGET_VERSION"] = target_version
@@ -2754,7 +2762,7 @@ with registry.cursor() as cr:
             self._reset_db_connection()
 
     def _should_refresh_website_after_openupgrade(self) -> bool:
-        target_version = (self.local.openupgrade_target_version or self.local.odoo_version or "").strip()
+        target_version = self._openupgrade_target_version()
         if not target_version:
             return False
         major_version = target_version.split(".", 1)[0]
