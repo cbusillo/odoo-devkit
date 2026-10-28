@@ -31,7 +31,7 @@ class PolicyAlias(NamedTuple):
     identifier: int
     module: str
     name: str
-    noupdate: bool
+    noupdate: bool | None
     audit: PolicyAudit
 
 
@@ -74,7 +74,7 @@ def read_access_policies(cr: Any) -> tuple[AccessPolicy, ...]:
     )
     aliases: dict[tuple[str, int], list[PolicyAlias]] = {}
     for model, identifier, alias_id, module, name, protected, *audit in cr.fetchall():
-        aliases.setdefault((model, identifier), []).append(PolicyAlias(alias_id, module, name, bool(protected), PolicyAudit(*audit)))
+        aliases.setdefault((model, identifier), []).append(PolicyAlias(alias_id, module, name, protected, PolicyAudit(*audit)))
     cr.execute("SELECT id FROM res_groups")
     existing_groups = {row[0] for row in cr.fetchall()}
     cr.execute("SELECT rule_group_id, group_id FROM rule_group_rel ORDER BY rule_group_id, group_id")

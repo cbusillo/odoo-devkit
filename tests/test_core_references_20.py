@@ -373,6 +373,7 @@ class CoreReferenceTests(unittest.TestCase):
         self.xmlid("fixture", "read_access", "ir.model.access", 14, True)
         self.xmlid("__custom__", "additional_access", "ir.model.access", 14, False)
         self.xmlid("fixture", "read_limit", "ir.rule", 14, True)
+        self.connection.execute("UPDATE ir_model_data SET noupdate=NULL WHERE module='__custom__' AND name='additional_access'")
         for table, audit in (
             ("ir_model_access", (37, "2025-01-02 03:04:05", 41, "2025-02-03 04:05:06")),
             ("ir_rule", (None, None, 53, "2025-03-04 05:06:07")),
