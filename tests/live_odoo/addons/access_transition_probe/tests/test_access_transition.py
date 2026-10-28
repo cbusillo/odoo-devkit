@@ -237,24 +237,28 @@ class TestAccessTransition(TransactionCase):
                     "noupdate": True,
                 }
             )
-        self.env.flush_all()
-        self.env.cr.execute("SELECT id,module,name,model,res_id,noupdate FROM ir_model_data ORDER BY id")
-        aliases = self.env.cr.fetchall()
-        self.env.cr.execute("SELECT id,arch_db,arch_prev,arch_updated FROM ir_ui_view ORDER BY id")
-        views = self.env.cr.fetchall()
-        self.env.cr.execute("SELECT * FROM ir_model_access ORDER BY id")
-        access = self.env.cr.fetchall()
-        with self.assertRaises(RuntimeError) as refusal:
-            bridge.migrate(self.env.cr, "19.0.1.0")
-        self.assertIn("access_transition_fixture.retained_rule", str(refusal.exception))
-        self.assertIn("access_transition_probe.source_sibling", str(refusal.exception))
-        self.assertIn("access_transition_probe.source_no_operations", str(refusal.exception))
-        self.env.cr.execute("SELECT id,module,name,model,res_id,noupdate FROM ir_model_data ORDER BY id")
-        self.assertEqual(self.env.cr.fetchall(), aliases)
-        self.env.cr.execute("SELECT id,arch_db,arch_prev,arch_updated FROM ir_ui_view ORDER BY id")
-        self.assertEqual(self.env.cr.fetchall(), views)
-        self.env.cr.execute("SELECT * FROM ir_model_access ORDER BY id")
-        self.assertEqual(self.env.cr.fetchall(), access)
+        for nonempty in (False, True):
+            if nonempty:
+                records[(empty.source_model, empty.identifier)].write({"perm_read": True})
+            self.env.flush_all()
+            self.env.cr.execute("SELECT id,module,name,model,res_id,noupdate FROM ir_model_data ORDER BY id")
+            aliases = self.env.cr.fetchall()
+            self.env.cr.execute("SELECT id,arch_db,arch_prev,arch_updated FROM ir_ui_view ORDER BY id")
+            views = self.env.cr.fetchall()
+            self.env.cr.execute("SELECT * FROM ir_model_access ORDER BY id")
+            access = self.env.cr.fetchall()
+            with self.assertRaises(RuntimeError) as refusal:
+                bridge.migrate(self.env.cr, "19.0.1.0")
+            if nonempty:
+                self.assertIn("access_transition_fixture.retained_rule", str(refusal.exception))
+                self.assertIn("access_transition_probe.source_sibling", str(refusal.exception))
+            self.assertIn("access_transition_probe.source_no_operations", str(refusal.exception))
+            self.env.cr.execute("SELECT id,module,name,model,res_id,noupdate FROM ir_model_data ORDER BY id")
+            self.assertEqual(self.env.cr.fetchall(), aliases)
+            self.env.cr.execute("SELECT id,arch_db,arch_prev,arch_updated FROM ir_ui_view ORDER BY id")
+            self.assertEqual(self.env.cr.fetchall(), views)
+            self.env.cr.execute("SELECT * FROM ir_model_access ORDER BY id")
+            self.assertEqual(self.env.cr.fetchall(), access)
 
     def test_custom_acl_cannot_bypass_module_grouped_rule(self) -> None:
         reader_acl = self.source[0]._replace(source_owned=True)
