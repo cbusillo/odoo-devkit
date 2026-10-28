@@ -15,6 +15,48 @@ from tests.git_fixture import commit_fixture_repository, init_fixture_repository
 
 
 class AddonCiTests(unittest.TestCase):
+    def test_copied_inputs_keep_current_code_without_credentials_or_masked_addons(self) -> None:
+        for tracked in (False, True):
+            with self.subTest(tracked=tracked), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                source = root / "tenant"
+                source.mkdir()
+                (source / ".gitignore").write_text(".env*\n.venv/\n")
+                (source / "current.py").write_text("original\n")
+                (source / "addons").mkdir()
+                (source / "addons/old.py").write_text("must be masked\n")
+                if tracked:
+                    init_fixture_repository(source)
+                    commit_fixture_repository(source)
+                (source / "current.py").write_text("working change\n")
+                (source / "new.py").write_text("new test input\n")
+                (source / ".env.private").write_text("synthetic credential sentinel\n")
+                (source / ".venv").mkdir()
+                (source / ".venv/cache").write_text("synthetic cache\n")
+                selected = root / "selected"
+                selected.mkdir()
+                (selected / "new.py").write_text("selected addon\n")
+                output = root / "evidence"
+                output.mkdir()
+                copied = root / "copied"
+                copied.mkdir()
+
+                def capture_copy(arguments: list[str], copied_root: Path = copied) -> subprocess.CompletedProcess[str]:
+                    payload = Path(arguments[-2])
+                    destination = copied_root / arguments[-1].split(":", 1)[1].lstrip("/")
+                    shutil.copytree(payload, destination, dirs_exist_ok=True)
+                    return subprocess.CompletedProcess(arguments, 0)
+
+                with patch.object(addon_ci, "command", side_effect=capture_copy):
+                    addon_ci.copy_test_inputs([(source, "/opt/project"), (selected, "/opt/project/addons")], "fixture", output)
+                project = copied / "opt/project"
+                self.assertEqual((project / "current.py").read_text(), "working change\n")
+                self.assertEqual((project / "new.py").read_text(), "new test input\n")
+                self.assertEqual((project / "addons/new.py").read_text(), "selected addon\n")
+                self.assertFalse((project / "addons/old.py").exists())
+                for excluded in (".git", ".env.private", ".venv"):
+                    self.assertFalse((project / excluded).exists())
+
     def test_addon_image_uses_derived_frozen_inputs_and_keeps_source_locks(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

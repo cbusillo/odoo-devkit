@@ -46,7 +46,10 @@ to locate Chromium, launch its version check, and import `websocket`.
 
 Each invocation creates uniquely named Docker resources: an internal network,
 Postgres with temporary database storage, a test container and a test image.
-Addon checkouts are mounted read-only. The containers expose no host ports;
+Current addon inputs are copied into the test container with `docker cp`, so
+Docker Desktop cannot retain host handles from source bind mounts. Git inputs
+exclude ignored credentials, environments and repository metadata; already-staged
+directories remain supported. The containers expose no host ports;
 the test network has no external connectivity and receives no credentials.
 The build context is a temporary sibling of the evidence directory, so a
 cancelled job cannot upload private source as test evidence; Git history is
@@ -104,8 +107,8 @@ does not execute shell text or assert workflow wording.
 ## Devkit live checks
 
 The `Devkit live Odoo checks` workflow runs the same runner with
-`--devkit-checks` and the test addon in `tests/live_odoo/addons`. It mounts
-the checked-out devkit scripts read-only and uses the real `launchplane_settings`
+`--devkit-checks` and the test addon in `tests/live_odoo/addons`. It copies
+the checked-out devkit scripts and uses the real `launchplane_settings`
 addon from the workflow's pinned shared-addons revision. The source commit is
 included in the uploaded evidence. It runs when runtime scripts, test inputs,
 the runner or its workflow change, including on merge-train branches.
@@ -165,4 +168,4 @@ uv run python -m odoo_devkit.addon_ci \
 
 Use the workflow's image selection. A sparse support checkout keeps unrelated
 addon dependencies out of this lane. The normal addon-CI path continues to run
-without mounting the devkit scripts or synthetic Enterprise fixtures.
+without copying the devkit scripts or synthetic Enterprise fixtures.
