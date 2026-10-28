@@ -3,6 +3,7 @@ import csv
 import json
 import logging
 import os
+import runpy
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
@@ -11,6 +12,7 @@ from typing import Any, NamedTuple
 SOURCE_STATE = "state_in_or"
 TARGET_STATE = "state_in_od"
 STATE_DATA_FILE = Path("/odoo/odoo/addons/base/data/res.country.state.csv")
+NATIVE_RELEASE_FILE = Path("/odoo/odoo/release.py")
 BANK_SELECTOR_19 = "expr=\"//field[@name='acc_number']\""
 BANK_SELECTOR_20 = "expr=\"//field[@name='account_number']\""
 _logger = logging.getLogger(__name__)
@@ -70,9 +72,8 @@ class AccessPlan(NamedTuple):
 
 def prepare_native_access_startup(*, database: str, host: str, port: int, user: str, password: str) -> None:
     import psycopg2
-    from odoo import release
 
-    major = release.version_info[0]
+    major = runpy.run_path(str(NATIVE_RELEASE_FILE))["version_info"][0]
     if type(major) is not int or major < 1:
         raise RuntimeError(f"Unsupported native access startup runtime: {major}")
     if major < 20:

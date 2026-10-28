@@ -407,8 +407,13 @@ class CoreReferenceTests(unittest.TestCase):
                 server.cursor.return_value.__enter__.return_value.fetchone.return_value = (1,) if database_exists else None
                 connection.cursor.return_value.__enter__.return_value = self.cursor
                 postgres = SimpleNamespace(connect=MagicMock(side_effect=(server, connection)))
-                odoo = SimpleNamespace(release=SimpleNamespace(version_info=(major,)))
-                with patch.dict(sys.modules, {"psycopg2": postgres, "odoo": odoo}):
+                odoo = SimpleNamespace(release=SimpleNamespace(version_info=("untrusted_namespace",)))
+                release = Path(self.directory.name) / "native-release.py"
+                release.write_text(f"version_info = ({major!r},)\n")
+                with (
+                    patch.dict(sys.modules, {"psycopg2": postgres, "odoo": odoo}),
+                    patch.object(bridge, "NATIVE_RELEASE_FILE", release, create=True),
+                ):
                     arguments = dict(database="fixture", host="db", port=5432, user="fixture", password="synthetic")
                     if type(major) is not int or (major >= 20 and database_exists and legacy):
                         with self.assertRaises(RuntimeError):
