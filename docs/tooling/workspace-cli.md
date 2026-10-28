@@ -658,6 +658,9 @@ Notes
   Data-only zero ACLs retain their groups, active state and aliases in the plan.
   A grouped zero ACL uses a native false permission; a groupless one uses a true
   global restriction. Native applicability flags do not represent legacy grant bits.
+  Later checkbox, domain and group-deletion changes remain unqualified: native 20
+  can cascade grouped policy rows, and frozen sibling membership does not follow
+  group deletion. Review affected policies before those operations.
   Source-owned zero policies and zero-operation rules still require an explicit
   owner or domain-data mapping. Nameless policies, policies targeting merged
   security models, nonzero groupless permissions and policies on delegated-inheritance

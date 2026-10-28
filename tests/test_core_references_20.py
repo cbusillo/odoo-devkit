@@ -258,6 +258,7 @@ class CoreReferenceTests(unittest.TestCase):
             access._replace(source_owned=False, active=False),
             access._replace(source_owned=False, groups=(10,)),
             access._replace(source_owned=False, operation="u"),
+            access._replace(source_owned=False, operation=""),
         ):
             with self.subTest(access=changed_access):
                 with self.assertRaises(RuntimeError) as refusal:

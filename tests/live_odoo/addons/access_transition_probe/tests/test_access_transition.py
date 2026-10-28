@@ -180,9 +180,10 @@ class TestAccessTransition(TransactionCase):
 
         baseline = observations()
         start = max(policy.identifier for policy in self.source) + 1
+        internal = self.env.ref("base.group_user")
         zeros = tuple(
             bridge.AccessPolicy("ir.model.access", index, "Retained zero permission", MODEL, groups, "", "", True, (), (), False)
-            for index, groups in enumerate(((), *((group.id,) for group in self.groups.values())), start)
+            for index, groups in enumerate(((), (internal.id,), *((group.id,) for group in self.groups.values())), start)
         )
         records = self.install_policies(zeros)
         self.assertEqual(observations(), baseline)
@@ -191,6 +192,13 @@ class TestAccessTransition(TransactionCase):
         self.assertEqual(observations(), baseline)
         for record in records.values():
             record.active = True
+        self.assertEqual(observations(), baseline)
+        zero = next(policy for policy in zeros if policy.groups == (internal.id,))
+        target = records[zero.source_model, zero.identifier]
+        with self.env.cr.savepoint() as checkpoint:
+            target.write({"domain": ""} if "ir.access" in self.env.registry else {"perm_read": True})
+            self.assertTrue(self.decide("ungranted", "allowed", "read"))
+            checkpoint.rollback()
         self.assertEqual(observations(), baseline)
 
     def test_inactive_global_rule_activation(self) -> None:
