@@ -611,7 +611,7 @@ Notes
   retain their existing OpenUpgrade selection. Native 20 rejects
   `--reset-versions` before asset discovery or database access; run it without
   that flag to preserve the installed versions.
-  The bridge resolves `base.state_in_or` from the source database and adds
+  After access admission, the bridge resolves `base.state_in_or` from the source database and adds
   `base.state_in_od` on that same state row, checking the running target's
   own state CSV and the source country binding. With an installed Website,
   it also binds `base.default_website` to the existing
@@ -632,9 +632,8 @@ Notes
   Before any bridge write, the access preflight inventories legacy ACLs, rules,
   aliases and rule-group references. Retained data-only or unowned grouped rules
   refuse with their identities and overlapping same-operation siblings; the bridge
-  does not turn them into permissions or freeze sibling policy copies. Data-only
-  permissions without verified native group coverage, missing models and dangling
-  aliases or group references also refuse.
+  does not turn them into permissions or freeze sibling policy copies. Missing
+  models and dangling aliases or group references also refuse.
   A data-only ACL also refuses if any active or inactive grouped rule applies to
   the same model and operation, including module-owned rules in other groups;
   a plain permission could bypass their native domains. Resolve a refused policy
@@ -650,14 +649,17 @@ Notes
   The bounded planner retains group-bound ACLs and global rules, including inactive
   state and protected aliases, for native validation. It keeps module-owned policies
   separate for their source mapping. Planning does not apply these representations
-  or qualify an access conversion. The migration hook refuses and lists every
-  otherwise planned policy until application is qualified, before any bridge write;
-  the actual security import remains unqualified.
+  or qualify an access conversion. The preflight first lists unsupported shapes.
+  If all shapes are plannable, the migration hook still refuses and lists those
+  policies until application is qualified, before any bridge write. Every real
+  19 crossing therefore currently refuses before the reference and bank steps;
+  the access work must remain unlanded until it includes qualified application.
   Exported, custom and Studio policy aliases remain data-only even when their
   customization module is installed.
-  Same-major 20 updates do nothing in this bridge. Its qualification ends at
-  the reference/base-data boundary; security conversion, later cleanup,
-  tenant hooks and a completed major-version migration need their own proof.
+  Same-major 20 updates do nothing in this bridge. Earlier reference and bank
+  qualification does not qualify this combined access crossing. Security conversion,
+  later cleanup, tenant hooks and a completed major-version migration need their
+  own proof.
   This selection does not replace the restored-copy credential boundary or
   authorize a Client data run.
 - Before post-deploy maintenance, update-only work or any restored-copy Odoo
