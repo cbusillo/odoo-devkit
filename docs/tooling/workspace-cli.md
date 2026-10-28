@@ -633,9 +633,8 @@ Notes
   aliases and rule-group references. Retained data-only or unowned grouped rules
   refuse with their identities and overlapping same-operation siblings; the bridge
   does not turn them into permissions or freeze sibling policy copies. Data-only
-  policies targeting the merged security models,
-  groupless permissions without verified native group coverage, missing models,
-  nameless policies, and dangling aliases or group references also refuse.
+  permissions without verified native group coverage, missing models and dangling
+  aliases or group references also refuse.
   A data-only ACL also refuses if any active or inactive grouped rule applies to
   the same model and operation, including module-owned rules in other groups;
   a plain permission could bypass their native domains. Resolve a refused policy
@@ -643,16 +642,17 @@ Notes
   deleting it or resetting module metadata is not a supported workaround.
   For dangling metadata, use an intact validated source or establish an explicit
   alias mapping to a surviving policy; the bridge never recreates a missing row.
-  Policies with no operations refuse regardless of source ownership, active state
-  or alias protection. Their flags and usable record/reference lifecycle need an
-  explicit native representation; native module deletion or backup-only retention
-  does not preserve them.
-  Data-only policies on delegated-inheritance models also refuse until the parent
-  permissions and rules have an explicit native mapping.
+  Policies with no operations, nameless policies, policies targeting merged
+  security models, groupless permissions and policies on delegated-inheritance
+  models refuse regardless of source ownership. Their flags, parent semantics and
+  usable record/reference lifecycle need an explicit native representation; native
+  module deletion or backup-only retention does not preserve them.
   The bounded planner retains group-bound ACLs and global rules, including inactive
   state and protected aliases, for native validation. It keeps module-owned policies
   separate for their source mapping. Planning does not apply these representations
-  or qualify an access conversion; the actual security import remains unqualified.
+  or qualify an access conversion. The migration hook refuses and lists every
+  otherwise planned policy until application is qualified, before any bridge write;
+  the actual security import remains unqualified.
   Exported, custom and Studio policy aliases remain data-only even when their
   customization module is installed.
   Same-major 20 updates do nothing in this bridge. Its qualification ends at

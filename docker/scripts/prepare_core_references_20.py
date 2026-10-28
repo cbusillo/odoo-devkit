@@ -145,9 +145,6 @@ def plan_access_transition(policies: tuple[AccessPolicy, ...]) -> AccessPlan:
         if not policy.operation:
             refusals.append(f"{label}: policy with no operations has no qualified native representation")
             continue
-        if policy.source_owned:
-            source_owned.append(policy)
-            continue
         if not policy.name:
             refusals.append(f"{label}: nameless policy has no qualified native name mapping")
             continue
@@ -157,10 +154,13 @@ def plan_access_transition(policies: tuple[AccessPolicy, ...]) -> AccessPlan:
         if policy.model in {"ir.model.access", "ir.rule", "ir.access"}:
             refusals.append(f"{label}: merged security-model policy requires an explicit reference mapping")
             continue
+        if policy.source_model == "ir.model.access" and not policy.groups:
+            refusals.append(f"{label}: groupless permission requires verified native everyone-group coverage")
+            continue
+        if policy.source_owned:
+            source_owned.append(policy)
+            continue
         if policy.source_model == "ir.model.access":
-            if not policy.groups:
-                refusals.append(f"{label}: groupless permission requires verified native everyone-group coverage")
-                continue
             siblings = _grouped_siblings(policy, policies)
             if siblings:
                 related = "; ".join(_policy_label(sibling) for sibling in siblings)
@@ -276,7 +276,12 @@ def migrate(cr: Any, version: str | None) -> None:
         return
     if major != "19":
         raise RuntimeError("Core reference preparation requires a native 19-to-20 crossing")
-    plan_access_transition(read_access_policies(cr))
+    plan = plan_access_transition(read_access_policies(cr))
+    pending = tuple(target.source for target in plan.converted) + plan.source_owned
+    if pending:
+        raise RuntimeError(
+            "Native access policy application is not qualified:\n" + "\n".join(_policy_label(policy) for policy in pending)
+        )
     state = _state_source(cr)
     website = _website_source(cr)
     state_target = _check_target(cr, TARGET_STATE, state, protect=state.noupdate)

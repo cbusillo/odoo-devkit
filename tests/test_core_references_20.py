@@ -98,6 +98,12 @@ class CoreReferenceTests(unittest.TestCase):
             "ir_module_module",
             "res_partner",
             "carrier_state_rel",
+            "ir_model",
+            "ir_model_inherit",
+            "ir_model_access",
+            "ir_rule",
+            "rule_group_rel",
+            "res_groups",
         )
         return {table: self.connection.execute("SELECT * FROM " + table + " ORDER BY rowid").fetchall() for table in tables}
 
@@ -222,13 +228,11 @@ class CoreReferenceTests(unittest.TestCase):
         self.xmlid("base", "portal_limit", "ir.rule", 29, False)
         self.connection.execute("INSERT INTO ir_module_module VALUES ('base','installed','19.0.1.0')")
         before = self.snapshot()
-        policies = self.connection.execute("SELECT * FROM ir_rule").fetchall()
         with self.assertRaises(RuntimeError) as refusal:
             self.apply()
         self.assertIn("fixture.contact_limit", str(refusal.exception))
         self.assertIn("base.portal_limit", str(refusal.exception))
         self.assertEqual(self.snapshot(), before)
-        self.assertEqual(self.connection.execute("SELECT * FROM ir_rule").fetchall(), policies)
 
     def test_data_only_access_plan_retains_inactive_acl_and_global_rule(self) -> None:
         self.connection.execute("INSERT INTO ir_model VALUES (31,'res.partner')")
@@ -281,30 +285,67 @@ class CoreReferenceTests(unittest.TestCase):
         self.connection.execute("INSERT INTO ir_model_access VALUES (16,31,'Source read',67,1,1,0,0,0)")
         self.xmlid("base", "no_operations", "ir.model.access", 14, False)
         self.xmlid("base", "source_read", "ir.model.access", 16, False)
-        self.xmlid("fixture", "retained_empty", "ir.model.access", 14, True)
-        for active in (True, False):
-            for protected in (True, False):
-                self.connection.execute("SAVEPOINT zero_operations")
-                with self.subTest(active=active, protected=protected):
-                    self.connection.execute("UPDATE ir_model_access SET active=? WHERE id=14", (active,))
-                    self.connection.execute(
-                        "UPDATE ir_model_data SET noupdate=? WHERE module='base' AND name='no_operations'", (protected,)
-                    )
-                    before = self.snapshot()
-                    policies = self.connection.execute("SELECT * FROM ir_model_access ORDER BY id").fetchall()
-                    with self.assertRaises(RuntimeError) as refusal:
-                        self.apply()
-                    self.assertIn("base.no_operations", str(refusal.exception))
-                    self.assertIn("fixture.retained_empty", str(refusal.exception))
-                    self.assertIn("no operations", str(refusal.exception))
-                    self.assertEqual(self.snapshot(), before)
-                    self.assertEqual(self.connection.execute("SELECT * FROM ir_model_access ORDER BY id").fetchall(), policies)
-                self.connection.execute("ROLLBACK TO zero_operations")
-                self.connection.execute("RELEASE zero_operations")
+        for retained_alias in (False, True):
+            if retained_alias:
+                self.xmlid("fixture", "retained_empty", "ir.model.access", 14, True)
+            for active in (True, False):
+                for protected in (True, False):
+                    self.connection.execute("SAVEPOINT zero_operations")
+                    with self.subTest(retained_alias=retained_alias, active=active, protected=protected):
+                        self.connection.execute("UPDATE ir_model_access SET active=? WHERE id=14", (active,))
+                        self.connection.execute(
+                            "UPDATE ir_model_data SET noupdate=? WHERE module='base' AND name='no_operations'", (protected,)
+                        )
+                        before = self.snapshot()
+                        with self.assertRaises(RuntimeError) as refusal:
+                            self.apply()
+                        self.assertIn("base.no_operations", str(refusal.exception))
+                        if retained_alias:
+                            self.assertIn("fixture.retained_empty", str(refusal.exception))
+                        self.assertIn("no operations", str(refusal.exception))
+                        self.assertEqual(self.snapshot(), before)
+                    self.connection.execute("ROLLBACK TO zero_operations")
+                    self.connection.execute("RELEASE zero_operations")
 
         self.connection.execute("UPDATE ir_model_access SET perm_read=1 WHERE id=14")
         plan = bridge.plan_access_transition(bridge.read_access_policies(self.cursor))
         self.assertEqual({policy.identifier for policy in plan.source_owned}, {14, 16})
+
+    def test_source_owned_shapes_require_the_same_explicit_native_mapping(self) -> None:
+        self.connection.executemany("INSERT INTO ir_model VALUES (?,?)", ((31, "fixture.child"), (32, "res.partner")))
+        self.connection.execute("INSERT INTO ir_module_module VALUES ('base','installed','19.0.1.0')")
+        self.connection.execute("INSERT INTO ir_model_access VALUES (14,31,'Source read',67,1,1,0,0,0)")
+        self.xmlid("base", "source_read", "ir.model.access", 14, False)
+        for statement, reason in (
+            ("UPDATE ir_model SET model='ir.rule' WHERE id=31", "merged security-model"),
+            ("INSERT INTO ir_model_inherit VALUES (31,32,71)", "delegated parents"),
+            ("UPDATE ir_model_access SET group_id=NULL", "groupless permission"),
+        ):
+            self.connection.execute("SAVEPOINT source_shape")
+            with self.subTest(reason=reason):
+                self.connection.execute(statement)
+                before = self.snapshot()
+                with self.assertRaises(RuntimeError) as refusal:
+                    self.apply()
+                self.assertIn("base.source_read", str(refusal.exception))
+                self.assertIn(reason, str(refusal.exception))
+                self.assertEqual(self.snapshot(), before)
+            self.connection.execute("ROLLBACK TO source_shape")
+            self.connection.execute("RELEASE source_shape")
+
+    def test_unapplied_access_plans_refuse_before_any_bridge_write(self) -> None:
+        self.connection.execute("INSERT INTO ir_model VALUES (31,'res.partner')")
+        self.connection.execute("INSERT INTO ir_module_module VALUES ('base','installed','19.0.1.0')")
+        self.connection.executemany("INSERT INTO ir_model_access VALUES (?,31,'Retained read',67,1,1,0,0,0)", ((14,), (16,)))
+        self.xmlid("base", "source_read", "ir.model.access", 16, False)
+        self.xmlid("fixture", "custom_read", "ir.model.access", 14, True)
+        before = self.snapshot()
+        with self.assertRaises(RuntimeError) as refusal:
+            self.apply()
+        self.assertIn("application", str(refusal.exception))
+        self.assertIn("base.source_read", str(refusal.exception))
+        self.assertIn("fixture.custom_read", str(refusal.exception))
+        self.assertEqual(self.snapshot(), before)
 
     def test_dangling_policy_alias_or_group_relation_refuses_before_any_bridge_write(self) -> None:
         for statement in (
@@ -357,13 +398,22 @@ class CoreReferenceTests(unittest.TestCase):
         self.assertEqual(len(plan.converted), 1)
         self.assertEqual(plan.converted[0].source.identifier, 14)
 
-    def test_nameless_data_only_rule_refuses_before_bridge_writes(self) -> None:
+    def test_nameless_rule_refuses_regardless_of_ownership_before_bridge_writes(self) -> None:
         self.connection.execute("INSERT INTO ir_model VALUES (31,'res.partner')")
         self.connection.execute("INSERT INTO ir_rule VALUES (23,31,NULL,'[]',1,1,0,0,0)")
-        before = self.snapshot()
-        with self.assertRaises(RuntimeError):
-            self.apply()
-        self.assertEqual(self.snapshot(), before)
+        self.connection.execute("INSERT INTO ir_module_module VALUES ('base','installed','19.0.1.0')")
+        for module in ("fixture", "base"):
+            self.connection.execute("SAVEPOINT nameless")
+            with self.subTest(module=module):
+                self.xmlid(module, "nameless_rule", "ir.rule", 23, False)
+                before = self.snapshot()
+                with self.assertRaises(RuntimeError) as refusal:
+                    self.apply()
+                self.assertIn(module + ".nameless_rule", str(refusal.exception))
+                self.assertIn("nameless", str(refusal.exception))
+                self.assertEqual(self.snapshot(), before)
+            self.connection.execute("ROLLBACK TO nameless")
+            self.connection.execute("RELEASE nameless")
 
     def test_delegated_parent_requires_native_permission_and_rule_mapping(self) -> None:
         self.connection.executemany("INSERT INTO ir_model VALUES (?,?)", ((31, "fixture.child"), (32, "res.partner")))
