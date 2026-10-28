@@ -28,6 +28,32 @@ class Cursor:
         connection.create_function("to_regclass", 1, to_regclass)
 
     def execute(self, query: str, parameters: tuple = ()) -> Any:
+        if "FROM pg_constraint" in query:
+            references = []
+            tables = self.cursor.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            for (table,) in tables:
+                fields = self.cursor.execute("SELECT * FROM pragma_table_info(?)", (table,)).fetchall()
+                identity = '"id"' if any(row[1] == "id" for row in fields) else "rowid"
+                for foreign_key in self.cursor.execute("SELECT * FROM pragma_foreign_key_list(?)", (table,)).fetchall():
+                    if foreign_key[2] != parameters[0]:
+                        continue
+                    name = table + "_" + foreign_key[3] + "_fk"
+                    selection = (
+                        "SELECT count(*), json_group_array("
+                        + identity
+                        + ") FROM "
+                        + '"'
+                        + table.replace('"', '""')
+                        + '" WHERE "'
+                        + foreign_key[3].replace('"', '""')
+                        + '" IN (SELECT value FROM json_each(?))'
+                    )
+                    references.append((table, name, 1, 1, foreign_key[4], selection))
+            if not references:
+                return self.cursor.execute("SELECT NULL,NULL,NULL,NULL,NULL,NULL WHERE 0")
+            return self.cursor.execute(" UNION ALL ".join("SELECT ?,?,?,?,?,?" for _ in references), sum(references, ()))
+        if "json_each(?)" in query:
+            return self.cursor.execute(query, (json.dumps(parameters[0]),))
         if "FROM pg_attribute" in query:
             columns = [
                 (table, row[1])
@@ -40,7 +66,10 @@ class Cursor:
         return self.cursor.execute(query.replace("%s", "?").replace(" FOR UPDATE", "").replace("::jsonb", ""), parameters)
 
     def fetchone(self) -> Any:
-        return self.cursor.fetchone()
+        row = self.cursor.fetchone()
+        if row and len(row) == 2 and self.cursor.description[1][0].startswith("json_group_array"):
+            return row[0], json.loads(row[1])
+        return row
 
     def fetchall(self) -> list[tuple]:
         return [
@@ -276,8 +305,8 @@ class CoreReferenceTests(unittest.TestCase):
             ("mail_activity_type", "res_model TEXT", "?", False),
             ("mail_followers", "res_model TEXT", "?", False),
             ("mail_message", "model TEXT", "?", False),
-            ("ir_act_server", "model_id INTEGER", "?", True),
-            ("mail_activity", "res_model_id INTEGER", "?", True),
+            ("ir_act_server", "model_id INTEGER REFERENCES ir_model(id)", "?", True),
+            ("mail_activity", "res_model_id INTEGER REFERENCES ir_model(id)", "?", True),
         )
         self.connection.execute("INSERT INTO ir_model VALUES (31,'ir.rule'), (32,'res.partner')")
         for table, columns, values, model_id in fixtures:
@@ -298,7 +327,7 @@ class CoreReferenceTests(unittest.TestCase):
     def test_scheduled_actions_and_custom_model_aliases_are_not_cleanup_casualties(self) -> None:
         self.connection.executescript(
             "INSERT INTO ir_model VALUES (31,'ir.model.access');"
-            "CREATE TABLE ir_act_server (id INTEGER PRIMARY KEY, model_id INTEGER);"
+            "CREATE TABLE ir_act_server (id INTEGER PRIMARY KEY, model_id INTEGER REFERENCES ir_model(id));"
             "CREATE TABLE ir_cron (id INTEGER PRIMARY KEY, ir_actions_server_id INTEGER);"
             "INSERT INTO ir_act_server VALUES (14,31); INSERT INTO ir_cron VALUES (23,14);"
         )
@@ -309,6 +338,40 @@ class CoreReferenceTests(unittest.TestCase):
         for identity in ("ir_cron:23", "__custom__.retained_model"):
             self.assertIn(identity, str(refusal.exception))
         self.assertEqual(list(self.connection.iterdump()), before)
+
+    def test_unnamed_foreign_key_consumer_refuses_for_every_delete_action_without_effects(self) -> None:
+        self.connection.executescript(
+            "INSERT INTO ir_model VALUES (31,'ir.rule');"
+            "CREATE TABLE ir_model_fields (id INTEGER PRIMARY KEY, model TEXT, relation TEXT, state TEXT);"
+            "INSERT INTO ir_model_fields VALUES (41,'ir.rule',NULL,'base');"
+            "CREATE TABLE ir_ui_view (id INTEGER PRIMARY KEY, model TEXT);"
+            "INSERT INTO ir_ui_view VALUES (51,'ir.rule');"
+        )
+        for table, identifier in (("ir_model", 31), ("ir_model_fields", 41), ("ir_ui_view", 51)):
+            for delete_action in ("CASCADE", "SET NULL", "RESTRICT", "NO ACTION", "SET DEFAULT"):
+                with self.subTest(table=table, delete_action=delete_action):
+                    self.connection.execute("SAVEPOINT consumer")
+                    self.connection.execute(
+                        "CREATE TABLE third_party_reference (id INTEGER PRIMARY KEY, target INTEGER "
+                        "REFERENCES " + table + "(id) ON DELETE " + delete_action + ")"
+                    )
+                    self.connection.execute("INSERT INTO third_party_reference VALUES (23,?)", (identifier,))
+                    before = list(self.connection.iterdump())
+                    with self.assertRaises(RuntimeError) as refusal:
+                        bridge.ensure_no_legacy_access_residue(self.cursor)
+                    self.assertIn("third_party_reference:23", str(refusal.exception))
+                    self.assertEqual(list(self.connection.iterdump()), before)
+                    self.connection.execute("ROLLBACK TO consumer")
+                    self.connection.execute("RELEASE consumer")
+
+    def test_base_owned_reflection_is_not_exempted_from_reference_mapping(self) -> None:
+        self.connection.execute("INSERT INTO ir_model VALUES (31,'ir.rule')")
+        self.xmlid("base", "model_ir_rule", "ir.model", 31, True)
+        before = self.snapshot()
+        with self.assertRaises(RuntimeError) as refusal:
+            bridge.ensure_no_legacy_access_residue(self.cursor)
+        self.assertIn("base.model_ir_rule", str(refusal.exception))
+        self.assertEqual(self.snapshot(), before)
 
     def test_native_end_hook_refuses_before_legacy_alias_cleanup(self) -> None:
         self.xmlid("__custom__", "retained_rule", "ir.rule", 14, True)

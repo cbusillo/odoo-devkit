@@ -180,31 +180,61 @@ def ensure_native_access_replay(cr: Any) -> None:
     ensure_no_legacy_access_residue(cr)
 
 
+def read_incoming_cleanup_references(cr: Any) -> tuple[str, ...]:
+    retired = ("ir.model.access", "ir.rule")
+    roots = (
+        ("ir_model", "SELECT id FROM ir_model WHERE model IN (%s, %s)", retired),
+        (
+            "ir_model_fields",
+            "SELECT id FROM ir_model_fields WHERE model IN (%s, %s) OR relation IN (%s, %s)",
+            retired + retired,
+        ),
+        ("ir_ui_view", "SELECT id FROM ir_ui_view WHERE model IN (%s, %s)", retired),
+    )
+    consumers = []
+    for table, query, parameters in roots:
+        cr.execute("SELECT to_regclass(%s)", (table,))
+        if not cr.fetchone()[0]:
+            continue
+        cr.execute(query, parameters)
+        identifiers = [row[0] for row in cr.fetchall()]
+        if not identifiers:
+            continue
+        if table != "ir_model":
+            consumers.extend(f"{table}:{identifier} (retired access reflection)" for identifier in identifiers)
+        cr.execute(
+            "SELECT namespace.nspname || '.' || source.relname, dependency.conname, "
+            "cardinality(dependency.conkey), cardinality(dependency.confkey), target.attname, "
+            "format('SELECT count(*), array_agg(%%s) FROM %%I.%%I AS child WHERE child.%%I = ANY(%%%%s)', "
+            "CASE WHEN EXISTS (SELECT 1 FROM pg_attribute identity_column WHERE identity_column.attrelid = source.oid "
+            "AND identity_column.attname = 'id' AND NOT identity_column.attisdropped) "
+            "THEN 'child.id::text' ELSE 'child.ctid::text' END, namespace.nspname, source.relname, origin.attname) "
+            "FROM pg_constraint dependency JOIN pg_class source ON source.oid = dependency.conrelid "
+            "JOIN pg_namespace namespace ON namespace.oid = source.relnamespace "
+            "JOIN pg_attribute target ON target.attrelid = dependency.confrelid AND target.attnum = dependency.confkey[1] "
+            "JOIN pg_attribute origin ON origin.attrelid = source.oid AND origin.attnum = dependency.conkey[1] "
+            "WHERE dependency.contype = 'f' AND dependency.confrelid = to_regclass(%s) "
+            "ORDER BY namespace.nspname, source.relname, dependency.conname",
+            (table,),
+        )
+        for source, constraint, source_count, target_count, column, selection in cr.fetchall():
+            if source_count != 1 or target_count != 1 or column != "id":
+                consumers.append(f"{source} ({constraint}; unsupported composite or non-id reference to {table})")
+                continue
+            cr.execute(selection, (identifiers,))
+            count, affected = cr.fetchone()
+            if count:
+                consumers.extend(f"{source}:{identifier} ({constraint}; references {table})" for identifier in affected)
+    return tuple(consumers)
+
+
 def read_legacy_cleanup_consumers(cr: Any) -> tuple[str, ...]:
     retired = ("ir.model.access", "ir.rule")
     queries = (
-        (
-            "ir_model_fields",
-            "SELECT id, relation FROM ir_model_fields WHERE relation IN (%s, %s) "
-            "UNION SELECT id, model FROM ir_model_fields WHERE model IN (%s, %s) AND state = 'manual'",
-            retired + retired,
-        ),
         ("ir_attachment", "SELECT id, res_model FROM ir_attachment WHERE res_model IN (%s, %s)", retired),
         ("mail_activity_type", "SELECT id, res_model FROM mail_activity_type WHERE res_model IN (%s, %s)", retired),
         ("mail_followers", "SELECT id, res_model FROM mail_followers WHERE res_model IN (%s, %s)", retired),
         ("mail_message", "SELECT id, model FROM mail_message WHERE model IN (%s, %s)", retired),
-        (
-            "mail_activity",
-            "SELECT activity.id, model.model FROM mail_activity activity "
-            "JOIN ir_model model ON model.id = activity.res_model_id WHERE model.model IN (%s, %s)",
-            retired,
-        ),
-        (
-            "ir_act_server",
-            "SELECT action.id, model.model FROM ir_act_server action "
-            "JOIN ir_model model ON model.id = action.model_id WHERE model.model IN (%s, %s)",
-            retired,
-        ),
         (
             "ir_cron",
             "SELECT cron.id, model.model FROM ir_cron cron "
@@ -220,7 +250,7 @@ def read_legacy_cleanup_consumers(cr: Any) -> tuple[str, ...]:
             retired,
         ),
     )
-    consumers = []
+    consumers = list(read_incoming_cleanup_references(cr))
     for table, query, parameters in queries:
         cr.execute("SELECT to_regclass(%s)", (table,))
         if not cr.fetchone()[0]:
