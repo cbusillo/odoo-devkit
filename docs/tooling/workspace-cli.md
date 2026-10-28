@@ -633,7 +633,7 @@ Notes
   aliases and rule-group references. Retained data-only or unowned grouped rules
   refuse with their identities and overlapping same-operation siblings; the bridge
   does not turn them into permissions or freeze sibling policy copies. Data-only
-  policies targeting the merged security models, policies with no operations,
+  policies targeting the merged security models,
   groupless permissions without verified native group coverage, missing models,
   nameless policies, and dangling aliases or group references also refuse.
   A data-only ACL also refuses if any active or inactive grouped rule applies to
@@ -643,6 +643,10 @@ Notes
   deleting it or resetting module metadata is not a supported workaround.
   For dangling metadata, use an intact validated source or establish an explicit
   alias mapping to a surviving policy; the bridge never recreates a missing row.
+  Policies with no operations refuse regardless of source ownership, active state
+  or alias protection. Their flags and usable record/reference lifecycle need an
+  explicit native representation; native module deletion or backup-only retention
+  does not preserve them.
   Data-only policies on delegated-inheritance models also refuse until the parent
   permissions and rules have an explicit native mapping.
   The bounded planner retains group-bound ACLs and global rules, including inactive

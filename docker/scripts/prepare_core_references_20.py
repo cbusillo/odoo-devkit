@@ -142,6 +142,9 @@ def plan_access_transition(policies: tuple[AccessPolicy, ...]) -> AccessPlan:
         if not policy.model:
             refusals.append(f"{label}: target model identity is missing")
             continue
+        if not policy.operation:
+            refusals.append(f"{label}: policy with no operations has no qualified native representation")
+            continue
         if policy.source_owned:
             source_owned.append(policy)
             continue
@@ -153,9 +156,6 @@ def plan_access_transition(policies: tuple[AccessPolicy, ...]) -> AccessPlan:
             continue
         if policy.model in {"ir.model.access", "ir.rule", "ir.access"}:
             refusals.append(f"{label}: merged security-model policy requires an explicit reference mapping")
-            continue
-        if not policy.operation:
-            refusals.append(f"{label}: policy with no operations has no qualified native representation")
             continue
         if policy.source_model == "ir.model.access":
             if not policy.groups:

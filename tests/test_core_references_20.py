@@ -274,6 +274,38 @@ class CoreReferenceTests(unittest.TestCase):
         self.assertEqual([record.identifier for record in plan.source_owned], [16])
         self.assertEqual(plan.source_owned[0].protected_aliases, ("fixture.protected_alias",))
 
+    def test_source_owned_zero_operation_policies_refuse_before_bridge_writes(self) -> None:
+        self.connection.execute("INSERT INTO ir_model VALUES (31,'res.partner')")
+        self.connection.execute("INSERT INTO ir_module_module VALUES ('base','installed','19.0.1.0')")
+        self.connection.execute("INSERT INTO ir_model_access VALUES (14,31,'Source zero operations',67,1,0,0,0,0)")
+        self.connection.execute("INSERT INTO ir_model_access VALUES (16,31,'Source read',67,1,1,0,0,0)")
+        self.xmlid("base", "no_operations", "ir.model.access", 14, False)
+        self.xmlid("base", "source_read", "ir.model.access", 16, False)
+        self.xmlid("fixture", "retained_empty", "ir.model.access", 14, True)
+        for active in (True, False):
+            for protected in (True, False):
+                self.connection.execute("SAVEPOINT zero_operations")
+                with self.subTest(active=active, protected=protected):
+                    self.connection.execute("UPDATE ir_model_access SET active=? WHERE id=14", (active,))
+                    self.connection.execute(
+                        "UPDATE ir_model_data SET noupdate=? WHERE module='base' AND name='no_operations'", (protected,)
+                    )
+                    before = self.snapshot()
+                    policies = self.connection.execute("SELECT * FROM ir_model_access ORDER BY id").fetchall()
+                    with self.assertRaises(RuntimeError) as refusal:
+                        self.apply()
+                    self.assertIn("base.no_operations", str(refusal.exception))
+                    self.assertIn("fixture.retained_empty", str(refusal.exception))
+                    self.assertIn("no operations", str(refusal.exception))
+                    self.assertEqual(self.snapshot(), before)
+                    self.assertEqual(self.connection.execute("SELECT * FROM ir_model_access ORDER BY id").fetchall(), policies)
+                self.connection.execute("ROLLBACK TO zero_operations")
+                self.connection.execute("RELEASE zero_operations")
+
+        self.connection.execute("UPDATE ir_model_access SET perm_read=1 WHERE id=14")
+        plan = bridge.plan_access_transition(bridge.read_access_policies(self.cursor))
+        self.assertEqual({policy.identifier for policy in plan.source_owned}, {14, 16})
+
     def test_dangling_policy_alias_or_group_relation_refuses_before_any_bridge_write(self) -> None:
         for statement in (
             "INSERT INTO ir_model_data(module,name,model,res_id,noupdate) VALUES ('fixture','missing','ir.rule',93,1)",
