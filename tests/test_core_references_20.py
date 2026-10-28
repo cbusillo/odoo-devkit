@@ -147,6 +147,10 @@ class CoreReferenceTests(unittest.TestCase):
             ("UPDATE res_country SET code='other'", ()),
             ("UPDATE res_country_state SET name='Custom name'", ()),
             ("UPDATE ir_model_data SET noupdate=0 WHERE module='website'", ()),
+            (
+                "INSERT INTO ir_model_data(module,name,model,res_id,noupdate) VALUES ('base','default_website','website',?,0)",
+                (self.website,),
+            ),
         )
         for statement, parameters in changes:
             with self.subTest(statement=statement):
@@ -169,6 +173,14 @@ class CoreReferenceTests(unittest.TestCase):
         self.assertEqual(
             self.connection.execute("SELECT name FROM res_country_state WHERE id=?", (self.state,)).fetchone()[0], "Custom name"
         )
+
+    def test_unprotected_target_cannot_replace_a_protected_state_binding(self) -> None:
+        self.connection.execute("UPDATE ir_model_data SET noupdate=1 WHERE name=?", (bridge.SOURCE_STATE,))
+        self.xmlid("base", bridge.TARGET_STATE, "res.country.state", self.state, False)
+        before = self.snapshot()
+        with self.assertRaises(RuntimeError):
+            self.apply()
+        self.assertEqual(self.snapshot(), before)
 
     def test_no_website_installed_does_not_require_or_create_website_binding(self) -> None:
         self.connection.execute("DELETE FROM ir_module_module WHERE name='website'")

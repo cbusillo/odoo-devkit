@@ -717,6 +717,25 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
         self.assertIsNone(runner.local.db_conn)
         connection.close.assert_called_once_with()
 
+    def test_native_20_uses_migration_roots_without_requiring_the_legacy_framework(self) -> None:
+        settings = self._local_settings()
+        settings.openupgrade_enabled = True
+        settings.openupgrade_target_version = "20.0"
+        runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "openupgrade_scripts_custom" / "scripts").mkdir(parents=True)
+            with (
+                patch.object(runner, "_resolve_addons_paths", return_value=(root,)),
+                patch.object(runner, "run_command") as run_command,
+            ):
+                runner.run_openupgrade()
+                run_command.assert_called_once()
+                settings.openupgrade_target_version = "19.0"
+                with self.assertRaises(odoo_data_workflows.OdooRestorerError):
+                    runner.run_openupgrade()
+                run_command.assert_called_once()
+
     def test_openupgrade_releases_cached_connection_before_odoo_command(self) -> None:
         settings = self._local_settings()
         settings.openupgrade_enabled = True

@@ -2624,7 +2624,7 @@ with registry.cursor() as cr:
         finally:
             self._reset_db_connection()
 
-    def _resolve_openupgrade_assets(self) -> tuple[list[Path], Path]:
+    def _resolve_openupgrade_assets(self, *, require_framework: bool = True) -> tuple[list[Path], Path | None]:
         addons_paths = self._resolve_addons_paths()
         scripts_paths: list[Path] = []
         explicit_scripts_path: Path | None = self.local.openupgrade_scripts_path
@@ -2662,7 +2662,7 @@ with registry.cursor() as cr:
                 "OpenUpgrade scripts not found. Ensure openupgrade_scripts is in the addons path "
                 "or available under an OpenUpgrade repo directory.",
             )
-        if framework_path is None:
+        if require_framework and framework_path is None:
             raise OdooRestorerError(
                 "OpenUpgrade framework not found. Ensure openupgrade_framework is in the addons path.",
             )
@@ -2711,11 +2711,11 @@ with registry.cursor() as cr:
         if not self.local.openupgrade_enabled:
             return
 
-        scripts_paths, _ = self._resolve_openupgrade_assets()
         target_version = (self.local.openupgrade_target_version or self.local.odoo_version or "").strip()
+        native_20 = target_version.split(".", 1)[0] == "20"
+        scripts_paths, _ = self._resolve_openupgrade_assets(require_framework=not native_20)
         if target_version:
             self.os_env["OPENUPGRADE_TARGET_VERSION"] = target_version
-        native_20 = target_version.split(".", 1)[0] == "20"
 
         odoo_bin = "/odoo/odoo-bin"
         if not Path(odoo_bin).exists():
