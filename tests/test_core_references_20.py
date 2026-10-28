@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import runpy
 import sqlite3
 import tempfile
 import unittest
@@ -19,6 +20,12 @@ spec.loader.exec_module(bridge)
 class Cursor:
     def __init__(self, connection: sqlite3.Connection) -> None:
         self.cursor = connection.cursor()
+
+        def to_regclass(name: str) -> str | None:
+            exists = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone()
+            return name if exists else None
+
+        connection.create_function("to_regclass", 1, to_regclass)
 
     def execute(self, query: str, parameters: tuple = ()) -> Any:
         return self.cursor.execute(query.replace("%s", "?").replace(" FOR UPDATE", "").replace("::jsonb", ""), parameters)
@@ -211,6 +218,48 @@ class CoreReferenceTests(unittest.TestCase):
         self.connection.execute("DELETE FROM ir_model_data WHERE module='website'")
         self.apply()
         self.assertIsNone(self.connection.execute("SELECT id FROM ir_model_data WHERE name='default_website'").fetchone())
+
+    def test_same_major_refuses_partial_access_conversion_before_any_bridge_write(self) -> None:
+        self.connection.execute("INSERT INTO ir_model VALUES (31,'res.partner')")
+        self.connection.execute(
+            "INSERT INTO ir_model_access(id,model_id,name,group_id,active,perm_read) VALUES (14,31,'Retained read',67,1,1)"
+        )
+        self.connection.execute(
+            "INSERT INTO ir_rule(id,model_id,name,domain_force,active,perm_read) VALUES (14,31,'Unowned inactive limit','[]',0,1)"
+        )
+        self.xmlid("fixture", "retained_access", "ir.model.access", 14, True)
+        before = self.snapshot()
+        with self.assertRaises(RuntimeError) as refusal:
+            bridge.migrate(self.cursor, "20.0.1.3")
+        self.assertIn("fixture.retained_access", str(refusal.exception))
+        self.assertIn("ir.rule:14", str(refusal.exception))
+        self.assertEqual(self.snapshot(), before)
+
+    def test_cleanup_guard_keeps_aliases_even_without_legacy_tables(self) -> None:
+        self.xmlid("fixture", "retained_rule", "ir.rule", 14, True)
+        self.connection.execute("DROP TABLE ir_model_access")
+        self.connection.execute("DROP TABLE ir_rule")
+        before = list(self.connection.iterdump())
+        with self.assertRaises(RuntimeError) as refusal:
+            bridge.finish_access_transition(self.cursor, "19.0.1.3")
+        self.assertIn("fixture.retained_rule", str(refusal.exception))
+        self.assertEqual(list(self.connection.iterdump()), before)
+
+    def test_native_end_hook_refuses_before_legacy_alias_cleanup(self) -> None:
+        self.xmlid("__custom__", "retained_rule", "ir.rule", 14, True)
+        before = self.snapshot()
+        hook = SCRIPT.with_name("native_upgrade") / "base" / "0.0.0" / "end-00-access.py"
+        with self.assertRaises(RuntimeError) as refusal:
+            runpy.run_path(str(hook))["migrate"](self.cursor, "19.0.1.3")
+        self.assertIn("__custom__.retained_rule", str(refusal.exception))
+        self.assertEqual(self.snapshot(), before)
+
+    def test_native_twenty_without_legacy_tables_replays_without_effects(self) -> None:
+        self.connection.execute("DROP TABLE ir_model_access")
+        self.connection.execute("DROP TABLE ir_rule")
+        before = list(self.connection.iterdump())
+        bridge.migrate(self.cursor, "20.0.1.3")
+        self.assertEqual(list(self.connection.iterdump()), before)
 
     def test_same_major_is_noop_and_other_crossings_refuse(self) -> None:
         before = self.snapshot()

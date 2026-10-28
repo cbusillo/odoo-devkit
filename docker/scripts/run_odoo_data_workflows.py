@@ -2722,6 +2722,9 @@ with registry.cursor() as cr:
         target_version = self._openupgrade_target_version()
         native_20 = self._is_native_20_upgrade()
         scripts_paths, _ = self._resolve_openupgrade_assets(require_framework=not native_20)
+        reference_script = Path(__file__).with_name("prepare_core_references_20.py")
+        if native_20:
+            scripts_paths = [*scripts_paths, reference_script.with_name("native_upgrade")]
         if target_version:
             self.os_env["OPENUPGRADE_TARGET_VERSION"] = target_version
 
@@ -2743,7 +2746,6 @@ with registry.cursor() as cr:
             ",".join(str(path) for path in scripts_paths),
         ]
         if native_20:
-            reference_script = Path(__file__).with_name("prepare_core_references_20.py")
             cmd_parts += ["--pre-upgrade-scripts", shlex.quote(str(reference_script))]
         cmd_parts += self._odoo_runtime_connection_flags()
 

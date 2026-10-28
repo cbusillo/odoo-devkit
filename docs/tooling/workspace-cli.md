@@ -632,14 +632,17 @@ Notes
   Before any bridge write, the access preflight inventories legacy ACLs, rules,
   aliases and rule-group references and lists unsupported policies. Every
   nonempty 19 crossing currently refuses until native policy application and
-  reference preservation are qualified; this access work must remain unlanded
-  until then. Resolve reported policies through an explicit native mapping and
+  reference preservation are qualified. Resolve reported policies through an explicit native mapping and
   the native rights oracle, preserving their records and references. Deleting
   a policy or resetting module metadata is not a supported workaround.
   Planned grouped conversions retain frozen sibling dependencies. Later sibling,
   domain, checkbox and group-deletion changes require their own native review;
   current qualification does not establish preservation through those changes.
-  Same-major 20 updates do nothing in this bridge. Earlier reference and bank
+  The packaged native base end script refuses any surviving legacy policy,
+  alias or rule-group reference before native model cleanup. A same-major 20
+  invocation also refuses legacy residue before loading; a partially upgraded
+  database must be restored from its original, not resumed. A clean native 20
+  replay makes no bridge writes. Earlier reference and bank
   qualification does not qualify this combined access crossing. Security conversion,
   later cleanup, tenant hooks and a completed major-version migration need their
   own proof.

@@ -145,6 +145,40 @@ def _policy_label(policy: AccessPolicy) -> str:
     return f"{policy.source_model}:{policy.identifier} ({aliases}; {policy.name})"
 
 
+def finish_access_transition(cr: Any, version: str | None) -> None:
+    if (version or "").split(".", 1)[0] not in {"19", "20"}:
+        raise RuntimeError("Access cleanup requires a native 19-to-20 crossing or native 20 replay")
+    cr.execute(
+        "SELECT model, res_id, module, name FROM ir_model_data WHERE model IN ('ir.model.access', 'ir.rule') ORDER BY module, name"
+    )
+    references: dict[tuple[str, int | None], list[str]] = {}
+    for model, identifier, module, name in cr.fetchall():
+        references.setdefault((model, identifier), []).append(f"{module}.{name}")
+    cr.execute("SELECT to_regclass('ir_model_access'), to_regclass('ir_rule'), to_regclass('rule_group_rel')")
+    access_table, rule_table, group_table = cr.fetchone()
+    queries = (
+        (access_table, "ir.model.access", "SELECT id, name FROM ir_model_access ORDER BY id"),
+        (rule_table, "ir.rule", "SELECT id, name FROM ir_rule ORDER BY id"),
+    )
+    names = {}
+    for exists, model, query in queries:
+        if exists:
+            cr.execute(query)
+            for identifier, name in cr.fetchall():
+                names[model, identifier] = name
+                references.setdefault((model, identifier), [])
+    if group_table:
+        cr.execute("SELECT rule_group_id, group_id FROM rule_group_rel ORDER BY rule_group_id, group_id")
+        for identifier, group in cr.fetchall():
+            references.setdefault(("ir.rule", identifier), []).append(f"group:{group}")
+    if references:
+        pending = (
+            f"{model}:{identifier} ({', '.join(aliases) or 'unowned'}; {names.get((model, identifier))})"
+            for (model, identifier), aliases in sorted(references.items(), key=lambda item: (item[0][0], str(item[0][1])))
+        )
+        raise RuntimeError("Unmapped access policies or references must not reach native cleanup:\n" + "\n".join(pending))
+
+
 def _grouped_siblings(policy: AccessPolicy, policies: tuple[AccessPolicy, ...]) -> tuple[AccessPolicy, ...]:
     return tuple(
         sibling
@@ -406,6 +440,7 @@ def _bank_form_source(cr: Any) -> tuple[int, dict[str, str]] | None:
 def migrate(cr: Any, version: str | None) -> None:
     major = (version or "").split(".", 1)[0]
     if major == "20":
+        finish_access_transition(cr, version)
         return
     if major != "19":
         raise RuntimeError("Core reference preparation requires a native 19-to-20 crossing")
