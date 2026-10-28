@@ -2,6 +2,7 @@ import ast
 import csv
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -19,6 +20,21 @@ class Reference(NamedTuple):
     noupdate: bool
 
 
+class PolicyAudit(NamedTuple):
+    create_uid: int | None
+    create_date: datetime | str | None
+    write_uid: int | None
+    write_date: datetime | str | None
+
+
+class PolicyAlias(NamedTuple):
+    identifier: int
+    module: str
+    name: str
+    noupdate: bool
+    audit: PolicyAudit
+
+
 class AccessPolicy(NamedTuple):
     source_model: str
     identifier: int
@@ -32,6 +48,8 @@ class AccessPolicy(NamedTuple):
     protected_aliases: tuple[str, ...]
     source_owned: bool
     delegated_parents: tuple[str, ...] = ()
+    audit: PolicyAudit | None = None
+    alias_records: tuple[PolicyAlias, ...] = ()
 
 
 class NativeAccess(NamedTuple):
@@ -51,12 +69,12 @@ def read_access_policies(cr: Any) -> tuple[AccessPolicy, ...]:
     cr.execute("SELECT name FROM ir_module_module WHERE state IN ('installed', 'to upgrade')")
     source_modules = {row[0] for row in cr.fetchall()} - {"__export__", "__custom__", "studio_customization"}
     cr.execute(
-        "SELECT model, res_id, module, name, noupdate FROM ir_model_data "
+        "SELECT model, res_id, id, module, name, noupdate, create_uid, create_date, write_uid, write_date FROM ir_model_data "
         "WHERE model IN ('ir.model.access', 'ir.rule') ORDER BY module, name"
     )
-    aliases: dict[tuple[str, int], list[tuple[str, str, bool]]] = {}
-    for model, identifier, module, name, protected in cr.fetchall():
-        aliases.setdefault((model, identifier), []).append((module, name, protected))
+    aliases: dict[tuple[str, int], list[PolicyAlias]] = {}
+    for model, identifier, alias_id, module, name, protected, *audit in cr.fetchall():
+        aliases.setdefault((model, identifier), []).append(PolicyAlias(alias_id, module, name, bool(protected), PolicyAudit(*audit)))
     cr.execute("SELECT id FROM res_groups")
     existing_groups = {row[0] for row in cr.fetchall()}
     cr.execute("SELECT rule_group_id, group_id FROM rule_group_rel ORDER BY rule_group_id, group_id")
@@ -76,19 +94,21 @@ def read_access_policies(cr: Any) -> tuple[AccessPolicy, ...]:
         delegated_parents.setdefault(child, []).append(parent)
     cr.execute(
         "SELECT access.id, access.name, model.model, access.active, access.perm_create, access.perm_read, "
-        "access.perm_write, access.perm_unlink, access.group_id FROM ir_model_access access "
+        "access.perm_write, access.perm_unlink, access.group_id, "
+        "access.create_uid, access.create_date, access.write_uid, access.write_date FROM ir_model_access access "
         "LEFT JOIN ir_model model ON model.id = access.model_id ORDER BY access.id"
     )
     access_rows = cr.fetchall()
     cr.execute(
         "SELECT rule.id, rule.name, model.model, rule.active, rule.perm_create, rule.perm_read, "
-        "rule.perm_write, rule.perm_unlink, rule.domain_force FROM ir_rule rule "
+        "rule.perm_write, rule.perm_unlink, rule.domain_force, "
+        "rule.create_uid, rule.create_date, rule.write_uid, rule.write_date FROM ir_rule rule "
         "LEFT JOIN ir_model model ON model.id = rule.model_id ORDER BY rule.id"
     )
     rule_rows = cr.fetchall()
     policies = []
     for source_model, rows in (("ir.model.access", access_rows), ("ir.rule", rule_rows)):
-        for identifier, name, model, active, create, read, write, unlink, extra in rows:
+        for identifier, name, model, active, create, read, write, unlink, extra, *audit in rows:
             references = aliases.pop((source_model, identifier), [])
             policy_groups = tuple(groups.pop(identifier, ())) if source_model == "ir.rule" else (() if extra is None else (extra,))
             missing_groups = set(policy_groups) - existing_groups
@@ -104,14 +124,16 @@ def read_access_policies(cr: Any) -> tuple[AccessPolicy, ...]:
                     "".join(operation for operation, enabled in zip("crud", (create, read, write, unlink), strict=True) if enabled),
                     (extra or "") if source_model == "ir.rule" else "",
                     bool(active),
-                    tuple(f"{module}.{alias}" for module, alias, _ in references),
-                    tuple(f"{module}.{alias}" for module, alias, protected in references if protected),
-                    any(module in source_modules for module, _, _ in references),
+                    tuple(f"{alias.module}.{alias.name}" for alias in references),
+                    tuple(f"{alias.module}.{alias.name}" for alias in references if alias.noupdate),
+                    any(alias.module in source_modules for alias in references),
                     tuple(delegated_parents.get(model, ())),
+                    PolicyAudit(*audit),
+                    tuple(references),
                 )
             )
     if aliases:
-        dangling = sorted(f"{module}.{name}" for references in aliases.values() for module, name, _ in references)
+        dangling = sorted(f"{alias.module}.{alias.name}" for references in aliases.values() for alias in references)
         raise RuntimeError(f"Dangling source access references: {', '.join(dangling)}")
     if groups:
         raise RuntimeError(f"Dangling source rule-group references: {sorted(groups)}")

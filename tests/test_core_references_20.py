@@ -42,7 +42,7 @@ class CoreReferenceTests(unittest.TestCase):
         self.addCleanup(self.connection.close)
         self.connection.executescript(
             "CREATE TABLE ir_model_data (id INTEGER PRIMARY KEY, module TEXT, name TEXT, model TEXT, res_id INTEGER, "
-            "noupdate BOOLEAN, create_uid INTEGER, write_uid INTEGER, UNIQUE(module,name));"
+            "noupdate BOOLEAN, create_uid INTEGER, write_uid INTEGER, create_date TEXT, write_date TEXT, UNIQUE(module,name));"
             "CREATE TABLE res_country (id INTEGER PRIMARY KEY, code TEXT);"
             "CREATE TABLE res_country_state (id INTEGER PRIMARY KEY, country_id INTEGER, code TEXT, name TEXT, write_uid INTEGER);"
             "CREATE TABLE website (id INTEGER PRIMARY KEY, name TEXT, domain TEXT, company_id INTEGER);"
@@ -50,9 +50,11 @@ class CoreReferenceTests(unittest.TestCase):
             "CREATE TABLE ir_model (id INTEGER PRIMARY KEY, model TEXT);"
             "CREATE TABLE ir_model_inherit (model_id INTEGER, parent_id INTEGER, parent_field_id INTEGER);"
             "CREATE TABLE ir_rule (id INTEGER PRIMARY KEY, model_id INTEGER, name TEXT, domain_force TEXT, active BOOLEAN, "
-            "perm_read BOOLEAN, perm_write BOOLEAN, perm_create BOOLEAN, perm_unlink BOOLEAN);"
+            "perm_read BOOLEAN, perm_write BOOLEAN, perm_create BOOLEAN, perm_unlink BOOLEAN, "
+            "create_uid INTEGER, create_date TEXT, write_uid INTEGER, write_date TEXT);"
             "CREATE TABLE ir_model_access (id INTEGER PRIMARY KEY, model_id INTEGER, name TEXT, group_id INTEGER, active BOOLEAN, "
-            "perm_read BOOLEAN, perm_write BOOLEAN, perm_create BOOLEAN, perm_unlink BOOLEAN);"
+            "perm_read BOOLEAN, perm_write BOOLEAN, perm_create BOOLEAN, perm_unlink BOOLEAN, "
+            "create_uid INTEGER, create_date TEXT, write_uid INTEGER, write_date TEXT);"
             "CREATE TABLE rule_group_rel (rule_group_id INTEGER, group_id INTEGER);"
             "CREATE TABLE res_groups (id INTEGER PRIMARY KEY);"
             "INSERT INTO res_groups VALUES (10),(67);"
@@ -221,9 +223,15 @@ class CoreReferenceTests(unittest.TestCase):
 
     def test_data_only_grouped_rule_records_frozen_siblings_without_applying_any_bridge_write(self) -> None:
         self.connection.execute("INSERT INTO ir_model VALUES (31,'res.partner')")
-        self.connection.execute("INSERT INTO ir_model_access VALUES (14,31,'Custom read',67,1,1,0,0,0)")
-        self.connection.execute("INSERT INTO ir_rule VALUES (23,31,'Retained contact limit',?,1,1,0,0,0)", ("[('id','=',7)]",))
-        self.connection.execute("INSERT INTO ir_rule VALUES (29,31,'Source portal limit',?,1,1,0,0,0)", ("[('id','=',9)]",))
+        self.connection.execute("INSERT INTO ir_model_access VALUES (14,31,'Custom read',67,1,1,0,0,0,NULL,NULL,NULL,NULL)")
+        self.connection.execute(
+            "INSERT INTO ir_rule VALUES (23,31,'Retained contact limit',?,1,1,0,0,0,NULL,NULL,NULL,NULL)",
+            ("[('id','=',7)]",),
+        )
+        self.connection.execute(
+            "INSERT INTO ir_rule VALUES (29,31,'Source portal limit',?,1,1,0,0,0,NULL,NULL,NULL,NULL)",
+            ("[('id','=',9)]",),
+        )
         self.connection.executemany("INSERT INTO rule_group_rel VALUES (?,?)", ((23, 67), (29, 10)))
         self.xmlid("fixture", "contact_limit", "ir.rule", 23, True)
         self.xmlid("base", "portal_limit", "ir.rule", 29, False)
@@ -305,11 +313,54 @@ class CoreReferenceTests(unittest.TestCase):
             with self.subTest(access=changed_access, source=changed_source), self.assertRaises(RuntimeError):
                 bridge.plan_access_transition((changed_access, changed_source, changed_sibling))
 
+    def test_policy_inventory_keeps_overlapping_identities_and_record_reference_audit(self) -> None:
+        self.connection.execute("INSERT INTO ir_model VALUES (31,'res.partner')")
+        self.connection.execute(
+            "INSERT INTO ir_model_access(id,model_id,name,group_id,active,perm_read) VALUES (14,31,'Retained read',67,1,1)"
+        )
+        self.connection.execute(
+            "INSERT INTO ir_rule(id,model_id,name,domain_force,active,perm_read) VALUES (14,31,'Retained limit','[]',1,1)"
+        )
+        self.xmlid("fixture", "read_access", "ir.model.access", 14, True)
+        self.xmlid("__custom__", "additional_access", "ir.model.access", 14, False)
+        self.xmlid("fixture", "read_limit", "ir.rule", 14, True)
+        for table, audit in (
+            ("ir_model_access", (37, "2025-01-02 03:04:05", 41, "2025-02-03 04:05:06")),
+            ("ir_rule", (None, None, 53, "2025-03-04 05:06:07")),
+        ):
+            self.connection.execute(
+                "UPDATE " + table + " SET create_uid=?,create_date=?,write_uid=?,write_date=? WHERE id=14", audit
+            )
+        self.connection.execute(
+            "UPDATE ir_model_data SET create_date=?,write_date=? WHERE model IN ('ir.model.access','ir.rule')",
+            ("2025-04-05 06:07:08", "2025-05-06 07:08:09"),
+        )
+        before = self.snapshot()
+        policies = bridge.read_access_policies(self.cursor)
+        self.assertEqual(
+            {(policy.source_model, policy.identifier) for policy in policies}, {("ir.model.access", 14), ("ir.rule", 14)}
+        )
+        for policy, table in zip(policies, ("ir_model_access", "ir_rule"), strict=True):
+            audit = self.connection.execute(
+                "SELECT create_uid,create_date,write_uid,write_date FROM " + table + " WHERE id=?", (policy.identifier,)
+            ).fetchone()
+            self.assertEqual(policy.audit, audit)
+            aliases = self.connection.execute(
+                "SELECT id,module,name,noupdate,create_uid,create_date,write_uid,write_date FROM ir_model_data "
+                "WHERE model=? AND res_id=? ORDER BY module,name",
+                (policy.source_model, policy.identifier),
+            ).fetchall()
+            self.assertEqual([(*alias[:4], *alias.audit) for alias in policy.alias_records], aliases)
+        self.assertEqual(self.snapshot(), before)
+
     def test_data_only_access_plan_retains_inactive_acl_and_global_rule(self) -> None:
         self.connection.execute("INSERT INTO ir_model VALUES (31,'res.partner')")
-        self.connection.execute("INSERT INTO ir_model_access VALUES (14,31,'Retained write',67,0,0,1,0,0)")
+        self.connection.execute("INSERT INTO ir_model_access VALUES (14,31,'Retained write',67,0,0,1,0,0,NULL,NULL,NULL,NULL)")
         domain = "[('company_id','in',company_ids)]"
-        self.connection.execute("INSERT INTO ir_rule VALUES (23,31,'Retained company',?,0,1,1,0,0)", (domain,))
+        self.connection.execute(
+            "INSERT INTO ir_rule VALUES (23,31,'Retained company',?,0,1,1,0,0,NULL,NULL,NULL,NULL)",
+            (domain,),
+        )
         self.xmlid("fixture", "write_access", "ir.model.access", 14, True)
         self.xmlid("fixture", "company_limit", "ir.rule", 23, True)
         plan = bridge.plan_access_transition(bridge.read_access_policies(self.cursor))
@@ -328,8 +379,8 @@ class CoreReferenceTests(unittest.TestCase):
 
     def test_access_refusals_are_aggregated_and_unowned_policies_are_not_dropped(self) -> None:
         self.connection.execute("INSERT INTO ir_model VALUES (31,'res.partner')")
-        self.connection.execute("INSERT INTO ir_model_access VALUES (14,31,NULL,67,1,1,0,0,0)")
-        self.connection.execute("INSERT INTO ir_model_access VALUES (16,31,'Unrestricted role',NULL,1,1,0,0,0)")
+        self.connection.execute("INSERT INTO ir_model_access VALUES (14,31,NULL,67,1,1,0,0,0,NULL,NULL,NULL,NULL)")
+        self.connection.execute("INSERT INTO ir_model_access VALUES (16,31,'Unrestricted role',NULL,1,1,0,0,0,NULL,NULL,NULL,NULL)")
         before = self.connection.execute("SELECT * FROM ir_model_access").fetchall()
         policies = bridge.read_access_policies(self.cursor)
         with self.assertRaises(RuntimeError) as refusal:
@@ -340,7 +391,10 @@ class CoreReferenceTests(unittest.TestCase):
 
     def test_unowned_acl_is_planned_and_module_owned_policy_requires_its_source_mapping(self) -> None:
         self.connection.execute("INSERT INTO ir_model VALUES (31,'res.partner')")
-        self.connection.executemany("INSERT INTO ir_model_access VALUES (?,31,'Retained read',67,1,1,0,0,0)", ((14,), (16,)))
+        self.connection.executemany(
+            "INSERT INTO ir_model_access VALUES (?,31,'Retained read',67,1,1,0,0,0,NULL,NULL,NULL,NULL)",
+            ((14,), (16,)),
+        )
         self.xmlid("base", "source_owned", "ir.model.access", 16, False)
         self.xmlid("fixture", "protected_alias", "ir.model.access", 16, True)
         self.connection.execute("INSERT INTO ir_module_module VALUES ('base','to upgrade','19.0.1.0')")
@@ -352,7 +406,9 @@ class CoreReferenceTests(unittest.TestCase):
 
     def test_data_only_zero_acls_keep_references_and_remain_unapplied(self) -> None:
         self.connection.execute("INSERT INTO ir_model VALUES (31,'res.partner')")
-        self.connection.execute("INSERT INTO ir_model_access VALUES (14,31,'Retained zero operations',67,1,0,0,0,0)")
+        self.connection.execute(
+            "INSERT INTO ir_model_access VALUES (14,31,'Retained zero operations',67,1,0,0,0,0,NULL,NULL,NULL,NULL)"
+        )
         self.xmlid("__custom__", "retained_zero", "ir.model.access", 14, True)
         for group in (None, 67):
             for active in (False, True):
@@ -373,8 +429,10 @@ class CoreReferenceTests(unittest.TestCase):
     def test_source_owned_zero_operation_policies_refuse_before_bridge_writes(self) -> None:
         self.connection.execute("INSERT INTO ir_model VALUES (31,'res.partner')")
         self.connection.execute("INSERT INTO ir_module_module VALUES ('base','installed','19.0.1.0')")
-        self.connection.execute("INSERT INTO ir_model_access VALUES (14,31,'Source zero operations',67,1,0,0,0,0)")
-        self.connection.execute("INSERT INTO ir_model_access VALUES (16,31,'Source read',67,1,1,0,0,0)")
+        self.connection.execute(
+            "INSERT INTO ir_model_access VALUES (14,31,'Source zero operations',67,1,0,0,0,0,NULL,NULL,NULL,NULL)"
+        )
+        self.connection.execute("INSERT INTO ir_model_access VALUES (16,31,'Source read',67,1,1,0,0,0,NULL,NULL,NULL,NULL)")
         self.xmlid("base", "no_operations", "ir.model.access", 14, False)
         self.xmlid("base", "source_read", "ir.model.access", 16, False)
         for retained_alias in (False, True):
@@ -407,7 +465,8 @@ class CoreReferenceTests(unittest.TestCase):
     def test_zero_rule_keeps_its_unused_domain_and_refuses_mapping(self) -> None:
         self.connection.execute("INSERT INTO ir_model VALUES (31,'res.partner')")
         self.connection.execute(
-            "INSERT INTO ir_rule VALUES (23,31,'Retained unused domain',?,1,0,0,0,0)", ("[('name','=','retained')]",)
+            "INSERT INTO ir_rule VALUES (23,31,'Retained unused domain',?,1,0,0,0,0,NULL,NULL,NULL,NULL)",
+            ("[('name','=','retained')]",),
         )
         self.xmlid("__custom__", "retained_zero_rule", "ir.rule", 23, True)
         policies = bridge.read_access_policies(self.cursor)
@@ -420,7 +479,7 @@ class CoreReferenceTests(unittest.TestCase):
     def test_source_owned_shapes_require_the_same_explicit_native_mapping(self) -> None:
         self.connection.executemany("INSERT INTO ir_model VALUES (?,?)", ((31, "fixture.child"), (32, "res.partner")))
         self.connection.execute("INSERT INTO ir_module_module VALUES ('base','installed','19.0.1.0')")
-        self.connection.execute("INSERT INTO ir_model_access VALUES (14,31,'Source read',67,1,1,0,0,0)")
+        self.connection.execute("INSERT INTO ir_model_access VALUES (14,31,'Source read',67,1,1,0,0,0,NULL,NULL,NULL,NULL)")
         self.xmlid("base", "source_read", "ir.model.access", 14, False)
         for statement, reason in (
             ("UPDATE ir_model SET model='ir.rule' WHERE id=31", "merged security-model"),
@@ -443,7 +502,10 @@ class CoreReferenceTests(unittest.TestCase):
     def test_unapplied_access_plans_refuse_before_any_bridge_write(self) -> None:
         self.connection.execute("INSERT INTO ir_model VALUES (31,'res.partner')")
         self.connection.execute("INSERT INTO ir_module_module VALUES ('base','installed','19.0.1.0')")
-        self.connection.executemany("INSERT INTO ir_model_access VALUES (?,31,'Retained read',67,1,1,0,0,0)", ((14,), (16,)))
+        self.connection.executemany(
+            "INSERT INTO ir_model_access VALUES (?,31,'Retained read',67,1,1,0,0,0,NULL,NULL,NULL,NULL)",
+            ((14,), (16,)),
+        )
         self.xmlid("base", "source_read", "ir.model.access", 16, False)
         self.xmlid("fixture", "custom_read", "ir.model.access", 14, True)
         before = self.snapshot()
@@ -471,7 +533,9 @@ class CoreReferenceTests(unittest.TestCase):
 
     def test_missing_group_and_merged_security_model_refuse(self) -> None:
         self.connection.execute("INSERT INTO ir_model VALUES (31,'ir.rule')")
-        self.connection.execute("INSERT INTO ir_model_access VALUES (14,31,'Retained security policy',67,1,1,0,0,0)")
+        self.connection.execute(
+            "INSERT INTO ir_model_access VALUES (14,31,'Retained security policy',67,1,1,0,0,0,NULL,NULL,NULL,NULL)"
+        )
         before = self.snapshot()
         with self.assertRaises(RuntimeError):
             self.apply()
@@ -485,9 +549,12 @@ class CoreReferenceTests(unittest.TestCase):
 
     def test_data_only_acl_refuses_active_or_inactive_module_grouped_siblings(self) -> None:
         self.connection.execute("INSERT INTO ir_model VALUES (31,'res.partner')")
-        self.connection.execute("INSERT INTO ir_model_access VALUES (14,31,'Retained read',67,1,1,0,0,0)")
+        self.connection.execute("INSERT INTO ir_model_access VALUES (14,31,'Retained read',67,1,1,0,0,0,NULL,NULL,NULL,NULL)")
         self.xmlid("fixture", "contact_access", "ir.model.access", 14, True)
-        self.connection.execute("INSERT INTO ir_rule VALUES (29,31,'Source portal limit',?,1,1,0,0,0)", ("[('id','=',9)]",))
+        self.connection.execute(
+            "INSERT INTO ir_rule VALUES (29,31,'Source portal limit',?,1,1,0,0,0,NULL,NULL,NULL,NULL)",
+            ("[('id','=',9)]",),
+        )
         self.connection.execute("INSERT INTO rule_group_rel VALUES (29,10)")
         self.xmlid("base", "portal_limit", "ir.rule", 29, False)
         self.connection.execute("INSERT INTO ir_module_module VALUES ('base','installed','19.0.1.0')")
@@ -507,7 +574,7 @@ class CoreReferenceTests(unittest.TestCase):
 
     def test_nameless_rule_refuses_regardless_of_ownership_before_bridge_writes(self) -> None:
         self.connection.execute("INSERT INTO ir_model VALUES (31,'res.partner')")
-        self.connection.execute("INSERT INTO ir_rule VALUES (23,31,NULL,'[]',1,1,0,0,0)")
+        self.connection.execute("INSERT INTO ir_rule VALUES (23,31,NULL,'[]',1,1,0,0,0,NULL,NULL,NULL,NULL)")
         self.connection.execute("INSERT INTO ir_module_module VALUES ('base','installed','19.0.1.0')")
         for module in ("fixture", "base"):
             self.connection.execute("SAVEPOINT nameless")
@@ -526,7 +593,7 @@ class CoreReferenceTests(unittest.TestCase):
     def test_delegated_parent_requires_native_permission_and_rule_mapping(self) -> None:
         self.connection.executemany("INSERT INTO ir_model VALUES (?,?)", ((31, "fixture.child"), (32, "res.partner")))
         self.connection.execute("INSERT INTO ir_model_inherit VALUES (31,32,71)")
-        self.connection.execute("INSERT INTO ir_model_access VALUES (14,31,'Retained child read',67,1,1,0,0,0)")
+        self.connection.execute("INSERT INTO ir_model_access VALUES (14,31,'Retained child read',67,1,1,0,0,0,NULL,NULL,NULL,NULL)")
         self.xmlid("fixture", "child_read", "ir.model.access", 14, True)
         before = self.snapshot()
         with self.assertRaises(RuntimeError) as refusal:
@@ -537,8 +604,8 @@ class CoreReferenceTests(unittest.TestCase):
 
     def test_installed_customization_modules_do_not_hide_unsafe_data_only_acl(self) -> None:
         self.connection.execute("INSERT INTO ir_model VALUES (31,'res.partner')")
-        self.connection.execute("INSERT INTO ir_model_access VALUES (14,31,'Retained read',67,1,1,0,0,0)")
-        self.connection.execute("INSERT INTO ir_rule VALUES (29,31,'Source portal limit','[]',1,1,0,0,0)")
+        self.connection.execute("INSERT INTO ir_model_access VALUES (14,31,'Retained read',67,1,1,0,0,0,NULL,NULL,NULL,NULL)")
+        self.connection.execute("INSERT INTO ir_rule VALUES (29,31,'Source portal limit','[]',1,1,0,0,0,NULL,NULL,NULL,NULL)")
         self.connection.execute("INSERT INTO rule_group_rel VALUES (29,10)")
         self.xmlid("base", "portal_limit", "ir.rule", 29, False)
         self.connection.execute("INSERT INTO ir_module_module VALUES ('base','installed','19.0.1.0')")
