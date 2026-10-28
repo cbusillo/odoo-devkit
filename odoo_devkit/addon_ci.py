@@ -102,6 +102,39 @@ def fetch_source(args: list[str], *, capture: bool = False) -> subprocess.Comple
     return subprocess.run(args, check=True, text=True, env=environment, capture_output=capture, timeout=180)
 
 
+def copy_test_inputs(inputs: list[tuple[Path, str]], container: str, output: Path) -> None:
+    from .local_runtime import copy_required_path
+
+    with tempfile.TemporaryDirectory(prefix=f"{container}-inputs-", dir=output.parent) as temporary:
+        for index, (source, destination) in enumerate(inputs):
+            staged = Path(temporary) / str(index)
+            excluded = tuple(
+                Path(nested).relative_to(destination)
+                for _, nested in inputs[index + 1 :]
+                if Path(nested).is_relative_to(destination)
+            )
+            repository = next((path for path in (source, *source.parents) if (path / ".git").exists()), None)
+            if repository is not None:
+                copy_required_path(
+                    repo_path=repository,
+                    source_commit=None,
+                    source_path=source,
+                    destination_path=staged,
+                    label="addon CI inputs",
+                    exclude_relative_paths=excluded,
+                )
+            else:
+                shutil.copytree(source, staged, ignore=shutil.ignore_patterns(".git", ".venv", ".env", ".env.*", "__pycache__"))
+                for relative in excluded:
+                    masked = staged / relative
+                    if masked.is_symlink():
+                        masked.unlink()
+                    elif masked.exists():
+                        shutil.rmtree(masked)
+            staged.mkdir(parents=True, exist_ok=True)
+            command(["docker", "cp", f"{staged}/.", f"{container}:{destination}"])
+
+
 def build_test_image(image: str, tenant: Path | None, context: Path, tag: str, *, support_root: Path | None = None) -> None:
     from .local_runtime import resolve_image_digest, split_image_reference
 
@@ -306,26 +339,27 @@ def run_tests(
             if time.monotonic() >= ready_by:
                 raise TimeoutError("Throwaway PostgreSQL did not become ready")
             time.sleep(1)
-        mounts = ["--volume", f"{addons_root}:/opt/project/addons:ro"]
+        inputs = [(addons_root, "/opt/project/addons")]
         paths = ["/opt/project/addons", "/opt/extra_addons", "/opt/enterprise", "/odoo/addons", "/odoo/odoo/addons"]
         paths.extend(sorted(set(external_paths)))
         python_paths = ["/odoo", "/opt/project/addons"]
         if tenant is not None:
-            mounts = ["--volume", f"{tenant}:/opt/project:ro", *mounts]
+            inputs.insert(0, (tenant, "/opt/project"))
         if support_root is not None:
             support_path = "/opt/support-addons" if devkit_checks else "/opt/extra_addons"
-            mounts.extend(["--volume", f"{support_root}:{support_path}:ro"])
+            inputs.append((support_root, support_path))
             if support_path not in paths:
                 paths.append(support_path)
             python_paths.append(support_path)
         if devkit_checks:
-            mounts.extend(["--volume", f"{ROOT / 'docker/scripts'}:/volumes/scripts:ro"])
-            mounts.extend(["--volume", f"{ROOT / 'tests/live_odoo/extra_addons'}:/opt/extra_addons:ro"])
+            inputs.append((ROOT / "docker/scripts", "/volumes/scripts"))
+            inputs.append((ROOT / "tests/live_odoo/extra_addons", "/opt/extra_addons"))
             paths.append("/opt/extra_addons/ci_enterprise")
             python_paths.insert(0, "/volumes/scripts")
+        mounts = [argument for _, destination in inputs for argument in ("--mount", f"type=volume,dst={destination},volume-nocopy")]
         test_command = [
             "docker",
-            "run",
+            "create",
             "--name",
             test_container,
             "--network",
@@ -367,9 +401,16 @@ def run_tests(
             "--limit-time-real",
             str(timeout),
         ]
+        command(test_command)
+        copy_test_inputs(inputs, test_container, output)
         with (output / "odoo.log").open("w", encoding="utf-8") as log_file:
             completed = subprocess.run(
-                test_command, stdout=log_file, stderr=subprocess.STDOUT, text=True, timeout=timeout, env=execution_environment()
+                ["docker", "start", "--attach", test_container],
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=timeout,
+                env=execution_environment(),
             )
         log = (output / "odoo.log").read_text(encoding="utf-8")
         print(log)
@@ -381,7 +422,7 @@ def run_tests(
     finally:
         # Names are generated for this invocation; never enumerate or prune other Docker resources.
         for args in (
-            ["docker", "rm", "--force", test_container, database_container],
+            ["docker", "rm", "--force", "--volumes", test_container, database_container],
             ["docker", "network", "rm", token],
             ["docker", "image", "rm", image_tag],
         ):
@@ -404,7 +445,7 @@ def argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tenant", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--timeout", type=int, default=1800)
-    parser.add_argument("--devkit-checks", action="store_true", help="Mount devkit scripts and synthetic live-check addons")
+    parser.add_argument("--devkit-checks", action="store_true", help="Copy devkit scripts and synthetic live-check addons")
     return parser
 
 
