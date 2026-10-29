@@ -3148,14 +3148,15 @@ sources = [
                 run_native_runtime_select(manifest=manifest)
 
             def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
-                if "/volumes/scripts/prepare_core_references_20.py" in command:
+                if "exec" in command and "script-runner" in command:
                     return subprocess.CompletedProcess(command, 1, stdout="", stderr="Unmapped access reference")
                 return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
             with mock.patch.object(local_runtime.subprocess, "run", side_effect=run) as process:
                 with self.assertRaises(ValueError), contextlib.redirect_stdout(io.StringIO()):
                     run_native_runtime_workflow(manifest=manifest, workflow="init")
-            self.assertFalse(any("/odoo/odoo-bin" in call.args[0] for call in process.call_args_list))
+            native_entry = local_runtime._odoo_bin_command(database_name="", addons_path=(), database_user="")[0]
+            self.assertFalse(any(native_entry in call.args[0] for call in process.call_args_list))
 
     def test_native_runtime_workflow_runs_update_natively_for_local_instance(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

@@ -723,7 +723,7 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
                 stack.enter_context(patch.object(odoo_startup, "_load_settings", return_value=self._settings()))
                 stack.enter_context(patch.object(odoo_startup, "_require_scheduler_ready"))
                 for name in dict.fromkeys((*self._STARTUP_STEP_NAMES, "_assert_native_access_startup")):
-                    stack.enter_context(patch.object(odoo_startup, name, getattr(recorder, name), create=True))
+                    stack.enter_context(patch.object(odoo_startup, name, getattr(recorder, name)))
                 stack.enter_context(patch.object(odoo_startup.os, "execve", recorder.execve))
                 with self.assertRaises(RuntimeError) as refused:
                     odoo_startup.main()

@@ -209,16 +209,29 @@ def ensure_native_access_replay(cr: Any) -> None:
 def read_incoming_cleanup_references(cr: Any) -> tuple[str, ...]:
     retired = ("ir.model.access", "ir.rule")
     roots = (
-        ("ir_model", "SELECT id FROM ir_model WHERE model IN (%s, %s)", retired),
+        ("ir_model", "ir.model", "SELECT id FROM ir_model WHERE model IN (%s, %s)", retired),
         (
             "ir_model_fields",
+            "ir.model.fields",
             "SELECT id FROM ir_model_fields WHERE model IN (%s, %s) OR relation IN (%s, %s)",
             retired + retired,
         ),
-        ("ir_ui_view", "SELECT id FROM ir_ui_view WHERE model IN (%s, %s)", retired),
+        ("ir_ui_view", "ir.ui.view", "SELECT id FROM ir_ui_view WHERE model IN (%s, %s)", retired),
+        ("ir_act_window", "ir.actions.act_window", "SELECT id FROM ir_act_window WHERE res_model IN (%s, %s)", retired),
+        ("ir_act_report_xml", "ir.actions.report", "SELECT id FROM ir_act_report_xml WHERE model IN (%s, %s)", retired),
+        (
+            "ir_actions",
+            "ir.actions.actions",
+            "SELECT id FROM ir_actions WHERE id IN ("
+            "SELECT id FROM ir_act_window WHERE res_model IN (%s, %s) UNION "
+            "SELECT id FROM ir_act_report_xml WHERE model IN (%s, %s) UNION "
+            "SELECT action.id FROM ir_act_server action JOIN ir_model model ON model.id = action.model_id "
+            "WHERE model.model IN (%s, %s))",
+            retired * 3,
+        ),
     )
     consumers = []
-    for table, query, parameters in roots:
+    for table, model, query, parameters in roots:
         cr.execute("SELECT to_regclass(%s)", (table,))
         if not cr.fetchone()[0]:
             continue
@@ -227,7 +240,26 @@ def read_incoming_cleanup_references(cr: Any) -> tuple[str, ...]:
         if not identifiers:
             continue
         if table != "ir_model":
-            consumers.extend(f"{table}:{identifier} (retired access reflection)" for identifier in identifiers)
+            consumers.extend(f"{table}:{identifier} (targets retired access model)" for identifier in identifiers)
+        cr.execute(
+            "SELECT id, module || '.' || name FROM ir_model_data WHERE model = %s AND res_id = ANY(%s)",
+            (model, identifiers),
+        )
+        consumers.extend(f"ir_model_data:{identifier} ({alias})" for identifier, alias in cr.fetchall())
+        if table == "ir_actions":
+            action_references = [
+                f"{kind},{identifier}"
+                for kind in ("ir.actions.act_window", "ir.actions.report", "ir.actions.server")
+                for identifier in identifiers
+            ]
+            for consumer, query, values in (
+                ("ir_filters", "SELECT id FROM ir_filters WHERE action_id = ANY(%s)", identifiers),
+                ("ir_ui_menu", "SELECT id FROM ir_ui_menu WHERE action = ANY(%s)", action_references),
+            ):
+                cr.execute("SELECT to_regclass(%s)", (consumer,))
+                if cr.fetchone()[0]:
+                    cr.execute(query, (values,))
+                    consumers.extend(f"{consumer}:{row[0]} (references retired access action)" for row in cr.fetchall())
         cr.execute(
             "SELECT namespace.nspname || '.' || source.relname, dependency.conname, "
             "cardinality(dependency.conkey), cardinality(dependency.confkey), target.attname, "
@@ -262,18 +294,12 @@ def read_legacy_cleanup_consumers(cr: Any) -> tuple[str, ...]:
         ("mail_activity_type", "SELECT id, res_model FROM mail_activity_type WHERE res_model IN (%s, %s)", retired),
         ("mail_followers", "SELECT id, res_model FROM mail_followers WHERE res_model IN (%s, %s)", retired),
         ("mail_message", "SELECT id, model FROM mail_message WHERE model IN (%s, %s)", retired),
+        ("ir_filters", "SELECT id, model_id FROM ir_filters WHERE model_id IN (%s, %s)", retired),
         (
             "ir_cron",
             "SELECT cron.id, model.model FROM ir_cron cron "
             "JOIN ir_act_server action ON action.id = cron.ir_actions_server_id "
             "JOIN ir_model model ON model.id = action.model_id WHERE model.model IN (%s, %s)",
-            retired,
-        ),
-        (
-            "ir_model_data",
-            "SELECT data.id, data.module || '.' || data.name FROM ir_model_data data "
-            "JOIN ir_model model ON model.id = data.res_id "
-            "WHERE data.model = 'ir.model' AND model.model IN (%s, %s)",
             retired,
         ),
     )

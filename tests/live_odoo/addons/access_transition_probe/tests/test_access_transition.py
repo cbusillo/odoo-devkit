@@ -457,11 +457,29 @@ class TestAccessTransition(TransactionCase):
                 "target INTEGER REFERENCES ir_model(id) ON DELETE SET NULL)"
             )
             self.env.cr.execute('INSERT INTO "access%%transition_reference" VALUES (14, %s)', (legacy.id,))
+            self.env.cr.execute('CREATE SCHEMA "access%transition"')
+            self.env.cr.execute(
+                'CREATE TABLE "access%transition".no_identity (target INTEGER REFERENCES ir_model(id) ON DELETE CASCADE)'
+            )
+            self.env.cr.execute('INSERT INTO "access%%transition".no_identity VALUES (%s)', (legacy.id,))
+            self.env.cr.execute('SELECT ctid::text, target FROM "access%transition".no_identity')
+            without_identity = self.env.cr.fetchall()
+            self.env.cr.execute("ALTER TABLE ir_model ADD CONSTRAINT access_transition_pair UNIQUE (id, model)")
+            self.env.cr.execute(
+                'CREATE TABLE "access%transition".composite_reference (target INTEGER, model VARCHAR, '
+                "FOREIGN KEY (target, model) REFERENCES ir_model(id, model))"
+            )
+            self.env.cr.execute('CREATE TABLE "access%transition".named_reference (model VARCHAR REFERENCES ir_model(model))')
             self.env.cr.execute('SELECT * FROM "access%transition_reference"')
             before = self.env.cr.fetchall()
             with self.assertRaises(RuntimeError) as refusal:
                 bridge.ensure_no_legacy_access_residue(self.env.cr)
             self.assertIn("access%transition_reference:14", str(refusal.exception))
+            self.assertIn("access%transition.no_identity:" + without_identity[0][0], str(refusal.exception))
+            for table in ("composite_reference", "named_reference"):
+                self.assertIn("access%transition." + table, str(refusal.exception))
+            self.env.cr.execute('SELECT ctid::text, target FROM "access%transition".no_identity')
+            self.assertEqual(self.env.cr.fetchall(), without_identity)
             self.env.cr.execute('SELECT * FROM "access%transition_reference"')
             self.assertEqual(self.env.cr.fetchall(), before)
             raise RevertOperation

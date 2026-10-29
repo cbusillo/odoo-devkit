@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / "docker" / "scripts" / "prepare_core_references_20.py"
 spec = importlib.util.spec_from_file_location("core_references_20", SCRIPT)
@@ -31,6 +31,16 @@ class Cursor:
         connection.create_function("to_regclass", 1, to_regclass)
 
     def execute(self, query: str, parameters: tuple = ()) -> Any:
+        if "res_id = ANY(%s)" in query:
+            return self.cursor.execute(
+                query.replace("%s", "?").replace("res_id = ANY(?)", "res_id IN (SELECT value FROM json_each(?))"),
+                (parameters[0], json.dumps(parameters[1])),
+            )
+        if "= ANY(%s)" in query:
+            return self.cursor.execute(
+                query.replace("= ANY(%s)", "IN (SELECT value FROM json_each(?))"),
+                (json.dumps(parameters[0]),),
+            )
         if "FROM pg_constraint" in query:
             references = []
             tables = self.cursor.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
@@ -321,6 +331,9 @@ class CoreReferenceTests(unittest.TestCase):
             ("mail_activity_type", "res_model TEXT", "?", False),
             ("mail_followers", "res_model TEXT", "?", False),
             ("mail_message", "model TEXT", "?", False),
+            ("ir_act_window", "res_model TEXT", "?", False),
+            ("ir_act_report_xml", "model TEXT", "?", False),
+            ("ir_filters", "model_id TEXT", "?", False),
             ("ir_act_server", "model_id INTEGER REFERENCES ir_model(id)", "?", True),
             ("mail_activity", "res_model_id INTEGER REFERENCES ir_model(id)", "?", True),
         )
@@ -346,12 +359,21 @@ class CoreReferenceTests(unittest.TestCase):
             "CREATE TABLE ir_act_server (id INTEGER PRIMARY KEY, model_id INTEGER REFERENCES ir_model(id));"
             "CREATE TABLE ir_cron (id INTEGER PRIMARY KEY, ir_actions_server_id INTEGER);"
             "INSERT INTO ir_act_server VALUES (14,31); INSERT INTO ir_cron VALUES (23,14);"
+            "CREATE TABLE ir_actions (id INTEGER PRIMARY KEY); INSERT INTO ir_actions VALUES (14);"
+            "CREATE TABLE ir_act_window (id INTEGER PRIMARY KEY, res_model TEXT);"
+            "CREATE TABLE ir_act_report_xml (id INTEGER PRIMARY KEY, model TEXT);"
+            "CREATE TABLE ir_filters (id INTEGER PRIMARY KEY, action_id INTEGER, model_id TEXT);"
+            "INSERT INTO ir_filters VALUES (43,14,'res.partner');"
+            "CREATE TABLE ir_ui_menu (id INTEGER PRIMARY KEY, action TEXT);"
+            "INSERT INTO ir_ui_menu VALUES (53,'ir.actions.server,14');"
+            "CREATE TABLE ir_actions_todo (id INTEGER PRIMARY KEY, action_id INTEGER REFERENCES ir_actions(id));"
+            "INSERT INTO ir_actions_todo VALUES (63,14);"
         )
         self.xmlid("__custom__", "retained_model", "ir.model", 31, True)
         before = list(self.connection.iterdump())
         with self.assertRaises(RuntimeError) as refusal:
             bridge.ensure_no_legacy_access_residue(self.cursor)
-        for identity in ("ir_cron:23", "__custom__.retained_model"):
+        for identity in ("ir_cron:23", "__custom__.retained_model", "ir_filters:43", "ir_ui_menu:53", "ir_actions_todo:63"):
             self.assertIn(identity, str(refusal.exception))
         self.assertEqual(list(self.connection.iterdump()), before)
 
@@ -363,7 +385,19 @@ class CoreReferenceTests(unittest.TestCase):
             "CREATE TABLE ir_ui_view (id INTEGER PRIMARY KEY, model TEXT);"
             "INSERT INTO ir_ui_view VALUES (51,'ir.rule');"
         )
-        for table, identifier in (("ir_model", 31), ("ir_model_fields", 41), ("ir_ui_view", 51)):
+        self.connection.executescript(
+            "CREATE TABLE ir_act_window (id INTEGER PRIMARY KEY, res_model TEXT);"
+            "INSERT INTO ir_act_window VALUES (61,'ir.rule');"
+            "CREATE TABLE ir_act_report_xml (id INTEGER PRIMARY KEY, model TEXT);"
+            "INSERT INTO ir_act_report_xml VALUES (71,'ir.rule');"
+        )
+        for table, identifier in (
+            ("ir_model", 31),
+            ("ir_model_fields", 41),
+            ("ir_ui_view", 51),
+            ("ir_act_window", 61),
+            ("ir_act_report_xml", 71),
+        ):
             for delete_action in ("CASCADE", "SET NULL", "RESTRICT", "NO ACTION", "SET DEFAULT"):
                 with self.subTest(table=table, delete_action=delete_action):
                     self.connection.execute("SAVEPOINT consumer")
@@ -414,7 +448,7 @@ class CoreReferenceTests(unittest.TestCase):
                 release.write_text(f"version_info = ({major!r},)\n")
                 with (
                     patch.dict(sys.modules, {"psycopg2": postgres, "odoo": odoo}),
-                    patch.object(bridge, "NATIVE_RELEASE_FILE", release, create=True),
+                    patch.object(bridge, "NATIVE_RELEASE_FILE", release),
                 ):
                     arguments = dict(database="fixture", host="db", port=5432, user="fixture", password="synthetic")
                     if type(major) is not int or (major >= 20 and database_exists and legacy):
@@ -424,6 +458,12 @@ class CoreReferenceTests(unittest.TestCase):
                         bridge.prepare_native_access_startup(**arguments)
                 if type(major) is int and major < 20:
                     postgres.connect.assert_not_called()
+                elif type(major) is int:
+                    for opened in (server, connection) if database_exists else (server,):
+                        self.assertLess(
+                            opened.mock_calls.index(call.set_session(readonly=True)),
+                            opened.mock_calls.index(call.cursor()),
+                        )
                 self.assertEqual(self.snapshot(), before)
                 self.connection.execute("ROLLBACK TO startup")
                 self.connection.execute("RELEASE startup")
