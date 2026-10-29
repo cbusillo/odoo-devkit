@@ -227,6 +227,7 @@ class CoreReferenceTests(unittest.TestCase):
         self.connection.execute("UPDATE rule_group_rel SET rule_group_id=14 WHERE rule_group_id=23")
         self.connection.execute("UPDATE ir_model_data SET res_id=14 WHERE model='ir.rule'")
         self.xmlid("__custom__", "retained_policy", "ir.rule", 14, True)
+        self.xmlid("import_batch", "retained_policy", "ir.rule", 14, True)
         before = self.snapshot()
         policies = bridge.read_access_policies(self.cursor)
         self.assertEqual(bridge.qualify_base_policy_replay(self.cursor, policies), policies)
@@ -241,7 +242,8 @@ class CoreReferenceTests(unittest.TestCase):
             ("UPDATE ir_model_access SET group_id=10", "base.retained_acl"),
             ("UPDATE ir_rule SET domain_force='[]'", "base.retained_rule"),
             ("UPDATE ir_rule SET perm_read=0", "base.retained_rule"),
-            ("UPDATE ir_rule SET name='Customized rule',active=0", "base.retained_rule"),
+            ("UPDATE ir_rule SET name='Customized rule'", "base.retained_rule"),
+            ("UPDATE ir_rule SET active=0", "base.retained_rule"),
             ("UPDATE ir_rule SET model_id=32", "base.retained_rule"),
             ("INSERT INTO rule_group_rel VALUES (23,67)", "base.retained_rule"),
             ("DELETE FROM rule_group_rel", "base.retained_rule"),
@@ -295,16 +297,19 @@ class CoreReferenceTests(unittest.TestCase):
             self.assertIn(identity, str(refusal.exception))
         self.assertEqual(self.snapshot(), before)
 
-    def test_another_installed_owner_cannot_share_a_pristine_base_policy(self) -> None:
+    def test_another_registered_owner_cannot_share_a_pristine_base_policy(self) -> None:
         self.pristine_base_policies()
         self.connection.execute("INSERT INTO ir_module_module VALUES ('other_owner','installed','19.0.1.0')")
         self.xmlid("other_owner", "shared_acl", "ir.model.access", 14, True)
-        before = self.snapshot()
-        with self.assertRaises(RuntimeError) as refusal:
-            bridge.qualify_base_policy_replay(self.cursor, bridge.read_access_policies(self.cursor))
-        for identity in ("base.retained_acl", "other_owner.shared_acl"):
-            self.assertIn(identity, str(refusal.exception))
-        self.assertEqual(self.snapshot(), before)
+        for state in ("installed", "to install", "uninstalled", "to remove"):
+            with self.subTest(state=state):
+                self.connection.execute("UPDATE ir_module_module SET state=? WHERE name='other_owner'", (state,))
+                before = self.snapshot()
+                with self.assertRaises(RuntimeError) as refusal:
+                    bridge.qualify_base_policy_replay(self.cursor, bridge.read_access_policies(self.cursor))
+                for identity in ("base.retained_acl", "other_owner.shared_acl"):
+                    self.assertIn(identity, str(refusal.exception))
+                self.assertEqual(self.snapshot(), before)
 
     def test_duplicate_captured_contracts_refuse_without_discarding_one(self) -> None:
         self.pristine_base_policies()
@@ -735,6 +740,7 @@ class CoreReferenceTests(unittest.TestCase):
         )
         sibling = source._replace(identifier=29, groups=(10,), aliases=("fixture_source.limit",), source_owned=True)
         access = source._replace(source_model="ir.model.access", identifier=14, domain="", aliases=("fixture.permission",))
+        bridge.plan_access_transition((source, sibling, access))
         for changed_source, changed_sibling in (
             (source, sibling._replace(active=False)),
             (source._replace(active=False), sibling),
@@ -743,6 +749,8 @@ class CoreReferenceTests(unittest.TestCase):
             (source, sibling._replace(domain="[] if user.id else [('id','=',7)]")),
             (source, sibling._replace(domain="[*user.domains]")),
             (source, sibling._replace(domain="['|', ('id','=',7)]")),
+            (source, sibling._replace(domain="\x00")),
+            (source, sibling._replace(domain="not " * 10000 + "True")),
         ):
             with self.subTest(source=changed_source, sibling=changed_sibling), self.assertRaises(RuntimeError) as refusal:
                 bridge.plan_access_transition((changed_source, changed_sibling, access))

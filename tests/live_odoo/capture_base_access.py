@@ -46,7 +46,6 @@ def capture_contract(capture: Path, qualification: Path, output: Path) -> None:
         )
     content = stream.getvalue().encode()
     provenance = {
-        "kind": "Native19 base policy content and delegated-model metadata; no native20 or rights qualification",
         "capture_sha256": digest,
         "artifact_sha256": hashlib.sha256(content).hexdigest(),
         "packet_sha256": receipt["packet_sha256"],

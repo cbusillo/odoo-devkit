@@ -113,14 +113,17 @@ def ensure_supported_policy_columns(cr: Any) -> None:
         raise RuntimeError("Unsupported stored access metadata: " + ", ".join(unsupported))
 
 
-def _installed_source_modules(cr: Any) -> set[str]:
-    cr.execute("SELECT name FROM ir_module_module WHERE state IN ('installed', 'to upgrade')")
+def _source_module_names(cr: Any, *, installed_only: bool = True) -> set[str]:
+    if installed_only:
+        cr.execute("SELECT name FROM ir_module_module WHERE state IN ('installed', 'to upgrade')")
+    else:
+        cr.execute("SELECT name FROM ir_module_module")
     return {row[0] for row in cr.fetchall()} - {"__export__", "__custom__", "studio_customization"}
 
 
 def read_access_policies(cr: Any) -> tuple[AccessPolicy, ...]:
     ensure_supported_policy_columns(cr)
-    source_modules = _installed_source_modules(cr)
+    source_modules = _source_module_names(cr)
     cr.execute(
         "SELECT model, res_id, id, module, name, noupdate, create_uid, create_date, write_uid, write_date FROM ir_model_data "
         "WHERE model IN ('ir.model.access', 'ir.rule') ORDER BY module, name"
@@ -202,9 +205,10 @@ def _policy_label(policy: AccessPolicy) -> str:
 
 def qualify_base_policy_replay(cr: Any, policies: tuple[AccessPolicy, ...]) -> tuple[AccessPolicy, ...]:
     base = tuple(policy for policy in policies if any(alias.startswith("base.") for alias in policy.aliases))
-    source_modules = _installed_source_modules(cr)
+    source_modules = _source_module_names(cr)
     if "base" not in source_modules and not base:
         return ()
+    source_owners = _source_module_names(cr, installed_only=False)
     with BASE_POLICY_SOURCE.open(newline="") as source:
         contracts = {}
         for row in csv.DictReader(source):
@@ -222,7 +226,7 @@ def qualify_base_policy_replay(cr: Any, policies: tuple[AccessPolicy, ...]) -> t
     seen = set()
     for policy in base:
         aliases = tuple(alias for alias in policy.aliases if alias.startswith("base."))
-        if len(aliases) != 1 or any(alias.module in source_modules - {"base"} for alias in policy.alias_records):
+        if len(aliases) != 1 or any(alias.module in source_owners - {"base"} for alias in policy.alias_records):
             refusals.append(f"{_policy_label(policy)}: distinct source owners share one base policy row")
         for alias in aliases:
             seen.add(alias)

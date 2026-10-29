@@ -18,6 +18,30 @@ class RevertOperation(Exception):
 
 @tagged("post_install", "-at_install")
 class TestAccessTransition(TransactionCase):
+    def test_pristine_base_content_and_stripped_identity_refusals(self) -> None:
+        if "ir.access" in self.env.registry:
+            self.skipTest("Source-content qualification requires the native19 policy models")
+        self.env.flush_all()
+        before = bridge.read_access_policies(self.env.cr)
+        qualified = bridge.qualify_base_policy_replay(self.env.cr, before)
+        self.assertTrue(qualified)
+        self.assertEqual(bridge.read_access_policies(self.env.cr), before)
+        head = next(policy for policy in qualified if policy.source_model == "ir.model.access" and policy.operation)
+        for strip_aliases in (False, True):
+            with self.subTest(strip_aliases=strip_aliases), self.assertRaises(RevertOperation), self.env.cr.savepoint():
+                if strip_aliases:
+                    self.env.cr.execute(
+                        "UPDATE ir_model_data SET module='access_transition_stripped' "
+                        "WHERE module='base' AND model IN ('ir.model.access','ir.rule')"
+                    )
+                else:
+                    self.env.cr.execute("UPDATE ir_model_access SET active=FALSE WHERE id=%s", (head.identifier,))
+                with self.assertRaises(RuntimeError) as refusal:
+                    bridge.qualify_base_policy_replay(self.env.cr, bridge.read_access_policies(self.env.cr))
+                self.assertIn(head.aliases[0], str(refusal.exception))
+                raise RevertOperation
+            self.assertEqual(bridge.read_access_policies(self.env.cr), before)
+
     def setUp(self) -> None:
         super().setUp()
         self.assertTrue(self.env.registry.ready)
