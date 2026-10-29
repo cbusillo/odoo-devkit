@@ -575,12 +575,10 @@ Notes
   workflow's `--no-sanitize` / `NO_SANITIZE` setting (not exposed by
   `platform runtime restore`) does not skip this step. It deletes the Shopify store credentials, the store
   URL and test-store flags, and the import cursors. It cancels open Shopify
-  sync jobs, clears pending export flags, and turns off the Shopify crons. It
-  deletes the copy's Shopify external IDs (every `external_id` row under the
-  `shopify` external system) and clears each product's export timestamps, the
-  same data the addon's Reset Shopify clears, without contacting any store. The
-  next export then creates products in the store Launchplane applies instead of
-  updating production-store product IDs. It
+  sync jobs and turns off the Shopify crons. It preserves external IDs,
+  external-system bindings, record relationships and product export history.
+  Only the explicitly selected `development-store` testing copy clears Shopify
+  IDs and export state for the existing Reset Shopify flow. It
   deletes the PrintNode key and the Mapbox, Unsplash and Tenor tokens. It
   deletes the Fishbowl, RepairShopr sync and cm_data database connections
   (host, database, user and password), so import crons that install hooks turn
@@ -792,6 +790,79 @@ Notes
   starts the script-runner, so password changes do not use stale selected values. Admin
   password updates read `ODOO_ADMIN_PASSWORD` inside the container; scripts
   and command-failure diagnostics contain no configured password values.
+
+## Isolated migration and saved copies
+
+`ODOO_COPY_PURPOSE=migration` selects the existing SQL credential boundary for
+an isolated restored or saved copy. Put it in the Odoo container environment of
+the existing heavy-run manifest, carrying that manifest's input/stage identities
+and receipt forward with the saved DB and filestore. Every copy loader must bind
+the purpose before its first Odoo process, including a saved-stage clone; a
+production-like instance label and a database name are not purpose evidence.
+There is no new snapshot catalog or queue. Do not pass this setting on a real
+Client-accepted production restore; that existing runtime path retains its
+production behavior. OpenUpgrade workflow preparation refuses an absent purpose.
+
+A source caller loading an already restored database can use the SQL-only API:
+
+```python
+runner.prepare_isolated_copy_before_registry(purpose="migration")
+```
+
+The method requires a recognized purpose and commits and independently reads
+back the same boundary before returning. A missing or forged purpose refuses;
+`production` is not an isolated-copy purpose. The method exports the purpose to
+child processes. The normal restore path also accepts the setting through
+`LocalServerSettings`, including env files. Keep it on every subsequent saved
+copy invocation. The receipt/manifest is caller-owned provenance, not permission
+to read private data or to mutate production.
+
+This boundary clears all copied integration secrets regardless of instance
+label, including secret-shaped `ebay.*` parameters if present. Current OPW eBay
+bindings are identities, not a separate credential/reset adapter. It preserves
+Shopify/eBay external IDs, external-system rows, relationships, product export
+flags/timestamps and Shopify import cursors for reconciliation. Copied Shopify
+jobs are canceled; every cron is disabled, outgoing mail is blocked, API keys
+and push devices are removed, payment providers and incoming mail are disabled.
+This is mandatory even with `--no-sanitize` or `ENV_OVERRIDE_DISABLE_CRON=false`.
+Managed credential parameters, managed addon settings, kept-integration
+exceptions and service-key provisioning refuse before registry loading. SQL
+non-credential config overrides retain their existing support. ORM integration
+settings are skipped on the copy. The startup wrapper repeats the boundary
+before initialization, each shell and the server; it disables server cron
+threads and refuses a separate scheduler. Other workers must remain stopped
+through preparation. Standalone Odoo commands must use the API first.
+
+For the **separately selected** testing copy only,
+`ODOO_COPY_PURPOSE=development-store` uses the same quarantine and clears the
+copy's Shopify IDs and product export state through the existing reset helper.
+It refuses every instance except `testing`; it does not reset eBay bindings.
+This setting does not grant reconnection authority. After this isolated copy is
+handed to the existing development-store workflow, its owner verifies store
+separation and reconnects through the supported settings/reset path. Migration
+and preview copies never select a reset implicitly.
+
+OPW canonical source handback (the migration lead integrates these changes):
+
+- Bind `ODOO_COPY_PURPOSE=migration` on fresh restores and every saved-stage
+  loader, in the existing heavy-run manifest before Odoo starts. Call the API
+  before direct OpenUpgrade/standalone Odoo invocations. Keep all current
+  queue, receipt, source-backup and stage-input bindings.
+- Replace the base migration hook's testing/preview label predicate with the
+  caller's explicit copy purpose. For migration copies, remove the flag-based
+  opt-out and keep defense-in-depth disconnection at both ends of the hook;
+  preserve channel graphs, export flags/timestamps and import cursors. The
+  shared SQL boundary, rather than this ORM hook, establishes first-start safety.
+  The hook must not snapshot/re-enable copied dispatcher state on a migration
+  copy. No change to the retained canonical branch is made by this handback.
+- In `docs/odoo-19-cutover-runbook.md`, replace automatic restore-time Shopify
+  ID deletion with preservation through migration and scripted reconciliation.
+  Keep the existing Reset Shopify procedure only for the explicitly selected
+  `development-store` testing copy after the store-separation gate. Add no eBay
+  reset and do not change real accepted production restores.
+- OPW314's lead and the OPW345 access owner consume this contract before their
+  next native run. Source delivery is not actual-data reconciliation, the
+  OPW310 preview event, staff acceptance or a production cutover.
 
 ## Ownership Rules
 

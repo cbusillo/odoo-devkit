@@ -711,6 +711,33 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
 
         self.assertEqual([recorded_call[0] for recorded_call in recorder.mock_calls], ["_enforce_public_credential_preflight"])
 
+    def test_isolated_startup_failure_prevents_all_odoo_processes(self) -> None:
+        recorder = MagicMock()
+        with (
+            patch.dict(os.environ, ODOO_COPY_PURPOSE="migration"),
+            patch.object(odoo_startup, "_quarantine_isolated_copy", side_effect=RuntimeError("boundary failed")),
+            self.assertRaisesRegex(RuntimeError, "boundary failed"),
+        ):
+            self._run_main(self._settings(platform_instance="prod", admin_password="configured-password"), recorder)
+        recorder._run_initialization_if_needed.assert_not_called()
+        recorder._apply_environment_overrides_if_available.assert_not_called()
+        recorder.execve.assert_not_called()
+
+    def test_isolated_startup_skips_managed_orm_settings_and_scheduler(self) -> None:
+        settings = self._settings(platform_instance="prod", admin_password="configured-password")
+        with (
+            patch.dict(os.environ, ODOO_COPY_PURPOSE="migration"),
+            patch.object(odoo_startup, "_quarantine_isolated_copy") as prepare,
+            patch.object(odoo_startup, "_run_odoo_shell") as shell,
+            patch.object(odoo_startup.os, "execve") as execute,
+        ):
+            odoo_startup._apply_environment_overrides_if_available(settings)
+            prepare.assert_called_once_with(settings)
+            shell.assert_not_called()
+            with self.assertRaisesRegex(RuntimeError, "isolated copy"):
+                odoo_startup._launch_scheduler(settings, argparse.Namespace())
+            execute.assert_not_called()
+
     def test_scheduler_requires_committed_marker_and_never_repeats_startup_writes(self) -> None:
         with TemporaryDirectory() as directory:
             marker = Path(directory) / "run-ready"
