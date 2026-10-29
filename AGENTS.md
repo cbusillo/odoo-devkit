@@ -90,9 +90,7 @@ These rules govern changes to `odoo-devkit` itself. When editing a tenant or
 shared-addon repo, read that repo's `AGENTS.md` and direction for its own
 ownership and landing path.
 
-- Follow the shared [executing loop](https://github.com/cbusillo/codex-skills/blob/HEAD/skills/references/executing-loop.md)
-  with `github-plan` for issue ownership and claims and `github` for PRs and
-  landing. Work in a linked task worktree, not the primary checkout.
+- Follow the shared [executing loop](https://github.com/cbusillo/codex-skills/blob/HEAD/skills/references/executing-loop.md).
 - Use [reviews by another model](https://github.com/cbusillo/codex-skills/blob/HEAD/skills/references/model-review.md)
   for shared execution-guidance changes, including this file. Record and weigh
   findings under that reference.
