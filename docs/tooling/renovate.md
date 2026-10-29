@@ -10,8 +10,12 @@ Renovate opens a pull request for each alert it can fix.
 - [`renovate/default.json`](../../renovate/default.json) is the shared setup:
   a weekly schedule, one grouped pull request for minor and patch updates,
   majors as separate pull requests, no automerge, and the Client test notes
-  section that Client repositories require. Pull requests land through the
-  merge train after an agent's review, like any engineering change.
+  section that Client repositories require. It also tracks dependencies
+  pinned in PEP 723 `# /// script` blocks in any Python file, including under
+  `tests/`, which `config:recommended` otherwise skips; Renovate's `pep723`
+  manager matches no files unless a config names them. Pull requests
+  land through the merge train after an agent's review, like any engineering
+  change.
 - [`renovate/devkit-pin.json`](../../renovate/devkit-pin.json) moves a
   consumer's exact odoo-devkit pins, in `workspace.toml` and in workflow
   `uses:` references, to the head commit of devkit `main`
