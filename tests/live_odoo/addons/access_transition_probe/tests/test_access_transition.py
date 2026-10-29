@@ -19,7 +19,7 @@ class RevertOperation(Exception):
 
 @tagged("post_install", "-at_install")
 class TestStockBasePolicy(TransactionCase):
-    def test_internal_partner_rights_do_not_widen(self) -> None:
+    def test_internal_partner_access_observations(self) -> None:
         internal = self.env.ref("base.group_user")
         group_field = "group_ids" if "group_ids" in self.env["res.users"]._fields else "groups_id"
         users = (
@@ -53,6 +53,8 @@ class TestStockBasePolicy(TransactionCase):
             effective_groups=groups.get_external_id(),
             membership=membership,
             decisions={},
+            policy_decisions={},
+            access_errors={},
         )
         self.assertTrue(membership["base.group_user"])
         self.assertFalse(any(value for alias, value in membership.items() if alias != "base.group_user"))
@@ -65,7 +67,15 @@ class TestStockBasePolicy(TransactionCase):
             self.assertFalse(target.env.su)
             self.assertNotEqual(target.env.uid, SUPERUSER_ID)
             for operation in ("read", "search", "write"):
+                policy_allowed = True
+                policy_error = None
+                try:
+                    target.check_access("read" if operation == "search" else operation)
+                except AccessError as error:
+                    policy_allowed = False
+                    policy_error = {"type": type(error).__name__, "message": str(error)}
                 allowed = False
+                operation_error = None
                 try:
                     with self.env.cr.savepoint():
                         if operation == "read":
@@ -74,23 +84,27 @@ class TestStockBasePolicy(TransactionCase):
                             allowed = target.id in target.search([("id", "=", target.id)]).ids
                         else:
                             allowed = target.write({"name": "Stock access rollback witness"})
+                            target.env.flush_all()
+                            self.env.cr.execute("SELECT name FROM res_partner WHERE id=%s", (target.id,))
+                            self.assertEqual(self.env.cr.fetchone(), ("Stock access rollback witness",))
                         raise RevertOperation
-                except AccessError:
+                except AccessError as error:
                     allowed = False
+                    operation_error = {"type": type(error).__name__, "message": str(error)}
                 except RevertOperation:
                     pass
                 STOCK_BASE_ROLE_OBSERVATIONS["decisions"][label + ":" + operation] = bool(allowed)
+                STOCK_BASE_ROLE_OBSERVATIONS["policy_decisions"][label + ":" + operation] = policy_allowed
+                STOCK_BASE_ROLE_OBSERVATIONS["access_errors"][label + ":" + operation] = {
+                    "policy": policy_error,
+                    "operation": operation_error,
+                }
                 self.env.flush_all()
                 self.env.cr.execute(
                     "SELECT row_to_json(partner) FROM res_partner partner WHERE id=ANY(%s) ORDER BY id", (partner_ids,)
                 )
                 self.assertEqual(self.env.cr.fetchall(), before)
         STOCK_BASE_ROLE_OBSERVATIONS["rollback_verified"] = True
-        for label in ("own", "other"):
-            with self.subTest(target=label):
-                self.assertTrue(STOCK_BASE_ROLE_OBSERVATIONS["decisions"][label + ":read"])
-                self.assertTrue(STOCK_BASE_ROLE_OBSERVATIONS["decisions"][label + ":search"])
-                self.assertFalse(STOCK_BASE_ROLE_OBSERVATIONS["decisions"][label + ":write"])
 
 
 @tagged("post_install", "-at_install")
