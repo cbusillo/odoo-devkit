@@ -1,50 +1,50 @@
 # When Odoo source is not the final answer
 
 Keep this reference at **550 words maximum**, including headings and link labels.
-These lessons were distilled from the retired
-[Odoo Intelligence code](https://github.com/cbusillo/odoo-intelligence-mcp/tree/4f2f5aa068acc7aeac32ca6c1e798a6b840bfe87/src/odoo_intelligence_mcp).
-Use source search to locate candidates; use the exact tenant registry to settle
-questions that depend on installed addons or database customizations.
+These lessons from the retired Odoo Intelligence code were checked against
+cached Community source on October 29, 2026. Target Odoo 20; Odoo 19 appears
+only for migration differences. The linked revisions are evidence snapshots,
+not tenant pins. Use the exact tenant registry for installed-addon or database
+customizations; the full two-version source audit is on [PR #301](https://github.com/cbusillo/odoo-devkit/pull/301).
 
-**Models.** A class found by name is only one contribution. The archived AST
-index skipped extensions without `_name` and replaced earlier entries with the
-same name; its inheritance graph could not establish the final model. Addon
-dependencies constrain load order, while `type(env[model]).__mro__` shows the
-assembled method order. Inspect each class's own `__dict__` for the method in
-question and follow its `super()` calls. Delegation through `_inherits` exposes
-parent fields through a relation, not the parent's methods. See
-[ORM inheritance](https://www.odoo.com/documentation/19.0/developer/reference/backend/orm.html#inheritance-and-extension).
+**Models.** A class declaration is one contribution. Addon dependencies
+constrain loading; `_inherit` contributions form the registry class.
+Inspect `type(env[model]).__mro__`, each class's own `__dict__`, and its
+`super()` calls to trace a method. `_inherits` delegates fields through
+relations; it does not add the parent's methods to that MRO.
+See [class assembly](https://github.com/odoo/odoo/blob/d60b687b047701f0bac45f47f4dee875dea5ba3e/odoo/orm/model_classes.py#L167-L240)
+and [delegated fields](https://github.com/odoo/odoo/blob/d60b687b047701f0bac45f47f4dee875dea5ba3e/odoo/orm/model_classes.py#L512-L540).
 
 **Fields.** Inspect `env[model]._fields[field]` after registry setup for the
 effective `compute`, `related`, `store`, `compute_sudo`, and relation metadata;
-one field declaration or one method's decorator is insufficient. Compute can
-be a method name, callable or generated related-field computation. Inspect
-setup and the whole MRO, rather than assuming one decorator supplies all
-dependencies. Follow each relational hop in its own model. Use the selected
-Odoo version's resolved dependency metadata and prove
-recomputation with a small native test. The archived substring-based reverse
-dependency search and swallowed resolution errors were approximations, not
-proof that no dependency exists. See
-[field resolution](https://github.com/odoo/odoo/blob/19.0/odoo/orm/fields.py).
+one declaration is insufficient. Explicit field `depends` takes precedence;
+otherwise named compute methods collect dependencies across their MRO.
+Compute may also be callable; related setup supplies `_compute_related`.
+Inspect `env.registry.field_depends[field_object]`, follow relational hops
+in their own models, and prove recomputation with a small native test.
+See [dependency and related setup](https://github.com/odoo/odoo/blob/d60b687b047701f0bac45f47f4dee875dea5ba3e/odoo/orm/fields.py#L599-L675).
 
 **Views.** A list of XML files or regex matches in individual view records
 does not show the rendered form. Resolve the action's actual primary view,
-then its inheritance tree: extension children apply depth-first, with sibling
-order governed by priority. XPath sees the architecture produced by preceding
-extensions. Inspect the combined view for the intended user and context before
-concluding a node is missing or changing priority. See
-[view resolution](https://www.odoo.com/documentation/19.0/developer/reference/user_interface/view_records.html#view-resolution).
+then its inheritance tree: extensions apply depth-first, siblings by priority
+then ID. XPath sees preceding extensions' output. Inspect the combined
+architecture and user-facing postprocessed view with the intended context
+before declaring a node missing or changing priority. See
+[ordering](https://github.com/odoo/odoo/blob/d60b687b047701f0bac45f47f4dee875dea5ba3e/odoo/addons/base/models/ir_ui_view.py#L738-L784)
+and [combination](https://github.com/odoo/odoo/blob/d60b687b047701f0bac45f47f4dee875dea5ba3e/odoo/addons/base/models/ir_ui_view.py#L984-L1055).
 
-**Permissions.** A model-level grant does not prove access to a record or
-field. In Odoo 19, ACL grants add together; applicable global record rules
-intersect, applicable group rules unite, and the two sets intersect. No
-applicable record rule means default allow after ACL access. This corrects the
-archived checker's contrary suggestion. Odoo 20 uses `ir.access`; consult that
-version's native access implementation rather than carrying old table queries
-forward. Check the exact operation and record as the intended user, without superuser mode,
-with the relevant company context and field restrictions. See
-[19 security](https://www.odoo.com/documentation/19.0/developer/reference/backend/security.html)
-and [20 access](https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/ir_access.py).
+**Permissions.** Odoo 20 uses `ir.access`: applicable group permissions unite,
+global restrictions intersect; no permission means denial. Parent access
+domains restrict `_inherits` children when `_check_inherits_access` is true
+(the default); native models such as `mail.mail` explicitly set it false.
+Odoo 19 first checks ACL grants, then combines global/group record rules;
+`ir.rule._compute_domain` also adds stored parent-relation rule domains.
+Do not infer parent-rule preservation from field delegation. See
+[20 evaluation](https://github.com/odoo/odoo/blob/d60b687b047701f0bac45f47f4dee875dea5ba3e/odoo/orm/models.py#L3603-L3653),
+[mail exception](https://github.com/odoo/odoo/blob/d60b687b047701f0bac45f47f4dee875dea5ba3e/addons/mail/models/mail_mail.py#L28-L41)
+and [19 rules](https://github.com/odoo/odoo/blob/977f36dc9a6f473b9cb32fa6f9e3db396fb4de13/odoo/addons/base/models/ir_rule.py#L141-L173).
+Check the actual operation, record and field as the intended user, without
+superuser mode, with the relevant company context.
 
 **Registry evidence.** For code-only questions, use a small native test through
 [addon-CI](tooling/addon-ci.md) with the selected tenant image and addons. For
@@ -52,8 +52,9 @@ database customizations, use an authorized disposable, sanitized restore with
 matching source, image and module state; a fresh database cannot settle these.
 Submit heavy workloads through the existing
 [heavy-run entrypoint](https://github.com/cbusillo/codex-skills/blob/main/skills/supervisor/references/heavy-runs.md)
-and run a bounded native Odoo shell script inside the job to inspect the
-objects above. For an existing local workspace, the
+and run a bounded native Odoo shell script inside the job. The native shell
+starts as superuser; change user and disable sudo for permission probes.
+For an existing local workspace, the
 [manifest-backed shell](tooling/workspace-cli.md)
 is local-only. Follow its documented command contract; it is not a remote
 execution route. Retain source/image versions, module state, user/context and
