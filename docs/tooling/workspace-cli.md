@@ -577,7 +577,7 @@ Notes
   URL and test-store flags, and the import cursors. It cancels open Shopify
   sync jobs and turns off the Shopify crons. It preserves external IDs,
   external-system bindings, record relationships and product export history.
-  Only the explicitly selected `development-store` testing copy clears Shopify
+  Only a managed Shopify development-store apply on `testing` clears Shopify
   IDs and export state for the existing Reset Shopify flow. It
   deletes the PrintNode key and the Mapbox, Unsplash and Tenor tokens. It
   deletes the Fishbowl, RepairShopr sync and cm_data database connections
@@ -801,7 +801,7 @@ the purpose before its first Odoo process, including a saved-stage clone; a
 production-like instance label and a database name are not purpose evidence.
 There is no new snapshot catalog or queue. Do not pass this setting on a real
 Client-accepted production restore; that existing runtime path retains its
-production behavior. OpenUpgrade workflow preparation refuses an absent purpose.
+production behavior. The operational caller must select migration purpose for an isolated copy.
 
 A source caller loading an already restored database can use the SQL-only API:
 
@@ -809,17 +809,18 @@ A source caller loading an already restored database can use the SQL-only API:
 runner.prepare_isolated_copy_before_registry(purpose="migration")
 ```
 
-The method requires a recognized purpose and commits and independently reads
-back the same boundary before returning. A missing or forged purpose refuses;
-`production` is not an isolated-copy purpose. The method exports the purpose to
-child processes. The normal restore path also accepts the setting through
-`LocalServerSettings`, including env files. Keep it on every subsequent saved
-copy invocation. The receipt/manifest is caller-owned provenance, not permission
-to read private data or to mutate production.
+The method requires `migration` purpose and commits and independently reads
+back the same boundary before returning. Missing or unsupported purpose refuses
+this isolated-copy API; ordinary runtime maintenance and accepted production
+restores keep their existing path without that setting. The method exports the
+purpose to child processes. The normal restore and standalone OpenUpgrade paths
+also accept it through `LocalServerSettings`, including env files; local exec
+forwards it. Keep it on every subsequent saved-copy invocation. The
+receipt/manifest is caller-owned provenance, not permission to read private data
+or to mutate production.
 
 This boundary clears all copied integration secrets regardless of instance
-label, including secret-shaped `ebay.*` parameters if present. Current OPW eBay
-bindings are identities, not a separate credential/reset adapter. It preserves
+label, including secret-shaped `ebay.*` parameters if present. It preserves
 Shopify/eBay external IDs, external-system rows, relationships, product export
 flags/timestamps and Shopify import cursors for reconciliation. Copied Shopify
 jobs are canceled; every cron is disabled, outgoing mail is blocked, API keys
@@ -833,36 +834,17 @@ before initialization, each shell and the server; it disables server cron
 threads and refuses a separate scheduler. Other workers must remain stopped
 through preparation. Standalone Odoo commands must use the API first.
 
-For the **separately selected** testing copy only,
-`ODOO_COPY_PURPOSE=development-store` uses the same quarantine and clears the
-copy's Shopify IDs and product export state through the existing reset helper.
-It refuses every instance except `testing`; it does not reset eBay bindings.
-This setting does not grant reconnection authority. After this isolated copy is
-handed to the existing development-store workflow, its owner verifies store
-separation and reconnects through the supported settings/reset path. Migration
-and preview copies never select a reset implicitly.
+For the separately selected testing copy, the existing managed Shopify apply
+selects its development store with `test_store=true`, a store key, API token,
+webhook key and API version. With no migration purpose, the restore clears
+that copy's Shopify IDs and export state before applying those managed values;
+the existing store verification and Reset Shopify workflow then run normally.
+Testing without that explicit selection and all migration copies preserve
+identity links. No eBay reset is added. Existing store-separation and release
+boundaries still govern reconnection; this setting grants no new authority.
 
-OPW canonical source handback (the migration lead integrates these changes):
-
-- Bind `ODOO_COPY_PURPOSE=migration` on fresh restores and every saved-stage
-  loader, in the existing heavy-run manifest before Odoo starts. Call the API
-  before direct OpenUpgrade/standalone Odoo invocations. Keep all current
-  queue, receipt, source-backup and stage-input bindings.
-- Replace the base migration hook's testing/preview label predicate with the
-  caller's explicit copy purpose. For migration copies, remove the flag-based
-  opt-out and keep defense-in-depth disconnection at both ends of the hook;
-  preserve channel graphs, export flags/timestamps and import cursors. The
-  shared SQL boundary, rather than this ORM hook, establishes first-start safety.
-  The hook must not snapshot/re-enable copied dispatcher state on a migration
-  copy. No change to the retained canonical branch is made by this handback.
-- In `docs/odoo-19-cutover-runbook.md`, replace automatic restore-time Shopify
-  ID deletion with preservation through migration and scripted reconciliation.
-  Keep the existing Reset Shopify procedure only for the explicitly selected
-  `development-store` testing copy after the store-separation gate. Add no eBay
-  reset and do not change real accepted production restores.
-- OPW314's lead and the OPW345 access owner consume this contract before their
-  next native run. Source delivery is not actual-data reconciliation, the
-  OPW310 preview event, staff acceptance or a production cutover.
+The migration lead owns the tenant hook/runbook integration handback on the
+source issue. Shared devkit docs retain the generic caller contract only.
 
 ## Ownership Rules
 

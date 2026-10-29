@@ -792,6 +792,40 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
                     assets.assert_not_called()
                     connect.assert_not_called()
 
+    def test_isolated_upgrade_and_module_commands_prepare_before_starting_odoo(self) -> None:
+        settings = self._local_settings()
+        settings.openupgrade_enabled = True
+        settings.copy_purpose = "migration"
+        runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
+        metadata = MagicMock()
+        metadata.cursor.return_value.__enter__.return_value.fetchall.return_value = [("probe", "installed")]
+        events: list[str] = []
+        with (
+            patch.object(runner, "_resolve_openupgrade_assets", return_value=([Path("/scripts")], None)),
+            patch.object(runner, "_resolve_addons_paths", return_value=[Path("/addons")]),
+            patch.object(runner, "connect_to_db", return_value=metadata),
+            patch.object(
+                runner, "prepare_credentials_before_registry", side_effect=lambda **_kwargs: events.append("prepare")
+            ) as prepare,
+            patch.object(runner, "run_command", side_effect=lambda _command: events.append("odoo")) as execute,
+        ):
+            operations = (
+                runner.run_openupgrade,
+                lambda: runner._apply_module_updates(
+                    ["probe"], modules_source_label="fixture", local_module_paths={"probe": Path("/addons/probe")}
+                ),
+            )
+            for operation in operations:
+                events.clear()
+                prepare.side_effect = lambda **_kwargs: events.append("prepare")
+                operation()
+                self.assertEqual(events, ["prepare", "odoo"])
+                prepare.side_effect = odoo_data_workflows.OdooDatabaseUpdateError("planted failure")
+                execute.reset_mock()
+                with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
+                    operation()
+                execute.assert_not_called()
+
     def test_native_20_uses_migration_roots_without_requiring_the_legacy_framework(self) -> None:
         settings = self._local_settings()
         settings.openupgrade_enabled = True
@@ -1380,7 +1414,7 @@ class ProductionCredentialSanitizeTests(unittest.TestCase):
         self.assertEqual({key: parameters[key] for key in UNRELATED_PARAMETERS}, UNRELATED_PARAMETERS)
 
     def test_restored_copy_on_a_non_production_instance_loses_every_production_credential(self) -> None:
-        runner = self._runner(ODOO_COPY_PURPOSE="development-store")
+        runner = self._runner()
 
         runner.fingerprint_restored_credentials()
         runner.neutralize_production_credentials()
@@ -1397,19 +1431,8 @@ class ProductionCredentialSanitizeTests(unittest.TestCase):
             dict(self.copy.database.execute("SELECT id, state FROM shopify_sync")),
             {1: "canceled", 2: "canceled", 3: "canceled", 4: "success"},
         )
-        self.assertEqual(
-            self.copy.scalar(
-                "SELECT count(*) FROM product_product WHERE shopify_next_export OR shopify_next_export_quantity_change_amount <> 0"
-                " OR shopify_last_exported_at IS NOT NULL OR shopify_created_at IS NOT NULL"
-            ),
-            0,
-        )
-        self.assertEqual(
-            dict(self.copy.database.execute("SELECT cron_name, active FROM ir_cron")),
-            {"Shopify Sync - Dispatcher": 0, "Mail: send queue": 1, "Shopify reconcile": 0},
-        )
-        # Every production-store Shopify ID is gone; other systems' external IDs stay.
-        self.assertEqual(self.copy.database.execute("SELECT id, external_id FROM external_id").fetchall(), [(4, "ebay-category-9")])
+        self.assertEqual(self.copy.scalar("SELECT count(*) FROM external_id"), 4)
+        self.assertEqual(self.copy.scalar("SELECT count(*) FROM product_product WHERE shopify_last_exported_at IS NOT NULL"), 1)
         self._assert_table_credentials_cleared()
 
     def _assert_table_credentials_cleared(self) -> None:
@@ -1643,19 +1666,6 @@ class ProductionCredentialSanitizeTests(unittest.TestCase):
         self.copy.database.execute("UPDATE payment_provider SET stripe_secret_key = 'sk_test_lane' WHERE id = 1")
 
         runner.verify_production_credentials_cleared()
-
-    def test_read_back_fails_when_a_production_shopify_external_id_survives(self) -> None:
-        runner = self._runner(ODOO_COPY_PURPOSE="development-store")
-        runner.fingerprint_restored_credentials()
-        runner.neutralize_production_credentials()
-        self.copy.database.execute("INSERT INTO external_id VALUES (9, 1, 'product.product', 2, 'product', '8000000000002')")
-
-        with self.assertRaisesRegex(
-            odoo_data_workflows.OdooDatabaseUpdateError, r"1 copied production Shopify external ID"
-        ) as raised:
-            runner.verify_production_credentials_cleared()
-
-        self.assertNotIn("8000000000002", str(raised.exception))
 
     def test_credential_clearing_tolerates_a_database_without_optional_addons(self) -> None:
         for table in (
@@ -2278,17 +2288,46 @@ class CredentialBoundaryTests(unittest.TestCase):
                     self.assertEqual(reader.execute("SELECT * FROM product_product").fetchall(), products)
                     self.assertEqual(reader.execute("SELECT count(*) FROM ir_cron WHERE active").fetchone()[0], 0)
                     self.assertEqual(
-                        reader.execute("SELECT count(*) FROM shopify_sync WHERE state IN ('pending','running')").fetchone()[0], 0
+                        reader.execute("SELECT count(*) FROM shopify_sync WHERE state IN ('draft','queued','running')").fetchone()[
+                            0
+                        ],
+                        0,
                     )
                     self.assertEqual(reader.execute("SELECT smtp_host FROM ir_mail_server WHERE active").fetchall(), [("invalid",)])
 
-    def test_only_explicit_testing_store_copy_resets_shopify_identities(self) -> None:
-        self.isolated_copy(purpose="development-store", instance="testing")
-        with sqlite3.connect(self.path) as reader:
-            self.assertEqual(reader.execute("SELECT external_id FROM external_id").fetchall(), [("ebay-category-9",)])
-            self.assertEqual(
-                reader.execute("SELECT count(*) FROM product_product WHERE shopify_last_exported_at IS NOT NULL").fetchone()[0], 0
-            )
+    def test_only_managed_testing_store_selection_resets_shopify_identities(self) -> None:
+        for test_store in (False, True):
+            with self.subTest(test_store=test_store):
+                settings = {
+                    "action": "apply",
+                    "shop_url_key": "development-store",
+                    "api_token": "inert-token",
+                    "webhook_key": "inert-webhook",
+                    "api_version": "fixture-version",
+                    "test_store": test_store,
+                }
+                self.runner.os_env["ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64"] = base64.b64encode(
+                    json.dumps(
+                        {
+                            "addon_settings": [
+                                {"addon": "shopify", "setting": key, "value": {"source": "literal", "value": value}}
+                                for key, value in settings.items()
+                            ]
+                        }
+                    ).encode()
+                ).decode()
+                self.runner.prepare_credentials_before_registry(restored_copy=True)
+                with sqlite3.connect(self.path) as reader:
+                    if test_store:
+                        self.assertEqual(reader.execute("SELECT external_id FROM external_id").fetchall(), [("ebay-category-9",)])
+                        self.assertEqual(
+                            reader.execute(
+                                "SELECT count(*) FROM product_product WHERE shopify_last_exported_at IS NOT NULL"
+                            ).fetchone()[0],
+                            0,
+                        )
+                    else:
+                        self.assertEqual(reader.execute("SELECT count(*) FROM external_id").fetchone()[0], 4)
 
     def test_isolated_copy_rejects_missing_or_forged_purpose_and_reset_on_other_lanes(self) -> None:
         for purpose, instance in ((None, "prod"), ("runtime", "prod"), ("production", "prod"), ("development-store", "prod")):
@@ -2305,25 +2344,30 @@ class CredentialBoundaryTests(unittest.TestCase):
                 self.runner.os_env["ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64"] = base64.b64encode(
                     json.dumps(self.payload).encode()
                 ).decode()
-                with self.assertRaisesRegex(odoo_data_workflows.OdooDatabaseUpdateError, "isolated copy"):
+                with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
                     self.runner.prepare_isolated_copy_before_registry(purpose="migration")
+                with sqlite3.connect(self.path) as reader:
+                    self.assertEqual(
+                        dict(reader.execute("SELECT key,value FROM ir_config_parameter")),
+                        PRODUCTION_PARAMETERS | UNRELATED_PARAMETERS,
+                    )
         self.runner.os_env.pop("ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64")
         self.runner.local.restore_kept_integrations = "shopify"
-        with self.assertRaisesRegex(odoo_data_workflows.OdooDatabaseUpdateError, "isolated copy"):
+        with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
             self.runner.prepare_isolated_copy_before_registry(purpose="migration")
 
-    def test_isolated_copy_refuses_managed_addons_and_missing_migration_purpose(self) -> None:
-        self.runner.local.openupgrade_enabled = True
-        with self.assertRaisesRegex(odoo_data_workflows.OdooDatabaseUpdateError, "purpose"):
-            self.runner.prepare_credentials_before_registry(restored_copy=True)
-        self.runner.local.openupgrade_enabled = False
+    def test_isolated_copy_refuses_managed_addons_before_commit(self) -> None:
         self.runner.os_env["ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64"] = base64.b64encode(
             json.dumps(
                 {"addon_settings": [{"addon": "shopify", "setting": "action", "value": {"source": "literal", "value": "apply"}}]}
             ).encode()
         ).decode()
-        with self.assertRaisesRegex(odoo_data_workflows.OdooDatabaseUpdateError, "isolated copy"):
+        with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
             self.runner.prepare_isolated_copy_before_registry(purpose="migration")
+        with sqlite3.connect(self.path) as reader:
+            self.assertEqual(
+                dict(reader.execute("SELECT key,value FROM ir_config_parameter")), PRODUCTION_PARAMETERS | UNRELATED_PARAMETERS
+            )
 
     def test_isolated_copy_rollback_prevents_followup_odoo(self) -> None:
         self.runner.local.platform_instance = "prod"
@@ -2337,6 +2381,7 @@ class CredentialBoundaryTests(unittest.TestCase):
 
     def test_production_keeps_credentials_except_explicit_managed_override(self) -> None:
         self.runner.local.platform_instance = "prod"
+        self.runner.local.openupgrade_enabled = True
         self.runner.prepare_credentials_before_registry(restored_copy=True)
         with self.connection("fixture").cursor() as cursor:
             self.assertFalse(odoo_data_workflows.restored_logins_preserved(cursor))

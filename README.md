@@ -192,7 +192,7 @@ Current runtime ownership is intentionally narrow and explicit:
   map and media tokens, web push keys and
   devices, user API keys, and `database.secret`. The restore preserves the copy's
   channel identity graphs and export history. Only an explicitly selected
-  `ODOO_COPY_PURPOSE=development-store` copy on `testing` resets Shopify IDs
+  managed Shopify apply with `test_store=true` on `testing` resets Shopify IDs
   and export state for the existing development-store reset flow. The restore keeps
   only the integrations named in `ODOO_RESTORE_KEPT_INTEGRATIONS`; keeping
   `incoming_mail` also keeps those OAuth app client secrets. Failures during
@@ -205,7 +205,7 @@ Current runtime ownership is intentionally narrow and explicit:
   all crons and blocks outgoing mail even with `--no-sanitize`. It preserves
   Shopify/eBay bindings and export/import history for reconciliation. Managed
   credentials, addon settings, kept integrations and service-key provisioning
-  are refused. Startup repeats the boundary before Odoo and holds the scheduler.
+  are refused. Startup repeats the boundary before Odoo and refuses a separate scheduler.
   The exact caller and OPW handback are in the [workspace CLI guide](docs/tooling/workspace-cli.md#isolated-migration-and-saved-copies).
 - An optional `company_email` in Launchplane's website-bootstrap payload sets
   the selected website company's sender address and verifies it was saved.

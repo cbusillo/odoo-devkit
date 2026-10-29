@@ -496,7 +496,6 @@ else:
 
 def _apply_environment_overrides_if_available(settings: StartupSettings) -> None:
     if "ODOO_COPY_PURPOSE" in os.environ:
-        _quarantine_isolated_copy(settings)
         return
     script = """
 from odoo_website_settings import apply_website_settings
@@ -618,7 +617,6 @@ def main() -> None:
     _write_runtime_config(settings)
     _wait_for_database(settings)
     _wait_for_data_workflow_lock(settings)
-    _quarantine_isolated_copy(settings)
     _sync_python_dependencies_if_needed(settings)
     _run_initialization_if_needed(settings)
     _apply_environment_overrides_if_available(settings)

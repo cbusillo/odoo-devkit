@@ -451,7 +451,7 @@ class LocalServerSettings(BaseSettings):
     admin_login: str = Field("admin", alias="ODOO_ADMIN_LOGIN")
     admin_password: SecretStr | None = Field(None, alias="ODOO_ADMIN_PASSWORD")
     platform_instance: str = Field("", alias="PLATFORM_INSTANCE")
-    copy_purpose: Literal["migration", "development-store"] | None = Field(None, alias="ODOO_COPY_PURPOSE")
+    copy_purpose: Literal["migration"] | None = Field(None, alias="ODOO_COPY_PURPOSE")
     # Integrations whose restored settings a non-production restore keeps, comma-separated
     # (Launchplane sets it from the lane's pre_live and read_only_source allowances). Unset clears every integration.
     restore_kept_integrations: str | None = Field(None, alias="ODOO_RESTORE_KEPT_INTEGRATIONS")
@@ -546,6 +546,7 @@ class OdooDataWorkflowRunner:
         self._odoo_shell_preflight_checked = False
         self._data_workflow_lock_path: Path | None = None
         self._restored_credential_fingerprints: dict[str, frozenset[str]] = {}
+        self._development_store_selected = False
 
     def require_environment_override_payloads_if_configured(self) -> None:
         try:
@@ -1101,24 +1102,17 @@ class OdooDataWorkflowRunner:
         return self.local.copy_purpose is None and self.local.platform_instance.strip().lower() in PRODUCTION_INSTANCE_NAMES
 
     def prepare_isolated_copy_before_registry(self, *, purpose: str | None) -> None:
-        if purpose not in {"migration", "development-store"}:
-            raise OdooDatabaseUpdateError("An isolated copy requires migration or development-store purpose.")
-        if purpose == "development-store" and self.local.platform_instance.strip().lower() != "testing":
-            raise OdooDatabaseUpdateError("A development-store isolated copy requires the testing instance.")
+        if purpose != "migration":
+            raise OdooDatabaseUpdateError("An isolated copy requires migration purpose.")
         self.local.copy_purpose = purpose
         self.os_env["ODOO_COPY_PURPOSE"] = purpose
         self.prepare_credentials_before_registry(restored_copy=True)
 
     def _validate_isolated_copy_settings(self, parameters: dict[str, str | None]) -> None:
-        purpose = self.local.copy_purpose
-        if purpose is None:
-            if self.local.openupgrade_enabled:
-                raise OdooDatabaseUpdateError("An isolated copy purpose is required for migration.")
+        if self.local.copy_purpose is None:
             return
-        if purpose not in {"migration", "development-store"}:
+        if self.local.copy_purpose != "migration":
             raise OdooDatabaseUpdateError("Invalid isolated copy purpose.")
-        if purpose == "development-store" and self.local.platform_instance.strip().lower() != "testing":
-            raise OdooDatabaseUpdateError("A development-store isolated copy requires the testing instance.")
         if self.local.restore_kept_integrations or self.local.odoo_key:
             raise OdooDatabaseUpdateError("An isolated copy cannot keep integrations or provision service keys.")
         if any(credential_parameter_integration(key) and value is not None for key, value in parameters.items()):
@@ -1287,7 +1281,7 @@ class OdooDataWorkflowRunner:
                 f"UPDATE shopify_sync SET state = 'canceled' WHERE state IN ({state_placeholders})",
                 SHOPIFY_OPEN_JOB_STATES,
             )
-        if self.local.copy_purpose == "development-store":
+        if self._development_store_selected:
             self._forget_production_shopify_records(cursor)
         if "ir_actions_server_id" not in self._table_columns(cursor, "ir_cron"):
             return
@@ -1347,9 +1341,7 @@ class OdooDataWorkflowRunner:
             if self._table_exists(cursor, "mail_push_device"):
                 cursor.execute("SELECT count(*) FROM mail_push_device")
                 push_devices = cursor.fetchone()[0]
-            shopify_external_ids = (
-                self._surviving_shopify_external_ids(cursor) if self.local.copy_purpose == "development-store" else 0
-            )
+            shopify_external_ids = self._surviving_shopify_external_ids(cursor) if self._development_store_selected else 0
             enabled_payment_providers = 0 if PAYMENT_INTEGRATION in kept else self._enabled_remote_payment_providers(cursor)
             active_incoming_mail_servers = 0
             if INCOMING_MAIL_INTEGRATION not in kept and "active" in self._table_columns(cursor, "fetchmail_server"):
@@ -1732,6 +1724,12 @@ class OdooDataWorkflowRunner:
         try:
             parameters = self._pre_registry_parameter_overrides()
             self._validate_isolated_copy_settings(parameters)
+            self._development_store_selected = (
+                self.local.copy_purpose is None
+                and self.local.platform_instance.strip().lower() == "testing"
+                and parameters.get("shopify.test_store") == "True"
+                and all(parameters.get(f"shopify.{key}") for key in ("shop_url_key", "api_token", "webhook_key", "api_version"))
+            )
             restored_copy = restored_copy or self.local.copy_purpose is not None
             if restored_copy:
                 self.fingerprint_restored_credentials()
@@ -1779,7 +1777,12 @@ class OdooDataWorkflowRunner:
                     if cursor.fetchone()[0]:
                         raise OdooDatabaseUpdateError("Pre-registry outgoing mail fence commit readback failed.")
                     if self.local.copy_purpose and "state" in self._table_columns(cursor, "shopify_sync"):
-                        cursor.execute("SELECT count(*) FROM shopify_sync WHERE state IN (%s, %s, %s)", SHOPIFY_OPEN_JOB_STATES)
+                        cursor.execute(
+                            "SELECT count(*) FROM shopify_sync WHERE state IN ("
+                            + ", ".join(["%s"] * len(SHOPIFY_OPEN_JOB_STATES))
+                            + ")",
+                            SHOPIFY_OPEN_JOB_STATES,
+                        )
                         if cursor.fetchone()[0]:
                             raise OdooDatabaseUpdateError("Pre-registry copied jobs commit readback failed.")
                     if self.local.copy_purpose or (do_sanitize and self.local.disable_cron):
@@ -2665,6 +2668,8 @@ with registry.cursor() as cr:
         command = " ".join(cmd_parts)
         _logger.info("Installing: %s; Updating: %s", to_install or "none", to_update or "none")
         try:
+            if self.local.copy_purpose:
+                self.prepare_credentials_before_registry(restored_copy=True)
             self.run_command(command)
         except subprocess.CalledProcessError as update_error:
             raise OdooRestorerError(f"Failed to install/update addons: {update_error}") from update_error
@@ -2804,6 +2809,8 @@ with registry.cursor() as cr:
         )
         self._reset_db_connection()
         try:
+            if self.local.copy_purpose:
+                self.prepare_credentials_before_registry(restored_copy=True)
             self.run_command(" ".join(cmd_parts))
         finally:
             self._reset_db_connection()

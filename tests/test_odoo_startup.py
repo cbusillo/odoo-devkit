@@ -711,17 +711,37 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
 
         self.assertEqual([recorded_call[0] for recorded_call in recorder.mock_calls], ["_enforce_public_credential_preflight"])
 
-    def test_isolated_startup_failure_prevents_all_odoo_processes(self) -> None:
-        recorder = MagicMock()
+    def test_startup_constructs_real_copy_settings_before_preparation(self) -> None:
+        from test_odoo_data_workflows import odoo_data_workflows
+
+        settings = self._settings(platform_instance="production", admin_password="configured-password")
+        with (
+            patch.dict(os.environ, {"ODOO_COPY_PURPOSE": "migration"}, clear=True),
+            patch.dict(sys.modules, {"run_odoo_data_workflows": odoo_data_workflows}),
+            patch.object(
+                odoo_data_workflows.OdooDataWorkflowRunner, "prepare_isolated_copy_before_registry", autospec=True
+            ) as prepare,
+        ):
+            odoo_startup._quarantine_isolated_copy(settings)
+        runner = prepare.call_args.args[0]
+        self.assertEqual(runner.local.db_name, settings.database_name)
+        self.assertEqual(runner.local.host, settings.database_host)
+        self.assertEqual(runner.local.db_password.get_secret_value(), settings.database_password)
+        self.assertEqual(runner.local.copy_purpose, "migration")
+
+    def test_isolated_startup_failure_prevents_initialization_and_shell(self) -> None:
+        settings = self._settings(platform_instance="prod", admin_password="configured-password")
         with (
             patch.dict(os.environ, ODOO_COPY_PURPOSE="migration"),
             patch.object(odoo_startup, "_quarantine_isolated_copy", side_effect=RuntimeError("boundary failed")),
-            self.assertRaisesRegex(RuntimeError, "boundary failed"),
+            patch.object(odoo_startup, "_missing_required_modules", return_value=["opw_custom"]),
+            patch.object(odoo_startup.subprocess, "run") as execute,
         ):
-            self._run_main(self._settings(platform_instance="prod", admin_password="configured-password"), recorder)
-        recorder._run_initialization_if_needed.assert_not_called()
-        recorder._apply_environment_overrides_if_available.assert_not_called()
-        recorder.execve.assert_not_called()
+            with self.assertRaises(RuntimeError):
+                odoo_startup._run_initialization_if_needed(settings)
+            with self.assertRaises(RuntimeError):
+                odoo_startup._run_odoo_shell(settings, "raise AssertionError", label="fixture")
+            execute.assert_not_called()
 
     def test_isolated_startup_skips_managed_orm_settings_and_scheduler(self) -> None:
         settings = self._settings(platform_instance="prod", admin_password="configured-password")
@@ -732,9 +752,9 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
             patch.object(odoo_startup.os, "execve") as execute,
         ):
             odoo_startup._apply_environment_overrides_if_available(settings)
-            prepare.assert_called_once_with(settings)
+            prepare.assert_not_called()
             shell.assert_not_called()
-            with self.assertRaisesRegex(RuntimeError, "isolated copy"):
+            with self.assertRaises(RuntimeError):
                 odoo_startup._launch_scheduler(settings, argparse.Namespace())
             execute.assert_not_called()
 
