@@ -10,10 +10,87 @@ from odoo.tests.common import TransactionCase
 
 MODEL = "access.transition.probe"
 MODES = {"c": "create", "r": "read", "u": "write", "d": "unlink"}
+STOCK_BASE_ROLE_OBSERVATIONS: dict[str, Any] = {}
 
 
 class RevertOperation(Exception):
     pass
+
+
+@tagged("post_install", "-at_install")
+class TestStockBasePolicy(TransactionCase):
+    def test_internal_partner_rights_do_not_widen(self) -> None:
+        internal = self.env.ref("base.group_user")
+        group_field = "group_ids" if "group_ids" in self.env["res.users"]._fields else "groups_id"
+        users = (
+            self.env["res.users"]
+            .with_context(no_reset_password=True)
+            .create(
+                [
+                    {
+                        "name": name,
+                        "login": "stock-access-" + name,
+                        group_field: [Command.set(internal.ids)],
+                        "company_id": self.env.company.id,
+                        "company_ids": [Command.set(self.env.company.ids)],
+                    }
+                    for name in ("actor", "other")
+                ]
+            )
+        )
+        actor, other = users
+        membership = {
+            alias: actor.has_group(alias)
+            for alias in ("base.group_user", "base.group_partner_manager", "base.group_erp_manager", "base.group_system")
+        }
+        groups = self.env["res.groups"].browse(actor._get_group_ids())
+        STOCK_BASE_ROLE_OBSERVATIONS.clear()
+        STOCK_BASE_ROLE_OBSERVATIONS.update(
+            actor_id=actor.id,
+            partner_id=actor.partner_id.id,
+            other_partner_id=other.partner_id.id,
+            company_ids=actor.company_ids.ids,
+            effective_groups=groups.get_external_id(),
+            membership=membership,
+            decisions={},
+        )
+        self.assertTrue(membership["base.group_user"])
+        self.assertFalse(any(value for alias, value in membership.items() if alias != "base.group_user"))
+        partner_ids = users.partner_id.ids
+        self.env.flush_all()
+        self.env.cr.execute("SELECT row_to_json(partner) FROM res_partner partner WHERE id=ANY(%s) ORDER BY id", (partner_ids,))
+        before = self.env.cr.fetchall()
+        for label, partner in (("own", actor.partner_id), ("other", other.partner_id)):
+            target = partner.with_user(actor).with_context(allowed_company_ids=actor.company_ids.ids)
+            self.assertFalse(target.env.su)
+            self.assertNotEqual(target.env.uid, SUPERUSER_ID)
+            for operation in ("read", "search", "write"):
+                allowed = False
+                try:
+                    with self.env.cr.savepoint():
+                        if operation == "read":
+                            allowed = bool(target.read(["name"]))
+                        elif operation == "search":
+                            allowed = target.id in target.search([("id", "=", target.id)]).ids
+                        else:
+                            allowed = target.write({"name": "Stock access rollback witness"})
+                        raise RevertOperation
+                except AccessError:
+                    allowed = False
+                except RevertOperation:
+                    pass
+                STOCK_BASE_ROLE_OBSERVATIONS["decisions"][label + ":" + operation] = bool(allowed)
+                self.env.flush_all()
+                self.env.cr.execute(
+                    "SELECT row_to_json(partner) FROM res_partner partner WHERE id=ANY(%s) ORDER BY id", (partner_ids,)
+                )
+                self.assertEqual(self.env.cr.fetchall(), before)
+        STOCK_BASE_ROLE_OBSERVATIONS["rollback_verified"] = True
+        for label in ("own", "other"):
+            with self.subTest(target=label):
+                self.assertTrue(STOCK_BASE_ROLE_OBSERVATIONS["decisions"][label + ":read"])
+                self.assertTrue(STOCK_BASE_ROLE_OBSERVATIONS["decisions"][label + ":search"])
+                self.assertFalse(STOCK_BASE_ROLE_OBSERVATIONS["decisions"][label + ":write"])
 
 
 @tagged("post_install", "-at_install")
