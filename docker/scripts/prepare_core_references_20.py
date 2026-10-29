@@ -220,6 +220,13 @@ def read_incoming_cleanup_references(cr: Any) -> tuple[str, ...]:
         ("ir_act_window", "ir.actions.act_window", "SELECT id FROM ir_act_window WHERE res_model IN (%s, %s)", retired),
         ("ir_act_report_xml", "ir.actions.report", "SELECT id FROM ir_act_report_xml WHERE model IN (%s, %s)", retired),
         (
+            "ir_act_server",
+            "ir.actions.server",
+            "SELECT action.id FROM ir_act_server action JOIN ir_model model ON model.id = action.model_id "
+            "WHERE model.model IN (%s, %s)",
+            retired,
+        ),
+        (
             "ir_actions",
             "ir.actions.actions",
             "SELECT id FROM ir_actions WHERE id IN ("
@@ -295,13 +302,9 @@ def read_legacy_cleanup_consumers(cr: Any) -> tuple[str, ...]:
         ("mail_followers", "SELECT id, res_model FROM mail_followers WHERE res_model IN (%s, %s)", retired),
         ("mail_message", "SELECT id, model FROM mail_message WHERE model IN (%s, %s)", retired),
         ("ir_filters", "SELECT id, model_id FROM ir_filters WHERE model_id IN (%s, %s)", retired),
-        (
-            "ir_cron",
-            "SELECT cron.id, model.model FROM ir_cron cron "
-            "JOIN ir_act_server action ON action.id = cron.ir_actions_server_id "
-            "JOIN ir_model model ON model.id = action.model_id WHERE model.model IN (%s, %s)",
-            retired,
-        ),
+        ("ir_act_client", "SELECT id, res_model FROM ir_act_client WHERE res_model IN (%s, %s)", retired),
+        ("ir_exports", "SELECT id, resource FROM ir_exports WHERE resource IN (%s, %s)", retired),
+        ("rating_rating", "SELECT id, res_model FROM rating_rating WHERE res_model IN (%s, %s)", retired),
     )
     consumers = list(read_incoming_cleanup_references(cr))
     for table, query, parameters in queries:

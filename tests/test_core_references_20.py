@@ -334,6 +334,9 @@ class CoreReferenceTests(unittest.TestCase):
             ("ir_act_window", "res_model TEXT", "?", False),
             ("ir_act_report_xml", "model TEXT", "?", False),
             ("ir_filters", "model_id TEXT", "?", False),
+            ("ir_act_client", "res_model TEXT", "?", False),
+            ("ir_exports", "resource TEXT", "?", False),
+            ("rating_rating", "res_model TEXT", "?", False),
             ("ir_act_server", "model_id INTEGER REFERENCES ir_model(id)", "?", True),
             ("mail_activity", "res_model_id INTEGER REFERENCES ir_model(id)", "?", True),
         )
@@ -357,7 +360,7 @@ class CoreReferenceTests(unittest.TestCase):
         self.connection.executescript(
             "INSERT INTO ir_model VALUES (31,'ir.model.access');"
             "CREATE TABLE ir_act_server (id INTEGER PRIMARY KEY, model_id INTEGER REFERENCES ir_model(id));"
-            "CREATE TABLE ir_cron (id INTEGER PRIMARY KEY, ir_actions_server_id INTEGER);"
+            "CREATE TABLE ir_cron (id INTEGER PRIMARY KEY, ir_actions_server_id INTEGER REFERENCES ir_act_server(id));"
             "INSERT INTO ir_act_server VALUES (14,31); INSERT INTO ir_cron VALUES (23,14);"
             "CREATE TABLE ir_actions (id INTEGER PRIMARY KEY); INSERT INTO ir_actions VALUES (14);"
             "CREATE TABLE ir_act_window (id INTEGER PRIMARY KEY, res_model TEXT);"
@@ -370,10 +373,18 @@ class CoreReferenceTests(unittest.TestCase):
             "INSERT INTO ir_actions_todo VALUES (63,14);"
         )
         self.xmlid("__custom__", "retained_model", "ir.model", 31, True)
+        self.xmlid("__custom__", "retained_action", "ir.actions.server", 14, True)
         before = list(self.connection.iterdump())
         with self.assertRaises(RuntimeError) as refusal:
             bridge.ensure_no_legacy_access_residue(self.cursor)
-        for identity in ("ir_cron:23", "__custom__.retained_model", "ir_filters:43", "ir_ui_menu:53", "ir_actions_todo:63"):
+        for identity in (
+            "ir_cron:23",
+            "__custom__.retained_model",
+            "__custom__.retained_action",
+            "ir_filters:43",
+            "ir_ui_menu:53",
+            "ir_actions_todo:63",
+        ):
             self.assertIn(identity, str(refusal.exception))
         self.assertEqual(list(self.connection.iterdump()), before)
 
@@ -390,6 +401,8 @@ class CoreReferenceTests(unittest.TestCase):
             "INSERT INTO ir_act_window VALUES (61,'ir.rule');"
             "CREATE TABLE ir_act_report_xml (id INTEGER PRIMARY KEY, model TEXT);"
             "INSERT INTO ir_act_report_xml VALUES (71,'ir.rule');"
+            "CREATE TABLE ir_act_server (id INTEGER PRIMARY KEY, model_id INTEGER REFERENCES ir_model(id));"
+            "INSERT INTO ir_act_server VALUES (81,31);"
         )
         for table, identifier in (
             ("ir_model", 31),
@@ -397,6 +410,7 @@ class CoreReferenceTests(unittest.TestCase):
             ("ir_ui_view", 51),
             ("ir_act_window", 61),
             ("ir_act_report_xml", 71),
+            ("ir_act_server", 81),
         ):
             for delete_action in ("CASCADE", "SET NULL", "RESTRICT", "NO ACTION", "SET DEFAULT"):
                 with self.subTest(table=table, delete_action=delete_action):

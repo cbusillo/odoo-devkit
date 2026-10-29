@@ -3137,7 +3137,7 @@ sources = [
             self.assertTrue(any("/volumes/scripts/run_openupgrade.py" in command for command in commands))
             self.assertTrue(any(command[-4:] == ["up", "-d", "--no-build", "web"] for command in commands))
 
-    def test_local_init_stops_before_native_process_when_access_preflight_refuses(self) -> None:
+    def test_local_registry_commands_stop_before_native_process_when_access_preflight_refuses(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             tenant, runtime = root / "tenant", root / "runtime"
@@ -3152,11 +3152,26 @@ sources = [
                     return subprocess.CompletedProcess(command, 1, stdout="", stderr="Unmapped access reference")
                 return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
-            with mock.patch.object(local_runtime.subprocess, "run", side_effect=run) as process:
-                with self.assertRaises(ValueError), contextlib.redirect_stdout(io.StringIO()):
-                    run_native_runtime_workflow(manifest=manifest, workflow="init")
             native_entry = local_runtime._odoo_bin_command(database_name="", addons_path=(), database_user="")[0]
-            self.assertFalse(any(native_entry in call.args[0] for call in process.call_args_list))
+            for operation in ("init", "shell"):
+                with self.subTest(operation=operation):
+                    with mock.patch.object(local_runtime.subprocess, "run", side_effect=run) as process:
+                        with (
+                            self.assertRaises((ValueError, local_runtime.RuntimeCommandError)),
+                            contextlib.redirect_stdout(io.StringIO()),
+                        ):
+                            if operation == "init":
+                                run_native_runtime_workflow(manifest=manifest, workflow=operation)
+                            else:
+                                run_native_runtime_odoo_shell(
+                                    manifest=manifest,
+                                    service="script-runner",
+                                    database_name="other-database",
+                                    script_path=None,
+                                    log_file=None,
+                                    dry_run=False,
+                                )
+                    self.assertFalse(any(native_entry in call.args[0] for call in process.call_args_list))
 
     def test_native_runtime_workflow_runs_update_natively_for_local_instance(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -3708,7 +3723,10 @@ sources = [
                         self.assertEqual(forwarded_input, input_script)
                         if name == "psql":
                             self.assertEqual(arguments[-3:], ["-c", "select 'quoted value'", "--set=name=$literal"])
-                        elif name == "init" and "/odoo/odoo-bin" in arguments:
+                        elif (
+                            name == "init"
+                            and local_runtime._odoo_bin_command(database_name="", addons_path=(), database_user="")[0] in arguments
+                        ):
                             self.assertIn("--stop-after-init", arguments)
                             self.assertIn(context.selection.database_name, arguments)
                         elif name == "admin":
@@ -3766,6 +3784,9 @@ sources = [
 
             self.assertEqual(exit_code, 0)
             command = run_mock.call_args.kwargs.get("args", run_mock.call_args.args[0])
+            preflight = run_mock.call_args_list[0].args[0]
+            self.assertIn("ODOO_DB_NAME=opw-alt", preflight)
+            self.assertNotIn("shell", preflight)
             self.assertIn("exec", command)
             self.assertIn("-T", command)
             self.assertIn("script-runner", command)

@@ -452,6 +452,22 @@ class TestAccessTransition(TransactionCase):
             legacy = self.env["ir.model"].create({"name": "Legacy rule model", "model": "ir.rule", "state": "base"})
         self.env.flush_all()
         with self.assertRaises(RevertOperation), self.env.cr.savepoint():
+            action = self.env["ir.actions.act_window"].create({"name": "Retired access action", "res_model": MODEL})
+            retained_filter = self.env["ir.filters"].create(
+                {"name": "Retained access filter", "model_id": MODEL, "action_id": action.id, "domain": "[]", "context": "{}"}
+            )
+            retained_menu = self.env["ir.ui.menu"].create(
+                {"name": "Retained access menu", "action": f"ir.actions.act_window,{action.id}"}
+            )
+            server = self.env["ir.actions.server"].create(
+                {"name": "Retired server action", "model_id": self.env["ir.model"]._get_id(MODEL), "state": "code", "code": "pass"}
+            )
+            self.env["ir.model.data"].create(
+                {"module": "__custom__", "name": "retained_server_action", "model": server._name, "res_id": server.id}
+            )
+            self.env.flush_all()
+            self.env.cr.execute("UPDATE ir_act_window SET res_model = 'ir.rule' WHERE id = %s", (action.id,))
+            self.env.cr.execute("UPDATE ir_act_server SET model_id = %s WHERE id = %s", (legacy.id, server.id))
             self.env.cr.execute(
                 'CREATE TABLE "access%transition_reference" (id INTEGER PRIMARY KEY, '
                 "target INTEGER REFERENCES ir_model(id) ON DELETE SET NULL)"
@@ -475,6 +491,14 @@ class TestAccessTransition(TransactionCase):
             with self.assertRaises(RuntimeError) as refusal:
                 bridge.ensure_no_legacy_access_residue(self.env.cr)
             self.assertIn("access%transition_reference:14", str(refusal.exception))
+            for identity in (
+                f"ir_act_window:{action.id}",
+                f"ir_filters:{retained_filter.id}",
+                f"ir_ui_menu:{retained_menu.id}",
+                f"ir_act_server:{server.id}",
+                "__custom__.retained_server_action",
+            ):
+                self.assertIn(identity, str(refusal.exception))
             self.assertIn("access%transition.no_identity:" + without_identity[0][0], str(refusal.exception))
             for table in ("composite_reference", "named_reference"):
                 self.assertIn("access%transition." + table, str(refusal.exception))

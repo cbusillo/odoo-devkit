@@ -1095,7 +1095,7 @@ def run_init_workflow(*, manifest: WorkspaceManifest, runtime_repo_path: Path) -
             runtime_repo_path=runtime_repo_path,
             runtime_env_file=runtime_env_file,
             container_service="script-runner",
-            container_command=with_odoo_database_password(["python3", "/volumes/scripts/prepare_core_references_20.py"]),
+            container_command=_native_access_preflight_command(runtime_context.selection.database_name),
         )
         compose_exec(
             runtime_repo_path=runtime_repo_path,
@@ -1122,6 +1122,12 @@ def run_init_workflow(*, manifest: WorkspaceManifest, runtime_repo_path: Path) -
         runtime_repo_path=runtime_repo_path,
         runtime_env_file=runtime_env_file,
         operation=run_init_operation,
+    )
+
+
+def _native_access_preflight_command(database_name: str) -> list[str]:
+    return with_odoo_database_password(
+        ["env", f"ODOO_DB_NAME={database_name}", "python3", "/volumes/scripts/prepare_core_references_20.py"]
     )
 
 
@@ -3980,8 +3986,15 @@ def run_odoo_shell_command(
     if script_text is not None or resolved_log_file is not None:
         odoo_shell_exec_command.append("-T")
     odoo_shell_exec_command.extend([normalized_service, *with_odoo_database_password(odoo_shell_command)])
+    preflight_command = compose_command + [
+        "exec",
+        "-T",
+        normalized_service,
+        *_native_access_preflight_command(target_database),
+    ]
 
     if dry_run:
+        print(f"$ {shlex.join(preflight_command)}")
         command_display = shlex.join(odoo_shell_exec_command)
         if resolved_script_path is not None:
             command_display = f"{command_display} < {shlex.quote(str(resolved_script_path))}"
@@ -3990,6 +4003,7 @@ def run_odoo_shell_command(
         print(f"$ {command_display}")
         return
 
+    run_command(runtime_repo_path=runtime_repo_path, command=preflight_command)
     execution_environment = command_execution_env()
     output_handle = None
     try:

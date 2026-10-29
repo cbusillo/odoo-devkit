@@ -635,12 +635,14 @@ Notes
   conversions and cleanup consumers. Catalog checks include references to
   retired models, fields, views and actions. Full ORM/serialized coverage and
   native policy/reference application still need qualification.
-  Shared SQL preparation, web/scheduler startup and local init refuse partial
+  Shared SQL preparation, web/scheduler startup, local init and the selected
+  Odoo-shell database refuse partial
   native-20 residue; the base end hook checks again after module commits.
   Explicit native upgrade retains the 19 pre-upgrade route; older runtimes and
   absent databases retain normal startup. Restore a partial 20 database from
   its original. Clean 20 replay makes no bridge writes. This work does not
   authorize Client data or qualify a complete migration.
+  Use `platform runtime psql` to inspect a refused copy without opening a registry.
 - Before post-deploy maintenance, update-only work or any restored-copy Odoo
   process (including OpenUpgrade), the runner commits a SQL-only preparation
   transaction. Restored copies reuse the credential-clearing rules below;
