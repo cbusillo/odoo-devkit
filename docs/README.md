@@ -14,6 +14,8 @@ lanes live in `launchplane`.
   surface.
 - [ARCHITECTURE.md](ARCHITECTURE.md) for the workspace-first ownership model.
 - [roles.md](roles.md) for shared coding-agent role expectations.
+- [odoo-resolution.md](odoo-resolution.md) for Odoo model, field, view and
+  permission questions that need the assembled registry rather than one source file.
 - [tooling/workspace-cli.md](tooling/workspace-cli.md) for the workspace
   command surface and generated-output contract.
 - [tooling/artifact-inputs.md](tooling/artifact-inputs.md) for the repo-owned
