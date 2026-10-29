@@ -240,7 +240,13 @@ class CoreReferenceTests(unittest.TestCase):
             ("UPDATE ir_model_access SET active=0", "base.retained_acl"),
             ("UPDATE ir_model_access SET group_id=10", "base.retained_acl"),
             ("UPDATE ir_rule SET domain_force='[]'", "base.retained_rule"),
+            ("UPDATE ir_rule SET perm_read=0", "base.retained_rule"),
+            ("UPDATE ir_rule SET name='Customized rule',active=0", "base.retained_rule"),
+            ("UPDATE ir_rule SET model_id=32", "base.retained_rule"),
+            ("INSERT INTO rule_group_rel VALUES (23,67)", "base.retained_rule"),
+            ("DELETE FROM rule_group_rel", "base.retained_rule"),
             ("UPDATE ir_rule SET global=1", "base.retained_rule"),
+            ("UPDATE ir_rule SET global=NULL", "base.retained_rule"),
             ("UPDATE ir_model_data SET noupdate=0 WHERE name='retained_rule'", "base.retained_rule"),
             ("UPDATE ir_model_data SET model='res.partner' WHERE name='fixture_reader'", "base.retained_acl"),
             ("INSERT INTO ir_model_inherit VALUES (31,32,71)", "base.retained_acl"),
@@ -266,6 +272,69 @@ class CoreReferenceTests(unittest.TestCase):
             bridge.qualify_base_policy_replay(self.cursor, bridge.read_access_policies(self.cursor))
         for identity in ("base.unknown_acl", "base.retained_acl", "base.retained_rule"):
             self.assertIn(identity, str(refusal.exception))
+        self.assertEqual(self.snapshot(), before)
+
+    def test_malformed_source_domains_keep_the_policy_identity_in_the_refusal(self) -> None:
+        self.pristine_base_policies()
+        for domain in ("\x00", "not " * 10000 + "True"):
+            with self.subTest(domain_size=len(domain)):
+                self.connection.execute("UPDATE ir_rule SET domain_force=?", (domain,))
+                before = self.snapshot()
+                with self.assertRaises(RuntimeError) as refusal:
+                    bridge.qualify_base_policy_replay(self.cursor, bridge.read_access_policies(self.cursor))
+                self.assertIn("base.retained_rule", str(refusal.exception))
+                self.assertEqual(self.snapshot(), before)
+
+    def test_installed_base_cannot_be_reclassified_by_stripping_all_policy_aliases(self) -> None:
+        self.pristine_base_policies()
+        self.connection.execute("DELETE FROM ir_model_data WHERE model IN ('ir.model.access','ir.rule')")
+        before = self.snapshot()
+        with self.assertRaises(RuntimeError) as refusal:
+            bridge.qualify_base_policy_replay(self.cursor, bridge.read_access_policies(self.cursor))
+        for identity in ("base.retained_acl", "base.retained_rule"):
+            self.assertIn(identity, str(refusal.exception))
+        self.assertEqual(self.snapshot(), before)
+
+    def test_another_installed_owner_cannot_share_a_pristine_base_policy(self) -> None:
+        self.pristine_base_policies()
+        self.connection.execute("INSERT INTO ir_module_module VALUES ('other_owner','installed','19.0.1.0')")
+        self.xmlid("other_owner", "shared_acl", "ir.model.access", 14, True)
+        before = self.snapshot()
+        with self.assertRaises(RuntimeError) as refusal:
+            bridge.qualify_base_policy_replay(self.cursor, bridge.read_access_policies(self.cursor))
+        for identity in ("base.retained_acl", "other_owner.shared_acl"):
+            self.assertIn(identity, str(refusal.exception))
+        self.assertEqual(self.snapshot(), before)
+
+    def test_duplicate_captured_contracts_refuse_without_discarding_one(self) -> None:
+        self.pristine_base_policies()
+        source = bridge.BASE_POLICY_SOURCE.read_text()
+        bridge.BASE_POLICY_SOURCE.write_text(source + source.splitlines(keepends=True)[1])
+        before = self.snapshot()
+        with self.assertRaises(RuntimeError) as refusal:
+            bridge.qualify_base_policy_replay(self.cursor, bridge.read_access_policies(self.cursor))
+        self.assertIn("base.retained_acl", str(refusal.exception))
+        self.assertEqual(self.snapshot(), before)
+
+    def test_source_and_planner_refusals_are_both_retained_before_bridge_writes(self) -> None:
+        self.pristine_base_policies()
+        self.connection.execute("UPDATE ir_model_access SET name='Customized base read'")
+        self.connection.execute("INSERT INTO ir_model_access VALUES (99,31,'Custom read',67,1,1,0,0,0,NULL,NULL,NULL,NULL)")
+        self.xmlid("fixture", "custom_read", "ir.model.access", 99, True)
+        policies = bridge.read_access_policies(self.cursor)
+        expected = []
+        for check in (
+            lambda: bridge.qualify_base_policy_replay(self.cursor, policies),
+            lambda: bridge.plan_access_transition(policies),
+        ):
+            with self.assertRaises(RuntimeError) as refusal:
+                check()
+            expected.append(str(refusal.exception))
+        before = self.snapshot()
+        with self.assertRaises(RuntimeError) as refusal:
+            self.apply()
+        for message in expected:
+            self.assertIn(message, str(refusal.exception))
         self.assertEqual(self.snapshot(), before)
 
     def test_bridge_binds_target_to_used_source_without_rewriting_source(self) -> None:
@@ -617,8 +686,8 @@ class CoreReferenceTests(unittest.TestCase):
         )
         self.connection.executemany("INSERT INTO rule_group_rel VALUES (?,?)", ((23, 67), (29, 10)))
         self.xmlid("fixture", "contact_limit", "ir.rule", 23, True)
-        self.xmlid("base", "portal_limit", "ir.rule", 29, False)
-        self.connection.execute("INSERT INTO ir_module_module VALUES ('base','installed','19.0.1.0')")
+        self.xmlid("fixture_source", "portal_limit", "ir.rule", 29, False)
+        self.connection.execute("INSERT INTO ir_module_module VALUES ('fixture_source','installed','19.0.1.0')")
         before = self.snapshot()
         plan = bridge.plan_access_transition(bridge.read_access_policies(self.cursor))
         restriction = next(policy for policy in plan.converted if policy.source.source_model == "ir.rule")
@@ -633,16 +702,16 @@ class CoreReferenceTests(unittest.TestCase):
         with self.assertRaises(RuntimeError) as refusal:
             self.apply()
         self.assertIn("fixture.contact_limit", str(refusal.exception))
-        self.assertIn("base.portal_limit", str(refusal.exception))
+        self.assertIn("fixture_source.portal_limit", str(refusal.exception))
         self.assertEqual(self.snapshot(), before)
 
     def test_grouped_rule_requires_plain_data_only_permission_for_each_group_and_operation(self) -> None:
         source = bridge.AccessPolicy(
             "ir.rule", 23, "Custom limit", "res.partner", (67,), "r", "[('id','=',7)]", True, ("fixture.limit",), (), False
         )
-        sibling = source._replace(identifier=29, groups=(10,), aliases=("base.limit",), source_owned=True)
+        sibling = source._replace(identifier=29, groups=(10,), aliases=("fixture_source.limit",), source_owned=True)
         access = source._replace(
-            source_model="ir.model.access", identifier=14, domain="", aliases=("base.permission",), source_owned=True
+            source_model="ir.model.access", identifier=14, domain="", aliases=("fixture_source.permission",), source_owned=True
         )
         for changed_access in (
             access,
@@ -655,8 +724,8 @@ class CoreReferenceTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError) as refusal:
                     bridge.plan_access_transition((source, sibling, changed_access))
                 self.assertIn("fixture.limit", str(refusal.exception))
-                self.assertIn("base.permission", str(refusal.exception))
-                self.assertIn("base.limit", str(refusal.exception))
+                self.assertIn("fixture_source.permission", str(refusal.exception))
+                self.assertIn("fixture_source.limit", str(refusal.exception))
         plan = bridge.plan_access_transition((source, sibling, access._replace(source_owned=False)))
         self.assertEqual({policy.source.identifier for policy in plan.converted}, {14, 23})
 
@@ -664,7 +733,7 @@ class CoreReferenceTests(unittest.TestCase):
         source = bridge.AccessPolicy(
             "ir.rule", 23, "Custom limit", "res.partner", (67,), "ru", "[('id','=',7)]", True, ("fixture.limit",), (), False
         )
-        sibling = source._replace(identifier=29, groups=(10,), aliases=("base.limit",), source_owned=True)
+        sibling = source._replace(identifier=29, groups=(10,), aliases=("fixture_source.limit",), source_owned=True)
         access = source._replace(source_model="ir.model.access", identifier=14, domain="", aliases=("fixture.permission",))
         for changed_source, changed_sibling in (
             (source, sibling._replace(active=False)),
@@ -678,7 +747,7 @@ class CoreReferenceTests(unittest.TestCase):
             with self.subTest(source=changed_source, sibling=changed_sibling), self.assertRaises(RuntimeError) as refusal:
                 bridge.plan_access_transition((changed_source, changed_sibling, access))
             self.assertIn("fixture.limit", str(refusal.exception))
-            self.assertIn("base.limit", str(refusal.exception))
+            self.assertIn("fixture_source.limit", str(refusal.exception))
 
     def test_acl_admission_requires_an_active_compiled_rule_covering_every_intersecting_operation(self) -> None:
         access = bridge.AccessPolicy("ir.model.access", 14, "Custom read", "res.partner", (67,), "r", "", True, (), (), False)
@@ -783,9 +852,9 @@ class CoreReferenceTests(unittest.TestCase):
             "INSERT INTO ir_model_access VALUES (?,31,'Retained read',67,1,1,0,0,0,NULL,NULL,NULL,NULL)",
             ((14,), (16,)),
         )
-        self.xmlid("base", "source_owned", "ir.model.access", 16, False)
+        self.xmlid("fixture_source", "source_owned", "ir.model.access", 16, False)
         self.xmlid("fixture", "protected_alias", "ir.model.access", 16, True)
-        self.connection.execute("INSERT INTO ir_module_module VALUES ('base','to upgrade','19.0.1.0')")
+        self.connection.execute("INSERT INTO ir_module_module VALUES ('fixture_source','to upgrade','19.0.1.0')")
         plan = bridge.plan_access_transition(bridge.read_access_policies(self.cursor))
         self.assertEqual([record.source.identifier for record in plan.converted], [14])
         self.assertFalse(plan.converted[0].source.aliases)
@@ -816,13 +885,13 @@ class CoreReferenceTests(unittest.TestCase):
 
     def test_source_owned_zero_operation_policies_refuse_before_bridge_writes(self) -> None:
         self.connection.execute("INSERT INTO ir_model VALUES (31,'res.partner')")
-        self.connection.execute("INSERT INTO ir_module_module VALUES ('base','installed','19.0.1.0')")
+        self.connection.execute("INSERT INTO ir_module_module VALUES ('fixture_source','installed','19.0.1.0')")
         self.connection.execute(
             "INSERT INTO ir_model_access VALUES (14,31,'Source zero operations',67,1,0,0,0,0,NULL,NULL,NULL,NULL)"
         )
         self.connection.execute("INSERT INTO ir_model_access VALUES (16,31,'Source read',67,1,1,0,0,0,NULL,NULL,NULL,NULL)")
-        self.xmlid("base", "no_operations", "ir.model.access", 14, False)
-        self.xmlid("base", "source_read", "ir.model.access", 16, False)
+        self.xmlid("fixture_source", "no_operations", "ir.model.access", 14, False)
+        self.xmlid("fixture_source", "source_read", "ir.model.access", 16, False)
         for retained_alias in (False, True):
             if retained_alias:
                 self.xmlid("fixture", "retained_empty", "ir.model.access", 14, True)
@@ -832,12 +901,13 @@ class CoreReferenceTests(unittest.TestCase):
                     with self.subTest(retained_alias=retained_alias, active=active, protected=protected):
                         self.connection.execute("UPDATE ir_model_access SET active=? WHERE id=14", (active,))
                         self.connection.execute(
-                            "UPDATE ir_model_data SET noupdate=? WHERE module='base' AND name='no_operations'", (protected,)
+                            "UPDATE ir_model_data SET noupdate=? WHERE module='fixture_source' AND name='no_operations'",
+                            (protected,),
                         )
                         before = self.snapshot()
                         with self.assertRaises(RuntimeError) as refusal:
                             bridge.plan_access_transition(bridge.read_access_policies(self.cursor))
-                        self.assertIn("base.no_operations", str(refusal.exception))
+                        self.assertIn("fixture_source.no_operations", str(refusal.exception))
                         if retained_alias:
                             self.assertIn("fixture.retained_empty", str(refusal.exception))
                         with self.assertRaises(RuntimeError):
@@ -866,9 +936,9 @@ class CoreReferenceTests(unittest.TestCase):
 
     def test_source_owned_shapes_require_the_same_explicit_native_mapping(self) -> None:
         self.connection.executemany("INSERT INTO ir_model VALUES (?,?)", ((31, "fixture.child"), (32, "res.partner")))
-        self.connection.execute("INSERT INTO ir_module_module VALUES ('base','installed','19.0.1.0')")
+        self.connection.execute("INSERT INTO ir_module_module VALUES ('fixture_source','installed','19.0.1.0')")
         self.connection.execute("INSERT INTO ir_model_access VALUES (14,31,'Source read',67,1,1,0,0,0,NULL,NULL,NULL,NULL)")
-        self.xmlid("base", "source_read", "ir.model.access", 14, False)
+        self.xmlid("fixture_source", "source_read", "ir.model.access", 14, False)
         for statement, reason in (
             ("UPDATE ir_model SET model='ir.rule' WHERE id=31", "merged security-model"),
             ("INSERT INTO ir_model_inherit VALUES (31,32,71)", "delegated parents"),
@@ -880,7 +950,7 @@ class CoreReferenceTests(unittest.TestCase):
                 before = self.snapshot()
                 with self.assertRaises(RuntimeError) as refusal:
                     bridge.plan_access_transition(bridge.read_access_policies(self.cursor))
-                self.assertIn("base.source_read", str(refusal.exception))
+                self.assertIn("fixture_source.source_read", str(refusal.exception))
                 with self.assertRaises(RuntimeError):
                     self.apply()
                 self.assertEqual(self.snapshot(), before)
@@ -889,18 +959,18 @@ class CoreReferenceTests(unittest.TestCase):
 
     def test_unapplied_access_plans_refuse_before_any_bridge_write(self) -> None:
         self.connection.execute("INSERT INTO ir_model VALUES (31,'res.partner')")
-        self.connection.execute("INSERT INTO ir_module_module VALUES ('base','installed','19.0.1.0')")
+        self.connection.execute("INSERT INTO ir_module_module VALUES ('fixture_source','installed','19.0.1.0')")
         self.connection.executemany(
             "INSERT INTO ir_model_access VALUES (?,31,'Retained read',67,1,1,0,0,0,NULL,NULL,NULL,NULL)",
             ((14,), (16,)),
         )
-        self.xmlid("base", "source_read", "ir.model.access", 16, False)
+        self.xmlid("fixture_source", "source_read", "ir.model.access", 16, False)
         self.xmlid("fixture", "custom_read", "ir.model.access", 14, True)
         before = self.snapshot()
         bridge.plan_access_transition(bridge.read_access_policies(self.cursor))
         with self.assertRaises(RuntimeError) as refusal:
             self.apply()
-        self.assertIn("base.source_read", str(refusal.exception))
+        self.assertIn("fixture_source.source_read", str(refusal.exception))
         self.assertIn("fixture.custom_read", str(refusal.exception))
         self.assertEqual(self.snapshot(), before)
 
@@ -944,8 +1014,8 @@ class CoreReferenceTests(unittest.TestCase):
             ("[('id','=',9)]",),
         )
         self.connection.execute("INSERT INTO rule_group_rel VALUES (29,10)")
-        self.xmlid("base", "portal_limit", "ir.rule", 29, False)
-        self.connection.execute("INSERT INTO ir_module_module VALUES ('base','installed','19.0.1.0')")
+        self.xmlid("fixture_source", "portal_limit", "ir.rule", 29, False)
+        self.connection.execute("INSERT INTO ir_module_module VALUES ('fixture_source','installed','19.0.1.0')")
         for active in (True, False):
             self.connection.execute("UPDATE ir_rule SET active=?", (active,))
             before = self.snapshot()
@@ -953,7 +1023,7 @@ class CoreReferenceTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError) as refusal:
                     self.apply()
                 self.assertIn("fixture.contact_access", str(refusal.exception))
-                self.assertIn("base.portal_limit", str(refusal.exception))
+                self.assertIn("fixture_source.portal_limit", str(refusal.exception))
                 self.assertEqual(self.snapshot(), before)
         self.connection.execute("UPDATE ir_model_access SET perm_read=0,perm_write=1")
         plan = bridge.plan_access_transition(bridge.read_access_policies(self.cursor))
@@ -963,8 +1033,8 @@ class CoreReferenceTests(unittest.TestCase):
     def test_nameless_rule_refuses_regardless_of_ownership_before_bridge_writes(self) -> None:
         self.connection.execute("INSERT INTO ir_model VALUES (31,'res.partner')")
         self.connection.execute("INSERT INTO ir_rule VALUES (23,31,NULL,'[]',1,1,0,0,0,NULL,NULL,NULL,NULL,NULL)")
-        self.connection.execute("INSERT INTO ir_module_module VALUES ('base','installed','19.0.1.0')")
-        for module in ("fixture", "base"):
+        self.connection.execute("INSERT INTO ir_module_module VALUES ('fixture_source','installed','19.0.1.0')")
+        for module in ("fixture", "fixture_source"):
             self.connection.execute("SAVEPOINT nameless")
             with self.subTest(module=module):
                 self.xmlid(module, "nameless_rule", "ir.rule", 23, False)
@@ -995,8 +1065,8 @@ class CoreReferenceTests(unittest.TestCase):
         self.connection.execute("INSERT INTO ir_model_access VALUES (14,31,'Retained read',67,1,1,0,0,0,NULL,NULL,NULL,NULL)")
         self.connection.execute("INSERT INTO ir_rule VALUES (29,31,'Source portal limit','[]',1,1,0,0,0,NULL,NULL,NULL,NULL,NULL)")
         self.connection.execute("INSERT INTO rule_group_rel VALUES (29,10)")
-        self.xmlid("base", "portal_limit", "ir.rule", 29, False)
-        self.connection.execute("INSERT INTO ir_module_module VALUES ('base','installed','19.0.1.0')")
+        self.xmlid("fixture_source", "portal_limit", "ir.rule", 29, False)
+        self.connection.execute("INSERT INTO ir_module_module VALUES ('fixture_source','installed','19.0.1.0')")
         for module in ("studio_customization", "__export__", "__custom__"):
             with self.subTest(module=module):
                 self.connection.execute("SAVEPOINT customized")

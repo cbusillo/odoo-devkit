@@ -113,10 +113,14 @@ def ensure_supported_policy_columns(cr: Any) -> None:
         raise RuntimeError("Unsupported stored access metadata: " + ", ".join(unsupported))
 
 
+def _installed_source_modules(cr: Any) -> set[str]:
+    cr.execute("SELECT name FROM ir_module_module WHERE state IN ('installed', 'to upgrade')")
+    return {row[0] for row in cr.fetchall()} - {"__export__", "__custom__", "studio_customization"}
+
+
 def read_access_policies(cr: Any) -> tuple[AccessPolicy, ...]:
     ensure_supported_policy_columns(cr)
-    cr.execute("SELECT name FROM ir_module_module WHERE state IN ('installed', 'to upgrade')")
-    source_modules = {row[0] for row in cr.fetchall()} - {"__export__", "__custom__", "studio_customization"}
+    source_modules = _installed_source_modules(cr)
     cr.execute(
         "SELECT model, res_id, id, module, name, noupdate, create_uid, create_date, write_uid, write_date FROM ir_model_data "
         "WHERE model IN ('ir.model.access', 'ir.rule') ORDER BY module, name"
@@ -198,10 +202,15 @@ def _policy_label(policy: AccessPolicy) -> str:
 
 def qualify_base_policy_replay(cr: Any, policies: tuple[AccessPolicy, ...]) -> tuple[AccessPolicy, ...]:
     base = tuple(policy for policy in policies if any(alias.startswith("base.") for alias in policy.aliases))
-    if not base:
+    source_modules = _installed_source_modules(cr)
+    if "base" not in source_modules and not base:
         return ()
     with BASE_POLICY_SOURCE.open(newline="") as source:
-        contracts = {row["xmlid"]: row for row in csv.DictReader(source)}
+        contracts = {}
+        for row in csv.DictReader(source):
+            if row["xmlid"] in contracts:
+                raise RuntimeError(f"Duplicate native19 base policy contract: {row['xmlid']}")
+            contracts[row["xmlid"]] = row
     group_names = sorted({name for row in contracts.values() for name in row["groups"].split(";") if name})
     cr.execute(
         "SELECT data.module || '.' || data.name, data.model, data.res_id, groups.id FROM ir_model_data data "
@@ -213,8 +222,8 @@ def qualify_base_policy_replay(cr: Any, policies: tuple[AccessPolicy, ...]) -> t
     seen = set()
     for policy in base:
         aliases = tuple(alias for alias in policy.aliases if alias.startswith("base."))
-        if len(aliases) != 1:
-            refusals.append(f"{_policy_label(policy)}: distinct base policy contracts share one source row")
+        if len(aliases) != 1 or any(alias.module in source_modules - {"base"} for alias in policy.alias_records):
+            refusals.append(f"{_policy_label(policy)}: distinct source owners share one base policy row")
         for alias in aliases:
             seen.add(alias)
             expected = contracts.get(alias)
@@ -241,7 +250,7 @@ def qualify_base_policy_replay(cr: Any, policies: tuple[AccessPolicy, ...]) -> t
                     ast.parse(expected["domain"] or "[]", mode="eval")
                 ):
                     changed.append("domain")
-            except SyntaxError:
+            except (SyntaxError, ValueError, RecursionError, MemoryError):
                 changed.append("domain")
             if policy.source_model == "ir.rule" and policy.global_rule != (not expected_groups):
                 changed.append("stored global")
@@ -549,7 +558,7 @@ def plan_access_transition(policies: tuple[AccessPolicy, ...]) -> AccessPlan:
         related = "; ".join(_policy_label(sibling) for sibling in siblings)
         try:
             converted[policy.source_model, policy.identifier] = _compile_grouped_rule(policy, policies)
-        except (ValueError, SyntaxError) as error:
+        except (ValueError, SyntaxError, RecursionError, MemoryError) as error:
             refusals.append(f"{label}: {error}; sibling policies: {related or 'none'}")
     restrictions = tuple(converted.values())
     for policy in permissions:

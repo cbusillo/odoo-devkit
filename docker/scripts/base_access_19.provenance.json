@@ -1,0 +1,9 @@
+{
+  "kind": "Native19 base policy content and delegated-model metadata; no native20 or rights qualification",
+  "capture_sha256": "145c9af69fbc959a136f62eb367f3702f329c7cb2d693ac95722f371f025e712",
+  "artifact_sha256": "64e4e6dc7e25fb7da141331e08e3ef97c3edcdf748f5ffda447aa71306a81678",
+  "packet_sha256": "e71a50ff6242167d2d7def6110583551fb7e53eb831179275a92d1737fa9ccac",
+  "job_id": "bf7fa5c9-50ed-4632-8527-e460e058d2bd",
+  "upstream_commit": null,
+  "upstream_commit_status": "Not captured; identity is bound by the independently qualified immutable factory packet"
+}

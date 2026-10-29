@@ -631,9 +631,12 @@ Notes
   full target architecture and validation; this step does not migrate bank data.
   Access conversion remains unqualified: every nonempty 19 crossing refuses
   before bridge writes. Base replay first compares the complete policy inventory
-  against `docker/scripts/base_access_19.csv`, captured from native 19 base
-  declarations and checked against a pristine native installation. Ownership
-  alone does not admit a policy: changed content, group bindings, protection,
+  against `docker/scripts/base_access_19.csv`, extracted from an independently
+  qualified pristine native 19 installation. Its provenance sidecar binds the
+  content and delegated-model metadata to the immutable capture and packet.
+  Regenerate both artifacts with
+  `uv run python tests/live_odoo/capture_base_access.py CAPTURE QUALIFICATION OUTPUT`.
+  Base ownership alone does not admit a base policy: changed content, group bindings, protection,
   stored global flags, missing or merged identities refuse. Extra non-base
   aliases and audit data remain intact. This source-content check does not
   qualify native 20 mappings or authorize replay.
