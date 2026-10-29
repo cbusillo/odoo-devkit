@@ -7,6 +7,7 @@
     "group:allNonMajor",
     "schedule:weekly"
   ],
+  "commitBody": "Renovate-Updates: [{{#each upgrades}}{{{toJSON (toObject 'depName' depName 'updateType' updateType 'currentVersion' currentVersion 'newVersion' newVersion 'currentValue' currentValue 'newValue' newValue 'currentDigest' currentDigest 'newDigest' newDigest)}}}{{#unless @last}},{{/unless}}{{/each}}]",
   "timezone": "America/New_York",
   "labels": ["dependencies"],
   "prConcurrentLimit": 3,
