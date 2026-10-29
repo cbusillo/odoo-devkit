@@ -13,6 +13,10 @@
   "prConcurrentLimit": 3,
   "rebaseWhen": "conflicted",
   "minimumReleaseAgeBehaviour": "timestamp-optional",
+  "pep723": {
+    "managerFilePatterns": ["/\\.py$/"],
+    "ignorePaths": ["**/node_modules/**"]
+  },
   "packageRules": [
     {
       "matchUpdateTypes": ["minor", "patch"],
