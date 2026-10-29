@@ -579,7 +579,8 @@ Notes
   external-system bindings, record relationships and product export history.
   Only a managed Shopify development-store apply on `testing` clears Shopify
   IDs and export state for the existing Reset Shopify flow. It
-  deletes the PrintNode key and the Mapbox, Unsplash and Tenor tokens. It
+  clears secret-shaped `ebay.*` parameters (these are never kept on a copy),
+  the PrintNode key and the Mapbox, Unsplash and Tenor tokens. It
   deletes the Fishbowl, RepairShopr sync and cm_data database connections
   (host, database, user and password), so import crons that install hooks turn
   back on cannot reach the production databases. It disables every payment
@@ -826,8 +827,9 @@ flags/timestamps and Shopify import cursors for reconciliation. Copied Shopify
 jobs are canceled; every cron is disabled, outgoing mail is blocked, API keys
 and push devices are removed, payment providers and incoming mail are disabled.
 This is mandatory even with `--no-sanitize` or `ENV_OVERRIDE_DISABLE_CRON=false`.
-Managed credential parameters, managed addon settings, kept-integration
-exceptions and service-key provisioning refuse before registry loading. SQL
+Managed credential parameters, kept-integration exceptions and service-key
+provisioning refuse before registry loading. Non-credential addon settings are
+validated and left unapplied. SQL
 non-credential config overrides retain their existing support. ORM integration
 settings are skipped on the copy. The startup wrapper repeats the boundary
 before initialization, each shell and the server; it disables server cron
@@ -836,11 +838,16 @@ through preparation. Standalone Odoo commands must use the API first.
 
 For the separately selected testing copy, the existing managed Shopify apply
 selects its development store with `test_store=true`, a store key, API token,
-webhook key and API version. With no migration purpose, the restore clears
-that copy's Shopify IDs and export state before applying those managed values;
-the existing store verification and Reset Shopify workflow then run normally.
-Testing without that explicit selection and all migration copies preserve
-identity links. No eBay reset is added. Existing store-separation and release
+webhook key and API version. With no migration purpose, the SQL boundary
+clears that copy's Shopify IDs/export state and cancels old jobs before applying
+the selected store on a restore or when the stored store key differs from the
+incoming key. A delayed apply follows the same path because quarantine removed
+the copied store key. Reapplying or rotating credentials for the same store
+preserves its IDs and jobs. Startup prepares a testing managed-settings apply
+before the ORM shell, after base initialization; direct settings applies use the
+same boundary. Independent readback verifies each reset. The existing store
+verification and Reset Shopify workflow then run normally. Testing without that
+explicit selection and all migration copies preserve identity links. No eBay reset is added. Existing store-separation and release
 boundaries still govern reconnection; this setting grants no new authority.
 
 The migration lead owns the tenant hook/runbook integration handback on the

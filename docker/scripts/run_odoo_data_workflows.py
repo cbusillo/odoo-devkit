@@ -105,7 +105,7 @@ KEEPABLE_INTEGRATIONS = (frozenset(INTEGRATION_CREDENTIAL_PARAMETER_KEYS) - {"we
 REGENERATED_SIGNING_PARAMETER_KEYS = ("database.secret",)
 SIGNING_KEYS = "signing_keys"
 SHOPIFY_PARAMETER_PREFIX = "shopify."
-SHOPIFY_SECRET_PARAMETER_SUFFIXES = ("_key", "_token", "_secret", "_password")
+INTEGRATION_SECRET_PARAMETER_SUFFIXES = ("_key", "_token", "_secret", "_password")
 SHOPIFY_IMPORT_CURSOR_PREFIX = "shopify.last_"
 SHOPIFY_IMPORT_CURSOR_SUFFIX = "_import_time"
 SHOPIFY_OPEN_JOB_STATES = ("draft", "queued", "running")
@@ -156,11 +156,11 @@ def credential_parameter_integration(key: str) -> str | None:
     for integration, keys in INTEGRATION_CREDENTIAL_PARAMETER_KEYS.items():
         if key in keys:
             return integration
-    if key.startswith("ebay.") and key.endswith(SHOPIFY_SECRET_PARAMETER_SUFFIXES):
+    if key.startswith("ebay.") and key.endswith(INTEGRATION_SECRET_PARAMETER_SUFFIXES):
         return "ebay"
     if not key.startswith(SHOPIFY_PARAMETER_PREFIX):
         return None
-    if key.endswith(SHOPIFY_SECRET_PARAMETER_SUFFIXES):
+    if key.endswith(INTEGRATION_SECRET_PARAMETER_SUFFIXES):
         return "shopify"
     if key.startswith(SHOPIFY_IMPORT_CURSOR_PREFIX) and key.endswith(SHOPIFY_IMPORT_CURSOR_SUFFIX):
         return "shopify"
@@ -546,7 +546,6 @@ class OdooDataWorkflowRunner:
         self._odoo_shell_preflight_checked = False
         self._data_workflow_lock_path: Path | None = None
         self._restored_credential_fingerprints: dict[str, frozenset[str]] = {}
-        self._development_store_selected = False
 
     def require_environment_override_payloads_if_configured(self) -> None:
         try:
@@ -1281,8 +1280,6 @@ class OdooDataWorkflowRunner:
                 f"UPDATE shopify_sync SET state = 'canceled' WHERE state IN ({state_placeholders})",
                 SHOPIFY_OPEN_JOB_STATES,
             )
-        if self._development_store_selected:
-            self._forget_production_shopify_records(cursor)
         if "ir_actions_server_id" not in self._table_columns(cursor, "ir_cron"):
             return
         cursor.execute(
@@ -1341,7 +1338,6 @@ class OdooDataWorkflowRunner:
             if self._table_exists(cursor, "mail_push_device"):
                 cursor.execute("SELECT count(*) FROM mail_push_device")
                 push_devices = cursor.fetchone()[0]
-            shopify_external_ids = self._surviving_shopify_external_ids(cursor) if self._development_store_selected else 0
             enabled_payment_providers = 0 if PAYMENT_INTEGRATION in kept else self._enabled_remote_payment_providers(cursor)
             active_incoming_mail_servers = 0
             if INCOMING_MAIL_INTEGRATION not in kept and "active" in self._table_columns(cursor, "fetchmail_server"):
@@ -1360,8 +1356,6 @@ class OdooDataWorkflowRunner:
                 problems.append("isolated copy credentials remain: " + ", ".join(sorted(unexpected)))
         if push_devices:
             problems.append(f"{push_devices} copied web push subscription(s)")
-        if shopify_external_ids:
-            problems.append(f"{shopify_external_ids} copied production Shopify external ID(s)")
         if enabled_payment_providers:
             problems.append(f"{enabled_payment_providers} payment provider(s) still enabled")
         if active_incoming_mail_servers:
@@ -1640,8 +1634,6 @@ class OdooDataWorkflowRunner:
             values = payload.get(name)
             if values is None:
                 return []
-            if self.local.copy_purpose and name != "config_parameters" and values:
-                raise OdooDatabaseUpdateError("Managed addon settings cannot reconnect an isolated copy.")
             if not isinstance(values, list) or any(not isinstance(value, dict) for value in values):
                 raise OdooDatabaseUpdateError(f"Invalid managed override list: {name}.")
             return values
@@ -1714,6 +1706,21 @@ class OdooDataWorkflowRunner:
                 raise OdooDatabaseUpdateError("Managed Shopify settings require apply or clear action.")
         return parameters
 
+    def _reset_selected_development_store(self, cursor: Any, parameters: dict[str, str | None], *, restored_copy: bool) -> bool:
+        if self.local.copy_purpose or self.local.platform_instance.strip().lower() != "testing":
+            return False
+        if parameters.get("shopify.test_store") != "True" or not all(
+            parameters.get(f"shopify.{key}") for key in ("shop_url_key", "api_token", "webhook_key", "api_version")
+        ):
+            return False
+        cursor.execute("SELECT value FROM ir_config_parameter WHERE key = %s", ("shopify.shop_url_key",))
+        previous = cursor.fetchone()
+        if not restored_copy and previous and (previous[0] or "").strip() == parameters["shopify.shop_url_key"]:
+            return False
+        self._stop_copied_shopify_work(cursor)
+        self._forget_production_shopify_records(cursor)
+        return True
+
     def prepare_credentials_before_registry(self, *, restored_copy: bool = False, do_sanitize: bool = False) -> None:
         """Commit the SQL-only credential boundary before starting any Odoo process.
 
@@ -1724,12 +1731,6 @@ class OdooDataWorkflowRunner:
         try:
             parameters = self._pre_registry_parameter_overrides()
             self._validate_isolated_copy_settings(parameters)
-            self._development_store_selected = (
-                self.local.copy_purpose is None
-                and self.local.platform_instance.strip().lower() == "testing"
-                and parameters.get("shopify.test_store") == "True"
-                and all(parameters.get(f"shopify.{key}") for key in ("shop_url_key", "api_token", "webhook_key", "api_version"))
-            )
             restored_copy = restored_copy or self.local.copy_purpose is not None
             if restored_copy:
                 self.fingerprint_restored_credentials()
@@ -1744,6 +1745,7 @@ class OdooDataWorkflowRunner:
             # was already correct, including production's preservation/no-op path.
             parameters[BOUNDARY_COMMIT_PARAMETER] = str(uuid.uuid4())
             with conn.cursor() as cursor:
+                reset_shopify = self._reset_selected_development_store(cursor, parameters, restored_copy=restored_copy)
                 for key, value in parameters.items():
                     if value is None:
                         cursor.execute("DELETE FROM ir_config_parameter WHERE key = %s", (key,))
@@ -1765,6 +1767,8 @@ class OdooDataWorkflowRunner:
                     self.verify_production_credentials_cleared(
                         database_connection=observer, managed_parameter_keys=frozenset(parameters)
                     )
+                if reset_shopify and self._surviving_shopify_external_ids(cursor):
+                    raise OdooDatabaseUpdateError("Development-store identity reset commit readback failed.")
                 for key, expected in parameters.items():
                     cursor.execute("SELECT value FROM ir_config_parameter WHERE key = %s", (key,))
                     if cursor.fetchone() != (None if expected is None else (expected,)):
@@ -1809,6 +1813,8 @@ class OdooDataWorkflowRunner:
         if self.local.copy_purpose:
             self.prepare_credentials_before_registry(restored_copy=True)
             return
+        if self.local.platform_instance.strip().lower() == "testing":
+            self.prepare_credentials_before_registry()
         payload = {
             "db": self.local.db_name,
         }

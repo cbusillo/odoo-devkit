@@ -186,7 +186,7 @@ Current runtime ownership is intentionally narrow and explicit:
   so a new production database can use the operator's supplied mail
   configuration.
 - Restores onto a non-production instance clear the copy's production
-  integration credentials and signing keys. This includes Shopify, PrintNode, Fishbowl,
+  integration credentials and signing keys. This includes Shopify, secret-shaped `ebay.*` parameters, PrintNode, Fishbowl,
   RepairShopr and cm_data connections, payment providers, incoming mail
   servers and Gmail/Outlook OAuth app client secrets, IAP account tokens,
   map and media tokens, web push keys and
@@ -204,8 +204,8 @@ Current runtime ownership is intentionally narrow and explicit:
   the SQL boundary clears credentials, cancels copied Shopify work, disables
   all crons and blocks outgoing mail even with `--no-sanitize`. It preserves
   Shopify/eBay bindings and export/import history for reconciliation. Managed
-  credentials, addon settings, kept integrations and service-key provisioning
-  are refused. Startup repeats the boundary before Odoo and refuses a separate scheduler.
+  credentials, kept integrations and service-key provisioning are refused.
+  Non-credential addon settings are validated and left unapplied. Startup repeats the boundary before Odoo and refuses a separate scheduler.
   The exact caller and OPW handback are in the [workspace CLI guide](docs/tooling/workspace-cli.md#isolated-migration-and-saved-copies).
 - An optional `company_email` in Launchplane's website-bootstrap payload sets
   the selected website company's sender address and verifies it was saved.
