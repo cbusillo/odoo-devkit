@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import importlib.util
 import json
 import re
@@ -170,6 +171,102 @@ class CoreReferenceTests(unittest.TestCase):
 
     def apply(self) -> None:
         bridge.migrate(self.cursor, "19.0.1.3")
+
+    def pristine_base_policies(self) -> None:
+        contract = Path(self.directory.name) / "base-policies.csv"
+        with contract.open("w", newline="") as stream:
+            writer = csv.writer(stream)
+            writer.writerow(
+                (
+                    "source_model",
+                    "xmlid",
+                    "name",
+                    "model",
+                    "groups",
+                    "operation",
+                    "domain",
+                    "active",
+                    "noupdate",
+                    "delegated_parents",
+                )
+            )
+            writer.writerows(
+                (
+                    ("ir.model.access", "base.retained_acl", "Native read", "res.partner", "base.fixture_reader", "r", "", 1, 0, ""),
+                    (
+                        "ir.rule",
+                        "base.retained_rule",
+                        "Native rule",
+                        "res.partner",
+                        "base.fixture_portal",
+                        "crud",
+                        "[('id','=',7)]",
+                        1,
+                        1,
+                        "",
+                    ),
+                )
+            )
+        patch.object(bridge, "BASE_POLICY_SOURCE", contract).start()
+        self.connection.execute("INSERT INTO ir_model VALUES (31,'res.partner')")
+        self.connection.execute("INSERT INTO ir_model VALUES (32,'res.company')")
+        self.connection.execute("INSERT INTO ir_module_module VALUES ('base','installed','19.0.1.0')")
+        self.connection.execute("INSERT INTO ir_model_access VALUES (14,31,'Native read',67,1,1,0,0,0,3,'created',5,'written')")
+        self.connection.execute(
+            "INSERT INTO ir_rule VALUES (23,31,'Native rule',?,1,1,1,1,1,3,'created',5,'written',0)", ("[('id', '=', 7)]",)
+        )
+        self.connection.execute("INSERT INTO rule_group_rel VALUES (23,10)")
+        self.xmlid("base", "fixture_reader", "res.groups", 67, True)
+        self.xmlid("base", "fixture_portal", "res.groups", 10, True)
+        self.xmlid("base", "retained_acl", "ir.model.access", 14, False)
+        self.xmlid("base", "retained_rule", "ir.rule", 23, True)
+
+    def test_pristine_base_contracts_preserve_overlapping_ids_aliases_and_audits(self) -> None:
+        self.pristine_base_policies()
+        self.connection.execute("UPDATE ir_rule SET id=14 WHERE id=23")
+        self.connection.execute("UPDATE rule_group_rel SET rule_group_id=14 WHERE rule_group_id=23")
+        self.connection.execute("UPDATE ir_model_data SET res_id=14 WHERE model='ir.rule'")
+        self.xmlid("__custom__", "retained_policy", "ir.rule", 14, True)
+        before = self.snapshot()
+        policies = bridge.read_access_policies(self.cursor)
+        self.assertEqual(bridge.qualify_base_policy_replay(self.cursor, policies), policies)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_owned_xmlid_does_not_qualify_customized_base_policy_content(self) -> None:
+        self.pristine_base_policies()
+        changes = (
+            ("UPDATE ir_model_access SET name='Customized read'", "base.retained_acl"),
+            ("UPDATE ir_model_access SET perm_write=1", "base.retained_acl"),
+            ("UPDATE ir_model_access SET active=0", "base.retained_acl"),
+            ("UPDATE ir_model_access SET group_id=10", "base.retained_acl"),
+            ("UPDATE ir_rule SET domain_force='[]'", "base.retained_rule"),
+            ("UPDATE ir_rule SET global=1", "base.retained_rule"),
+            ("UPDATE ir_model_data SET noupdate=0 WHERE name='retained_rule'", "base.retained_rule"),
+            ("UPDATE ir_model_data SET model='res.partner' WHERE name='fixture_reader'", "base.retained_acl"),
+            ("INSERT INTO ir_model_inherit VALUES (31,32,71)", "base.retained_acl"),
+        )
+        for statement, identity in changes:
+            with self.subTest(statement=statement):
+                self.connection.execute("SAVEPOINT customized")
+                self.connection.execute(statement)
+                before = self.snapshot()
+                with self.assertRaises(RuntimeError) as refusal:
+                    bridge.qualify_base_policy_replay(self.cursor, bridge.read_access_policies(self.cursor))
+                self.assertIn(identity, str(refusal.exception))
+                self.assertEqual(self.snapshot(), before)
+                self.connection.execute("ROLLBACK TO customized")
+                self.connection.execute("RELEASE customized")
+
+    def test_base_contract_missing_unknown_and_merged_identities_refuse_together(self) -> None:
+        self.pristine_base_policies()
+        self.connection.execute("UPDATE ir_model_data SET name='unknown_acl' WHERE name='retained_acl'")
+        self.xmlid("base", "retained_acl", "ir.rule", 23, False)
+        before = self.snapshot()
+        with self.assertRaises(RuntimeError) as refusal:
+            bridge.qualify_base_policy_replay(self.cursor, bridge.read_access_policies(self.cursor))
+        for identity in ("base.unknown_acl", "base.retained_acl", "base.retained_rule"):
+            self.assertIn(identity, str(refusal.exception))
+        self.assertEqual(self.snapshot(), before)
 
     def test_bridge_binds_target_to_used_source_without_rewriting_source(self) -> None:
         before = self.snapshot()

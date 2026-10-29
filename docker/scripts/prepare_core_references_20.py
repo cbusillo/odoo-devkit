@@ -13,6 +13,7 @@ SOURCE_STATE = "state_in_or"
 TARGET_STATE = "state_in_od"
 STATE_DATA_FILE = Path("/odoo/odoo/addons/base/data/res.country.state.csv")
 NATIVE_RELEASE_FILE = Path("/odoo/odoo/release.py")
+BASE_POLICY_SOURCE = Path(__file__).with_name("base_access_19.csv")
 BANK_SELECTOR_19 = "expr=\"//field[@name='acc_number']\""
 BANK_SELECTOR_20 = "expr=\"//field[@name='account_number']\""
 _logger = logging.getLogger(__name__)
@@ -193,6 +194,63 @@ def read_access_policies(cr: Any) -> tuple[AccessPolicy, ...]:
 def _policy_label(policy: AccessPolicy) -> str:
     aliases = ", ".join(policy.aliases) if policy.aliases else "unowned"
     return f"{policy.source_model}:{policy.identifier} ({aliases}; {policy.name})"
+
+
+def qualify_base_policy_replay(cr: Any, policies: tuple[AccessPolicy, ...]) -> tuple[AccessPolicy, ...]:
+    base = tuple(policy for policy in policies if any(alias.startswith("base.") for alias in policy.aliases))
+    if not base:
+        return ()
+    with BASE_POLICY_SOURCE.open(newline="") as source:
+        contracts = {row["xmlid"]: row for row in csv.DictReader(source)}
+    group_names = sorted({name for row in contracts.values() for name in row["groups"].split(";") if name})
+    cr.execute(
+        "SELECT data.module || '.' || data.name, data.model, data.res_id, groups.id FROM ir_model_data data "
+        "LEFT JOIN res_groups groups ON groups.id = data.res_id WHERE data.module || '.' || data.name = ANY(%s)",
+        (group_names,),
+    )
+    groups = {name: identifier for name, model, identifier, existing in cr.fetchall() if model == "res.groups" and existing}
+    refusals = []
+    seen = set()
+    for policy in base:
+        aliases = tuple(alias for alias in policy.aliases if alias.startswith("base."))
+        if len(aliases) != 1:
+            refusals.append(f"{_policy_label(policy)}: distinct base policy contracts share one source row")
+        for alias in aliases:
+            seen.add(alias)
+            expected = contracts.get(alias)
+            if expected is None:
+                refusals.append(f"{_policy_label(policy)}: no qualified native19 base contract for {alias}")
+                continue
+            changed = [
+                field for field in ("source_model", "name", "model", "operation") if getattr(policy, field) != expected[field]
+            ]
+            if policy.active != (expected["active"] == "1"):
+                changed.append("active")
+            if set(policy.delegated_parents) != {name for name in expected["delegated_parents"].split(";") if name}:
+                changed.append("delegated parents")
+            expected_groups = tuple(name for name in expected["groups"].split(";") if name)
+            if any(name not in groups for name in expected_groups) or set(policy.groups) != {
+                groups.get(name) for name in expected_groups
+            }:
+                changed.append("groups")
+            metadata = tuple(item for item in policy.alias_records if f"{item.module}.{item.name}" == alias)
+            if len(metadata) != 1 or metadata[0].noupdate != (expected["noupdate"] == "1"):
+                changed.append("noupdate")
+            try:
+                if ast.dump(ast.parse(policy.domain or "[]", mode="eval")) != ast.dump(
+                    ast.parse(expected["domain"] or "[]", mode="eval")
+                ):
+                    changed.append("domain")
+            except SyntaxError:
+                changed.append("domain")
+            if policy.source_model == "ir.rule" and policy.global_rule != (not expected_groups):
+                changed.append("stored global")
+            if changed:
+                refusals.append(f"{_policy_label(policy)}: differs from native19 base contract in {', '.join(changed)}")
+    refusals.extend(f"{alias}: native19 base contract is missing" for alias in sorted(contracts.keys() - seen))
+    if refusals:
+        raise RuntimeError("Unqualified source-owned base policy replay:\n" + "\n".join(refusals))
+    return base
 
 
 def ensure_native_access_replay(cr: Any) -> None:
@@ -622,12 +680,23 @@ def migrate(cr: Any, version: str | None) -> None:
         return
     if major != "19":
         raise RuntimeError("Core reference preparation requires a native 19-to-20 crossing")
-    plan = plan_access_transition(read_access_policies(cr))
-    pending = tuple(target.source for target in plan.converted) + plan.source_owned
-    if pending:
-        raise RuntimeError(
+    policies = read_access_policies(cr)
+    refusals = []
+    plan = None
+    try:
+        qualify_base_policy_replay(cr, policies)
+    except RuntimeError as error:
+        refusals.append(str(error))
+    try:
+        plan = plan_access_transition(policies)
+    except RuntimeError as error:
+        refusals.append(str(error))
+    if plan is not None and (pending := tuple(target.source for target in plan.converted) + plan.source_owned):
+        refusals.append(
             "Native access policy application is not qualified:\n" + "\n".join(_policy_label(policy) for policy in pending)
         )
+    if refusals:
+        raise RuntimeError("\n".join(refusals))
     state = _state_source(cr)
     website = _website_source(cr)
     state_target = _check_target(cr, TARGET_STATE, state, protect=state.noupdate)

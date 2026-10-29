@@ -630,7 +630,14 @@ Notes
   any bridge write. Replay is unchanged. Account's later native update owns its
   full target architecture and validation; this step does not migrate bank data.
   Access conversion remains unqualified: every nonempty 19 crossing refuses
-  before bridge writes. The inventory retains policy/alias audit, protection,
+  before bridge writes. Base replay first compares the complete policy inventory
+  against `docker/scripts/base_access_19.csv`, captured from native 19 base
+  declarations and checked against a pristine native installation. Ownership
+  alone does not admit a policy: changed content, group bindings, protection,
+  stored global flags, missing or merged identities refuse. Extra non-base
+  aliases and audit data remain intact. This source-content check does not
+  qualify native 20 mappings or authorize replay.
+  The inventory retains policy/alias audit, protection,
   global flags and grouped dependencies, and names unsupported stored columns,
   conversions and cleanup consumers. Catalog checks include references to
   retired models, fields, views and actions. Full ORM/serialized coverage and
