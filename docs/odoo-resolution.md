@@ -18,9 +18,10 @@ parent fields through a relation, not the parent's methods. See
 **Fields.** Inspect `env[model]._fields[field]` after registry setup for the
 effective `compute`, `related`, `store`, `compute_sudo`, and relation metadata;
 one field declaration or one method's decorator is insufficient. Compute can
-be a method name or callable; a resolved related path can be a sequence rather
-than the declaration's dotted string. Follow each relational hop in its own
-model. Use the selected Odoo version's resolved dependency metadata and prove
+be a method name, callable or generated related-field computation. Inspect
+setup and the whole MRO, rather than assuming one decorator supplies all
+dependencies. Follow each relational hop in its own model. Use the selected
+Odoo version's resolved dependency metadata and prove
 recomputation with a small native test. The archived substring-based reverse
 dependency search and swallowed resolution errors were approximations, not
 proof that no dependency exists. See
@@ -38,20 +39,22 @@ concluding a node is missing or changing priority. See
 field. In Odoo 19, ACL grants add together; applicable global record rules
 intersect, applicable group rules unite, and the two sets intersect. No
 applicable record rule means default allow after ACL access. This corrects the
-archived checker's contrary suggestion. Odoo 20 uses `ir.access`; consult its
-native evaluator rather than carrying the old table queries forward. Check
-the exact operation and record as the intended user, without superuser mode,
+archived checker's contrary suggestion. Odoo 20 uses `ir.access`; consult that
+version's native access implementation rather than carrying old table queries
+forward. Check the exact operation and record as the intended user, without superuser mode,
 with the relevant company context and field restrictions. See
 [19 security](https://www.odoo.com/documentation/19.0/developer/reference/backend/security.html)
 and [20 access](https://github.com/odoo/odoo/blob/20.0/odoo/addons/base/models/ir_access.py).
 
-**Registry evidence.** Use the existing
+**Registry evidence.** For code-only questions, use a small native test through
+[addon-CI](tooling/addon-ci.md) with the selected tenant image and addons. For
+database customizations, use an authorized disposable, sanitized restore with
+matching source, image and module state; a fresh database cannot settle these.
+Submit heavy workloads through the existing
 [heavy-run entrypoint](https://github.com/cbusillo/codex-skills/blob/main/skills/supervisor/references/heavy-runs.md)
-with an isolated fixture containing the exact source, image and installed
-addons. Run a bounded Odoo shell script inside that job to inspect the objects
-above; retain the versions, module state, user/context and output as evidence.
-For an existing local workspace, the
+and run a bounded native Odoo shell script inside the job to inspect the
+objects above. For an existing local workspace, the
 [manifest-backed shell](tooling/workspace-cli.md)
 is local-only. Follow its documented command contract; it is not a remote
-execution route. A registry answer describes that fixture, not an unexamined
-tenant database.
+execution route. Retain source/image versions, module state, user/context and
+output as evidence. Limit the conclusion to the inspected fixture.
