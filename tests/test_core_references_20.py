@@ -863,11 +863,14 @@ class CoreReferenceTests(unittest.TestCase):
         self.xmlid("fixture_source", "source_owned", "ir.model.access", 16, False)
         self.xmlid("fixture", "protected_alias", "ir.model.access", 16, True)
         self.connection.execute("INSERT INTO ir_module_module VALUES ('fixture_source','to upgrade','19.0.1.0')")
-        plan = bridge.plan_access_transition(bridge.read_access_policies(self.cursor))
-        self.assertEqual([record.source.identifier for record in plan.converted], [14])
-        self.assertFalse(plan.converted[0].source.aliases)
-        self.assertEqual([record.identifier for record in plan.source_owned], [16])
-        self.assertEqual(plan.source_owned[0].protected_aliases, ("fixture.protected_alias",))
+        for state in ("installed", "to upgrade", "to install", "uninstalled", "to remove"):
+            with self.subTest(state=state):
+                self.connection.execute("UPDATE ir_module_module SET state=? WHERE name='fixture_source'", (state,))
+                plan = bridge.plan_access_transition(bridge.read_access_policies(self.cursor))
+                self.assertEqual([record.source.identifier for record in plan.converted], [14])
+                self.assertFalse(plan.converted[0].source.aliases)
+                self.assertEqual([record.identifier for record in plan.source_owned], [16])
+                self.assertEqual(plan.source_owned[0].protected_aliases, ("fixture.protected_alias",))
 
     def test_data_only_zero_acls_keep_references_and_remain_unapplied(self) -> None:
         self.connection.execute("INSERT INTO ir_model VALUES (31,'res.partner')")
