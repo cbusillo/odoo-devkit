@@ -949,7 +949,7 @@ or missing materialization. A missing devkit checkout reports the override
 instead of attempting uv in a nonexistent directory. No primary workspace
 files or credentials are copied into the task workspace.
 
-### Shared file stores in queued offline runs
+## Shared file stores in queued offline runs
 
 For an isolated migration or test that leaves its frozen file-store base unchanged,
 put `"overlay": true` on that directory's existing heavy-manifest copy entry:
@@ -971,8 +971,11 @@ state. Lower bytes and filesystem identity are checked again after containers
 stop. Failure keeps the original cleanup custody and stops successor admission.
 There is no fallback to a copy when overlay mounting fails.
 
-The private receiver can reuse the same retained lower across runs. After the
-first admitted run completes and its inputs are independently qualified, keep
+The private receiver can reuse the same retained lower across runs. Use an
+original admitted with `overlay: true` after the matching helper/receiver pair
+is adopted, so its new input has container-copy permissions and its returned
+evidence includes `run.json`. After that run completes and its inputs are
+independently qualified, keep
 that original request's guest inputs in place. Obtain its UUID from the existing
 `request.json` and its exact input name from the returned `run.json`, alongside
 `image-provenance.json`. A subsequent copy entry keeps the same frozen local
@@ -996,8 +999,10 @@ local source's hashes before execution. A missing, changed, aliased or retired
 lower refuses admission. The reference cannot select an arbitrary host path or
 chain through another reference. The lower stays owned by its original request;
 retiring a borrowing run removes only that run's own inputs/images. Keep the
-base until its borrowers have been retired and no future run needs it. Its owner
-then uses the original request's existing retirement path.
+base while future runs need it. Its owner uses the original request's existing
+retirement path. If the original has already completed retirement, a borrower
+can still retire its own copies against the preserved original receipts; it
+cannot execute again using that retired lower.
 
 Keep `ODOO_COPY_PURPOSE=migration`, source/image/stage bindings, disconnected
 networking, resource caps, credential stripping and the normal heavy entrypoint.
