@@ -5,6 +5,7 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any, cast
 
 from odoo_devkit.addon_baseline import database_input, file_sha256, producer_input, verify_baseline
 
@@ -15,7 +16,7 @@ class AddonBaselineTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.binding = self.root / "binding.json"
-        self.stage = {
+        self.stage: dict[str, Any] = {
             "synthetic_only": True,
             "database": "synthetic_baseline",
             "postgres_image": "postgres@sha256:" + "a" * 64,
@@ -51,7 +52,7 @@ class AddonBaselineTests(unittest.TestCase):
                 member.mode = 0o600
                 output.addfile(member, io.BytesIO(content))
             member = tarfile.TarInfo("filestore")
-            member.type = tarfile.DIRTYPE
+            member.type = cast(bytes, tarfile.DIRTYPE)
             output.addfile(member)
             if extra is not None:
                 output.addfile(extra)

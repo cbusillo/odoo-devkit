@@ -32,13 +32,13 @@ started=$(date +%s%N)
 docker-entrypoint.sh postgres &
 server=$!
 for attempt in {1..60}; do
-    if pg_isready -h 127.0.0.1 -U "$POSTGRES_USER"; then
+    if pg_isready -h 127.0.0.1 -U "$POSTGRES_USER" -d postgres; then
         break
     fi
     kill -0 "$server"
     sleep 1
 done
-pg_isready -h 127.0.0.1 -U "$POSTGRES_USER"
+pg_isready -h 127.0.0.1 -U "$POSTGRES_USER" -d postgres
 restore_started=$(date +%s%N)
 pg_restore -h 127.0.0.1 -U "$POSTGRES_USER" --exit-on-error --create --dbname postgres database.dump
 printf '%s\n' "$(( $(date +%s%N) - restore_started ))" > /workspace/baseline/results/restore-nanoseconds.txt

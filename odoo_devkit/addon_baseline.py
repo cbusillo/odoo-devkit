@@ -22,7 +22,7 @@ def read_binding(binding: Path) -> dict[str, Any]:
         for key in ("postgres_image", "postgres_version", "architecture", "database", "database_identity")
     ):
         raise ValueError("Baseline needs a complete PostgreSQL binding")
-    if not re.fullmatch(r"(?:[^\s]+@)?sha256:[0-9a-f]{64}", expected["postgres_image"]):
+    if not re.fullmatch(r"(?:\S+@)?sha256:[0-9a-f]{64}", expected["postgres_image"]):
         raise ValueError("Baseline requires an immutable PostgreSQL image")
     if expected["architecture"] != "x86_64" or not re.fullmatch(
         r"postgres \(PostgreSQL\) [0-9]+\.[^\n]+", expected["postgres_version"]
