@@ -142,6 +142,8 @@ MAIL_SERVER_OAUTH_TOKEN_COLUMNS = (
 TABLE_CREDENTIAL_COLUMNS = (
     (INCOMING_MAIL_INTEGRATION, "fetchmail_server", "password"),
     *((INCOMING_MAIL_INTEGRATION, "fetchmail_server", column) for column in MAIL_SERVER_OAUTH_TOKEN_COLUMNS),
+    (None, "ir_mail_server", "smtp_user"),
+    (None, "ir_mail_server", "smtp_pass"),
     # Outgoing mail is blocked on every non-production instance, so its tokens are never kept.
     *((None, "ir_mail_server", column) for column in MAIL_SERVER_OAUTH_TOKEN_COLUMNS),
     (IAP_INTEGRATION, "iap_account", "account_token"),
@@ -546,6 +548,7 @@ class OdooDataWorkflowRunner:
         self._odoo_shell_preflight_checked = False
         self._data_workflow_lock_path: Path | None = None
         self._restored_credential_fingerprints: dict[str, frozenset[str]] = {}
+        self._isolated_copy_parameters: dict[str, str | None] | None = None
 
     def require_environment_override_payloads_if_configured(self) -> None:
         try:
@@ -1101,6 +1104,7 @@ class OdooDataWorkflowRunner:
         return self.local.copy_purpose is None and self.local.platform_instance.strip().lower() in PRODUCTION_INSTANCE_NAMES
 
     def prepare_isolated_copy_before_registry(self, *, purpose: str | None) -> None:
+        self._isolated_copy_parameters = None
         if purpose != "migration":
             raise OdooDatabaseUpdateError("An isolated copy requires migration purpose.")
         self.local.copy_purpose = purpose
@@ -1334,18 +1338,24 @@ class OdooDataWorkflowRunner:
         """Fail the restore when any restored credential value, push subscription or live connection survived sanitize."""
         if self._is_production_instance():
             return
-        kept = self._kept_integrations()
         with (database_connection or self.connect_to_db()).cursor() as cursor:
-            values = self._credential_values(cursor)
-            push_devices = 0
-            if self._table_exists(cursor, "mail_push_device"):
-                cursor.execute("SELECT count(*) FROM mail_push_device")
-                push_devices = cursor.fetchone()[0]
-            enabled_payment_providers = 0 if PAYMENT_INTEGRATION in kept else self._enabled_remote_payment_providers(cursor)
-            active_incoming_mail_servers = 0
-            if INCOMING_MAIL_INTEGRATION not in kept and "active" in self._table_columns(cursor, "fetchmail_server"):
-                cursor.execute("SELECT count(*) FROM fetchmail_server WHERE active")
-                active_incoming_mail_servers = cursor.fetchone()[0]
+            self._verify_credential_readback(cursor, managed_parameter_keys=managed_parameter_keys)
+
+    def _verify_credential_readback(
+        self, cursor: Any, *, managed_parameter_keys: frozenset[str] = frozenset(), isolated_copy: bool = False
+    ) -> None:
+        kept = self._kept_integrations()
+        values = self._credential_values(cursor)
+        push_records = 0
+        for table in WEB_PUSH_TABLES:
+            if self._table_exists(cursor, table):
+                cursor.execute(sql.SQL("SELECT count(*) FROM {}").format(sql.Identifier(table)))
+                push_records += cursor.fetchone()[0]
+        enabled_payment_providers = 0 if PAYMENT_INTEGRATION in kept else self._enabled_remote_payment_providers(cursor)
+        active_incoming_mail_servers = 0
+        if INCOMING_MAIL_INTEGRATION not in kept and "active" in self._table_columns(cursor, "fetchmail_server"):
+            cursor.execute("SELECT count(*) FROM fetchmail_server WHERE active")
+            active_incoming_mail_servers = cursor.fetchone()[0]
         unchanged = sorted(
             label
             for label, found in values.items()
@@ -1353,12 +1363,14 @@ class OdooDataWorkflowRunner:
             if any(_credential_fingerprint(value) in self._restored_credential_fingerprints.get(label, ()) for value in found)
         )
         problems = [f"unchanged restored value: {label}" for label in unchanged]
+        if isolated_copy and (missing := set(values) - set(self._restored_credential_fingerprints)):
+            problems.append("isolated copy rotation proof missing: " + ", ".join(sorted(missing)))
         if self.local.copy_purpose:
             unexpected = set(values) - set(REGENERATED_SIGNING_PARAMETER_KEYS) - {"iap_account.account_token"}
             if unexpected:
                 problems.append("isolated copy credentials remain: " + ", ".join(sorted(unexpected)))
-        if push_devices:
-            problems.append(f"{push_devices} copied web push subscription(s)")
+        if push_records:
+            problems.append(f"{push_records} copied web push row(s)")
         if enabled_payment_providers:
             problems.append(f"{enabled_payment_providers} payment provider(s) still enabled")
         if active_incoming_mail_servers:
@@ -1366,6 +1378,33 @@ class OdooDataWorkflowRunner:
         if problems:
             raise OdooDatabaseUpdateError("Production credentials survived sanitize: " + "; ".join(problems))
         _logger.info("Read-back confirmed no restored production credential remains.")
+
+    def _require_unfiltered_isolated_copy_reads(self, cursor: Any) -> None:
+        tables = {table for _integration, table, _column in TABLE_CREDENTIAL_COLUMNS}
+        tables.update(WEB_PUSH_TABLES)
+        tables.update(("ir_config_parameter", "payment_provider", "ir_cron", "shopify_sync"))
+        for table in sorted(tables):
+            if not self._table_exists(cursor, table):
+                continue
+            cursor.execute("SELECT row_security_active(to_regclass(%s))", (table,))
+            if cursor.fetchone() != (False,):
+                raise OdooDatabaseUpdateError(f"Isolated copy cannot verify filtered relation: {table}.")
+            self._table_columns(cursor, table)
+
+    def verify_isolated_copy_before_registry(self, *, database_connection: Any) -> None:
+        if self.local.copy_purpose != "migration" or self._isolated_copy_parameters is None:
+            raise OdooDatabaseUpdateError("Isolated copy readback requires the current migration preparation pass.")
+        self._validate_isolated_copy_settings(self._isolated_copy_parameters)
+        try:
+            with database_connection.cursor() as cursor:
+                self._require_unfiltered_isolated_copy_reads(cursor)
+                self._verify_credential_readback(cursor, isolated_copy=True)
+                self._verify_pre_registry_parameters(cursor, self._isolated_copy_parameters)
+                self._verify_pre_registry_execution_fences(cursor, require_inactive_cron=True)
+        except OdooRestorerError:
+            raise
+        except psycopg2.Error as error:
+            raise OdooDatabaseUpdateError("Isolated copy SQL readback failed.") from error
 
     def _enabled_remote_payment_providers(self, cursor: Any) -> int:
         if not (activations := self._payment_provider_activations(cursor)):
@@ -1752,6 +1791,8 @@ class OdooDataWorkflowRunner:
         Callers must keep other workers stopped. This transaction does not acquire a
         registry: even an Odoo shell would run _register_hook before its input script.
         """
+        self._isolated_copy_parameters = None
+        verified = False
         conn = self.connect_to_db()
         try:
             parameters = self._pre_registry_parameter_overrides()
@@ -1787,30 +1828,25 @@ class OdooDataWorkflowRunner:
             conn.commit()
             # A separate connection must see the committed values. A rollback/no-op
             # commit must not allow the first hook to start with the old credentials.
-            with closing(self._connect_with_retry(self.local.db_name)) as observer, observer.cursor() as cursor:
-                if restored_copy:
-                    self.verify_production_credentials_cleared(
-                        database_connection=observer, managed_parameter_keys=frozenset(parameters)
-                    )
-                if reset_shopify:
-                    self._verify_development_store_reset(cursor)
-                for key, expected in parameters.items():
-                    cursor.execute("SELECT value FROM ir_config_parameter WHERE key = %s", (key,))
-                    if cursor.fetchone() != (None if expected is None else (expected,)):
-                        raise OdooDatabaseUpdateError("Pre-registry override commit readback failed.")
-                if not self._is_production_instance():
-                    cursor.execute("SELECT count(*) FROM ir_mail_server WHERE active AND smtp_host = 'invalid'")
-                    if not cursor.fetchone()[0]:
-                        raise OdooDatabaseUpdateError("Pre-registry outgoing mail fence commit readback failed.")
-                    cursor.execute("SELECT count(*) FROM ir_mail_server WHERE active AND smtp_host <> 'invalid'")
-                    if cursor.fetchone()[0]:
-                        raise OdooDatabaseUpdateError("Pre-registry outgoing mail fence commit readback failed.")
-                    if self.local.copy_purpose and self._open_shopify_jobs(cursor):
-                        raise OdooDatabaseUpdateError("Pre-registry copied jobs commit readback failed.")
-                    if self.local.copy_purpose or (do_sanitize and self.local.disable_cron):
-                        cursor.execute("SELECT count(*) FROM ir_cron WHERE active")
-                        if cursor.fetchone()[0]:
-                            raise OdooDatabaseUpdateError("Pre-registry cron fence commit readback failed.")
+            observer = self._connect_with_retry(self.local.db_name)
+            with closing(observer):
+                if self.local.copy_purpose:
+                    self._isolated_copy_parameters = dict(parameters)
+                    self.verify_isolated_copy_before_registry(database_connection=observer)
+                else:
+                    if restored_copy:
+                        self.verify_production_credentials_cleared(
+                            database_connection=observer, managed_parameter_keys=frozenset(parameters)
+                        )
+                    with observer.cursor() as cursor:
+                        if reset_shopify:
+                            self._verify_development_store_reset(cursor)
+                        self._verify_pre_registry_parameters(cursor, parameters)
+                        if not self._is_production_instance():
+                            self._verify_pre_registry_execution_fences(
+                                cursor, require_inactive_cron=do_sanitize and self.local.disable_cron
+                            )
+            verified = True
             _logger.info("Credential boundary committed and verified before registry loading.")
         except OdooRestorerError:
             with suppress(psycopg2.Error):
@@ -1825,7 +1861,30 @@ class OdooDataWorkflowRunner:
                 conn.rollback()
             raise
         finally:
+            if not verified:
+                self._isolated_copy_parameters = None
             self._reset_db_connection()
+
+    @staticmethod
+    def _verify_pre_registry_parameters(cursor: Any, parameters: dict[str, str | None]) -> None:
+        for key, expected in parameters.items():
+            cursor.execute("SELECT value FROM ir_config_parameter WHERE key = %s", (key,))
+            if cursor.fetchone() != (None if expected is None else (expected,)):
+                raise OdooDatabaseUpdateError("Pre-registry override commit readback failed.")
+
+    def _verify_pre_registry_execution_fences(self, cursor: Any, *, require_inactive_cron: bool) -> None:
+        cursor.execute("SELECT count(*) FROM ir_mail_server WHERE active AND smtp_host = 'invalid'")
+        if not cursor.fetchone()[0]:
+            raise OdooDatabaseUpdateError("Pre-registry outgoing mail fence commit readback failed.")
+        cursor.execute("SELECT count(*) FROM ir_mail_server WHERE active AND smtp_host IS DISTINCT FROM 'invalid'")
+        if cursor.fetchone()[0]:
+            raise OdooDatabaseUpdateError("Pre-registry outgoing mail fence commit readback failed.")
+        if self.local.copy_purpose and self._open_shopify_jobs(cursor):
+            raise OdooDatabaseUpdateError("Pre-registry copied jobs commit readback failed.")
+        if require_inactive_cron:
+            cursor.execute("SELECT count(*) FROM ir_cron WHERE active")
+            if cursor.fetchone()[0]:
+                raise OdooDatabaseUpdateError("Pre-registry cron fence commit readback failed.")
 
     def apply_environment_overrides(self) -> None:
         if self.local.copy_purpose:

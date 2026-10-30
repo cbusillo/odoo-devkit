@@ -1550,18 +1550,21 @@ class ProductionCredentialSanitizeTests(unittest.TestCase):
     def test_read_back_fails_when_a_restored_credential_survives(self) -> None:
         runner = self._runner("testing")
         runner.fingerprint_restored_credentials()
-        runner.neutralize_production_credentials()
-        self.copy.database.execute(
-            "INSERT INTO ir_config_parameter VALUES ('printnode.api_key', ?)", (PRODUCTION_PARAMETERS["printnode.api_key"],)
+        faults = (
+            (
+                "INSERT INTO ir_config_parameter VALUES ('printnode.api_key', ?)",
+                (PRODUCTION_PARAMETERS["printnode.api_key"],),
+            ),
+            ("INSERT INTO mail_push_device VALUES (9, 'https://push.example.test/copied')", ()),
+            ("INSERT INTO mail_push VALUES (9, 9, 'copied-push')", ()),
         )
-        self.copy.database.execute("INSERT INTO mail_push_device VALUES (9, 'https://push.example.test/copied')")
-
-        with self.assertRaisesRegex(
-            odoo_data_workflows.OdooDatabaseUpdateError, r"printnode\.api_key.*1 copied web push subscription"
-        ) as raised:
-            runner.verify_production_credentials_cleared()
-
-        self.assertNotIn(PRODUCTION_PARAMETERS["printnode.api_key"], str(raised.exception))
+        for fault, parameters in faults:
+            with self.subTest(fault=fault):
+                runner.neutralize_production_credentials()
+                self.copy.database.execute(fault, parameters)
+                with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError) as raised:
+                    runner.verify_production_credentials_cleared()
+                self.assertNotIn(PRODUCTION_PARAMETERS["printnode.api_key"], str(raised.exception))
 
     def test_restore_keeps_only_the_integrations_the_request_allows(self) -> None:
         runner = self._runner("testing", ODOO_RESTORE_KEPT_INTEGRATIONS="fishbowl, payment incoming_mail")
@@ -2096,6 +2099,7 @@ class CredentialBoundaryTests(unittest.TestCase):
     def connection(self, _name: str) -> _BoundaryConnection:
         database = sqlite3.connect(self.path)
         database.create_function("to_regclass", 1, lambda name: name if name in self.tables else None)
+        database.create_function("row_security_active", 1, lambda _name: False)
         database.executescript(
             "ATTACH DATABASE ':memory:' AS information_schema; "
             "CREATE TABLE information_schema.columns (table_name TEXT, column_name TEXT, is_nullable TEXT, data_type TEXT);"
@@ -2408,6 +2412,109 @@ class CredentialBoundaryTests(unittest.TestCase):
                 self.runner.local.platform_instance = instance
                 with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
                     self.runner.prepare_isolated_copy_before_registry(purpose=purpose)
+
+    def prepare_migration_copy(self) -> None:
+        self.runner.os_env.pop("ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64", None)
+        self.runner.prepare_isolated_copy_before_registry(purpose="migration")
+
+    def test_isolated_readback_uses_only_the_supplied_readonly_connection(self) -> None:
+        self.runner.local.platform_instance = "prod"
+        self.prepare_migration_copy()
+        observer = self.connection("fixture")
+        observer.database.execute("PRAGMA query_only=ON")
+        with (
+            patch.object(self.runner, "connect_to_db", side_effect=AssertionError("unexpected connection")),
+            patch.object(self.runner, "_connect_with_retry", side_effect=AssertionError("unexpected connection")),
+            patch.object(observer, "commit", side_effect=AssertionError("unexpected commit")),
+            patch.object(observer, "rollback", side_effect=AssertionError("unexpected rollback")),
+        ):
+            self.runner.verify_isolated_copy_before_registry(database_connection=observer)
+
+    def test_isolated_readback_requires_the_current_preparation_pass(self) -> None:
+        observer = self.connection("fixture")
+        self.runner.local.copy_purpose = "migration"
+        with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
+            self.runner.verify_isolated_copy_before_registry(database_connection=observer)
+        self.prepare_migration_copy()
+        conn = self.runner.connect_to_db()
+        conn.commit = conn.rollback
+        with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
+            self.runner.prepare_isolated_copy_before_registry(purpose="migration")
+        with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
+            self.runner.verify_isolated_copy_before_registry(database_connection=observer)
+
+    def test_isolated_readback_rejects_changed_witness_and_execution_fences(self) -> None:
+        faults = (
+            (
+                "UPDATE ir_config_parameter SET value='another-pass' WHERE key=?",
+                (odoo_data_workflows.BOUNDARY_COMMIT_PARAMETER,),
+            ),
+            ("INSERT INTO ir_config_parameter VALUES ('ebay.custom_refresh_token','inert-reintroduced-key')", ()),
+            ("UPDATE ir_mail_server SET smtp_user='inert-returned-user' WHERE NOT active", ()),
+            ("UPDATE ir_mail_server SET smtp_pass='inert-returned-password' WHERE NOT active", ()),
+            ("INSERT INTO mail_push VALUES (9, 9, 'inert-returned-push')", ()),
+            ("UPDATE ir_cron SET active=TRUE WHERE id=1", ()),
+            ("UPDATE shopify_sync SET state='queued' WHERE id=1", ()),
+            ("UPDATE ir_mail_server SET smtp_host='smtp.example.invalid' WHERE active", ()),
+            ("INSERT INTO ir_mail_server (name, active, smtp_host) VALUES ('missing-host', TRUE, NULL)", ()),
+            ("DELETE FROM ir_mail_server WHERE active", ()),
+        )
+        for fault, parameters in faults:
+            with self.subTest(fault=fault):
+                self.prepare_migration_copy()
+                with closing(sqlite3.connect(self.path)) as writer, writer:
+                    writer.execute(fault, parameters)
+                with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
+                    self.runner.verify_isolated_copy_before_registry(database_connection=self.connection("fixture"))
+
+    def test_isolated_readback_rejects_kept_integrations_and_service_keys(self) -> None:
+        self.prepare_migration_copy()
+        for attribute, value in (("restore_kept_integrations", "shopify"), ("odoo_key", "inert-service-key")):
+            with self.subTest(attribute=attribute):
+                previous = getattr(self.runner.local, attribute)
+                setattr(self.runner.local, attribute, value)
+                with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
+                    self.runner.verify_isolated_copy_before_registry(database_connection=self.connection("fixture"))
+                setattr(self.runner.local, attribute, previous)
+
+    def test_isolated_readback_rejects_row_filtering(self) -> None:
+        self.prepare_migration_copy()
+        for relation in ("ir_config_parameter", "mail_push"):
+            with self.subTest(relation=relation):
+                observer = self.connection("fixture")
+                observer.database.create_function("row_security_active", 1, lambda name, target=relation: name == target)
+                with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
+                    self.runner.verify_isolated_copy_before_registry(database_connection=observer)
+
+    def test_isolated_readback_preserves_fenced_pending_business_mail(self) -> None:
+        with closing(sqlite3.connect(self.path)) as writer, writer:
+            writer.execute("CREATE TABLE mail_mail (id INTEGER PRIMARY KEY, state TEXT, body TEXT)")
+            writer.execute("INSERT INTO mail_mail VALUES (1, 'outgoing', 'pending-business-message')")
+            expected = writer.execute("SELECT * FROM mail_mail").fetchall()
+        self.prepare_migration_copy()
+        observer = self.connection("fixture")
+        self.runner.verify_isolated_copy_before_registry(database_connection=observer)
+        self.assertEqual(observer.database.execute("SELECT * FROM mail_mail").fetchall(), expected)
+
+    def test_isolated_readback_rejects_hidden_credential_columns(self) -> None:
+        self.prepare_migration_copy()
+        observer = self.connection("fixture")
+        observer.database.execute("DELETE FROM information_schema.columns WHERE column_name='stripe_secret_key'")
+
+        def authorize(action: int, table: str | None, column: str | None, _database: str | None, _trigger: str | None) -> int:
+            if action == sqlite3.SQLITE_READ and table == "payment_provider" and column == "stripe_secret_key":
+                return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK
+
+        observer.database.set_authorizer(authorize)
+        with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
+            self.runner.verify_isolated_copy_before_registry(database_connection=observer)
+
+    def test_isolated_readback_requires_rotation_fingerprints_for_retained_tokens(self) -> None:
+        self.prepare_migration_copy()
+        self.runner._restored_credential_fingerprints = {}
+        with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
+            self.runner.verify_isolated_copy_before_registry(database_connection=self.connection("fixture"))
 
     def test_migration_copy_rejects_credential_reinjection_and_kept_integrations(self) -> None:
         for key in ("printnode.api_key", "shopify.api_token", "ebay.refresh_token"):
