@@ -85,71 +85,57 @@ uses only throwaway containers, never an installed runtime or Client data.
 
 ## Sealed synthetic stage inputs
 
-For repeated local heavy batches, use the catalog's existing single
-`heavy_run.py --manifest ... --evidence ...` entrypoint. The ordinary hosted
-addon action still starts fresh. `odoo_devkit.addon_baseline` prepares one
-database container entry for that existing manifest; it executes no Docker
-commands, submits no jobs and maintains no registry or persistent service.
+`odoo_devkit.addon_baseline` prepares database entries for the installed
+`heavy_run.py --manifest ... --evidence ...` interface. It runs no containers
+or jobs itself. Hosted addon CI continues to start fresh.
 
-Keep the portable logical dump and its qualified original receipt. The one-time
-producer uses the same immutable PostgreSQL image and architecture as that
-receipt. Copy only its synthetic `database.dump`, `filestore/`, `binding.json`
-and `inputs.sha256` into `/workspace/baseline/input`. The checksum inventory
-must come from the independently qualified original. Copy
-`docker/scripts/odoo-baseline-producer.sh` separately and run it with `bash` as
-the database job, with `POSTGRES_USER`, its disposable password and
-`BASELINE_DATABASE` supplied through the manifest environment. Set `PGPASSWORD`
-to that same disposable password. Select that database container as the job
-and collect `/workspace/baseline/results` after it exits. It restores once,
-stops PostgreSQL cleanly and archives the complete PGDATA plus filestore.
-The original queue receipt and independent exact-resource absence check must
-qualify cleanup before admitting this artifact to a separate consumer.
+Keep the qualified portable logical dump and original receipt. Derive a current
+`binding.json` independently from initialization inputs, using the existing
+queue receipts, image/platform provenance and input hashes. Bind `synthetic_only:
+true`, `database`, immutable `postgres_image`, exact `postgres_version`,
+`architecture` (currently only `x86_64`), `database_identity` (PostgreSQL's
+pipe-separated encoding, collation, ctype and locale-provider row), and `settings`
+(`lc_messages`, `lc_monetary`, `lc_numeric`, `lc_time`, `default_text_search_config`,
+`timezone`). `initialization` contains SHA256 bindings for relevant source,
+modules, schema, migration/preparation and initialization configuration, including
+`logical_dump` and `filestore_inventory`. The latter hashes sorted
+`SHA256  filestore/relative-path\n` lines for every regular filestore file;
+check complete membership against the original receipt first. Test/docs changes
+may reuse a stage only if initialization inputs stay identical. Changed inputs
+invalidate that stage and its successors. This adds no saved-copy registry.
 
-The archived `binding.json` is a frozen input record, not a new saved-copy
-identity. Reuse the queue's receipt, manifest, image provenance and input hashes
-as the authoritative labels. Its fields are `synthetic_only: true`, `database`,
-`postgres_image` (immutable reference), `postgres_version` (exact
-`postgres --version` output), `architecture` (`x86_64`) and `initialization`.
-The last field maps input labels to SHA256 values from the existing qualified
-records: source backup/dump and filestore inventory, PostgreSQL platform/config
-identity, preparation/sanitization state, initialization configuration, and
-runtime/schema/init/migration source closure. Do not use just a Git commit or
-whole application image. Derive the expected record from current initialization
-inputs independently of the archived copy. Test, docs and test-selection changes
-can reuse it only when those initialization inputs are byte-identical. Changed
-stage inputs invalidate that stage and every successor. Actual OPW/CM data needs
-its owner's separate custody, quarantine and sizing qualification; this helper
-currently admits synthetic fixtures only.
+Place `database.dump`, `filestore/` and that `binding.json` in a private input
+directory. Call `producer_input(inputs, binding=current_binding, user=dump_owner,
+password=disposable_password)` to prepare its manifest container. The owner role
+must match the dump. Select `database` as the job and collect
+`/workspace/baseline/results`. The producer verifies bytes and runtime identity,
+restores with original database metadata, compares settings, stops cleanly and
+seals the complete PGDATA/filestore. Its synthetic password remains in the inert
+cluster; treat the archive as private. Qualify the original queue receipt, image
+provenance and exact-resource cleanup before admitting it to a separate job.
 
-After original producer qualification, prepare the consumer database entry:
+Prepare the consumer entry with:
 
 ```bash
 uv run python -m odoo_devkit.addon_baseline \
   --archive /private/qualified-producer/stage.tar \
-  --sha256 <independently-qualified-archive-sha256> \
+  --sha256 <qualified-original-sha256> \
   --binding /private/current-inputs/binding.json \
   --max-expanded-bytes <measured-PGDATA-plus-filestore-budget>
 ```
 
-Insert that JSON entry into the existing heavy manifest. Its database startup
-rechecks archive bytes, exact PostgreSQL version, architecture and clean control
-state, extracts with container-local postgres ownership, and uses a fresh
-configuration without saved outbound settings. Admission rejects changed stage
-bindings, unexpected members, links/special files, external tablespaces, recovery
-state and active automatic configuration. Only a qualified immutable original
-is eligible; a SHA256 generated from an unqualified artifact is insufficient.
-
-Copy the same sealed archive to the existing Odoo test job. Recheck its qualified
-SHA256 before extracting `filestore/` into that job's private writable workspace.
-Wait for PostgreSQL, then use native `CREATE DATABASE ... WITH TEMPLATE ...` and
-independent filestore copies for each batch. Run the existing required regression
-methods without `--init`, `--update`, logical restore or migration in the
-consumer. Retain original outputs and record creation, extraction/start, clone,
-test and delivery timings, expanded PGDATA/WAL, clone/output growth and archive
-bytes. Budget all writable copies and delivery staging against current headroom;
-the adapter's transport reserve alone does not cover expansion. Each job retains
-its own original cleanup qualification; no database container or writable volume
-survives between jobs.
+Admission checks the entire archive through one open handle and rejects changed
+inputs, unsafe members, tablespaces, recovery state, automatic settings and
+excess expansion. Startup verifies the runtime and clean shutdown state and
+uses only the bound locale/text-search/timezone settings in a fresh config.
+Copy the same verified archive to the existing Odoo job for its filestore;
+clone private databases/filestores per batch and run the existing regressions
+without init, update, migration or logical restore. Each original job needs its
+own cleanup proof. Measure logical restore, seal/extract/start, clones, tests,
+transport and expanded PGDATA/WAL/output growth. Budget all copies against
+current headroom. Actual business data remains subject to its owner's separate
+custody, quarantine and sizing qualification; this helper admits synthetic data
+only.
 
 ## Declared local command
 

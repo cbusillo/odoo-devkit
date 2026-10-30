@@ -7,7 +7,7 @@ import re
 import shlex
 import tarfile
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, BinaryIO
 
 
 def file_sha256(path: Path) -> str:
@@ -15,30 +15,112 @@ def file_sha256(path: Path) -> str:
         return hashlib.file_digest(source, "sha256").hexdigest()
 
 
-def verify_baseline(archive: Path, *, sha256: str, binding: Path, max_expanded_bytes: int) -> dict[str, Any]:
-    if max_expanded_bytes <= 0 or not re.fullmatch(r"[0-9a-f]{64}", sha256):
-        raise ValueError("A positive expansion budget and qualified archive SHA256 are required")
-    if archive.is_symlink() or not archive.is_file() or file_sha256(archive) != sha256:
-        raise ValueError("Baseline archive does not match its qualified original")
+def read_binding(binding: Path) -> dict[str, Any]:
     expected = json.loads(binding.read_bytes())
+    if not isinstance(expected, dict) or any(
+        not isinstance(expected.get(key), str)
+        for key in ("postgres_image", "postgres_version", "architecture", "database", "database_identity")
+    ):
+        raise ValueError("Baseline needs a complete PostgreSQL binding")
     if not re.fullmatch(r"(?:[^\s]+@)?sha256:[0-9a-f]{64}", expected["postgres_image"]):
         raise ValueError("Baseline requires an immutable PostgreSQL image")
-    if expected["architecture"] != "x86_64" or not expected["postgres_version"].startswith("postgres (PostgreSQL) "):
+    if expected["architecture"] != "x86_64" or not re.fullmatch(
+        r"postgres \(PostgreSQL\) [0-9]+\.[^\n]+", expected["postgres_version"]
+    ):
         raise ValueError("Baseline requires the qualified PostgreSQL identity and AMD64 architecture")
-    initialization = expected["initialization"]
+    initialization = expected.get("initialization")
+    settings = expected.get("settings")
     if (
         not isinstance(initialization, dict)
         or not initialization
-        or any(not re.fullmatch(r"[0-9a-f]{64}", value) for value in initialization.values())
+        or any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value) for value in initialization.values())
         or not re.fullmatch(r"[A-Za-z0-9_]+", expected["database"])
-        or expected["synthetic_only"] is not True
+        or expected.get("synthetic_only") is not True
+        or not re.fullmatch(r"[A-Za-z0-9_.|@-]+", expected["database_identity"])
+        or not isinstance(settings, dict)
+        or set(settings) != {"lc_messages", "lc_monetary", "lc_numeric", "lc_time", "default_text_search_config", "timezone"}
+        or any(not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_./@-]+", value) for value in settings.values())
     ):
         raise ValueError("Baseline needs a synthetic database and current initialization bindings")
+    return expected
+
+
+def producer_input(inputs: Path, *, binding: Path, user: str, password: str) -> dict[str, Any]:
+    stage = read_binding(binding)
+    if json.loads((inputs / "binding.json").read_bytes()) != stage:
+        raise ValueError("Producer binding differs from current inputs")
+    filestore = inputs / "filestore"
+    if filestore.is_symlink() or not filestore.is_dir():
+        raise ValueError("Producer needs a regular filestore")
+    inventory = []
+    for path in sorted(filestore.rglob("*")):
+        relative = path.relative_to(inputs).as_posix()
+        if path.is_symlink() or not (path.is_file() or path.is_dir()) or not re.fullmatch(r"[A-Za-z0-9_./-]+", relative):
+            raise ValueError("Producer contains an unqualified filestore member")
+        if path.is_file():
+            inventory.append(f"{file_sha256(path)}  {relative}\n")
+    filestore_sha256 = hashlib.sha256("".join(inventory).encode()).hexdigest()
+    dump = inputs / "database.dump"
+    if (
+        dump.is_symlink()
+        or not dump.is_file()
+        or (
+            file_sha256(dump) != stage["initialization"].get("logical_dump")
+            or filestore_sha256 != stage["initialization"].get("filestore_inventory")
+        )
+    ):
+        raise ValueError("Producer dump or complete filestore differs from the qualified inputs")
+    return {
+        "name": "database",
+        "image": stage["postgres_image"],
+        "command": ["bash", "/workspace/baseline/producer.sh"],
+        "environment": {
+            "POSTGRES_USER": user,
+            "POSTGRES_PASSWORD": password,
+            "PGPASSWORD": password,
+            "BASELINE_DATABASE": stage["database"],
+            "BASELINE_POSTGRES_VERSION": stage["postgres_version"],
+            "BASELINE_ARCHITECTURE": stage["architecture"],
+            "BASELINE_DATABASE_IDENTITY": stage["database_identity"],
+            "BASELINE_SETTINGS": "\n".join(
+                f"{key}|{value}"
+                for key, value in sorted(
+                    {"TimeZone" if key == "timezone" else key: value for key, value in stage["settings"].items()}.items()
+                )
+            ),
+            "BASELINE_BINDING_SHA256": file_sha256(inputs / "binding.json"),
+            "BASELINE_DUMP_SHA256": stage["initialization"]["logical_dump"],
+            "BASELINE_FILESTORE_SHA256": filestore_sha256,
+        },
+        "copies": [
+            {"source": str(inputs.resolve()), "destination": "/workspace/baseline/input"},
+            {
+                "source": str(Path(__file__).resolve().parents[1] / "docker/scripts/odoo-baseline-producer.sh"),
+                "destination": "/workspace/baseline/producer.sh",
+            },
+        ],
+    }
+
+
+def verify_baseline(archive: Path, *, sha256: str, binding: Path, max_expanded_bytes: int) -> dict[str, Any]:
+    if max_expanded_bytes <= 0 or not re.fullmatch(r"[0-9a-f]{64}", sha256):
+        raise ValueError("A positive expansion budget and qualified archive SHA256 are required")
+    if archive.is_symlink() or not archive.is_file():
+        raise ValueError("Baseline requires a regular archive")
+    expected = read_binding(binding)
+    with archive.open("rb") as handle:
+        if hashlib.file_digest(handle, "sha256").hexdigest() != sha256:
+            raise ValueError("Baseline archive does not match its qualified original")
+        handle.seek(0)
+        return _verify_members(handle, expected, max_expanded_bytes)
+
+
+def _verify_members(handle: BinaryIO, expected: dict[str, Any], max_expanded_bytes: int) -> dict[str, Any]:
     required = {"binding.json", "pgdata/PG_VERSION", "pgdata/global/pg_control", "filestore"}
     names: set[str] = set()
     directories: set[str] = set()
     expanded = 0
-    with tarfile.open(archive, "r:") as source:
+    with tarfile.open(fileobj=handle, mode="r:") as source:
         for member in source:
             path = PurePosixPath(member.name)
             name = member.name.rstrip("/")
@@ -72,7 +154,7 @@ def verify_baseline(archive: Path, *, sha256: str, binding: Path, max_expanded_b
                 raise ValueError("Baseline exceeds the expanded-byte budget")
             if name == "binding.json":
                 stream = source.extractfile(member)
-                if stream is None or member.size > 1024 * 1024 or stream.read() != binding.read_bytes():
+                if stream is None or member.size > 1024 * 1024 or json.load(stream) != expected:
                     raise ValueError("Baseline stage bindings differ from the current inputs")
             if name == "pgdata/PG_VERSION":
                 stream = source.extractfile(member)
@@ -109,7 +191,9 @@ def database_input(archive: Path, *, sha256: str, binding: Path, max_expanded_by
             'test ! -e "$PGDATA/postmaster.pid"',
             'chown -R postgres:postgres "$PGDATA"',
             'chmod 700 "$PGDATA"',
-            "printf '%s\\n' \"listen_addresses = '*'\" > /workspace/baseline/postgresql.conf",
+            "printf '%s\\n' "
+            + shlex.quote("listen_addresses = '*'\n" + "\n".join(f"{key} = '{value}'" for key, value in stage["settings"].items()))
+            + " > /workspace/baseline/postgresql.conf",
             "exec docker-entrypoint.sh postgres -c config_file=/workspace/baseline/postgresql.conf",
         ]
     )
@@ -128,7 +212,12 @@ def main() -> None:
     parser.add_argument("--binding", type=Path, required=True)
     parser.add_argument("--max-expanded-bytes", type=int, required=True)
     arguments = parser.parse_args()
-    print(json.dumps(database_input(**vars(arguments)), indent=2))
+    try:
+        container = database_input(**vars(arguments))
+    except (ValueError, OSError, tarfile.TarError) as error:
+        parser.error(str(error))
+    else:
+        print(json.dumps(container, indent=2))
 
 
 if __name__ == "__main__":

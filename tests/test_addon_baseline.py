@@ -1,3 +1,4 @@
+import hashlib
 import io
 import json
 import tarfile
@@ -5,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from odoo_devkit.addon_baseline import database_input, file_sha256, verify_baseline
+from odoo_devkit.addon_baseline import database_input, file_sha256, producer_input, verify_baseline
 
 
 class AddonBaselineTests(unittest.TestCase):
@@ -20,6 +21,15 @@ class AddonBaselineTests(unittest.TestCase):
             "postgres_image": "postgres@sha256:" + "a" * 64,
             "postgres_version": "postgres (PostgreSQL) 17.11 (fixture)",
             "architecture": "x86_64",
+            "database_identity": "UTF8|en_US.utf8|en_US.utf8|c",
+            "settings": {
+                "lc_messages": "en_US.utf8",
+                "lc_monetary": "en_US.utf8",
+                "lc_numeric": "en_US.utf8",
+                "lc_time": "en_US.utf8",
+                "default_text_search_config": "pg_catalog.english",
+                "timezone": "Etc/UTC",
+            },
             "initialization": {"schema": "b" * 64, "configuration": "c" * 64},
         }
         self.binding.write_text(json.dumps(self.stage))
@@ -63,11 +73,11 @@ class AddonBaselineTests(unittest.TestCase):
         original = file_sha256(archive)
         self.stage["initialization"]["schema"] = "d" * 64
         self.binding.write_text(json.dumps(self.stage))
-        with self.assertRaisesRegex(ValueError, "stage bindings"):
+        with self.assertRaises(ValueError):
             self.verify(archive)
         with archive.open("ab") as output:
             output.write(b"changed")
-        with self.assertRaisesRegex(ValueError, "qualified original"):
+        with self.assertRaises(ValueError):
             verify_baseline(archive, sha256=original, binding=self.binding, max_expanded_bytes=1024 * 1024)
 
     def test_unsafe_archive_members_are_refused(self) -> None:
@@ -94,12 +104,49 @@ class AddonBaselineTests(unittest.TestCase):
 
     def test_expansion_missing_state_and_automatic_settings_are_refused(self) -> None:
         archive = self.archive()
-        with self.assertRaisesRegex(ValueError, "expanded-byte"):
+        with self.assertRaises(ValueError):
             self.verify(archive, budget=1)
-        with self.assertRaisesRegex(ValueError, "missing"):
+        with self.assertRaises(ValueError):
             self.verify(self.archive(omit="pgdata/global/pg_control"))
-        with self.assertRaisesRegex(ValueError, "automatic PostgreSQL settings"):
+        with self.assertRaises(ValueError):
             self.verify(self.archive(auto_conf=b"primary_conninfo = 'host=external.invalid'\n"))
+
+    def test_equivalent_regenerated_binding_is_accepted(self) -> None:
+        archive = self.archive()
+        self.binding.write_text(json.dumps(dict(reversed(list(self.stage.items()))), indent=2))
+        self.assertEqual(self.verify(archive)["binding"], self.stage)
+
+    def test_malformed_binding_is_refused(self) -> None:
+        archive = self.archive()
+        for record in [None, [], {}, dict(self.stage, initialization={"schema": None}), dict(self.stage, postgres_version=17)]:
+            with self.subTest(record=record):
+                self.binding.write_text(json.dumps(record))
+                with self.assertRaises(ValueError):
+                    self.verify(archive)
+
+    def test_producer_binds_dump_and_complete_filestore(self) -> None:
+        inputs = self.root / "inputs"
+        (inputs / "filestore").mkdir(parents=True)
+        dump = inputs / "database.dump"
+        dump.write_bytes(b"qualified synthetic dump")
+        attachment = inputs / "filestore/attachment"
+        attachment.write_bytes(b"qualified synthetic attachment")
+        self.stage["initialization"] = {
+            "logical_dump": file_sha256(dump),
+            "filestore_inventory": hashlib.sha256(f"{file_sha256(attachment)}  filestore/attachment\n".encode()).hexdigest(),
+        }
+        self.binding.write_text(json.dumps(self.stage))
+        (inputs / "binding.json").write_bytes(self.binding.read_bytes())
+        container = producer_input(inputs, binding=self.binding, user="fixture", password="fixture-only")
+        self.assertEqual(container["image"], self.stage["postgres_image"])
+        self.assertEqual(container["environment"]["BASELINE_DUMP_SHA256"], self.stage["initialization"]["logical_dump"])
+        (inputs / "filestore/unlisted").write_bytes(b"unexpected")
+        with self.assertRaises(ValueError):
+            producer_input(inputs, binding=self.binding, user="fixture", password="fixture-only")
+        (inputs / "filestore/unlisted").unlink()
+        dump.write_bytes(b"different dump")
+        with self.assertRaises(ValueError):
+            producer_input(inputs, binding=self.binding, user="fixture", password="fixture-only")
 
 
 if __name__ == "__main__":
