@@ -1824,7 +1824,8 @@ class OdooDataWorkflowRunner:
             conn.commit()
             # A separate connection must see the committed values. A rollback/no-op
             # commit must not allow the first hook to start with the old credentials.
-            with closing(self._connect_with_retry(self.local.db_name)) as observer:
+            observer = self._connect_with_retry(self.local.db_name)
+            with closing(observer):
                 if self.local.copy_purpose:
                     self._isolated_copy_parameters = dict(parameters)
                     self.verify_isolated_copy_before_registry(database_connection=observer)

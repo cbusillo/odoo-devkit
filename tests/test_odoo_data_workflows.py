@@ -2483,7 +2483,7 @@ class CredentialBoundaryTests(unittest.TestCase):
         observer = self.connection("fixture")
         observer.database.execute("DELETE FROM information_schema.columns WHERE column_name='stripe_secret_key'")
 
-        def authorize(action: int, table: str, column: str, _database: str, _trigger: str) -> int:
+        def authorize(action: int, table: str | None, column: str | None, _database: str | None, _trigger: str | None) -> int:
             if action == sqlite3.SQLITE_READ and table == "payment_provider" and column == "stripe_secret_key":
                 return sqlite3.SQLITE_DENY
             return sqlite3.SQLITE_OK
