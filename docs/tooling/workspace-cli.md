@@ -575,13 +575,12 @@ Notes
   workflow's `--no-sanitize` / `NO_SANITIZE` setting (not exposed by
   `platform runtime restore`) does not skip this step. It deletes the Shopify store credentials, the store
   URL and test-store flags, and the import cursors. It cancels open Shopify
-  sync jobs, clears pending export flags, and turns off the Shopify crons. It
-  deletes the copy's Shopify external IDs (every `external_id` row under the
-  `shopify` external system) and clears each product's export timestamps, the
-  same data the addon's Reset Shopify clears, without contacting any store. The
-  next export then creates products in the store Launchplane applies instead of
-  updating production-store product IDs. It
-  deletes the PrintNode key and the Mapbox, Unsplash and Tenor tokens. It
+  sync jobs and turns off the Shopify crons. It preserves external IDs,
+  external-system bindings, record relationships and product export history.
+  Only a managed Shopify development-store apply on `testing` clears Shopify
+  IDs and export state for the existing Reset Shopify flow. It
+  clears secret-shaped `ebay.*` parameters (these are never kept on a copy),
+  the PrintNode key and the Mapbox, Unsplash and Tenor tokens. It
   deletes the Fishbowl, RepairShopr sync and cm_data database connections
   (host, database, user and password), so import crons that install hooks turn
   back on cannot reach the production databases. It disables every payment
@@ -659,7 +658,12 @@ Notes
   URL/dispatcher bookkeeping and website bootstrap still use their installed
   ORM adapters after the credential transaction. No addon code or Odoo shell is
   used to strip credentials. Callers must keep other workers stopped until
-  preparation and maintenance finish; this is not a traffic-switch mechanism.
+  preparation and maintenance finish, including the scheduler during a delayed
+  testing store change. Use the existing stopped-runtime maintenance procedure
+  before starting the web process with changed store settings; an environment-only
+  plan stages values and does not authorize a running scheduler to overlap the
+  transition. On readback failure keep those workers stopped and use the supported
+  restore/reset procedure before resuming; this is not a traffic-switch mechanism.
   Restore reasserts the boundary after module work before running further
   settings/admin hooks, because install data can re-enable integrations.
   OpenUpgrade also reasserts requested sanitization before addon installation,
@@ -792,6 +796,69 @@ Notes
   starts the script-runner, so password changes do not use stale selected values. Admin
   password updates read `ODOO_ADMIN_PASSWORD` inside the container; scripts
   and command-failure diagnostics contain no configured password values.
+
+## Isolated migration and saved copies
+
+`ODOO_COPY_PURPOSE=migration` selects the existing SQL credential boundary for
+an isolated restored or saved copy. Put it in the Odoo container environment of
+the existing heavy-run manifest, carrying that manifest's input/stage identities
+and receipt forward with the saved DB and filestore. Every copy loader must bind
+the purpose before its first Odoo process, including a saved-stage clone; a
+production-like instance label and a database name are not purpose evidence.
+There is no new snapshot catalog or queue. Do not pass this setting on a real
+Client-accepted production restore; that existing runtime path retains its
+production behavior. The operational caller must select migration purpose for an isolated copy.
+
+A source caller loading an already restored database can use the SQL-only API:
+
+```python
+runner.prepare_isolated_copy_before_registry(purpose="migration")
+```
+
+The method requires `migration` purpose and commits and independently reads
+back the same boundary before returning. Missing or unsupported purpose refuses
+this isolated-copy API; ordinary runtime maintenance and accepted production
+restores keep their existing path without that setting. The method exports the
+purpose to child processes. The normal restore and standalone OpenUpgrade paths
+also accept it through `LocalServerSettings`, including env files; local exec
+forwards it. Keep it on every subsequent saved-copy invocation. The
+receipt/manifest is caller-owned provenance, not permission to read private data
+or to mutate production.
+
+This boundary clears all copied integration secrets regardless of instance
+label, including secret-shaped `ebay.*` parameters if present. It preserves
+Shopify/eBay external IDs, external-system rows, relationships, product export
+flags/timestamps and Shopify import cursors for reconciliation. Copied Shopify
+jobs are canceled; every cron is disabled, outgoing mail is blocked, API keys
+and push devices are removed, payment providers and incoming mail are disabled.
+This is mandatory even with `--no-sanitize` or `ENV_OVERRIDE_DISABLE_CRON=false`.
+Managed credential parameters, kept-integration exceptions and service-key
+provisioning refuse before registry loading. Non-credential addon settings are
+validated and left unapplied. SQL
+non-credential config overrides retain their existing support. ORM integration
+settings are skipped on the copy. The startup wrapper repeats the boundary
+before initialization, each shell and the server; it disables server cron
+threads and refuses a separate scheduler. Other workers must remain stopped
+through preparation. Standalone Odoo commands must use the API first.
+
+For the separately selected testing copy, the existing managed Shopify apply
+selects its development store with `test_store=true`, a store key, API token,
+webhook key and API version. With no migration purpose, the SQL boundary
+clears that copy's Shopify IDs/export state and cancels old jobs before applying
+the selected store on a restore or when the stored store key differs from the
+incoming key. A delayed apply follows the same path because quarantine removed
+the copied store key. Reapplying or rotating credentials for the same store
+preserves its IDs and jobs. Startup prepares a testing managed-settings apply
+before the ORM shell, after base initialization; data-workflow callers prepare
+before their settings apply. Independent readback verifies identities, export
+state and open jobs for each reset. Store changes leave cron activation to the
+existing settings consumer, preserving offline-check cron state. The existing store
+verification and Reset Shopify workflow then run normally. Testing without that
+explicit selection and all migration copies preserve identity links. No eBay reset is added. Existing store-separation and release
+boundaries still govern reconnection; this setting grants no new authority.
+
+The migration lead owns the tenant hook/runbook integration handback on the
+source issue. Shared devkit docs retain the generic caller contract only.
 
 ## Ownership Rules
 

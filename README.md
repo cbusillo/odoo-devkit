@@ -186,17 +186,27 @@ Current runtime ownership is intentionally narrow and explicit:
   so a new production database can use the operator's supplied mail
   configuration.
 - Restores onto a non-production instance clear the copy's production
-  integration credentials and signing keys. This includes Shopify, PrintNode, Fishbowl,
+  integration credentials and signing keys. This includes Shopify, secret-shaped `ebay.*` parameters, PrintNode, Fishbowl,
   RepairShopr and cm_data connections, payment providers, incoming mail
   servers and Gmail/Outlook OAuth app client secrets, IAP account tokens,
   map and media tokens, web push keys and
-  devices, user API keys, and `database.secret`. The restore also clears the copy's
-  production-store Shopify external IDs and export state. The restore keeps
+  devices, user API keys, and `database.secret`. The restore preserves the copy's
+  channel identity graphs and export history. Only an explicitly selected
+  managed Shopify apply with `test_store=true` on `testing` resets Shopify IDs
+  and export state for the existing development-store reset flow. The restore keeps
   only the integrations named in `ODOO_RESTORE_KEPT_INTEGRATIONS`; keeping
   `incoming_mail` also keeps those OAuth app client secrets. Failures during
   database preparation drop the restored database. This includes the Launchplane
   settings apply and the outgoing-mail block immediately afterward. See
   `docs/tooling/workspace-cli.md` for the full contract.
+- Isolated restored and saved migration copies set `ODOO_COPY_PURPOSE=migration`
+  in the existing run manifest. Their instance label never permits live keys:
+  the SQL boundary clears credentials, cancels copied Shopify work, disables
+  all crons and blocks outgoing mail even with `--no-sanitize`. It preserves
+  Shopify/eBay bindings and export/import history for reconciliation. Managed
+  credentials, kept integrations and service-key provisioning are refused.
+  Non-credential addon settings are validated and left unapplied. Startup repeats the boundary before Odoo and refuses a separate scheduler.
+  The exact caller and OPW handback are in the [workspace CLI guide](docs/tooling/workspace-cli.md#isolated-migration-and-saved-copies).
 - An optional `company_email` in Launchplane's website-bootstrap payload sets
   the selected website company's sender address and verifies it was saved.
   Omission preserves the existing company email. This fixes the company sender

@@ -233,6 +233,7 @@ DATA_WORKFLOW_EXPANDED_PATH_KEYS = frozenset(
 
 DATA_WORKFLOW_SCRIPT = "/volumes/scripts/run_odoo_data_workflows.py"
 DATA_WORKFLOW_SCRIPT_ENV_KEYS = {
+    "ODOO_COPY_PURPOSE",
     "ODOO_DB_HOST",
     "ODOO_DB_PORT",
     "ODOO_DB_USER",

@@ -3905,6 +3905,10 @@ sources = [
             with self.assertRaisesRegex(ValueError, "requires --instance local"):
                 run_native_runtime_logs(manifest=manifest, service="web", tail_lines=200, follow=True)
 
+    def test_data_workflow_exec_keeps_explicit_copy_purpose(self) -> None:
+        values = {"ODOO_COPY_PURPOSE": "migration", "UNRELATED_VALUE": "unused"}
+        self.assertEqual(local_runtime.data_workflow_script_environment(values), {"ODOO_COPY_PURPOSE": values["ODOO_COPY_PURPOSE"]})
+
     def test_native_runtime_psql_runs_local_helper(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)

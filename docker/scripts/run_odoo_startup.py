@@ -353,7 +353,35 @@ def _odoo_environment(settings: StartupSettings) -> dict[str, str]:
     return environment
 
 
+def _prepare_credentials_before_registry(settings: StartupSettings, *, testing_settings: bool = False) -> None:
+    isolated_copy = "ODOO_COPY_PURPOSE" in os.environ
+    if not isolated_copy and not (
+        testing_settings
+        and settings.platform_instance.strip().lower() == "testing"
+        and "ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64" in os.environ
+    ):
+        return
+    from pydantic import SecretStr
+    from run_odoo_data_workflows import LocalServerSettings, OdooDataWorkflowRunner
+
+    local = LocalServerSettings(
+        ODOO_DB_HOST=settings.database_host,
+        ODOO_DB_PORT=settings.database_port,
+        ODOO_DB_USER=settings.database_user,
+        ODOO_DB_PASSWORD=SecretStr(settings.database_password),
+        ODOO_DB_NAME=settings.database_name,
+        ODOO_FILESTORE_PATH=Path(settings.data_dir) / "filestore" / settings.database_name,
+        PLATFORM_INSTANCE=settings.platform_instance,
+    )
+    runner = OdooDataWorkflowRunner(local, None, None)
+    if isolated_copy:
+        runner.prepare_isolated_copy_before_registry(purpose=os.environ["ODOO_COPY_PURPOSE"])
+    else:
+        runner.prepare_credentials_before_registry()
+
+
 def _run_odoo_shell(settings: StartupSettings, script_text: str, *, label: str) -> None:
+    _prepare_credentials_before_registry(settings)
     print(f"[platform-startup] running {label}", flush=True)
     subprocess.run(_build_odoo_shell_command(settings), input=script_text.encode(), env=_odoo_environment(settings), check=True)
 
@@ -450,7 +478,8 @@ def _apply_admin_password_if_configured(settings: StartupSettings) -> None:
     payload = {
         "login": settings.admin_login,
         "password": settings.admin_password,
-        "nonproduction": settings.platform_instance.strip().lower() not in PRODUCTION_INSTANCE_NAMES,
+        "nonproduction": "ODOO_COPY_PURPOSE" in os.environ
+        or settings.platform_instance.strip().lower() not in PRODUCTION_INSTANCE_NAMES,
     }
     script = """
 import json
@@ -474,6 +503,9 @@ else:
 
 
 def _apply_environment_overrides_if_available(settings: StartupSettings) -> None:
+    if "ODOO_COPY_PURPOSE" in os.environ:
+        return
+    _prepare_credentials_before_registry(settings, testing_settings=True)
     script = """
 from odoo_website_settings import apply_website_settings
 from odoo_website_bootstrap import (
@@ -531,6 +563,7 @@ def _run_initialization_if_needed(settings: StartupSettings) -> None:
         flush=True,
     )
     initialize_command = _build_odoo_command(settings, initialize_modules=missing_modules, stop_after_init=True)
+    _prepare_credentials_before_registry(settings)
     subprocess.run(initialize_command, env=_odoo_environment(settings), check=True)
     remaining_modules = _missing_required_modules(settings)
     if remaining_modules:
@@ -571,6 +604,8 @@ def _require_scheduler_ready(arguments: argparse.Namespace) -> None:
 
 
 def _launch_scheduler(settings: StartupSettings, arguments: argparse.Namespace) -> None:
+    if "ODOO_COPY_PURPOSE" in os.environ:
+        raise RuntimeError("An isolated copy cannot start the scheduler.")
     _require_scheduler_ready(arguments)
     _write_runtime_config(settings)
     _wait_for_database(settings)
@@ -599,7 +634,10 @@ def main() -> None:
         _assert_active_admin_password_is_not_default(settings)
 
     print("[platform-startup] starting Odoo web server", flush=True)
+    _prepare_credentials_before_registry(settings)
     server_command = _build_odoo_command(settings, stop_after_init=False)
+    if "ODOO_COPY_PURPOSE" in os.environ:
+        server_command.append("--max-cron-threads=0")
     os.execve(server_command[0], server_command, _odoo_environment(settings))
 
 

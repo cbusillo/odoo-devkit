@@ -711,6 +711,82 @@ class OdooStartupDependencySyncTests(unittest.TestCase):
 
         self.assertEqual([recorded_call[0] for recorded_call in recorder.mock_calls], ["_enforce_public_credential_preflight"])
 
+    def test_startup_constructs_real_copy_settings_before_preparation(self) -> None:
+        from test_odoo_data_workflows import odoo_data_workflows
+
+        settings = self._settings(platform_instance="production", admin_password="configured-password")
+        with (
+            patch.dict(os.environ, {"ODOO_COPY_PURPOSE": "migration"}, clear=True),
+            patch.dict(sys.modules, {"run_odoo_data_workflows": odoo_data_workflows}),
+            patch.object(
+                odoo_data_workflows.OdooDataWorkflowRunner, "prepare_isolated_copy_before_registry", autospec=True
+            ) as prepare,
+        ):
+            odoo_startup._prepare_credentials_before_registry(settings)
+        runner = prepare.call_args.args[0]
+        self.assertEqual(runner.local.db_name, settings.database_name)
+        self.assertEqual(runner.local.host, settings.database_host)
+        self.assertEqual(runner.local.db_password.get_secret_value(), settings.database_password)
+        self.assertEqual(runner.local.copy_purpose, "migration")
+
+    def test_forged_environment_purpose_is_rejected_before_constructing_runner(self) -> None:
+        from test_odoo_data_workflows import odoo_data_workflows
+
+        with (
+            patch.dict(os.environ, {"ODOO_COPY_PURPOSE": "production"}, clear=True),
+            patch.dict(sys.modules, {"run_odoo_data_workflows": odoo_data_workflows}),
+            patch.object(odoo_data_workflows, "OdooDataWorkflowRunner") as runner,
+            self.assertRaises(ValueError),
+        ):
+            odoo_startup._prepare_credentials_before_registry(self._settings())
+        runner.assert_not_called()
+
+    def test_testing_startup_prepares_delayed_settings_before_orm(self) -> None:
+        from test_odoo_data_workflows import odoo_data_workflows
+
+        events: list[str] = []
+        with (
+            patch.dict(os.environ, {"ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64": "fixture-payload"}, clear=True),
+            patch.dict(sys.modules, {"run_odoo_data_workflows": odoo_data_workflows}),
+            patch.object(
+                odoo_data_workflows.OdooDataWorkflowRunner,
+                "prepare_credentials_before_registry",
+                side_effect=lambda: events.append("sql"),
+            ),
+            patch.object(odoo_startup, "_run_odoo_shell", side_effect=lambda *_args, **_kwargs: events.append("orm")),
+        ):
+            odoo_startup._apply_environment_overrides_if_available(self._settings(platform_instance="testing"))
+        self.assertEqual(events, ["sql", "orm"])
+
+    def test_isolated_startup_failure_prevents_initialization_and_shell(self) -> None:
+        settings = self._settings(platform_instance="prod", admin_password="configured-password")
+        with (
+            patch.dict(os.environ, ODOO_COPY_PURPOSE="migration"),
+            patch.object(odoo_startup, "_prepare_credentials_before_registry", side_effect=RuntimeError("boundary failed")),
+            patch.object(odoo_startup, "_missing_required_modules", return_value=["opw_custom"]),
+            patch.object(odoo_startup.subprocess, "run") as execute,
+        ):
+            with self.assertRaises(RuntimeError):
+                odoo_startup._run_initialization_if_needed(settings)
+            with self.assertRaises(RuntimeError):
+                odoo_startup._run_odoo_shell(settings, "raise AssertionError", label="fixture")
+            execute.assert_not_called()
+
+    def test_isolated_startup_skips_managed_orm_settings_and_scheduler(self) -> None:
+        settings = self._settings(platform_instance="prod", admin_password="configured-password")
+        with (
+            patch.dict(os.environ, ODOO_COPY_PURPOSE="migration"),
+            patch.object(odoo_startup, "_prepare_credentials_before_registry") as prepare,
+            patch.object(odoo_startup, "_run_odoo_shell") as shell,
+            patch.object(odoo_startup.os, "execve") as execute,
+        ):
+            odoo_startup._apply_environment_overrides_if_available(settings)
+            prepare.assert_not_called()
+            shell.assert_not_called()
+            with self.assertRaises(RuntimeError):
+                odoo_startup._launch_scheduler(settings, argparse.Namespace())
+            execute.assert_not_called()
+
     def test_scheduler_requires_committed_marker_and_never_repeats_startup_writes(self) -> None:
         with TemporaryDirectory() as directory:
             marker = Path(directory) / "run-ready"
