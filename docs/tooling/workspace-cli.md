@@ -948,3 +948,83 @@ Run status with `--check` before using guidance and sync when it reports stale
 or missing materialization. A missing devkit checkout reports the override
 instead of attempting uv in a nonexistent directory. No primary workspace
 files or credentials are copied into the task workspace.
+
+## Shared file stores in queued offline runs
+
+For an isolated migration or test that leaves its frozen file-store base unchanged,
+put `"overlay": true` on that directory's existing heavy-manifest copy entry:
+
+```json
+{
+  "source": "/private/frozen-stage/filestore",
+  "destination": "/volumes/data/filestore/migration_copy",
+  "overlay": true
+}
+```
+
+This uses the Q861 Docker local overlay mechanism: the verified staged directory
+is the lower, with private upper/work directories in a run-owned backing volume.
+The container reads the lower through the overlay; writes and deletions stay in
+its upper. Containers in one run using the same source and destination share
+that upper. Different destinations and different runs get separate writable
+state. Lower bytes and filesystem identity are checked again after containers
+stop. Failure keeps the original cleanup custody and stops successor admission.
+There is no fallback to a copy when overlay mounting fails.
+
+The private receiver can reuse the same retained lower across runs. Use an
+original admitted with `overlay: true` after the matching helper/receiver pair
+is adopted, so its new input has container-copy permissions and its returned
+evidence includes `run.json`. After that run completes and its inputs are
+independently qualified, keep
+that original request's guest inputs in place. Obtain its UUID from the existing
+`request.json` and its exact input name from the returned `run.json`, alongside
+`image-provenance.json`. A subsequent copy entry keeps the same frozen local
+source and adds the original input reference:
+
+```json
+{
+  "source": "/private/frozen-stage/filestore",
+  "destination": "/volumes/data/filestore/migration_copy",
+  "overlay": true,
+  "retained_from": {
+    "job": "00000000-0000-4000-8000-000000000001",
+    "input": "inputs/0"
+  }
+}
+```
+
+Use the actual original UUID and input name. The receiver checks the original's
+cleanup receipt, frozen transfer inventory, current bytes and the requesting
+local source's hashes before execution. A missing, changed, aliased or retired
+lower refuses admission. The reference cannot select an arbitrary host path or
+chain through another reference. The lower stays owned by its original request;
+retiring a borrowing run removes only that run's own inputs/images. Keep the
+base while future runs need it. Its owner uses the original request's existing
+retirement path. If the original has already completed retirement, a borrower
+can still retire its own copies against the preserved original receipts; it
+cannot execute again using that retired lower.
+
+Keep `ODOO_COPY_PURPOSE=migration`, source/image/stage bindings, disconnected
+networking, resource caps, credential stripping and the normal heavy entrypoint.
+The flag replaces the container copy for this destination, so remove any job
+command that copies/extracts a file store over the same mounted destination.
+Retain database restoration and the SQL boundary before the first registry.
+For an already restored database, use the existing
+`runner.prepare_isolated_copy_before_registry(purpose="migration")` API above.
+Do not run restore/bootstrap file replacement or recursive `chown`/`chmod`
+over the overlay: metadata changes can copy the entire lower into its upper.
+The receiver has already prepared container-copy permissions. Use the
+independent-copy case if a workflow requires that whole-store rewrite.
+When the base itself must change, omit both `overlay` and `retained_from`; the
+existing ordinary copy is the independent writable case. An overlay never
+publishes its private writes as a new saved stage automatically.
+
+Adoption requires the matching catalog heavy helper and private receiver source
+installed together through the receiver's documented drained-queue procedure.
+Do not run these examples against an older installed pair. The lead owns that
+adoption and the single Q1096 real-size timing/disk comparison in the Q1097
+batched real-copy check. Source checks do not establish receiver mount support
+or a migration result. Measure file-store input transfer, verification, overlay
+preparation, database restore, and cleanup separately; a shared lower avoids its
+bulk retransfer on subsequent runs but still requires integrity reads. Preserve
+any full-copy headroom refusal rather than inventing a before measurement.
