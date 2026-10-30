@@ -52,7 +52,7 @@ class AddonBaselineTests(unittest.TestCase):
                 member.mode = 0o600
                 output.addfile(member, io.BytesIO(content))
             member = tarfile.TarInfo("filestore")
-            member.type = cast(bytes, tarfile.DIRTYPE)
+            member.type = cast(Any, tarfile.DIRTYPE)
             output.addfile(member)
             if extra is not None:
                 output.addfile(extra)
