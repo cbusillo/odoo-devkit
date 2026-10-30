@@ -658,7 +658,12 @@ Notes
   URL/dispatcher bookkeeping and website bootstrap still use their installed
   ORM adapters after the credential transaction. No addon code or Odoo shell is
   used to strip credentials. Callers must keep other workers stopped until
-  preparation and maintenance finish; this is not a traffic-switch mechanism.
+  preparation and maintenance finish, including the scheduler during a delayed
+  testing store change. Use the existing stopped-runtime maintenance procedure
+  before starting the web process with changed store settings; an environment-only
+  plan stages values and does not authorize a running scheduler to overlap the
+  transition. On readback failure keep those workers stopped and use the supported
+  restore/reset procedure before resuming; this is not a traffic-switch mechanism.
   Restore reasserts the boundary after module work before running further
   settings/admin hooks, because install data can re-enable integrations.
   OpenUpgrade also reasserts requested sanitization before addon installation,
@@ -844,8 +849,10 @@ the selected store on a restore or when the stored store key differs from the
 incoming key. A delayed apply follows the same path because quarantine removed
 the copied store key. Reapplying or rotating credentials for the same store
 preserves its IDs and jobs. Startup prepares a testing managed-settings apply
-before the ORM shell, after base initialization; direct settings applies use the
-same boundary. Independent readback verifies each reset. The existing store
+before the ORM shell, after base initialization; data-workflow callers prepare
+before their settings apply. Independent readback verifies identities, export
+state and open jobs for each reset. Store changes leave cron activation to the
+existing settings consumer, preserving offline-check cron state. The existing store
 verification and Reset Shopify workflow then run normally. Testing without that
 explicit selection and all migration copies preserve identity links. No eBay reset is added. Existing store-separation and release
 boundaries still govern reconnection; this setting grants no new authority.

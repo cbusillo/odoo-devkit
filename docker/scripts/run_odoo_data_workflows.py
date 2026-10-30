@@ -1273,13 +1273,16 @@ class OdooDataWorkflowRunner:
                 )
             )
 
-    def _stop_copied_shopify_work(self, cursor: Any) -> None:
+    def _cancel_copied_shopify_jobs(self, cursor: Any) -> None:
         state_placeholders = ", ".join(["%s"] * len(SHOPIFY_OPEN_JOB_STATES))
         if "state" in self._table_columns(cursor, "shopify_sync"):
             cursor.execute(
                 f"UPDATE shopify_sync SET state = 'canceled' WHERE state IN ({state_placeholders})",
                 SHOPIFY_OPEN_JOB_STATES,
             )
+
+    def _stop_copied_shopify_work(self, cursor: Any) -> None:
+        self._cancel_copied_shopify_jobs(cursor)
         if "ir_actions_server_id" not in self._table_columns(cursor, "ir_cron"):
             return
         cursor.execute(
@@ -1717,9 +1720,31 @@ class OdooDataWorkflowRunner:
         previous = cursor.fetchone()
         if not restored_copy and previous and (previous[0] or "").strip() == parameters["shopify.shop_url_key"]:
             return False
-        self._stop_copied_shopify_work(cursor)
+        self._cancel_copied_shopify_jobs(cursor)
         self._forget_production_shopify_records(cursor)
         return True
+
+    def _open_shopify_jobs(self, cursor: Any) -> int:
+        if "state" not in self._table_columns(cursor, "shopify_sync"):
+            return 0
+        placeholders = ", ".join(["%s"] * len(SHOPIFY_OPEN_JOB_STATES))
+        cursor.execute("SELECT count(*) FROM shopify_sync WHERE state IN (" + placeholders + ")", SHOPIFY_OPEN_JOB_STATES)
+        return cursor.fetchone()[0]
+
+    def _verify_development_store_reset(self, cursor: Any) -> None:
+        if self._surviving_shopify_external_ids(cursor) or self._open_shopify_jobs(cursor):
+            raise OdooDatabaseUpdateError("Development-store identity/work reset commit readback failed.")
+        columns = self._table_columns(cursor, "product_product")
+        for column, cleared_value in SHOPIFY_PRODUCT_EXPORT_STATE_COLUMNS:
+            if column not in columns:
+                continue
+            cursor.execute(
+                sql.SQL("SELECT count(*) FROM product_product WHERE {column} IS DISTINCT FROM {value}").format(
+                    column=sql.Identifier(column), value=sql.SQL(cleared_value)
+                )
+            )
+            if cursor.fetchone()[0]:
+                raise OdooDatabaseUpdateError("Development-store export-state reset commit readback failed.")
 
     def prepare_credentials_before_registry(self, *, restored_copy: bool = False, do_sanitize: bool = False) -> None:
         """Commit the SQL-only credential boundary before starting any Odoo process.
@@ -1767,8 +1792,8 @@ class OdooDataWorkflowRunner:
                     self.verify_production_credentials_cleared(
                         database_connection=observer, managed_parameter_keys=frozenset(parameters)
                     )
-                if reset_shopify and self._surviving_shopify_external_ids(cursor):
-                    raise OdooDatabaseUpdateError("Development-store identity reset commit readback failed.")
+                if reset_shopify:
+                    self._verify_development_store_reset(cursor)
                 for key, expected in parameters.items():
                     cursor.execute("SELECT value FROM ir_config_parameter WHERE key = %s", (key,))
                     if cursor.fetchone() != (None if expected is None else (expected,)):
@@ -1780,15 +1805,8 @@ class OdooDataWorkflowRunner:
                     cursor.execute("SELECT count(*) FROM ir_mail_server WHERE active AND smtp_host <> 'invalid'")
                     if cursor.fetchone()[0]:
                         raise OdooDatabaseUpdateError("Pre-registry outgoing mail fence commit readback failed.")
-                    if self.local.copy_purpose and "state" in self._table_columns(cursor, "shopify_sync"):
-                        cursor.execute(
-                            "SELECT count(*) FROM shopify_sync WHERE state IN ("
-                            + ", ".join(["%s"] * len(SHOPIFY_OPEN_JOB_STATES))
-                            + ")",
-                            SHOPIFY_OPEN_JOB_STATES,
-                        )
-                        if cursor.fetchone()[0]:
-                            raise OdooDatabaseUpdateError("Pre-registry copied jobs commit readback failed.")
+                    if self.local.copy_purpose and self._open_shopify_jobs(cursor):
+                        raise OdooDatabaseUpdateError("Pre-registry copied jobs commit readback failed.")
                     if self.local.copy_purpose or (do_sanitize and self.local.disable_cron):
                         cursor.execute("SELECT count(*) FROM ir_cron WHERE active")
                         if cursor.fetchone()[0]:
@@ -1813,8 +1831,6 @@ class OdooDataWorkflowRunner:
         if self.local.copy_purpose:
             self.prepare_credentials_before_registry(restored_copy=True)
             return
-        if self.local.platform_instance.strip().lower() == "testing":
-            self.prepare_credentials_before_registry()
         payload = {
             "db": self.local.db_name,
         }

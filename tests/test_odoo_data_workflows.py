@@ -11,7 +11,7 @@ import sys
 import tempfile
 import types
 import unittest
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import ExitStack, closing, contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -1163,6 +1163,7 @@ class SanitizeCronTests(unittest.TestCase):
 PRODUCTION_PARAMETERS = {
     "shopify.shop_url_key": "production-store",
     "shopify.api_token": "production-shopify-token",
+    "ebay.refresh_token": "production-ebay-refresh-token",
     "shopify.webhook_key": "production-webhook-key",
     "shopify.shop_url": "https://production-store.example.test",
     "shopify.test_store": "False",
@@ -2279,7 +2280,7 @@ class CredentialBoundaryTests(unittest.TestCase):
                 with sqlite3.connect(self.path) as reader:
                     parameters = dict(reader.execute("SELECT key,value FROM ir_config_parameter"))
                     for key in PRODUCTION_PARAMETERS:
-                        if key.startswith("shopify.last_"):
+                        if key.startswith(odoo_data_workflows.SHOPIFY_IMPORT_CURSOR_PREFIX):
                             self.assertEqual(parameters[key], PRODUCTION_PARAMETERS[key])
                             continue
                         self.assertNotEqual(parameters.get(key), PRODUCTION_PARAMETERS[key])
@@ -2375,22 +2376,31 @@ class CredentialBoundaryTests(unittest.TestCase):
         with sqlite3.connect(self.path) as reader:
             self.assertEqual(reader.execute("SELECT * FROM external_id WHERE system_id=1").fetchall(), [])
             self.assertEqual(reader.execute("SELECT state FROM shopify_sync WHERE id=9").fetchone(), ("canceled",))
-            self.assertEqual(reader.execute("SELECT active FROM ir_cron WHERE id=1").fetchone(), (False,))
+            self.assertEqual(reader.execute("SELECT active FROM ir_cron WHERE id=1").fetchone(), (True,))
             self.assertEqual(reader.execute("SELECT * FROM external_id WHERE system_id=2").fetchall(), ebay)
 
     def test_selected_store_reset_requires_independent_readback(self) -> None:
-        self.select_development_store()
-        conn = self.runner.connect_to_db()
-        commit = conn.commit
+        faults = (
+            "INSERT INTO external_id VALUES (9,1,'product.product',1,'product','surviving-production-id')",
+            "UPDATE product_product SET shopify_next_export=true WHERE id=1",
+            "UPDATE shopify_sync SET state='queued' WHERE id=1",
+        )
+        for statement in faults:
+            with self.subTest(statement=statement):
+                self.select_development_store()
+                conn = self.runner.connect_to_db()
+                commit = conn.commit
 
-        def leave_copied_id() -> None:
-            conn.database.execute("INSERT INTO external_id VALUES (9,1,'product.product',1,'product','surviving-production-id')")
-            commit()
+                def incomplete_reset(
+                    _statement: str = statement, _conn: _BoundaryConnection = conn, _commit: Callable[[], None] = commit
+                ) -> None:
+                    _conn.database.execute(_statement)
+                    _commit()
 
-        conn.commit = leave_copied_id
-        with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
-            self.runner.prepare_credentials_before_registry(restored_copy=True)
-        self.assertIsNone(self.runner.local.db_conn)
+                conn.commit = incomplete_reset
+                with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
+                    self.runner.prepare_credentials_before_registry(restored_copy=True)
+                self.assertIsNone(self.runner.local.db_conn)
 
     def test_isolated_copy_rejects_missing_or_forged_purpose(self) -> None:
         for purpose, instance in ((None, "prod"), ("runtime", "prod"), ("production", "prod"), ("development-store", "prod")):
