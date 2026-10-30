@@ -604,6 +604,12 @@ Notes
   or `ODOO_VERSION`, the existing packaged runner
   uses native `base,web` loading and selects its SQL-only
   `prepare_core_references_20.py` with native `--pre-upgrade-scripts`.
+  Explicit `ODOO_INSTALL_MODULES` (comma- or colon-separated) selects initial
+  installs with `--init` in the same invocation as `--update all`, so their
+  native post-init hooks run before module cleanup. Unset, empty and `AUTO`
+  declarations add no initial installs. Other targets do not consume this
+  selection during OpenUpgrade. The later restore install phase cannot
+  substitute for an initial migration ownership handoff.
   It retains the discovered upgrade roots; it does not load the Odoo 19
   OpenUpgrade framework or reset module states or versions. Subsequent addon
   maintenance and release-plan shells also skip that framework. Other targets

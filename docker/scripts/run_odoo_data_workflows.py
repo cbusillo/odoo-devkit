@@ -2876,6 +2876,9 @@ with registry.cursor() as cr:
             ",".join(str(path) for path in scripts_paths),
         ]
         if native_20:
+            install_modules, _ = self._resolve_install_modules()
+            if install_modules:
+                cmd_parts += ["--init", shlex.quote(",".join(install_modules))]
             reference_script = Path(__file__).with_name("prepare_core_references_20.py")
             cmd_parts += ["--pre-upgrade-scripts", shlex.quote(str(reference_script))]
         cmd_parts += self._odoo_runtime_connection_flags()
