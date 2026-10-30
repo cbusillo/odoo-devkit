@@ -34,7 +34,7 @@ jobs:
             image: ghcr.io/cbusillo/odoo-docker@sha256:bd8b212b09f9a5e197663d08f758cb8bf3df459cc52012d41f3a91f6b09315c2
             shared_ref: 5dcf55162eca8cbcc026789e6cb4f0c79f7c8733
           - series: '20.0'
-            image: ghcr.io/cbusillo/odoo-docker@sha256:4c36271cc8ad71c865d00b772131d020e5c1a3109666fb6bf464f62df531fd8e
+            image: ghcr.io/cbusillo/odoo-docker@sha256:e3038bff93f23677f2fa246c60a721cc1dc4bd5be8e25d8e512c3b6b0508a36c
             shared_ref: 158bec70b8c216a47d6f86510dcad8c769db6d19
     steps:
       - uses: actions/checkout@v7

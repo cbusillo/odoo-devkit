@@ -318,7 +318,7 @@ class WebsiteSettingsTests(unittest.TestCase):
         registry = types.ModuleType("odoo.modules.registry")
         registry.Registry = lambda database: SimpleNamespace(cursor=lambda: nullcontext(env.cr))
         runner = object.__new__(workflows.OdooDataWorkflowRunner)
-        runner.local = SimpleNamespace(db_name="fixture-copy", platform_instance="testing")
+        runner.local = SimpleNamespace(db_name="fixture-copy", platform_instance="testing", copy_purpose=None)
 
         def shell(program: str, label: str) -> None:
             exec(program, {})
