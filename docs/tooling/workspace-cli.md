@@ -1009,6 +1009,12 @@ networking, resource caps, credential stripping and the normal heavy entrypoint.
 The flag replaces the container copy for this destination, so remove any job
 command that copies/extracts a file store over the same mounted destination.
 Retain database restoration and the SQL boundary before the first registry.
+For an already restored database, use the existing
+`runner.prepare_isolated_copy_before_registry(purpose="migration")` API above.
+Do not run restore/bootstrap file replacement or recursive `chown`/`chmod`
+over the overlay: metadata changes can copy the entire lower into its upper.
+The receiver has already prepared container-copy permissions. Use the
+independent-copy case if a workflow requires that whole-store rewrite.
 When the base itself must change, omit both `overlay` and `retained_from`; the
 existing ordinary copy is the independent writable case. An overlay never
 publishes its private writes as a new saved stage automatically.
