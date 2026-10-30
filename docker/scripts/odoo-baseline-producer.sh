@@ -49,7 +49,7 @@ test "$(cat /workspace/baseline/results/database-identity.txt)" = "$BASELINE_DAT
 psql -X -h 127.0.0.1 -U "$POSTGRES_USER" -d "$BASELINE_DATABASE" -At -v ON_ERROR_STOP=1 \
     -c "SELECT name, setting FROM pg_settings WHERE name IN ('lc_messages','lc_monetary','lc_numeric','lc_time','default_text_search_config','TimeZone') ORDER BY name COLLATE \"C\"" \
     > /workspace/baseline/results/settings.txt
-test "$(cat /workspace/baseline/results/settings.txt)" = "$BASELINE_SETTINGS"
+test "$(paste -sd ';' /workspace/baseline/results/settings.txt)" = "$BASELINE_SETTINGS"
 stop_postgres
 wait "$server"
 test ! -e "$PGDATA/postmaster.pid"

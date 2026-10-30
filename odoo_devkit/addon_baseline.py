@@ -36,7 +36,7 @@ def read_binding(binding: Path) -> dict[str, Any]:
         or any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value) for value in initialization.values())
         or not re.fullmatch(r"[A-Za-z0-9_]+", expected["database"])
         or expected.get("synthetic_only") is not True
-        or not re.fullmatch(r"[A-Za-z0-9_.|@-]+", expected["database_identity"])
+        or not re.fullmatch(r"[A-Za-z0-9_.@-]+\|[A-Za-z0-9_.@-]+\|[A-Za-z0-9_.@-]+\|c", expected["database_identity"])
         or not isinstance(settings, dict)
         or set(settings) != {"lc_messages", "lc_monetary", "lc_numeric", "lc_time", "default_text_search_config", "timezone"}
         or any(not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_./@-]+", value) for value in settings.values())
@@ -59,7 +59,7 @@ def producer_input(inputs: Path, *, binding: Path, user: str, password: str) -> 
             raise ValueError("Producer contains an unqualified filestore member")
         if path.is_file():
             inventory.append(f"{file_sha256(path)}  {relative}\n")
-    filestore_sha256 = hashlib.sha256("".join(inventory).encode()).hexdigest()
+    filestore_sha256 = hashlib.sha256("".join(sorted(inventory)).encode()).hexdigest()
     dump = inputs / "database.dump"
     if (
         dump.is_symlink()
@@ -76,13 +76,14 @@ def producer_input(inputs: Path, *, binding: Path, user: str, password: str) -> 
         "command": ["bash", "/workspace/baseline/producer.sh"],
         "environment": {
             "POSTGRES_USER": user,
+            "POSTGRES_DB": "postgres",
             "POSTGRES_PASSWORD": password,
             "PGPASSWORD": password,
             "BASELINE_DATABASE": stage["database"],
             "BASELINE_POSTGRES_VERSION": stage["postgres_version"],
             "BASELINE_ARCHITECTURE": stage["architecture"],
             "BASELINE_DATABASE_IDENTITY": stage["database_identity"],
-            "BASELINE_SETTINGS": "\n".join(
+            "BASELINE_SETTINGS": ";".join(
                 f"{key}|{value}"
                 for key, value in sorted(
                     {"TimeZone" if key == "timezone" else key: value for key, value in stage["settings"].items()}.items()
@@ -181,12 +182,16 @@ def database_input(archive: Path, *, sha256: str, binding: Path, max_expanded_by
     script = "\n".join(
         [
             "set -eu",
+            "mkdir /workspace/baseline/results",
+            "date +%s%N > /workspace/baseline/results/start-nanoseconds.txt",
             f"printf '%s  %s\\n' {shlex.quote(sha256)} {archive_path} | sha256sum --check --status",
             f'test "$(postgres --version)" = {shlex.quote(stage["postgres_version"])}',
             f'test "$(uname -m)" = {shlex.quote(stage["architecture"])}',
             ': "${PGDATA:?}"',
             'test -z "$(find "$PGDATA" -mindepth 1 -print -quit)"',
+            "date +%s%N > /workspace/baseline/results/verified-nanoseconds.txt",
             f'tar --extract --file={archive_path} --directory="$PGDATA" --strip-components=1 --no-same-owner pgdata',
+            "date +%s%N > /workspace/baseline/results/extracted-nanoseconds.txt",
             'test "$(LC_ALL=C pg_controldata "$PGDATA" | sed -n \'s/^Database cluster state: *//p\')" = "shut down"',
             'test ! -e "$PGDATA/postmaster.pid"',
             'chown -R postgres:postgres "$PGDATA"',
@@ -194,6 +199,7 @@ def database_input(archive: Path, *, sha256: str, binding: Path, max_expanded_by
             "printf '%s\\n' "
             + shlex.quote("listen_addresses = '*'\n" + "\n".join(f"{key} = '{value}'" for key, value in stage["settings"].items()))
             + " > /workspace/baseline/postgresql.conf",
+            "date +%s%N > /workspace/baseline/results/preexec-nanoseconds.txt",
             "exec docker-entrypoint.sh postgres -c config_file=/workspace/baseline/postgresql.conf",
         ]
     )

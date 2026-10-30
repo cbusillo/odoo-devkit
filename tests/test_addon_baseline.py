@@ -129,17 +129,22 @@ class AddonBaselineTests(unittest.TestCase):
         (inputs / "filestore").mkdir(parents=True)
         dump = inputs / "database.dump"
         dump.write_bytes(b"qualified synthetic dump")
-        attachment = inputs / "filestore/attachment"
-        attachment.write_bytes(b"qualified synthetic attachment")
+        (inputs / "filestore/a").write_bytes(b"a")
+        (inputs / "filestore/z").write_bytes(b"z")
+        lines = [
+            f"{file_sha256(path)}  {path.relative_to(inputs).as_posix()}\n" for path in sorted((inputs / "filestore").iterdir())
+        ]
+        self.assertNotEqual(lines, sorted(lines))
         self.stage["initialization"] = {
             "logical_dump": file_sha256(dump),
-            "filestore_inventory": hashlib.sha256(f"{file_sha256(attachment)}  filestore/attachment\n".encode()).hexdigest(),
+            "filestore_inventory": hashlib.sha256("".join(sorted(lines)).encode()).hexdigest(),
         }
         self.binding.write_text(json.dumps(self.stage))
         (inputs / "binding.json").write_bytes(self.binding.read_bytes())
         container = producer_input(inputs, binding=self.binding, user="fixture", password="fixture-only")
         self.assertEqual(container["image"], self.stage["postgres_image"])
         self.assertEqual(container["environment"]["BASELINE_DUMP_SHA256"], self.stage["initialization"]["logical_dump"])
+        self.assertTrue(all("\n" not in value and "\r" not in value for value in container["environment"].values()))
         (inputs / "filestore/unlisted").write_bytes(b"unexpected")
         with self.assertRaises(ValueError):
             producer_input(inputs, binding=self.binding, user="fixture", password="fixture-only")

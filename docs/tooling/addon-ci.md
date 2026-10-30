@@ -93,12 +93,12 @@ Keep the qualified portable logical dump and original receipt. Derive a current
 `binding.json` independently from initialization inputs, using the existing
 queue receipts, image/platform provenance and input hashes. Bind `synthetic_only:
 true`, `database`, immutable `postgres_image`, exact `postgres_version`,
-`architecture` (currently only `x86_64`), `database_identity` (PostgreSQL's
+`architecture` (currently only `x86_64` with libc locales), `database_identity` (PostgreSQL's
 pipe-separated encoding, collation, ctype and locale-provider row), and `settings`
 (`lc_messages`, `lc_monetary`, `lc_numeric`, `lc_time`, `default_text_search_config`,
 `timezone`). `initialization` contains SHA256 bindings for relevant source,
 modules, schema, migration/preparation and initialization configuration, including
-`logical_dump` and `filestore_inventory`. The latter hashes sorted
+`logical_dump` and `filestore_inventory`. The latter hashes full-line C-sorted
 `SHA256  filestore/relative-path\n` lines for every regular filestore file;
 check complete membership against the original receipt first. Test/docs changes
 may reuse a stage only if initialization inputs stay identical. Changed inputs
@@ -128,9 +128,16 @@ Admission checks the entire archive through one open handle and rejects changed
 inputs, unsafe members, tablespaces, recovery state, automatic settings and
 excess expansion. Startup verifies the runtime and clean shutdown state and
 uses only the bound locale/text-search/timezone settings in a fresh config.
-Copy the same verified archive to the existing Odoo job for its filestore;
+Copy the same archive to the existing Odoo job and check it there before extracting only its filestore:
+
+```bash
+printf '%s  %s\n' "$QUALIFIED_SHA256" /workspace/stage.tar | sha256sum --check --status
+tar --extract --file=/workspace/stage.tar --directory=/workspace/data --no-same-owner filestore
+```
+
+Run those commands as the Odoo job user in a fresh writable directory;
 clone private databases/filestores per batch and run the existing regressions
-without init, update, migration or logical restore. Each original job needs its
+without init, update, migration or logical restore. Collect `/workspace/baseline/results` from the consumer database to retain verify/extract/pre-exec epoch nanoseconds; its native ready log supplies the startup endpoint. Each original job needs its
 own cleanup proof. Measure logical restore, seal/extract/start, clones, tests,
 transport and expanded PGDATA/WAL/output growth. Budget all copies against
 current headroom. Actual business data remains subject to its owner's separate
