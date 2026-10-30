@@ -142,6 +142,8 @@ MAIL_SERVER_OAUTH_TOKEN_COLUMNS = (
 TABLE_CREDENTIAL_COLUMNS = (
     (INCOMING_MAIL_INTEGRATION, "fetchmail_server", "password"),
     *((INCOMING_MAIL_INTEGRATION, "fetchmail_server", column) for column in MAIL_SERVER_OAUTH_TOKEN_COLUMNS),
+    (None, "ir_mail_server", "smtp_user"),
+    (None, "ir_mail_server", "smtp_pass"),
     # Outgoing mail is blocked on every non-production instance, so its tokens are never kept.
     *((None, "ir_mail_server", column) for column in MAIL_SERVER_OAUTH_TOKEN_COLUMNS),
     (IAP_INTEGRATION, "iap_account", "account_token"),
@@ -1344,10 +1346,11 @@ class OdooDataWorkflowRunner:
     ) -> None:
         kept = self._kept_integrations()
         values = self._credential_values(cursor)
-        push_devices = 0
-        if self._table_exists(cursor, "mail_push_device"):
-            cursor.execute("SELECT count(*) FROM mail_push_device")
-            push_devices = cursor.fetchone()[0]
+        push_records = 0
+        for table in WEB_PUSH_TABLES:
+            if self._table_exists(cursor, table):
+                cursor.execute(sql.SQL("SELECT count(*) FROM {}").format(sql.Identifier(table)))
+                push_records += cursor.fetchone()[0]
         enabled_payment_providers = 0 if PAYMENT_INTEGRATION in kept else self._enabled_remote_payment_providers(cursor)
         active_incoming_mail_servers = 0
         if INCOMING_MAIL_INTEGRATION not in kept and "active" in self._table_columns(cursor, "fetchmail_server"):
@@ -1366,8 +1369,8 @@ class OdooDataWorkflowRunner:
             unexpected = set(values) - set(REGENERATED_SIGNING_PARAMETER_KEYS) - {"iap_account.account_token"}
             if unexpected:
                 problems.append("isolated copy credentials remain: " + ", ".join(sorted(unexpected)))
-        if push_devices:
-            problems.append(f"{push_devices} copied web push subscription(s)")
+        if push_records:
+            problems.append(f"{push_records} copied web push row(s)")
         if enabled_payment_providers:
             problems.append(f"{enabled_payment_providers} payment provider(s) still enabled")
         if active_incoming_mail_servers:
@@ -1378,7 +1381,8 @@ class OdooDataWorkflowRunner:
 
     def _require_unfiltered_isolated_copy_reads(self, cursor: Any) -> None:
         tables = {table for _integration, table, _column in TABLE_CREDENTIAL_COLUMNS}
-        tables.update(("ir_config_parameter", "payment_provider", "mail_push_device", "ir_cron", "shopify_sync"))
+        tables.update(WEB_PUSH_TABLES)
+        tables.update(("ir_config_parameter", "payment_provider", "ir_cron", "shopify_sync"))
         for table in sorted(tables):
             if not self._table_exists(cursor, table):
                 continue

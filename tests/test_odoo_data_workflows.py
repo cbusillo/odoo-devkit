@@ -1550,18 +1550,21 @@ class ProductionCredentialSanitizeTests(unittest.TestCase):
     def test_read_back_fails_when_a_restored_credential_survives(self) -> None:
         runner = self._runner("testing")
         runner.fingerprint_restored_credentials()
-        runner.neutralize_production_credentials()
-        self.copy.database.execute(
-            "INSERT INTO ir_config_parameter VALUES ('printnode.api_key', ?)", (PRODUCTION_PARAMETERS["printnode.api_key"],)
+        faults = (
+            (
+                "INSERT INTO ir_config_parameter VALUES ('printnode.api_key', ?)",
+                (PRODUCTION_PARAMETERS["printnode.api_key"],),
+            ),
+            ("INSERT INTO mail_push_device VALUES (9, 'https://push.example.test/copied')", ()),
+            ("INSERT INTO mail_push VALUES (9, 9, 'copied-push')", ()),
         )
-        self.copy.database.execute("INSERT INTO mail_push_device VALUES (9, 'https://push.example.test/copied')")
-
-        with self.assertRaisesRegex(
-            odoo_data_workflows.OdooDatabaseUpdateError, r"printnode\.api_key.*1 copied web push subscription"
-        ) as raised:
-            runner.verify_production_credentials_cleared()
-
-        self.assertNotIn(PRODUCTION_PARAMETERS["printnode.api_key"], str(raised.exception))
+        for fault, parameters in faults:
+            with self.subTest(fault=fault):
+                runner.neutralize_production_credentials()
+                self.copy.database.execute(fault, parameters)
+                with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError) as raised:
+                    runner.verify_production_credentials_cleared()
+                self.assertNotIn(PRODUCTION_PARAMETERS["printnode.api_key"], str(raised.exception))
 
     def test_restore_keeps_only_the_integrations_the_request_allows(self) -> None:
         runner = self._runner("testing", ODOO_RESTORE_KEPT_INTEGRATIONS="fishbowl, payment incoming_mail")
@@ -2447,6 +2450,9 @@ class CredentialBoundaryTests(unittest.TestCase):
                 (odoo_data_workflows.BOUNDARY_COMMIT_PARAMETER,),
             ),
             ("INSERT INTO ir_config_parameter VALUES ('ebay.custom_refresh_token','inert-reintroduced-key')", ()),
+            ("UPDATE ir_mail_server SET smtp_user='inert-returned-user' WHERE NOT active", ()),
+            ("UPDATE ir_mail_server SET smtp_pass='inert-returned-password' WHERE NOT active", ()),
+            ("INSERT INTO mail_push VALUES (9, 9, 'inert-returned-push')", ()),
             ("UPDATE ir_cron SET active=TRUE WHERE id=1", ()),
             ("UPDATE shopify_sync SET state='queued' WHERE id=1", ()),
             ("UPDATE ir_mail_server SET smtp_host='smtp.example.invalid' WHERE active", ()),
@@ -2473,10 +2479,22 @@ class CredentialBoundaryTests(unittest.TestCase):
 
     def test_isolated_readback_rejects_row_filtering(self) -> None:
         self.prepare_migration_copy()
+        for relation in ("ir_config_parameter", "mail_push"):
+            with self.subTest(relation=relation):
+                observer = self.connection("fixture")
+                observer.database.create_function("row_security_active", 1, lambda name, target=relation: name == target)
+                with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
+                    self.runner.verify_isolated_copy_before_registry(database_connection=observer)
+
+    def test_isolated_readback_preserves_fenced_pending_business_mail(self) -> None:
+        with closing(sqlite3.connect(self.path)) as writer, writer:
+            writer.execute("CREATE TABLE mail_mail (id INTEGER PRIMARY KEY, state TEXT, body TEXT)")
+            writer.execute("INSERT INTO mail_mail VALUES (1, 'outgoing', 'pending-business-message')")
+            expected = writer.execute("SELECT * FROM mail_mail").fetchall()
+        self.prepare_migration_copy()
         observer = self.connection("fixture")
-        observer.database.create_function("row_security_active", 1, lambda name: name == "ir_config_parameter")
-        with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
-            self.runner.verify_isolated_copy_before_registry(database_connection=observer)
+        self.runner.verify_isolated_copy_before_registry(database_connection=observer)
+        self.assertEqual(observer.database.execute("SELECT * FROM mail_mail").fetchall(), expected)
 
     def test_isolated_readback_rejects_hidden_credential_columns(self) -> None:
         self.prepare_migration_copy()
