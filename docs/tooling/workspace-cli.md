@@ -815,7 +815,27 @@ A source caller loading an already restored database can use the SQL-only API:
 runner.prepare_isolated_copy_before_registry(purpose="migration")
 ```
 
-The method requires `migration` purpose and commits and independently reads
+An SQL-only stage check reuses that final prepared runner and its existing
+connection:
+
+```python
+runner.verify_isolated_copy_before_registry(database_connection=connection)
+```
+
+This readback performs only reads on the supplied connection. It neither
+prepares the copy nor opens a connection, starts Odoo, commits or rolls back.
+The runner must retain its successful current migration preparation pass;
+a fresh runner, failed later preparation, changed transaction witness, kept
+integration or service key refuses. The same readback is used by preparation's
+independent observer. It checks credential rotation/clearing, outgoing and
+incoming mail, cron and copied runnable Shopify jobs, while preserving channel
+identities, cursors and pending export intent. Missing optional addon tables
+remain supported. Present credential surfaces must be fully readable without
+active PostgreSQL row filtering; inaccessible columns or missing required
+core tables fail rather than appearing empty. The caller retains its existing
+database/stage identity, writer exclusion and transaction ownership checks.
+
+Preparation requires `migration` purpose and commits and independently reads
 back the same boundary before returning. Missing or unsupported purpose refuses
 this isolated-copy API; ordinary runtime maintenance and accepted production
 restores keep their existing path without that setting. The method exports the
