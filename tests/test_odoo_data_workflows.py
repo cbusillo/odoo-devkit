@@ -795,6 +795,8 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
     def test_isolated_upgrade_and_module_commands_prepare_before_starting_odoo(self) -> None:
         settings = self._local_settings()
         settings.openupgrade_enabled = True
+        settings.openupgrade_target_version = "20.0"
+        settings.install_modules = "replacement"
         settings.copy_purpose = "migration"
         runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
         metadata = MagicMock()
@@ -844,6 +846,38 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
                 with self.assertRaises(odoo_data_workflows.OdooRestorerError):
                     runner.run_openupgrade()
                 run_command.assert_called_once()
+
+    def test_native_20_selects_only_declared_initial_installs_alongside_update_all(self) -> None:
+        for target, runtime in (("20.0", "19.0"), (None, "20.0")):
+            for declaration, modules in (
+                (" replacement_one, replacement_two ", ["replacement_one", "replacement_two"]),
+                ("replacement_one: replacement_two", ["replacement_one", "replacement_two"]),
+                ("replacement; echo 'literal'", ["replacement; echo 'literal'"]),
+                (None, []),
+                ("", []),
+                ("  ", []),
+                ("AUTO", []),
+                ("auto", []),
+            ):
+                with self.subTest(target=target, runtime=runtime, declaration=declaration):
+                    settings = self._local_settings()
+                    settings.openupgrade_enabled = True
+                    settings.openupgrade_target_version = target
+                    settings.odoo_version = runtime
+                    settings.install_modules = declaration
+                    runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
+                    with (
+                        patch.object(runner, "_resolve_openupgrade_assets", return_value=([Path("/scripts")], None)),
+                        patch.object(runner, "run_command") as execute,
+                    ):
+                        runner.run_openupgrade()
+                    execute.assert_called_once()
+                    command = shlex.split(execute.call_args.args[0])
+                    if modules:
+                        self.assertEqual(command[command.index("--init") + 1].split(","), modules)
+                    else:
+                        self.assertNotIn("--init", command)
+                    self.assertEqual(command[command.index("--update") + 1], "all")
 
     def test_openupgrade_releases_cached_connection_before_odoo_command(self) -> None:
         settings = self._local_settings()
