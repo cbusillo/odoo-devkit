@@ -753,6 +753,31 @@ Notes
   any bridge write. Replay is unchanged. Each owning module's later native update
   owns its full target architecture and validation; this step does not migrate
   bank or partner data.
+  Installed Calendar also admits exactly its two stock 19 users/privacy
+  extensions before any bridge write. Their complete current architectures,
+  parents, aliases and populated scalar state must qualify; translations,
+  custom edits, previous custom architectures, restrictions, children and
+  dashboard customizations refuse. The bridge preserves the admitted stock
+  18/19 previous architectures and all other columns, replacing only `arch_db`
+  with an empty inheritance spec. Native 20 then loads its own calendar-management
+  UI and owns removal of the retired preference XMLID through normal module
+  cleanup. No view family is deleted or deactivated by the bridge.
+  The shared `docker/scripts/legacy/calendar/res_users_views_19.xml` is the
+  exact static source from the qualified 19 image; the 18 file is the official
+  [stock history source](https://github.com/odoo/odoo/blob/68d580d3d4703e7190055f7040682942d5f1a24f/addons/calendar/views/res_users_views.xml).
+  These are admission inputs, never target UI templates. Qualification and
+  source bindings are recorded on [Calendar transition #332](https://github.com/cbusillo/odoo-devkit/issues/332).
+  Every effective saved user privacy must equal the global native fallback
+  (`public` when the parameter is absent); divergent preferences or ambiguous
+  settings owners refuse before effects. User settings remain unchanged. This
+  bounded crossing requires absent new calendar ownership tables, empty events
+  and recurrences, and no references to the removed preference in other views,
+  rule domains, window contexts/domains, server code or saved filters. It does
+  not claim absence of every possible dynamic reference. Native 20's calendar
+  initializer is an install hook, so source admission alone proves neither
+  calendar creation during an upgrade nor registry/privacy behavior. Those
+  remain part of the owning migration's actual-data qualification. Preparation
+  can replay before native loading; completed major-20 crossings are untouched.
   Before native Discuss initializes its unique direct-chat audience, the same
   preflight checks every duplicate audience and every stored channel/member
   column. Only redundant empty partner chats with default state and matching
