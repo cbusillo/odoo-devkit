@@ -1,6 +1,7 @@
 import csv
 import json
 import logging
+from datetime import datetime
 from importlib import import_module
 from math import isfinite
 from pathlib import Path
@@ -207,6 +208,12 @@ def _check_chat_state(cr: Any, group: list[DirectChat]) -> None:
     for channel in group:
         if channel.values["name"] not in generated_names or not channel.values["active"]:
             raise RuntimeError("Customized duplicate direct chat name or visibility")
+        created = channel.values.get("create_date")
+        projections = (
+            {"livechat_start_hour": (None, created.hour), "livechat_week_day": (None, str(created.weekday()))}
+            if isinstance(created, datetime) and created.tzinfo is None
+            else {}
+        )
         _require_empty(
             channel.values,
             {"id", "name", "uuid", "create_uid", "write_uid", "create_date", "write_date", "last_interest_dt"},
@@ -217,9 +224,9 @@ def _check_chat_state(cr: Any, group: list[DirectChat]) -> None:
                 "livechat_active": (None, False),
                 "rating_last_value": (None, 0),
                 "livechat_is_escalated": (None, False),
-                "livechat_start_hour": (None, 0),
                 "has_crm_lead": (None, False),
                 "is_pending_chat_request": (None, False),
+                **projections,
             },
         )
         for member in channel.members:

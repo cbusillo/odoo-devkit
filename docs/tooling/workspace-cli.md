@@ -644,7 +644,11 @@ Notes
   sidebar visibility qualify. Current partner names must explain their generated
   chat names; read state, customization, history,
   aliases or incoming references refuse before any bridge write. Unknown populated
-  columns, physical references without foreign keys, materialized reference
+  columns refuse. The stored livechat weekday and start hour may be populated only
+  when they match the native projections of that chat's UTC creation date; NULL
+  values remain supported before computation. Livechat configuration, help state,
+  history, notes, ratings and relations retain their state and reference guards.
+  Physical references without foreign keys, materialized reference
   storage, company-dependent
   references, and custom deletion triggers also refuse. The reference scan covers
   channel and member foreign keys, indirect model references, field defaults,

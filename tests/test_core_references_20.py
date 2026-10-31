@@ -5,6 +5,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -37,7 +38,11 @@ class Cursor:
     def fetchall(self) -> list[tuple]:
         return [
             tuple(
-                json.loads(value) if column[0] == "arch_db" else value
+                json.loads(value)
+                if column[0] == "arch_db"
+                else datetime.fromisoformat(value)
+                if column[0] == "create_date" and value is not None
+                else value
                 for column, value in zip(self.cursor.description, row, strict=True)
             )
             for row in self.cursor.fetchall()
@@ -425,8 +430,77 @@ class EmptyChatFixture(CoreReferenceFixture):
         tables = [row[0] for row in self.connection.execute("SELECT name FROM sqlite_master WHERE type='table'")]
         return {table: self.connection.execute('SELECT * FROM "' + table + '" ORDER BY rowid').fetchall() for table in tables}
 
+    def livechat_projections(self) -> None:
+        self.connection.executescript(
+            "ALTER TABLE discuss_channel ADD COLUMN livechat_week_day TEXT;"
+            "ALTER TABLE discuss_channel ADD COLUMN livechat_start_hour REAL;"
+            "UPDATE discuss_channel SET create_date='2025-01-01T10:37:59',livechat_week_day='2',livechat_start_hour=10 WHERE id=41;"
+            "UPDATE discuss_channel SET create_date='2025-01-05T00:01:00',livechat_week_day='6',livechat_start_hour=0 WHERE id=42;"
+        )
+
 
 class EmptyChatTests(EmptyChatFixture):
+    def test_creation_projections_preserve_survivor_and_replay(self) -> None:
+        self.livechat_projections()
+        self.test_retains_survivor_and_audience_unchanged_and_replays()
+
+    def test_mismatched_creation_projections_refuse_before_every_effect(self) -> None:
+        self.livechat_projections()
+        for change in (
+            "UPDATE discuss_channel SET livechat_week_day='3' WHERE id=41",
+            "UPDATE discuss_channel SET livechat_week_day='7' WHERE id=42",
+            "UPDATE discuss_channel SET livechat_start_hour=0 WHERE id=41",
+            "UPDATE discuss_channel SET livechat_start_hour=0.5 WHERE id=42",
+            "UPDATE discuss_channel SET livechat_start_hour=24 WHERE id=42",
+            "UPDATE discuss_channel SET create_date=NULL WHERE id=42",
+        ):
+            with self.subTest(change=change):
+                self.connection.execute("SAVEPOINT projection")
+                self.connection.execute(change)
+                before = self.all_rows()
+                with self.assertRaises(RuntimeError):
+                    self.apply()
+                self.assertEqual(self.all_rows(), before)
+                self.connection.execute("ROLLBACK TO projection")
+                self.connection.execute("RELEASE projection")
+
+    def test_livechat_configuration_and_history_refuse_with_valid_projections(self) -> None:
+        self.livechat_projections()
+        for name, sql_type, value in (
+            ("livechat_channel_id", "INTEGER", 9),
+            ("livechat_operator_id", "INTEGER", 9),
+            ("chatbot_current_step_id", "INTEGER", 9),
+            ("livechat_active", "BOOLEAN", True),
+            ("livechat_visitor_id", "INTEGER", 9),
+            ("livechat_lang_id", "INTEGER", 9),
+            ("livechat_agent_requesting_help_history", "INTEGER", 9),
+            ("livechat_agent_providing_help_history", "INTEGER", 9),
+            ("livechat_status", "TEXT", "need_help"),
+            ("livechat_looking_for_help_since_dt", "TEXT", "2025-01-01T11:00:00"),
+            ("livechat_outcome", "TEXT", "no_failure"),
+            ("livechat_failure", "TEXT", "no_failure"),
+            ("livechat_note", "TEXT", "Retain this note"),
+            ("livechat_rating", "TEXT", "3"),
+            ("livechat_is_escalated", "BOOLEAN", True),
+            ("livechat_end_dt", "TEXT", "2025-01-01T11:00:00"),
+        ):
+            with self.subTest(field=name):
+                self.connection.execute("SAVEPOINT livechat")
+                self.connection.execute("ALTER TABLE discuss_channel ADD COLUMN " + name + " " + sql_type)
+                if sql_type == "BOOLEAN":
+                    self.connection.execute("UPDATE discuss_channel SET " + name + "=0")
+                self.connection.execute("SAVEPOINT default_state")
+                self.apply()
+                self.connection.execute("ROLLBACK TO default_state")
+                self.connection.execute("RELEASE default_state")
+                self.connection.execute("UPDATE discuss_channel SET " + name + "=? WHERE id=42", (value,))
+                before = self.all_rows()
+                with self.assertRaises(RuntimeError):
+                    self.apply()
+                self.assertEqual(self.all_rows(), before)
+                self.connection.execute("ROLLBACK TO livechat")
+                self.connection.execute("RELEASE livechat")
+
     def test_retains_survivor_and_audience_unchanged_and_replays(self) -> None:
         before = self.all_rows()
         self.apply()
@@ -439,6 +513,7 @@ class EmptyChatTests(EmptyChatFixture):
         self.assertEqual(self.all_rows(), after)
 
     def test_reference_and_state_refusals_precede_every_bridge_effect(self) -> None:
+        self.livechat_projections()
         changes = (
             "INSERT INTO mail_message VALUES (1,'discuss.channel',42,'history')",
             "INSERT INTO mail_message VALUES (1,'discuss.channel',41,'survivor history')",
