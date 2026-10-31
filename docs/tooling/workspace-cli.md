@@ -638,6 +638,27 @@ Notes
   any bridge write. Replay is unchanged. Each owning module's later native update
   owns its full target architecture and validation; this step does not migrate
   bank or partner data.
+  Before native Discuss initializes its unique direct-chat audience, the same
+  preflight checks every duplicate audience and every stored channel/member
+  column. Only redundant empty partner chats with default state and matching
+  sidebar visibility qualify. Current partner names must explain their generated
+  chat names; read state, customization, history,
+  aliases or incoming references refuse before any bridge write. Unknown populated
+  columns, physical references without foreign keys, materialized reference
+  storage, company-dependent
+  references, and custom deletion triggers also refuse. The reference scan covers
+  channel and member foreign keys, indirect model references, field defaults,
+  aliases, exact stored Reference values and JSON references. JSON Properties
+  definitions naming either Discuss model refuse as unsupported storage. The scan
+  reads physical base tables; ordinary views and inline-query reports hold no
+  rows of their own. Relational metadata checks physical columns without guessing
+  a table name from its model; uncertain matches without foreign keys refuse. Pinning is compared by
+  the native visible-state rule, without comparing application and database clocks. After all candidates pass, the lowest
+  channel ID survives unchanged and the redundant chats and their members retire.
+  Their old links stop resolving, as permitted by Director decision Q1113; this
+  creates no redirects or general chat-merging path. Replay leaves the survivor
+  unchanged. A historical partner rename or unqualified stored state can therefore
+  require further source investigation rather than automatic retirement.
   Same-major 20 updates do nothing in this bridge. Its qualification ends at
   the reference/base-data boundary; security conversion, later cleanup,
   tenant hooks and a completed major-version migration need their own proof.
