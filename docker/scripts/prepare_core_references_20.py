@@ -251,8 +251,38 @@ def _check_chat_state(cr: Any, group: list[DirectChat]) -> None:
         raise RuntimeError("Duplicate direct chats have different sidebar state")
 
 
+def _check_encoded_relations(cr: Any, table: str, column: str, targets: dict[str, list[int]], known_models: set[str]) -> None:
+    references = {f"{model},{record}" for model, records in targets.items() for record in records}
+    ambiguous = set(targets) | references | {str(record) for records in targets.values() for record in records}
+    _identified(cr, "SELECT %s FROM %s WHERE %s IS NOT NULL", (column, table, column))
+    while row := cr.fetchone():
+        try:
+            value = json.loads(row[0])
+        except (ValueError, TypeError) as error:
+            raise RuntimeError(f"Unsupported core transition reference encoding: {table}.{column}") from error
+        if (
+            not isinstance(value, list)
+            or len(value) not in {2, 3, 4}
+            or not isinstance(value[0], str)
+            or not value[0]
+            or not isinstance(value[1], str)
+        ):
+            raise RuntimeError(f"Unsupported core transition reference encoding: {table}.{column}")
+        model = value[1]
+        topics = (value[0], *(value[1:] if len(value) == 2 else value[3:]))
+        if any(isinstance(topic, str) and topic in ambiguous for topic in topics):
+            raise RuntimeError(f"Ambiguous core transition reference: {table}.{column}")
+        if len(value) == 2:
+            continue
+        if model not in known_models or type(value[2]) is not int or (len(value) == 4 and not isinstance(value[3], str)):
+            raise RuntimeError(f"Unsupported core transition reference encoding: {table}.{column}")
+        if model in targets and value[2] in targets[model]:
+            raise RuntimeError(f"Referenced core transition row: {table}.{column}")
+
+
 def _check_references(cr: Any, ids: dict[str, list[int]], internal_relations: set[tuple[str, str, str]]) -> None:
-    models = [table.replace("_", ".") for table in ids]
+    model_targets = {table.replace("_", "."): records for table, records in ids.items()}
+    models = list(model_targets)
     cr.execute(
         "SELECT source_ns.nspname, source.relname, source_col.attname, target.relname, target_col.attname, "
         "cardinality(fk.conkey) FROM pg_constraint fk "
@@ -294,8 +324,10 @@ def _check_references(cr: Any, ids: dict[str, list[int]], internal_relations: se
     )
     if cr.fetchone():
         raise RuntimeError("Unsupported company-dependent core transition reference")
-    _identified(cr, "SELECT id, model FROM ir_model WHERE model = ANY(%s)", (), (models,))
-    model_ids = {model: model_id for model_id, model in cr.fetchall()}
+    cr.execute("SELECT id, model FROM ir_model")
+    model_metadata = {model: model_id for model_id, model in cr.fetchall()}
+    known_models = set(model_metadata)
+    model_ids = {model: model_metadata[model] for model in models if model in model_metadata}
     if set(model_ids) != set(models):
         raise RuntimeError("Missing core transition model metadata")
     cr.execute(
@@ -347,16 +379,20 @@ def _check_references(cr: Any, ids: dict[str, list[int]], internal_relations: se
     json_targets = json.dumps({"targets": [*model_ids, *references]})
     for table, fields in columns.items():
         for column, data_type in fields:
+            text_storage = data_type in {"text", "character varying", "character"}
             if (table, column) not in foreign_columns:
                 for owner, targets in relational_columns.get(column, ()):
                     if owner is not None and owner != table:
+                        continue
+                    if owner is None and text_storage:
+                        _check_encoded_relations(cr, table, column, model_targets, known_models)
                         continue
                     if data_type not in {"smallint", "integer", "bigint"}:
                         raise RuntimeError(f"Unsupported core transition reference column type: {table}.{column}")
                     _identified(cr, "SELECT 1 FROM %s WHERE %s = ANY(%s) LIMIT 1", (table, column), (targets,))
                     if cr.fetchone():
                         raise RuntimeError(f"Unsupported FK-less core transition reference: {table}.{column}")
-            if data_type in {"text", "character varying", "character"}:
+            if text_storage:
                 _identified(cr, "SELECT 1 FROM %s WHERE %s = ANY(%s) LIMIT 1", (table, column), (references,))
                 if cr.fetchone():
                     raise RuntimeError(f"Referenced core transition row: {table}.{column}")
@@ -380,9 +416,7 @@ def _check_references(cr: Any, ids: dict[str, list[int]], internal_relations: se
                     "WHERE value.key = ANY(%s) AND value.value = %s)) LIMIT 1",
                     (table, column),
                     (
-                        [str(record) for record in ids[model.replace(".", "_")]]
-                        if data_type in {"text", "character varying", "character"}
-                        else ids[model.replace(".", "_")],
+                        [str(record) for record in ids[model.replace(".", "_")]] if text_storage else ids[model.replace(".", "_")],
                         model,
                         list(model_columns.get(table, ())),
                         str(model_id),

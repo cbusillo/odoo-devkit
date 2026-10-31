@@ -684,6 +684,67 @@ class EmptyChatTests(EmptyChatFixture):
             self.apply()
         self.assertEqual(self.all_rows(), before)
 
+    def test_same_name_text_storage_checks_values_without_claiming_ownership(self) -> None:
+        self.connection.executescript(
+            "CREATE TABLE notification_history (channel INTEGER REFERENCES discuss_channel(id));"
+            "CREATE TABLE unrelated_owner (channel TEXT);"
+            "INSERT INTO ir_model_fields(name,ttype,store,relation,model) "
+            "VALUES ('channel','many2one',1,'discuss.channel','notification.history');"
+            "INSERT INTO ir_model VALUES (700,'res.users');"
+        )
+        for value in (
+            '["synthetic","res.users",42]',
+            '["synthetic","res.users",53,"update"]',
+            '["synthetic","discuss.channel",999]',
+            '["synthetic","discuss.channel.member",999,"update"]',
+            '["synthetic","named-topic"]',
+        ):
+            with self.subTest(value=value):
+                self.connection.execute("SAVEPOINT unrelated")
+                self.connection.execute("INSERT INTO unrelated_owner VALUES (?)", (value,))
+                try:
+                    self.test_retains_survivor_and_audience_unchanged_and_replays()
+                finally:
+                    self.connection.execute("ROLLBACK TO unrelated")
+                    self.connection.execute("RELEASE unrelated")
+        self.connection.execute('INSERT INTO unrelated_owner VALUES (\'["synthetic","res.users",42]\')')
+        for table, value in (
+            ("notification_history", 42),
+            ("unrelated_owner", "42"),
+            ("unrelated_owner", "discuss.channel,42"),
+            ("unrelated_owner", '["synthetic","discuss.channel",42]'),
+            ("unrelated_owner", '["synthetic","discuss.channel.member",53,"update"]'),
+            ("unrelated_owner", '{"nested":{"reference":"discuss.channel,42"}}'),
+            ("unrelated_owner", "unrelated text"),
+            ("unrelated_owner", "41,42"),
+            ("unrelated_owner", "042"),
+            ("unrelated_owner", "discuss.channel, 42"),
+            ("unrelated_owner", "[42]"),
+            ("unrelated_owner", '{"channel_id":42}'),
+            ("unrelated_owner", '["synthetic","unknown.model",999]'),
+            ("unrelated_owner", '["synthetic","discuss.channel",42'),
+            ("unrelated_owner", '["synthetic","discuss.channel,42"]'),
+            ("unrelated_owner", '["synthetic","discuss.channel"]'),
+            ("unrelated_owner", '["synthetic","res.users",999,"discuss.channel,42"]'),
+            ("unrelated_owner", '["discuss.channel","42"]'),
+            ("unrelated_owner", '["discuss.channel","res.users",5]'),
+            ("unrelated_owner", '["synthetic","42"]'),
+            ("unrelated_owner", '["synthetic","res.users",999,"42"]'),
+            ("unrelated_owner", '["discuss.channel,42","res.users",999]'),
+            ("unrelated_owner", '"\\u0000"'),
+        ):
+            with self.subTest(table=table, value=value):
+                self.connection.execute("SAVEPOINT referenced")
+                self.connection.execute("INSERT INTO " + table + " VALUES (?)", (value,))
+                try:
+                    before = self.all_rows()
+                    with self.assertRaises(RuntimeError):
+                        self.apply()
+                    self.assertEqual(self.all_rows(), before)
+                finally:
+                    self.connection.execute("ROLLBACK TO referenced")
+                    self.connection.execute("RELEASE referenced")
+
 
 class LunchTests(EmptyChatFixture):
     def setUp(self) -> None:
