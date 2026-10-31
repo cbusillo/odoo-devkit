@@ -152,6 +152,13 @@ class CoreReferenceFixture(unittest.TestCase):
 
 
 class CoreReferenceTests(CoreReferenceFixture):
+    def test_calendar_preferences_require_qualification_before_every_bridge_effect(self) -> None:
+        self.connection.execute("INSERT INTO ir_module_module VALUES ('calendar','installed','19.0.1.0')")
+        before = self.snapshot()
+        with self.assertRaises(RuntimeError):
+            self.apply()
+        self.assertEqual(self.snapshot(), before)
+
     def test_mail_family_refusal_precedes_every_bridge_effect(self) -> None:
         before = self.snapshot()
         with patch.object(bridge, "_admit_mail", side_effect=RuntimeError("custom Mail family")), self.assertRaises(RuntimeError):
