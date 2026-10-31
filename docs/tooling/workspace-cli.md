@@ -659,6 +659,19 @@ Notes
   creates no redirects or general chat-merging path. Replay leaves the survivor
   unchanged. A historical partner rename or unqualified stored state can therefore
   require further source investigation rather than automatic retirement.
+  For installed Resource, the same preflight recognizes legacy nonworking lunch
+  rows before native recomputation. Only zero-duration breaks on single-week,
+  undated calendars without sections or resource-specific intervals qualify.
+  Within calendars containing lunch rows, overlaps with work (including native
+  full-day work), unsupported periods or clock ranges, and populated custom
+  break fields refuse. Calendars without lunch rows stay outside this treatment. The shared reference checks also cover attendance
+  foreign keys, indirect and Reference links, XMLIDs, defaults, JSON/Properties,
+  physical relations without foreign keys, materialized storage and deletion
+  triggers. Referenced breaks refuse rather than losing their links. After the
+  whole bridge passes preflight, only the qualified break rows are removed;
+  work intervals and stored calendar totals stay unchanged, so native 20 keeps
+  the nonworking gap. Replay has no remaining lunch rows to change. This does
+  not split overlapping work or translate two-week, section or date semantics.
   Same-major 20 updates do nothing in this bridge. Its qualification ends at
   the reference/base-data boundary; security conversion, later cleanup,
   tenant hooks and a completed major-version migration need their own proof.
