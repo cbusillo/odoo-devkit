@@ -616,11 +616,25 @@ Notes
   retain their existing OpenUpgrade selection. Native 20 rejects
   `--reset-versions` before asset discovery or database access; run it without
   that flag to preserve the installed versions.
+  Before native security data loads, the bridge releases registered modules'
+  legacy `ir.model.access` and `ir.rule` XMLID names using the
+  [upstream-derived transition already used by OPW](https://github.com/hbrunn/OpenUpgrade/blob/2d9eb6bab7e7e579953e38d7ad3b96aad6fcc44d/openupgrade_scripts/scripts/base/20.0.1.3/pre-migration.py).
+  It appends the legacy model suffix, retaining each alias's ID, record binding,
+  ownership and `noupdate`. Custom/export/Studio aliases, aliases without a registered
+  module owner and all legacy policy rows remain untouched. Already released
+  names and native `ir.access` bindings survive replay unchanged. Any destination
+  collision refuses during the shared preflight, before any bridge effect.
+  Native 20 loads its own stock defaults; this step neither converts legacy
+  rights nor settles own-addon or data-only policy disposition.
+  The legacy model suffix is reserved for released names; an original alias
+  already using it needs product-owned disposition before native loading.
+  When adopting the shared step, remove the equivalent tenant pre-migration
+  rename so the later native module migration cannot append the suffix again.
   The bridge resolves `base.state_in_or` from the source database and adds
   `base.state_in_od` on that same state row, checking the running target's
   own state CSV and the source country binding. With an installed Website,
   it also binds `base.default_website` to the existing
-  `website.default_website` row. Source aliases, other owners, record data
+  `website.default_website` row. Those source aliases, other owners, record data
   and incoming links are untouched. Replay keeps existing target metadata;
   missing, dangling, conflicting or unsupported custom identities refuse
   before either alias is inserted. An updateable custom state name refuses
@@ -672,6 +686,8 @@ Notes
   For installed Resource, the same preflight recognizes legacy nonworking lunch
   rows before native recomputation. Only zero-duration breaks on single-week,
   undated calendars without sections or resource-specific intervals qualify.
+  The optional `two_weeks_calendar` flag may be false or SQL NULL, which Odoo
+  reads as false; true still refuses. This does not default other NULL fields.
   Within calendars containing lunch rows, overlaps with work (including native
   full-day work), unsupported periods or clock ranges, and populated custom
   break fields refuse. Calendars without lunch rows stay outside this treatment. The shared reference checks also cover attendance
