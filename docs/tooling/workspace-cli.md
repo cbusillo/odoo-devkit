@@ -672,6 +672,8 @@ Notes
   For installed Resource, the same preflight recognizes legacy nonworking lunch
   rows before native recomputation. Only zero-duration breaks on single-week,
   undated calendars without sections or resource-specific intervals qualify.
+  The optional `two_weeks_calendar` flag may be false or SQL NULL, which Odoo
+  reads as false; true still refuses. This does not default other NULL fields.
   Within calendars containing lunch rows, overlaps with work (including native
   full-day work), unsupported periods or clock ranges, and populated custom
   break fields refuse. Calendars without lunch rows stay outside this treatment. The shared reference checks also cover attendance

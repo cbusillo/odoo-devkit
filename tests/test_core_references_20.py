@@ -756,7 +756,7 @@ class LunchTests(EmptyChatFixture):
             "display_type TEXT, week_type TEXT, date_from TEXT, date_to TEXT, resource_id INTEGER, custom_value TEXT);"
             "INSERT INTO ir_module_module VALUES ('resource','installed','19.0');"
             "INSERT INTO ir_model VALUES (703,'resource.calendar.attendance');"
-            "INSERT INTO resource_calendar VALUES (61,0,40);"
+            "INSERT INTO resource_calendar VALUES (61,NULL,40);"
             "INSERT INTO resource_calendar_attendance(id,calendar_id,name,dayofweek,hour_from,hour_to,day_period,duration_hours,duration_days) "
             "VALUES (81,61,'Morning','0',8,12,'morning',4,0.5),"
             "(82,61,'Break','0',12,13,'lunch',0,0),(83,61,'Afternoon','0',13,17,'afternoon',4,0.5);"
@@ -786,6 +786,10 @@ class LunchTests(EmptyChatFixture):
             "INSERT INTO resource_calendar_attendance(id,calendar_id,name,display_type,week_type) "
             "VALUES (84,62,'Other week','line_section','1');"
         )
+        self.assert_gap_preserved()
+
+    def test_explicit_single_week_preserves_gap(self) -> None:
+        self.connection.execute("UPDATE resource_calendar SET two_weeks_calendar=0")
         self.assert_gap_preserved()
 
     def test_unsupported_calendar_and_lunch_state_refuse_before_all_effects(self) -> None:
