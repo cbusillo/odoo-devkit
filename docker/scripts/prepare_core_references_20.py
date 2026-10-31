@@ -621,6 +621,128 @@ def _admit_mail(cr: Any) -> None:
     helpers["admit_before_effects"](cr, target)
 
 
+def _calendar_stock_views(series: str) -> dict[str, dict[str, ElementTree.Element]]:
+    source = Path(__file__).with_name("legacy") / "calendar" / f"res_users_views_{series}.xml"
+    return {
+        record.attrib["id"]: {field.attrib["name"]: field for field in record.findall("field")}
+        for record in ElementTree.parse(source).findall("./data/record")
+    }
+
+
+def _check_calendar_privacy(cr: Any) -> None:
+    cr.execute("SELECT to_regclass('calendar_calendar'), to_regclass('calendar_user')")
+    if cr.fetchone() != (None, None):
+        raise RuntimeError("Calendar ownership already exists; qualify this crossing separately")
+    cr.execute("SELECT value FROM ir_config_parameter WHERE key = 'calendar.default_privacy' FOR UPDATE")
+    defaults = cr.fetchall()
+    if len(defaults) > 1:
+        raise RuntimeError("Ambiguous Calendar global privacy")
+    fallback = defaults[0][0] if defaults else "public"
+    if fallback not in {"public", "private", "confidential"}:
+        raise RuntimeError("Unsupported Calendar global privacy")
+    cr.execute("SELECT user_id, calendar_default_privacy FROM res_users_settings ORDER BY id FOR UPDATE")
+    settings = cr.fetchall()
+    cr.execute("SELECT id FROM res_users FOR UPDATE")
+    users = {row[0] for row in cr.fetchall()}
+    owners = [row[0] for row in settings]
+    if len(owners) != len(set(owners)) or not set(owners) <= users:
+        raise RuntimeError("Ambiguous Calendar preference owners")
+    if any((privacy or fallback) != fallback for _, privacy in settings):
+        raise RuntimeError("Preserve divergent Calendar privacy before native calendar creation")
+    cr.execute("SELECT 1 FROM calendar_event LIMIT 1")
+    if cr.fetchone():
+        raise RuntimeError("Populated Calendar events require a qualified ownership transition")
+    cr.execute("SELECT 1 FROM calendar_recurrence LIMIT 1")
+    if cr.fetchone():
+        raise RuntimeError("Populated Calendar recurrence requires a qualified ownership transition")
+
+
+def _calendar_view_plan(cr: Any) -> list[int]:
+    cr.execute("SELECT state FROM ir_module_module WHERE name = 'calendar'")
+    installed = cr.fetchone()
+    if installed is None or installed[0] not in {"installed", "to upgrade"}:
+        return []
+    normalize = runpy.run_path(str(Path(__file__).with_name("mail_view_20.py")))["_normalized_architecture"]
+    stock = _calendar_stock_views("19")
+    sources = {name: _require_source(cr, "calendar", name, "ir.ui.view") for name in stock}
+    cr.execute(
+        "LOCK TABLE ir_ui_view, ir_ui_view_custom, ir_ui_view_group_rel, ir_model_data, res_users, res_users_settings, "
+        "ir_config_parameter, calendar_event, calendar_recurrence IN SHARE ROW EXCLUSIVE MODE"
+    )
+    _check_calendar_privacy(cr)
+    previous = _calendar_stock_views("18")
+    changes = []
+    for name, fields in stock.items():
+        source = sources[name]
+        parent_name = fields["inherit_id"].attrib["ref"].removeprefix("base.")
+        parent = _require_source(cr, "base", parent_name, "ir.ui.view")
+        rows = _rows(cr, "SELECT * FROM ir_ui_view WHERE id = %s FOR UPDATE", (source.record_id,))
+        if source.noupdate or parent.noupdate or len(rows) != 1 or rows[0]["inherit_id"] != parent.record_id:
+            raise RuntimeError(f"Unsupported Calendar view ownership or inheritance: {name}")
+        cr.execute("SELECT id FROM ir_ui_view WHERE id = %s FOR UPDATE", (parent.record_id,))
+        if cr.fetchone() is None:
+            raise RuntimeError("Missing Calendar users parent")
+        cr.execute(
+            "SELECT module, name, noupdate FROM ir_model_data WHERE model = 'ir.ui.view' AND res_id = %s", (source.record_id,)
+        )
+        if cr.fetchall() != [("calendar", name, False)]:
+            raise RuntimeError("Customized Calendar view aliases")
+        cr.execute("SELECT 1 FROM ir_ui_view WHERE inherit_id = %s LIMIT 1", (source.record_id,))
+        children = cr.fetchone()
+        cr.execute("SELECT 1 FROM ir_ui_view_custom WHERE ref_id = %s LIMIT 1", (source.record_id,))
+        customizations = cr.fetchone()
+        cr.execute("SELECT 1 FROM ir_ui_view_group_rel WHERE view_id = %s LIMIT 1", (source.record_id,))
+        if children or customizations or cr.fetchone():
+            raise RuntimeError("Preserve dependent, customized or restricted Calendar view")
+        view = rows[0]
+        _require_empty(
+            view,
+            {"id", "inherit_id", "arch_db", "arch_prev", "create_uid", "write_uid", "create_date", "write_date"},
+            {
+                "name": (fields["name"].text,),
+                "model": (fields["model"].text,),
+                "type": ("form",),
+                "mode": ("extension",),
+                "active": (True,),
+                "priority": (16,),
+                "arch_updated": (False,),
+                "arch_fs": ("calendar/views/res_users_views.xml",),
+                "is_seo_optimized": (False,),
+            },
+        )
+        expected = normalize(ElementTree.tostring(fields["arch"][0], encoding="unicode"))
+        old = normalize(ElementTree.tostring(previous[name]["arch"][0], encoding="unicode"))
+        architectures = view["arch_db"]
+        if not isinstance(architectures, dict) or set(architectures) != {"en_US"}:
+            raise RuntimeError("Preserve translated Calendar architecture")
+        try:
+            current = normalize(architectures["en_US"])
+            if view.get("arch_prev") and normalize(view["arch_prev"]) not in {old, expected}:
+                raise RuntimeError("Preserve customized Calendar previous architecture")
+        except (ElementTree.ParseError, TypeError, ValueError) as error:
+            raise RuntimeError("Unsupported Calendar architecture") from error
+        if current == expected:
+            changes.append(source.record_id)
+        elif current != normalize("<data/>"):
+            raise RuntimeError("Preserve customized Calendar architecture")
+    cr.execute(
+        "SELECT 1 FROM ir_ui_view WHERE id NOT IN (%s, %s) AND CAST(arch_db AS TEXT) LIKE %s LIMIT 1",
+        (*[source.record_id for source in sources.values()], "%calendar_default_privacy%"),
+    )
+    if cr.fetchone():
+        raise RuntimeError("Preserve other Calendar preference views")
+    for query in (
+        "SELECT 1 FROM ir_rule WHERE CAST(domain_force AS TEXT) LIKE %s LIMIT 1",
+        "SELECT 1 FROM ir_act_window WHERE CAST(context AS TEXT) LIKE %s OR CAST(domain AS TEXT) LIKE %s LIMIT 1",
+        "SELECT 1 FROM ir_act_server WHERE CAST(code AS TEXT) LIKE %s LIMIT 1",
+        "SELECT 1 FROM ir_filters WHERE CAST(context AS TEXT) LIKE %s OR CAST(domain AS TEXT) LIKE %s LIMIT 1",
+    ):
+        cr.execute(query, ("%calendar_default_privacy%",) * query.count("%s"))
+        if cr.fetchone():
+            raise RuntimeError("Preserve outside Calendar preference references")
+    return changes
+
+
 def migrate(cr: Any, version: str | None) -> None:
     major = (version or "").split(".", 1)[0]
     if major == "20":
@@ -636,7 +758,10 @@ def migrate(cr: Any, version: str | None) -> None:
     lunches = _lunch_plan(cr)
     policies = _policy_xmlid_plan(cr)
     stock_valuation = _stock_valuation_action_plan(cr)
+    calendar_views = _calendar_view_plan(cr)
     _admit_mail(cr)
+    for record_id in calendar_views:
+        cr.execute("UPDATE ir_ui_view SET arch_db = %s::jsonb WHERE id = %s", (json.dumps({"en_US": "<data/>"}), record_id))
     if state_target is None:
         _bind_target(cr, TARGET_STATE, state)
     if website is not None and website_target is None:
