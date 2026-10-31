@@ -626,7 +626,7 @@ class LunchTests(EmptyChatFixture):
             "(82,61,'Break','0',12,13,'lunch',0,0),(83,61,'Afternoon','0',13,17,'afternoon',4,0.5);"
         )
 
-    def test_gap_work_hours_and_other_bridge_transitions_survive_replay(self) -> None:
+    def assert_gap_preserved(self) -> dict[str, list[tuple]]:
         before = self.all_rows()
         self.apply()
         after = self.all_rows()
@@ -634,9 +634,23 @@ class LunchTests(EmptyChatFixture):
             after["resource_calendar_attendance"], [row for row in before["resource_calendar_attendance"] if row[0] != 82]
         )
         self.assertEqual(after["resource_calendar"], before["resource_calendar"])
-        self.assertEqual(after["discuss_channel"], before["discuss_channel"][:1])
+        return after
+
+    def test_gap_work_hours_and_other_bridge_transitions_survive_replay(self) -> None:
+        chats = self.all_rows()["discuss_channel"]
+        after = self.assert_gap_preserved()
+        self.assertEqual(after["discuss_channel"], chats[:1])
         self.apply()
         self.assertEqual(self.all_rows(), after)
+
+    def test_full_day_work_and_unrelated_calendar_are_preserved(self) -> None:
+        self.connection.executescript(
+            "UPDATE resource_calendar_attendance SET day_period='full_day',duration_days=1 WHERE id=81;"
+            "INSERT INTO resource_calendar VALUES (62,1,0);"
+            "INSERT INTO resource_calendar_attendance(id,calendar_id,name,display_type,week_type) "
+            "VALUES (84,62,'Other week','line_section','1');"
+        )
+        self.assert_gap_preserved()
 
     def test_unsupported_calendar_and_lunch_state_refuse_before_all_effects(self) -> None:
         self.connection.execute("DELETE FROM ir_module_module WHERE name='mail'")

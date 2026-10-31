@@ -421,12 +421,14 @@ def _lunch_plan(cr: Any) -> list[int]:
     lunches = [row for row in attendances if row["day_period"] == "lunch"]
     if not lunches:
         return []
+    calendar_ids = {row["calendar_id"] for row in lunches}
+    attendances = [row for row in attendances if row["calendar_id"] in calendar_ids]
     calendars = _rows(cr, "SELECT id, two_weeks_calendar FROM resource_calendar FOR UPDATE")
     single_week = {row["id"] for row in calendars if row["two_weeks_calendar"] is False or row["two_weeks_calendar"] == 0}
     for row in attendances:
         if row["calendar_id"] not in single_week or row["dayofweek"] not in {str(day) for day in range(7)}:
             raise RuntimeError("Unsupported legacy attendance calendar or weekday")
-        if row["day_period"] not in {"morning", "afternoon", "lunch"}:
+        if row["day_period"] not in {"morning", "afternoon", "full_day", "lunch"}:
             raise RuntimeError("Unsupported legacy attendance period")
         if any(row.get(name) is not None for name in ("week_type", "display_type", "date_from", "date_to", "resource_id")):
             raise RuntimeError("Unsupported legacy attendance recurrence, section, dates or resource")

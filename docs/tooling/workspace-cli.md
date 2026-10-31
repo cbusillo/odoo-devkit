@@ -662,8 +662,9 @@ Notes
   For installed Resource, the same preflight recognizes legacy nonworking lunch
   rows before native recomputation. Only zero-duration breaks on single-week,
   undated calendars without sections or resource-specific intervals qualify.
-  Breaks overlapping work, unsupported periods or clock ranges, and populated
-  custom break fields refuse. The shared reference checks also cover attendance
+  Within calendars containing lunch rows, overlaps with work (including native
+  full-day work), unsupported periods or clock ranges, and populated custom
+  break fields refuse. Calendars without lunch rows stay outside this treatment. The shared reference checks also cover attendance
   foreign keys, indirect and Reference links, XMLIDs, defaults, JSON/Properties,
   physical relations without foreign keys, materialized storage and deletion
   triggers. Referenced breaks refuse rather than losing their links. After the
