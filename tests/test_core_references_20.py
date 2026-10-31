@@ -385,7 +385,7 @@ class EmptyChatTests(CoreReferenceFixture):
             "custom_notifications TEXT, mute_until_dt TEXT, fetched_message_id INTEGER, seen_message_id INTEGER, "
             "new_message_separator INTEGER, unpin_dt TEXT, last_interest_dt TEXT, last_seen_dt TEXT, create_date TEXT);"
             "CREATE TABLE ir_model (id INTEGER PRIMARY KEY, model TEXT);"
-            "CREATE TABLE ir_model_fields (name TEXT, ttype TEXT, store BOOLEAN, company_dependent BOOLEAN, relation TEXT, model TEXT, relation_table TEXT, column2 TEXT);"
+            "CREATE TABLE ir_model_fields (name TEXT, ttype TEXT, store BOOLEAN, company_dependent BOOLEAN, relation TEXT, model TEXT, relation_table TEXT, column2 TEXT, column1 TEXT);"
             "CREATE TABLE mail_message (id INTEGER PRIMARY KEY, model TEXT, res_id INTEGER, body TEXT);"
             "CREATE TABLE deletion_triggers (name TEXT);"
             "CREATE TABLE materialized_references (name TEXT);"
@@ -578,6 +578,29 @@ class EmptyChatTests(CoreReferenceFixture):
         self.assertEqual(self.all_rows(), before)
         self.connection.execute("DELETE FROM unusual_owner")
         self.connection.execute("INSERT INTO materialized_references VALUES ('chat_id')")
+        before = self.all_rows()
+        with self.assertRaises(RuntimeError):
+            self.apply()
+        self.assertEqual(self.all_rows(), before)
+
+    def test_owned_many2many_without_fk_and_unsupported_column_type_refuse(self) -> None:
+        self.connection.executescript(
+            "CREATE TABLE owned_groups (chat_id INTEGER, group_id INTEGER);"
+            "INSERT INTO owned_groups VALUES (42,999);"
+            "INSERT INTO ir_model_fields(name,ttype,store,model,relation,relation_table,column1,column2) "
+            "VALUES ('group_ids','many2many',1,'discuss.channel','res.groups','owned_groups','chat_id','group_id');"
+        )
+        before = self.all_rows()
+        with self.assertRaises(RuntimeError):
+            self.apply()
+        self.assertEqual(self.all_rows(), before)
+        self.connection.execute("DELETE FROM owned_groups")
+        self.connection.execute("CREATE TABLE unusual_owner (chat_id TEXT)")
+        self.connection.execute("INSERT INTO unusual_owner VALUES ('42')")
+        self.connection.execute(
+            "INSERT INTO ir_model_fields(name,ttype,store,relation,model) "
+            "VALUES ('chat_id','many2one',1,'discuss.channel','different.table.name')"
+        )
         before = self.all_rows()
         with self.assertRaises(RuntimeError):
             self.apply()

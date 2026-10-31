@@ -299,16 +299,20 @@ def _check_chat_references(cr: Any, groups: list[list[DirectChat]]) -> None:
     for table, column, data_type in cr.fetchall():
         columns.setdefault(table, []).append((column, data_type))
     cr.execute(
-        "SELECT name, ttype, relation, relation_table, column2 FROM ir_model_fields WHERE store "
-        "AND relation IN ('discuss.channel', 'discuss.channel.member') AND ttype IN ('many2one', 'many2many')"
+        "SELECT name, ttype, relation, relation_table, column2, model, column1 FROM ir_model_fields WHERE store AND "
+        "((relation IN ('discuss.channel', 'discuss.channel.member') AND ttype IN ('many2one', 'many2many')) "
+        "OR (model IN ('discuss.channel', 'discuss.channel.member') AND ttype = 'many2many'))"
     )
     relational_columns: dict[str, list[tuple[str | None, list[int]]]] = {}
-    for name, kind, relation, relation_table, target_column in cr.fetchall():
-        if kind == "many2many" and (not relation_table or not target_column):
-            raise RuntimeError("Unsupported direct chat relation metadata")
-        column = target_column if kind == "many2many" else name
-        owner = relation_table if kind == "many2many" else None
-        relational_columns.setdefault(column, []).append((owner, ids[relation.replace(".", "_")]))
+    for name, kind, relation, relation_table, target_column, model, source_column in cr.fetchall():
+        endpoints = ((target_column, relation), (source_column, model)) if kind == "many2many" else ((name, relation),)
+        for column, target in endpoints:
+            if target not in {"discuss.channel", "discuss.channel.member"}:
+                continue
+            if not column or (kind == "many2many" and not relation_table):
+                raise RuntimeError("Unsupported direct chat relation metadata")
+            owner = relation_table if kind == "many2many" else None
+            relational_columns.setdefault(column, []).append((owner, ids[target.replace(".", "_")]))
     cr.execute(
         "SELECT 1 FROM pg_class relation JOIN pg_namespace schema ON schema.oid = relation.relnamespace "
         "JOIN pg_attribute field ON field.attrelid = relation.oid WHERE schema.nspname = 'public' "
@@ -333,6 +337,8 @@ def _check_chat_references(cr: Any, groups: list[list[DirectChat]]) -> None:
                 for owner, targets in relational_columns.get(column, ()):
                     if owner is not None and owner != table:
                         continue
+                    if data_type not in {"smallint", "integer", "bigint"}:
+                        raise RuntimeError(f"Unsupported direct chat reference column type: {table}.{column}")
                     _identified(cr, "SELECT 1 FROM %s WHERE %s = ANY(%s) LIMIT 1", (table, column), (targets,))
                     if cr.fetchone():
                         raise RuntimeError(f"Unsupported FK-less direct chat reference: {table}.{column}")
