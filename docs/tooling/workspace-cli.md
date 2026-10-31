@@ -616,6 +616,96 @@ Notes
   retain their existing OpenUpgrade selection. Native 20 rejects
   `--reset-versions` before asset discovery or database access; run it without
   that flag to preserve the installed versions.
+  Native 20 also selects the packaged `docker/scripts/nativeupgrade` root.
+  Its Mail pre-stage reuses the guarded stock-view conversion from
+  [website227](https://github.com/cbusillo/odoo-tenant-cm-website/issues/227).
+  Before any shared bridge effect, `mail_view_20.py` locks and compares the
+  complete server-action inheritance family against the independent source19
+  reference. The Mail stage rechecks its old version, live binding and complete
+  target architecture before replacing only `arch_db` on the same view. The
+  replacement comes from the digest-bound target20 Mail XML; aliases, previous
+  architecture and write attribution remain unchanged. Unknown, edited,
+  translated, rebound, unowned and `noupdate` inputs refuse.
+  The existing `CM_WEBSITE_MAIL_REFERENCE` and
+  `CM_WEBSITE_MAIL_REFERENCE_SHA256` inputs remain the reference contract for
+  shared consumers. A missing or changed artifact refuses before effects.
+  A source custodian can use `qualify_source_family(profile, source_manifest,
+  manifest_sha256, automation_source)` to add the one stock Base Automation
+  extension without changing the independent reference. The separate immutable
+  source manifest contains `source_image`, `modules`,
+  `base_automation_xml_sha256` and `base_automation_defaults`. Its image must
+  match the independent profile's immutable source image; its complete
+  source-derived module/version closure must preserve every reference component
+  version. Supply the manifest's separately recorded digest, never a manifest
+  derived from candidate rows. `automation_source` is the exact source19
+  `base_automation/views/ir_actions_server_views.xml`; its bytes must match the
+  manifest. Its declared fields and architecture supply the added view.
+  `base_automation_defaults` contains the separately source-qualified common
+  fields: all independent target fields except `name`, `model`, `arch_fs`,
+  `arch_db` and `xmlids`. They match the independent stock Mail stored shape,
+  or the exact independent SMS server-action extension shape when its only
+  common-field difference is the legacy `customize_show=False` versus NULL.
+  The SMS anchor must retain its exact ownership, model, form/extension kind,
+  parent and all other common fields. This qualifies persisted stock storage,
+  not universal creation defaults; no column is ignored or normalized and no
+  candidate row supplies the expected shape: its diagnosis selects between
+  two independently observed stock storage shapes.
+  The profile embeds and revalidates both source artifacts. Artifact hashes
+  prove integrity; the custodian still establishes their source provenance.
+  The candidate's full family
+  and module closure still have to match, including every extension field,
+  alias and locale. Candidate rows never supply stock defaults or architecture.
+  Group restrictions anywhere in the family refuse before effects too.
+  The custodian writes a new immutable profile and binds its digest through the
+  existing inputs. This adds no general view-rebase support or native19 run.
+  Optional stored module versions may remain NULL in that exact source closure;
+  every independently referenced component still needs its matching version.
+  This is input metadata, not a stock-view default derived from candidate rows.
+  The website's existing `history.source_contract.modules` binding is also
+  accepted with exact closure/component and whole-family checks. Its separate
+  target-module/reference completeness checks remain in its conversion
+  preflight. The shared stage checks the binding, not its original provenance.
+  If both closure bindings are present, they must agree exactly. Build an
+  OPW-specific profile from the retained independent reference without unrelated
+  website history; do not silently discard a website binding inside the helper.
+
+  From the artifact's `/venv/bin/python`, qualify an already retained independent
+  stock reference without starting Odoo19:
+
+  ```python
+  import hashlib
+  import json
+  import runpy
+  from pathlib import Path
+
+  helpers = runpy.run_path("/volumes/scripts/mail_view_20.py")
+  profile = json.loads(Path("/workspace/independent-reference.json").read_bytes())
+  qualified = helpers["qualify_source_family"](
+      profile,
+      Path("/workspace/source-closure.json"),
+      Path("/workspace/source-closure.sha256").read_text().strip(),
+      Path("/workspace/source19/base_automation/views/ir_actions_server_views.xml"),
+  )
+  payload = json.dumps(qualified, sort_keys=True, indent=2).encode() + b"\n"
+  with Path("/workspace/qualified-reference.json").open("xb") as output:
+      output.write(payload)
+  print(hashlib.sha256(payload).hexdigest())
+  ```
+
+  Copy that qualified file into the job through the existing heavy manifest
+  `copies` input and set its job-container `environment` entries
+  `CM_WEBSITE_MAIL_REFERENCE=/workspace/qualified-reference.json` and
+  `CM_WEBSITE_MAIL_REFERENCE_SHA256` to the recorded digest before invoking the
+  existing data workflow. These inherited names are the shared contract for
+  OPW too. The saved independent profile, complete source manifest and its
+  separately supplied digest must be qualified by their custodian before this
+  command; hashing does not establish provenance. A missing independent input
+  remains a source-qualification task, never a new native19 behavior run.
+  When adopting the shared stage, remove the equivalent tenant-owned Mail
+  execution pre-stage so only `mail_view_20.py` performs the transition;
+  retain tenant-specific reference/completeness helpers. Selecting both
+  execution stages would attempt the same transition twice. Other tenant upgrade
+  roots remain selected.
   Before native security data loads, the bridge releases registered modules'
   legacy `ir.model.access` and `ir.rule` XMLID names using the
   [upstream-derived transition already used by OPW](https://github.com/hbrunn/OpenUpgrade/blob/2d9eb6bab7e7e579953e38d7ad3b96aad6fcc44d/openupgrade_scripts/scripts/base/20.0.1.3/pre-migration.py).
@@ -630,6 +720,17 @@ Notes
   already using it needs product-owned disposition before native loading.
   When adopting the shared step, remove the equivalent tenant pre-migration
   rename so the later native module migration cannot append the suffix again.
+  For the code-owned stock valuation client action moved from `stock_account`
+  to `account`, the same preflight binds the native target XMLID to the existing
+  action. It preserves the action ID, path and incoming links, then lets native
+  Account data update the report model and context. The old XMLID remains
+  protected against end-of-load cleanup, so both XMLID links stay usable.
+  This is one named ownership handoff, never a merge by matching paths.
+  Conflicting targets, protected originals, extra aliases, ambiguous physical
+  storage, custom fields or context, and edited or translated names refuse
+  before any bridge effects. Preparation replays before native loading; the
+  bridge leaves completed major-20 crossings untouched. The target's own XML
+  supplies its name, tag and path.
   The bridge resolves `base.state_in_or` from the source database and adds
   `base.state_in_od` on that same state row, checking the running target's
   own state CSV and the source country binding. With an installed Website,
