@@ -7,8 +7,6 @@ from typing import Any, NamedTuple
 SOURCE_STATE = "state_in_or"
 TARGET_STATE = "state_in_od"
 STATE_DATA_FILE = Path("/odoo/odoo/addons/base/data/res.country.state.csv")
-BANK_SELECTOR_19 = "expr=\"//field[@name='acc_number']\""
-BANK_SELECTOR_20 = "expr=\"//field[@name='account_number']\""
 _logger = logging.getLogger(__name__)
 
 
@@ -16,6 +14,35 @@ class Reference(NamedTuple):
     model: str
     record_id: int
     noupdate: bool
+
+
+class InheritedView(NamedTuple):
+    module: str
+    name: str
+    model: str
+    parent: str
+    source_selector: str
+    target_selector: str
+
+
+INHERITED_VIEWS = (
+    InheritedView(
+        "account",
+        "view_partner_bank_form_inherit_account",
+        "res.partner.bank",
+        "view_partner_bank_form",
+        "expr=\"//field[@name='acc_number']\"",
+        "expr=\"//field[@name='account_number']\"",
+    ),
+    InheritedView(
+        "hr_calendar",
+        "view_res_partner_filter_inherit_calendar",
+        "res.partner",
+        "view_res_partner_filter",
+        '<filter name="type_company" position="after">',
+        '<filter name="filter_vat_set" position="after">',
+    ),
+)
 
 
 def _reference(cr: Any, module: str, name: str) -> Reference | None:
@@ -82,27 +109,27 @@ def _bind_target(cr: Any, name: str, source: Reference) -> None:
     _logger.info("Bound core reference base.%s to preserved %s row %s", name, source.model, source.record_id)
 
 
-def _bank_form_source(cr: Any) -> tuple[int, dict[str, str]] | None:
-    cr.execute("SELECT state FROM ir_module_module WHERE name = 'account'")
+def _inherited_view_source(cr: Any, view: InheritedView) -> tuple[int, dict[str, str]] | None:
+    cr.execute("SELECT state FROM ir_module_module WHERE name = %s", (view.module,))
     installed = cr.fetchone()
     if installed is None or installed[0] not in {"installed", "to upgrade"}:
         return None
-    source = _require_source(cr, "account", "view_partner_bank_form_inherit_account", "ir.ui.view")
-    parent = _require_source(cr, "base", "view_partner_bank_form", "ir.ui.view")
+    source = _require_source(cr, view.module, view.name, "ir.ui.view")
+    parent = _require_source(cr, "base", view.parent, "ir.ui.view")
     cr.execute("SELECT model, inherit_id, mode, arch_db FROM ir_ui_view WHERE id = %s FOR UPDATE", (source.record_id,))
     rows = cr.fetchall()
-    if source.noupdate or parent.noupdate or len(rows) != 1 or rows[0][:3] != ("res.partner.bank", parent.record_id, "primary"):
-        raise RuntimeError("Unsupported account bank form ownership or inheritance")
+    if source.noupdate or parent.noupdate or len(rows) != 1 or rows[0][:3] != (view.model, parent.record_id, "primary"):
+        raise RuntimeError(f"Unsupported {view.module}.{view.name} ownership or inheritance")
     architectures = rows[0][3]
     if not architectures or not isinstance(architectures, dict) or any(not isinstance(arch, str) for arch in architectures.values()):
-        raise RuntimeError("Unsupported account bank form architecture")
-    counts = {(arch.count(BANK_SELECTOR_19), arch.count(BANK_SELECTOR_20)) for arch in architectures.values()}
+        raise RuntimeError(f"Unsupported {view.module}.{view.name} architecture")
+    counts = {(arch.count(view.source_selector), arch.count(view.target_selector)) for arch in architectures.values()}
     if counts == {(0, 1)}:
         return None
     if counts != {(1, 0)}:
-        raise RuntimeError("Ambiguous account bank form selectors or mixed language transition")
+        raise RuntimeError(f"Ambiguous {view.module}.{view.name} selectors or mixed language transition")
     return source.record_id, {
-        language: arch.replace(BANK_SELECTOR_19, BANK_SELECTOR_20, 1) for language, arch in architectures.items()
+        language: arch.replace(view.source_selector, view.target_selector, 1) for language, arch in architectures.items()
     }
 
 
@@ -116,12 +143,14 @@ def migrate(cr: Any, version: str | None) -> None:
     website = _website_source(cr)
     state_target = _check_target(cr, TARGET_STATE, state, protect=state.noupdate)
     website_target = _check_target(cr, "default_website", website, protect=True) if website is not None else None
-    bank_form = _bank_form_source(cr)
+    inherited_views = [(view, _inherited_view_source(cr, view)) for view in INHERITED_VIEWS]
     if state_target is None:
         _bind_target(cr, TARGET_STATE, state)
     if website is not None and website_target is None:
         _bind_target(cr, "default_website", website)
-    if bank_form is not None:
-        record_id, architectures = bank_form
+    for view, change in inherited_views:
+        if change is None:
+            continue
+        record_id, architectures = change
         cr.execute("UPDATE ir_ui_view SET arch_db = %s::jsonb WHERE id = %s", (json.dumps(architectures), record_id))
-        _logger.info("Retargeted account.view_partner_bank_form_inherit_account on preserved ir.ui.view row %s", record_id)
+        _logger.info("Retargeted %s.%s on preserved ir.ui.view row %s", view.module, view.name, record_id)
