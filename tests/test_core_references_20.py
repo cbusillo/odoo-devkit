@@ -3,12 +3,14 @@ from __future__ import annotations
 import importlib.util
 import json
 import sqlite3
+import sys
 import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from types import ModuleType
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / "docker" / "scripts" / "prepare_core_references_20.py"
 spec = importlib.util.spec_from_file_location("core_references_20", SCRIPT)
@@ -47,6 +49,41 @@ class Cursor:
             )
             for row in self.cursor.fetchall()
         ]
+
+
+class MailAdmissionWrapperTests(unittest.TestCase):
+    def test_installed_mail_delegates_native_target_and_absent_mail_skips(self) -> None:
+        cursor = Mock()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "views/ir_actions_server_views.xml"
+            source.parent.mkdir()
+            source.write_text("selected native Mail source")
+            module = ModuleType("odoo.modules.module")
+            resolver = Mock(return_value=str(root))
+            module.get_module_path = resolver
+            observed = []
+
+            def admit(candidate: Any, target: Path) -> None:
+                self.assertIs(candidate, cursor)
+                observed.append(target.read_text())
+
+            with (
+                patch.dict(
+                    sys.modules,
+                    {"odoo": ModuleType("odoo"), "odoo.modules": ModuleType("odoo.modules"), "odoo.modules.module": module},
+                ),
+                patch.object(bridge.runpy, "run_path", return_value={"admit_before_effects": admit}) as load,
+            ):
+                for state in (None, ("uninstalled",)):
+                    cursor.fetchone.return_value = state
+                    bridge._admit_mail(cursor)
+                    load.assert_not_called()
+                for state in (("installed",), ("to upgrade",)):
+                    cursor.fetchone.return_value = state
+                    bridge._admit_mail(cursor)
+            self.assertEqual(observed, [source.read_text(), source.read_text()])
+            self.assertEqual(resolver.call_count, len(observed))
 
 
 class CoreReferenceFixture(unittest.TestCase):
