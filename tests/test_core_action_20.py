@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 import json
 from pathlib import Path
 from typing import Any
@@ -116,13 +115,9 @@ class StockValuationActionTests(CoreReferenceFixture):
         self.native_cleanup()
         for module in ("stock_account", "account"):
             self.assertEqual(bridge._reference(self.cursor, module, self.action_name).record_id, self.action)
-        action = self.connection.execute("SELECT id,path,res_model,context FROM ir_act_client").fetchone()
-        self.assertEqual(action[:3], (self.action, self.native["path"], self.native["res_model"]))
-        self.assertEqual(ast.literal_eval(action[3]), ast.literal_eval(self.native["context"]))
+        action = self.connection.execute("SELECT id,path FROM ir_act_client").fetchone()
+        self.assertEqual(action, (self.action, self.native["path"]))
         self.assertEqual(self.snapshot()["action_links"], before["action_links"])
-        converted = self.snapshot()
-        self.apply()
-        self.assertEqual(self.snapshot(), converted)
 
     def test_custom_values_ownership_destinations_and_storage_refuse_before_all_effects(self) -> None:
         changes = (

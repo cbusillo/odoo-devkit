@@ -638,8 +638,9 @@ Notes
   This is one named ownership handoff, never a merge by matching paths.
   Conflicting targets, protected originals, extra aliases, ambiguous physical
   storage, custom fields or context, and edited or translated names refuse
-  before any bridge effects. Source and fully loaded target shapes both replay;
-  the target's own XML supplies its name, tag and path.
+  before any bridge effects. Preparation replays before native loading; the
+  bridge leaves completed major-20 crossings untouched. The target's own XML
+  supplies its name, tag and path.
   The bridge resolves `base.state_in_or` from the source database and adds
   `base.state_in_od` on that same state row, checking the running target's
   own state CSV and the source country binding. With an installed Website,

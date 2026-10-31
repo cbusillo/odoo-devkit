@@ -162,12 +162,10 @@ def _stock_valuation_action_plan(cr: Any) -> Reference | None:
     except (ValueError, SyntaxError, TypeError) as error:
         raise RuntimeError("Unsupported stock valuation action context") from error
     old_model = "stock_account.stock.valuation.report"
-    if native["res_model"] != "account.stock.valuation.report" or native_context != {"model": native["res_model"]}:
+    if native_context != {"model": native["res_model"]}:
         raise RuntimeError("Unsupported native stock valuation report model")
-    if action["res_model"] not in {old_model, native["res_model"]} or context != {"model": action["res_model"]}:
+    if action["res_model"] != old_model or context != {"model": old_model}:
         raise RuntimeError("Customized stock valuation report model or context")
-    if action["res_model"] != old_model and target is None:
-        raise RuntimeError("Unowned converted stock valuation action")
     _require_empty(
         action,
         {"id", "create_uid", "write_uid", "create_date", "write_date", "res_model", "context"},
