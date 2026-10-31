@@ -1,3 +1,6 @@
+# Copyright 2026 Hunki Enterprises BV (_release_policy_xmlids only)
+# License AGPL-3.0 or later for _release_policy_xmlids (https://www.gnu.org/licenses/agpl).
+
 import csv
 import json
 import logging
@@ -529,8 +532,6 @@ def _policy_xmlid_plan(cr: Any) -> list[int]:
 
 
 def _release_policy_xmlids(cr: Any, policies: list[int]) -> None:
-    # Copyright 2026 Hunki Enterprises BV
-    # License AGPL-3.0 or later (https://www.gnu.org/licenses/agpl).
     # https://github.com/hbrunn/OpenUpgrade/blob/2d9eb6bab7e7e579953e38d7ad3b96aad6fcc44d/openupgrade_scripts/scripts/base/20.0.1.3/pre-migration.py
     for record_id in policies:
         cr.execute("UPDATE ir_model_data SET name = name || '_' || replace(model, '.', '_') WHERE id = %s", (record_id,))
