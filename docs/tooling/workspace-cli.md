@@ -628,12 +628,16 @@ Notes
   its protection. An updateable source website or unprotected existing
   target website alias refuses rather than accepting fresh base defaults.
   Before the base bank form updates, an installed Account's surviving primary
-  bank form retargets its `acc_number` XPath to `account_number` in every stored
-  language. Only that selector changes; view and alias identities, custom content,
+  bank form retargets its `acc_number` XPath to `account_number`. An installed
+  HR Calendar's primary partner search view likewise retargets its stock
+  `type_company` filter locator to `filter_vat_set`, before the base search view
+  reloads. Both transitions use the same preflight and update every stored
+  language. Only the selectors change; view and alias identities, custom content,
   incoming references, history and metadata stay intact. Protected ownership,
   unsupported inheritance and absent, duplicate or mixed selectors refuse before
-  any bridge write. Replay is unchanged. Account's later native update owns its
-  full target architecture and validation; this step does not migrate bank data.
+  any bridge write. Replay is unchanged. Each owning module's later native update
+  owns its full target architecture and validation; this step does not migrate
+  bank or partner data.
   Same-major 20 updates do nothing in this bridge. Its qualification ends at
   the reference/base-data boundary; security conversion, later cleanup,
   tenant hooks and a completed major-version migration need their own proof.

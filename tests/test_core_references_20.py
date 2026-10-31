@@ -16,6 +16,10 @@ bridge = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bridge)
 
 
+def patch_attr(target: Any, name: str, value: Any) -> Any:
+    return patch.object(target, name, value)
+
+
 class Cursor:
     def __init__(self, connection: sqlite3.Connection) -> None:
         self.cursor = connection.cursor()
@@ -36,7 +40,7 @@ class Cursor:
         ]
 
 
-class CoreReferenceTests(unittest.TestCase):
+class CoreReferenceFixture(unittest.TestCase):
     def setUp(self) -> None:
         self.connection = sqlite3.connect(":memory:")
         self.addCleanup(self.connection.close)
@@ -60,6 +64,9 @@ class CoreReferenceTests(unittest.TestCase):
         self.website = self.connection.execute(
             "INSERT INTO website(name,domain,company_id) VALUES ('Retained store','https://store.invalid',91)"
         ).lastrowid
+        assert self.country is not None
+        assert self.state is not None
+        assert self.website is not None
         self.xmlid("base", "in", "res.country", self.country, True)
         self.xmlid("base", bridge.SOURCE_STATE, "res.country.state", self.state, False)
         self.xmlid("website", "default_website", "website", self.website, True)
@@ -72,7 +79,7 @@ class CoreReferenceTests(unittest.TestCase):
         target = Path(self.directory.name) / "states.csv"
         target.write_text(f"id,country_id:id,name,code\n{bridge.TARGET_STATE},in,Native state,OD\n")
         self.addCleanup(patch.stopall)
-        patch.object(bridge, "STATE_DATA_FILE", target).start()
+        patch_attr(bridge, "STATE_DATA_FILE", target).start()
 
     def xmlid(self, module: str, name: str, model: str, record: int, noupdate: bool) -> None:
         self.connection.execute(
@@ -95,6 +102,8 @@ class CoreReferenceTests(unittest.TestCase):
     def apply(self) -> None:
         bridge.migrate(self.cursor, "19.0.1.3")
 
+
+class CoreReferenceTests(CoreReferenceFixture):
     def test_bridge_binds_target_to_used_source_without_rewriting_source(self) -> None:
         before = self.snapshot()
         self.apply()
@@ -204,93 +213,110 @@ class CoreReferenceTests(unittest.TestCase):
                 bridge.migrate(self.cursor, version)
             self.assertEqual(self.snapshot(), before)
 
-    def bank_form(self, state: str = "installed") -> int:
+
+class InheritedViewTests(CoreReferenceFixture):
+    module, view_name, model, parent_name, old_selector, new_selector = bridge.INHERITED_VIEWS[0]
+
+    def architecture(self, label: str) -> str:
+        return f"<data><xpath {self.old_selector}/><separator string='{label}'/></data>"
+
+    def inherited_view(self, state: str = "installed") -> int:
         self.connection.execute(
             "CREATE TABLE ir_ui_view (id INTEGER PRIMARY KEY, model TEXT, inherit_id INTEGER, mode TEXT, arch_db TEXT, "
             "arch_prev TEXT, arch_updated BOOLEAN, active BOOLEAN, priority INTEGER, write_uid INTEGER)"
         )
-        parent = self.connection.execute("INSERT INTO ir_ui_view(model) VALUES ('res.partner.bank')").lastrowid
-        self.xmlid("base", "view_partner_bank_form", "ir.ui.view", parent, False)
+        parent = self.connection.execute("INSERT INTO ir_ui_view(model) VALUES (?)", (self.model,)).lastrowid
+        assert parent is not None
+        self.xmlid("base", self.parent_name, "ir.ui.view", parent, False)
         child = self.connection.execute(
-            "INSERT INTO ir_ui_view VALUES (NULL,'res.partner.bank',?,'primary',?,'Retained history',1,1,14,71)",
+            "INSERT INTO ir_ui_view VALUES (NULL,?,?,'primary',?,'Retained history',1,1,14,71)",
             (
+                self.model,
                 parent,
                 json.dumps(
                     {
-                        "en_US": f"<data><xpath {bridge.BANK_SELECTOR_19}/><separator string='Custom'/></data>",
-                        "fr_FR": f"<data><xpath {bridge.BANK_SELECTOR_19}/><separator string='Personnalise'/></data>",
+                        "en_US": self.architecture("Custom"),
+                        "fr_FR": self.architecture("Translated"),
                     }
                 ),
             ),
         ).lastrowid
-        self.xmlid("account", "view_partner_bank_form_inherit_account", "ir.ui.view", child, False)
-        self.xmlid("custom", "retained_bank", "ir.ui.view", child, True)
-        self.connection.execute("INSERT INTO ir_module_module VALUES ('account',?,'19.0.1.0')", (state,))
+        assert child is not None
+        self.xmlid(self.module, self.view_name, "ir.ui.view", child, False)
+        self.xmlid("custom", "retained_view", "ir.ui.view", child, True)
+        self.connection.execute("INSERT INTO ir_module_module VALUES (?,?,'19.0.1.0')", (self.module, state))
         return child
 
-    def bank_snapshot(self) -> list[tuple]:
+    def view_snapshot(self) -> list[tuple]:
         return self.connection.execute("SELECT * FROM ir_ui_view ORDER BY id").fetchall()
 
-    def test_bank_selector_transition_preserves_custom_languages_metadata_and_replay(self) -> None:
-        child = self.bank_form()
-        before = self.bank_snapshot()
+    def test_selector_transition_preserves_custom_languages_metadata_and_replay(self) -> None:
+        child = self.inherited_view()
+        before = self.view_snapshot()
         aliases = self.connection.execute("SELECT * FROM ir_model_data WHERE model='ir.ui.view'").fetchall()
         self.apply()
-        after = self.bank_snapshot()
+        after = self.view_snapshot()
         self.assertEqual(after[0], before[0])
         self.assertEqual(after[1][:4] + after[1][5:], before[1][:4] + before[1][5:])
         for language, arch in json.loads(before[1][4]).items():
-            self.assertEqual(json.loads(after[1][4])[language], arch.replace(bridge.BANK_SELECTOR_19, bridge.BANK_SELECTOR_20))
+            self.assertEqual(json.loads(after[1][4])[language], arch.replace(self.old_selector, self.new_selector))
         self.assertEqual(self.connection.execute("SELECT * FROM ir_model_data WHERE model='ir.ui.view'").fetchall(), aliases)
         self.assertEqual(self.connection.execute("SELECT id FROM ir_ui_view WHERE inherit_id IS NOT NULL").fetchone()[0], child)
         first = self.snapshot()
         self.apply()
-        self.assertEqual(self.bank_snapshot(), after)
+        self.assertEqual(self.view_snapshot(), after)
         self.assertEqual(self.snapshot(), first)
 
-    def test_unsupported_bank_sources_refuse_before_any_effect(self) -> None:
-        child = self.bank_form()
+    def test_unsupported_view_sources_refuse_before_any_effect(self) -> None:
+        child = self.inherited_view()
         changes = (
-            ("UPDATE ir_model_data SET noupdate=1 WHERE module='account'", ()),
-            ("UPDATE ir_model_data SET noupdate=1 WHERE module='base' AND name='view_partner_bank_form'", ()),
-            ("DELETE FROM ir_model_data WHERE module='base' AND name='view_partner_bank_form'", ()),
-            ("DELETE FROM ir_model_data WHERE module='account'", ()),
-            ("UPDATE ir_model_data SET model='wrong' WHERE module='account'", ()),
-            ("UPDATE ir_model_data SET res_id=-1 WHERE module='account'", ()),
+            ("UPDATE ir_model_data SET noupdate=1 WHERE module=?", (self.module,)),
+            ("UPDATE ir_model_data SET noupdate=1 WHERE module='base' AND name=?", (self.parent_name,)),
+            ("DELETE FROM ir_model_data WHERE module='base' AND name=?", (self.parent_name,)),
+            ("DELETE FROM ir_model_data WHERE module=?", (self.module,)),
+            ("UPDATE ir_model_data SET model='wrong' WHERE module=?", (self.module,)),
+            ("UPDATE ir_model_data SET res_id=-1 WHERE module=?", (self.module,)),
             ("UPDATE ir_ui_view SET inherit_id=NULL WHERE id=?", (child,)),
             ("UPDATE ir_ui_view SET mode='extension' WHERE id=?", (child,)),
             ("UPDATE ir_ui_view SET model='wrong' WHERE id=?", (child,)),
         )
         for statement, parameters in changes:
             with self.subTest(statement=statement):
-                self.connection.execute("SAVEPOINT bank")
+                self.connection.execute("SAVEPOINT view_change")
                 self.connection.execute(statement, parameters)
-                before, rows = self.snapshot(), self.bank_snapshot()
+                before, rows = self.snapshot(), self.view_snapshot()
                 with self.assertRaises(RuntimeError):
                     self.apply()
                 self.assertEqual(self.snapshot(), before)
-                self.assertEqual(self.bank_snapshot(), rows)
-                self.connection.execute("ROLLBACK TO bank")
-                self.connection.execute("RELEASE bank")
+                self.assertEqual(self.view_snapshot(), rows)
+                self.connection.execute("ROLLBACK TO view_change")
+                self.connection.execute("RELEASE view_change")
 
-    def test_uninstalled_account_leaves_its_bank_view_unchanged(self) -> None:
-        self.bank_form(state="uninstalled")
-        before = self.bank_snapshot()
+    def test_uninstalled_module_leaves_its_view_unchanged(self) -> None:
+        self.inherited_view(state="uninstalled")
+        before = self.view_snapshot()
         self.apply()
-        self.assertEqual(self.bank_snapshot(), before)
+        self.assertEqual(self.view_snapshot(), before)
 
     def test_missing_duplicate_and_mixed_language_selectors_refuse_without_effects(self) -> None:
-        child = self.bank_form()
-        old = f"<data><xpath {bridge.BANK_SELECTOR_19}/></data>"
-        new = old.replace(bridge.BANK_SELECTOR_19, bridge.BANK_SELECTOR_20)
+        child = self.inherited_view()
+        old = self.architecture("Custom")
+        new = old.replace(self.old_selector, self.new_selector)
         for architectures in ({}, {"en_US": "<data/>"}, {"en_US": old + old}, {"en_US": old + new}, {"en_US": old, "fr_FR": new}):
             with self.subTest(architectures=architectures):
                 self.connection.execute("UPDATE ir_ui_view SET arch_db=? WHERE id=?", (json.dumps(architectures), child))
-                before, rows = self.snapshot(), self.bank_snapshot()
+                before, rows = self.snapshot(), self.view_snapshot()
                 with self.assertRaises(RuntimeError):
                     self.apply()
                 self.assertEqual(self.snapshot(), before)
-                self.assertEqual(self.bank_snapshot(), rows)
+                self.assertEqual(self.view_snapshot(), rows)
+
+
+class CalendarViewTests(InheritedViewTests):
+    module, view_name, model, parent_name, old_selector, new_selector = bridge.INHERITED_VIEWS[1]
+
+    def architecture(self, label: str) -> str:
+        return f"<data>{self.old_selector}<filter name='type_team' string='{label}' domain='[]'/></filter></data>"
 
 
 if __name__ == "__main__":
