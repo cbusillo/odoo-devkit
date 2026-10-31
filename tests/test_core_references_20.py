@@ -16,13 +16,17 @@ bridge = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bridge)
 
 
-def patch_attr(target: Any, name: str, value: Any) -> Any:
-    return patch.object(target, name, value)
+def patch_attr(target: Any, name: str, value: Any, *, create: bool = False) -> Any:
+    return patch.object(target, name, value, create=create)
 
 
 class Cursor:
     def __init__(self, connection: sqlite3.Connection) -> None:
         self.cursor = connection.cursor()
+
+    @property
+    def description(self) -> Any:
+        return self.cursor.description
 
     def execute(self, query: str, parameters: tuple = ()) -> Any:
         return self.cursor.execute(query.replace("%s", "?").replace(" FOR UPDATE", "").replace("::jsonb", ""), parameters)
@@ -321,3 +325,196 @@ class CalendarViewTests(InheritedViewTests):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DiscussCursor(Cursor):
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        super().__init__(connection)
+        self.connection = connection
+
+    def execute(self, query: str, parameters: tuple = ()) -> Any:
+        if "FROM pg_constraint" in query:
+            rows = []
+            for (table,) in self.connection.execute("SELECT name FROM sqlite_master WHERE type='table'"):
+                for foreign_key in self.connection.execute('PRAGMA foreign_key_list("' + table + '")'):
+                    if foreign_key[2] in {"discuss_channel", "discuss_channel_member", "ir_model"}:
+                        rows.append(("public", table, foreign_key[3], foreign_key[2], foreign_key[4], 1))
+            return self._catalog(rows, 6)
+        if "FROM information_schema.columns" in query:
+            rows = []
+            for (table,) in self.connection.execute("SELECT name FROM sqlite_master WHERE type='table'"):
+                for column in self.connection.execute('PRAGMA table_info("' + table + '")'):
+                    rows.append((table, column[1], "text" if column[2] == "TEXT" else "integer"))
+            return self._catalog(rows, 3)
+        if "FROM pg_trigger" in query:
+            query = "SELECT 1 FROM deletion_triggers"
+        return super().execute(query, parameters)
+
+    def _catalog(self, rows: list[tuple], width: int) -> Any:
+        if not rows:
+            return self.cursor.execute("SELECT 1 WHERE 0")
+        placeholders = ",".join("?" for _ in range(width))
+        return self.cursor.execute(" UNION ALL ".join("SELECT " + placeholders for _ in rows), sum(rows, ()))
+
+    def identified(self, cr: Any, query: str, identifiers: tuple[str, ...], parameters: tuple = ()) -> None:
+        for identifier in identifiers:
+            query = query.replace("%s", '"' + identifier.replace('"', '""') + '"', 1)
+        if "to_jsonb(record)" in query:
+            columns = [row[1] for row in self.connection.execute('PRAGMA table_info("' + identifiers[0] + '")')]
+            expression = "json_object(" + ",".join("'" + name + "',record." + name for name in columns) + ")"
+            query = query.replace("to_jsonb(record)->>%s", "CAST(" + expression + "->>%s AS TEXT)")
+            query = query.replace("value.value", "CAST(value.value AS TEXT)")
+            query = query.replace("to_jsonb(record)", expression).replace("jsonb_each_text", "json_each")
+        query = query.replace("= ANY(", "IN (")
+        expanded = []
+        for value in parameters:
+            if isinstance(value, list):
+                query = query.replace("(%s)", "(" + ",".join("?" for _ in value) + ")", 1)
+                expanded.extend(value)
+            else:
+                query = query.replace("%s", "?", 1)
+                expanded.append(value)
+        cr.execute(query, tuple(expanded))
+
+
+class EmptyChatTests(CoreReferenceFixture):
+    def setUp(self) -> None:
+        super().setUp()
+        self.connection.executescript(
+            "CREATE TABLE discuss_channel (id INTEGER PRIMARY KEY, name TEXT, channel_type TEXT, active BOOLEAN, uuid TEXT, "
+            "description TEXT, last_interest_dt TEXT, create_date TEXT, write_date TEXT, custom_value TEXT);"
+            "CREATE TABLE discuss_channel_member (id INTEGER PRIMARY KEY, channel_id INTEGER REFERENCES discuss_channel(id), "
+            "partner_id INTEGER REFERENCES res_partner(id), guest_id INTEGER, custom_channel_name TEXT, fold_state TEXT, "
+            "custom_notifications TEXT, mute_until_dt TEXT, fetched_message_id INTEGER, seen_message_id INTEGER, "
+            "new_message_separator INTEGER, unpin_dt TEXT, last_interest_dt TEXT, last_seen_dt TEXT, create_date TEXT);"
+            "CREATE TABLE ir_model (id INTEGER PRIMARY KEY, model TEXT);"
+            "CREATE TABLE ir_model_fields (name TEXT, ttype TEXT, store BOOLEAN, company_dependent BOOLEAN, relation TEXT, model TEXT, relation_table TEXT);"
+            "CREATE TABLE mail_message (id INTEGER PRIMARY KEY, model TEXT, res_id INTEGER, body TEXT);"
+            "CREATE TABLE deletion_triggers (name TEXT);"
+            "ALTER TABLE res_partner ADD COLUMN name TEXT;"
+            "INSERT INTO res_partner(id,name) VALUES (101,'Alice'),(202,'Bob');"
+            "INSERT INTO ir_module_module VALUES ('mail','installed','19.0');"
+            "INSERT INTO ir_model VALUES (701,'discuss.channel'),(702,'discuss.channel.member');"
+            "INSERT INTO discuss_channel VALUES (41,'Alice, Bob','chat',1,'first',NULL,'2025-01-01T10:00:00',"
+            "'2025-01-01T10:00:01','2025-01-01T10:00:01',NULL);"
+            "INSERT INTO discuss_channel SELECT 42,name,channel_type,active,'second',description,last_interest_dt,"
+            "create_date,write_date,custom_value FROM discuss_channel WHERE id=41;"
+            "INSERT INTO discuss_channel_member (id,channel_id,partner_id,fold_state,new_message_separator,last_interest_dt,create_date) "
+            "VALUES (51,41,101,'closed',0,'2025-01-01T10:00:00','2025-01-01T10:00:01'),"
+            "(52,41,202,'closed',0,'2025-01-01T10:00:00','2025-01-01T10:00:01'),"
+            "(53,42,101,'closed',0,'2025-01-01T10:00:00','2025-01-01T10:00:01'),"
+            "(54,42,202,'closed',0,'2025-01-01T10:00:00','2025-01-01T10:00:01');"
+        )
+        self.cursor = DiscussCursor(self.connection)
+        patch_attr(bridge, "_identified", self.cursor.identified, create=True).start()
+
+    def all_rows(self) -> dict[str, list[tuple]]:
+        tables = [row[0] for row in self.connection.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+        return {table: self.connection.execute('SELECT * FROM "' + table + '" ORDER BY rowid').fetchall() for table in tables}
+
+    def test_retains_survivor_and_audience_unchanged_and_replays(self) -> None:
+        before = self.all_rows()
+        self.apply()
+        after = self.all_rows()
+        self.assertEqual(after["discuss_channel"], before["discuss_channel"][:1])
+        self.assertEqual(after["discuss_channel_member"], before["discuss_channel_member"][:2])
+        for table in before.keys() - {"ir_model_data", "discuss_channel", "discuss_channel_member"}:
+            self.assertEqual(after[table], before[table])
+        self.apply()
+        self.assertEqual(self.all_rows(), after)
+
+    def test_reference_and_state_refusals_precede_every_bridge_effect(self) -> None:
+        changes = (
+            "INSERT INTO mail_message VALUES (1,'discuss.channel',42,'history')",
+            "INSERT INTO mail_message VALUES (1,'discuss.channel',41,'survivor history')",
+            "INSERT INTO mail_message VALUES (1,'discuss.channel.member',53,'member history')",
+            "INSERT INTO ir_model_data(module,name,model,res_id) VALUES ('custom','chat','discuss.channel',42)",
+            "INSERT INTO ir_model_data(module,name,model,res_id) VALUES ('custom','member','discuss.channel.member',51)",
+            "UPDATE discuss_channel SET description='custom'",
+            "UPDATE discuss_channel SET custom_value='custom' WHERE id=42",
+            "UPDATE discuss_channel SET name='custom'",
+            "UPDATE discuss_channel SET last_interest_dt='2026-01-01' WHERE id=42",
+            "UPDATE discuss_channel SET create_date=NULL WHERE id=42",
+            "UPDATE discuss_channel SET active=0 WHERE id=42",
+            "UPDATE discuss_channel_member SET last_interest_dt='2026-01-01' WHERE id=53",
+            "UPDATE discuss_channel_member SET custom_channel_name='custom'",
+            "UPDATE discuss_channel_member SET custom_notifications='mentions' WHERE id=53",
+            "UPDATE discuss_channel_member SET fold_state='open' WHERE id=54",
+            "UPDATE discuss_channel_member SET mute_until_dt='2027-01-01' WHERE id=53",
+            "UPDATE discuss_channel_member SET seen_message_id=1 WHERE id=51",
+            "UPDATE discuss_channel_member SET fetched_message_id=1 WHERE id=53",
+            "UPDATE discuss_channel_member SET last_seen_dt='2025-01-01' WHERE id=53",
+            "UPDATE discuss_channel_member SET unpin_dt='2026-01-01' WHERE id=53",
+            "UPDATE discuss_channel_member SET guest_id=303 WHERE id=53",
+            "INSERT INTO ir_model_fields(name,ttype,store,company_dependent,relation) VALUES ('custom','many2one',1,1,'discuss.channel')",
+            "INSERT INTO ir_model_fields(name,ttype,store,relation,model) VALUES ('chat_id','many2one',1,'discuss.channel','custom.owner')",
+            "INSERT INTO deletion_triggers VALUES ('custom_delete')",
+        )
+        for change in changes:
+            with self.subTest(change=change):
+                self.connection.execute("SAVEPOINT candidate")
+                self.connection.execute(change)
+                before = self.all_rows()
+                with self.assertRaises(RuntimeError):
+                    self.apply()
+                self.assertEqual(self.all_rows(), before)
+                self.connection.execute("ROLLBACK TO candidate")
+                self.connection.execute("RELEASE candidate")
+
+    def test_custom_fk_reference_and_reference_field_refuse(self) -> None:
+        self.connection.execute(
+            "CREATE TABLE custom_owner (id INTEGER PRIMARY KEY, member_id INTEGER REFERENCES discuss_channel_member(id), link TEXT)"
+        )
+        for member_id, reference in ((54, None), (51, None), (None, "discuss.channel,42"), (None, "discuss.channel.member,53")):
+            with self.subTest(member_id=member_id, reference=reference):
+                self.connection.execute("DELETE FROM custom_owner")
+                self.connection.execute("INSERT INTO custom_owner VALUES (1,?,?)", (member_id, reference))
+                before = self.all_rows()
+                with self.assertRaises(RuntimeError):
+                    self.apply()
+                self.assertEqual(self.all_rows(), before)
+
+    def test_custom_polymorphic_field_and_numeric_model_alias_refuse(self) -> None:
+        self.connection.executescript(
+            "CREATE TABLE custom_owner (target INTEGER, kind TEXT);"
+            "INSERT INTO ir_model_fields(name,ttype,store,company_dependent,relation) VALUES ('target','many2one_reference',1,0,NULL);"
+            "INSERT INTO custom_owner VALUES (42,'discuss.channel');"
+            "CREATE TABLE mail_alias (alias_model_id INTEGER REFERENCES ir_model(id), alias_force_thread_id INTEGER);"
+        )
+        for change in ("SELECT 1", "DELETE FROM custom_owner", "INSERT INTO mail_alias VALUES (701,42)"):
+            self.connection.execute(change)
+            if change == "DELETE FROM custom_owner":
+                continue
+            before = self.all_rows()
+            with self.assertRaises(RuntimeError):
+                self.apply()
+            self.assertEqual(self.all_rows(), before)
+
+    def test_distinct_audiences_and_no_mail_are_unchanged(self) -> None:
+        self.connection.execute("UPDATE discuss_channel_member SET partner_id=202 WHERE id=53")
+        self.connection.execute("DELETE FROM discuss_channel_member WHERE id=54")
+        chats = self.all_rows()["discuss_channel"]
+        members = self.all_rows()["discuss_channel_member"]
+        self.apply()
+        self.assertEqual(self.all_rows()["discuss_channel"], chats)
+        self.assertEqual(self.all_rows()["discuss_channel_member"], members)
+        self.connection.execute("DELETE FROM ir_module_module WHERE name='mail'")
+        self.apply()
+        self.assertEqual(self.all_rows()["discuss_channel"], chats)
+
+    def test_all_groups_preflight_before_any_effect(self) -> None:
+        self.connection.executescript(
+            "INSERT INTO res_partner(id,name) VALUES (303,'Carol');"
+            "INSERT INTO discuss_channel SELECT 43,'Alice, Carol',channel_type,active,'third',description,last_interest_dt,"
+            "create_date,write_date,custom_value FROM discuss_channel WHERE id=41;"
+            "INSERT INTO discuss_channel SELECT 44,'Alice, Carol',channel_type,active,'fourth',description,last_interest_dt,"
+            "create_date,write_date,custom_value FROM discuss_channel WHERE id=41;"
+            "INSERT INTO discuss_channel_member(id,channel_id,partner_id,fold_state,new_message_separator,last_interest_dt,create_date) "
+            "SELECT id+4,channel_id+2,CASE WHEN partner_id=202 THEN 303 ELSE partner_id END,fold_state,new_message_separator,"
+            "last_interest_dt,create_date FROM discuss_channel_member;"
+            "INSERT INTO mail_message VALUES (1,'discuss.channel',44,'history');"
+        )
+        before = self.all_rows()
+        with self.assertRaises(RuntimeError):
+            self.apply()
+        self.assertEqual(self.all_rows(), before)
