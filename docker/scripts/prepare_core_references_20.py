@@ -4,6 +4,7 @@
 import csv
 import json
 import logging
+import runpy
 from datetime import datetime
 from importlib import import_module
 from math import isfinite
@@ -538,6 +539,18 @@ def _release_policy_xmlids(cr: Any, policies: list[int]) -> None:
     _logger.info("Released %s legacy policy XML IDs for native Odoo 20 data loading", len(policies))
 
 
+def _admit_mail(cr: Any) -> None:
+    cr.execute("SELECT state FROM ir_module_module WHERE name = 'mail'")
+    installed = cr.fetchone()
+    if installed is None or installed[0] not in {"installed", "to upgrade"}:
+        return
+    from odoo.modules.module import get_module_path
+
+    helpers = runpy.run_path(str(Path(__file__).with_name("mail_view_20.py")))
+    target = Path(get_module_path("mail")) / "views/ir_actions_server_views.xml"
+    helpers["admit_before_effects"](cr, target)
+
+
 def migrate(cr: Any, version: str | None) -> None:
     major = (version or "").split(".", 1)[0]
     if major == "20":
@@ -552,6 +565,7 @@ def migrate(cr: Any, version: str | None) -> None:
     empty_chats = _empty_chat_plan(cr)
     lunches = _lunch_plan(cr)
     policies = _policy_xmlid_plan(cr)
+    _admit_mail(cr)
     if state_target is None:
         _bind_target(cr, TARGET_STATE, state)
     if website is not None and website_target is None:

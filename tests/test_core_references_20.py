@@ -89,6 +89,7 @@ class CoreReferenceFixture(unittest.TestCase):
         target.write_text(f"id,country_id:id,name,code\n{bridge.TARGET_STATE},in,Native state,OD\n")
         self.addCleanup(patch.stopall)
         patch_attr(bridge, "STATE_DATA_FILE", target).start()
+        patch_attr(bridge, "_admit_mail", lambda _cr: None).start()
 
     def xmlid(self, module: str, name: str, model: str, record: int, noupdate: bool) -> None:
         self.connection.execute(
@@ -113,6 +114,12 @@ class CoreReferenceFixture(unittest.TestCase):
 
 
 class CoreReferenceTests(CoreReferenceFixture):
+    def test_mail_family_refusal_precedes_every_bridge_effect(self) -> None:
+        before = self.snapshot()
+        with patch.object(bridge, "_admit_mail", side_effect=RuntimeError("custom Mail family")), self.assertRaises(RuntimeError):
+            self.apply()
+        self.assertEqual(self.snapshot(), before)
+
     def test_bridge_binds_target_to_used_source_without_rewriting_source(self) -> None:
         before = self.snapshot()
         self.apply()
