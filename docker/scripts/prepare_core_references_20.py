@@ -2,6 +2,7 @@ import csv
 import json
 import logging
 from importlib import import_module
+from math import isfinite
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -181,7 +182,7 @@ def _require_empty(row: dict[str, Any], ignored: set[str], defaults: dict[str, t
         if name in ignored:
             continue
         if value not in defaults.get(name, (None,)):
-            raise RuntimeError(f"Customized or unsupported direct chat state: {name}")
+            raise RuntimeError(f"Customized or unsupported core transition state: {name}")
 
 
 def _pinned(member: dict[str, Any], channel: dict[str, Any]) -> bool:
@@ -243,11 +244,8 @@ def _check_chat_state(cr: Any, group: list[DirectChat]) -> None:
         raise RuntimeError("Duplicate direct chats have different sidebar state")
 
 
-def _check_chat_references(cr: Any, groups: list[list[DirectChat]]) -> None:
-    ids = {
-        "discuss_channel": [channel.values["id"] for group in groups for channel in group],
-        "discuss_channel_member": [member["id"] for group in groups for channel in group for member in channel.members],
-    }
+def _check_references(cr: Any, ids: dict[str, list[int]], internal_relations: set[tuple[str, str, str]]) -> None:
+    models = [table.replace("_", ".") for table in ids]
     cr.execute(
         "SELECT source_ns.nspname, source.relname, source_col.attname, target.relname, target_col.attname, "
         "cardinality(fk.conkey) FROM pg_constraint fk "
@@ -265,31 +263,34 @@ def _check_chat_references(cr: Any, groups: list[list[DirectChat]]) -> None:
                 foreign_keys.add((table, column, target))
             continue
         if schema != "public" or target_column != "id" or width != 1:
-            raise RuntimeError("Unsupported direct chat reference constraint")
+            raise RuntimeError("Unsupported core transition reference constraint")
         foreign_keys.add((table, column, target))
         if target == "ir_model":
             model_columns.setdefault(table, set()).add(column)
             continue
-        if (table, column, target) == ("discuss_channel_member", "channel_id", "discuss_channel"):
+        if (table, column, target) in internal_relations:
             continue
         _identified(cr, "SELECT 1 FROM %s WHERE %s = ANY(%s) LIMIT 1", (table, column), (ids[target],))
         if cr.fetchone():
-            raise RuntimeError(f"Referenced direct chat or member: {table}.{column}")
+            raise RuntimeError(f"Referenced core transition row: {table}.{column}")
     cr.execute(
         "SELECT name FROM ir_model_fields WHERE store AND ttype = 'many2one_reference' "
         "UNION SELECT 'res_id' UNION SELECT 'alias_force_thread_id' UNION SELECT 'alias_parent_thread_id'"
     )
     indirect_columns = {row[0] for row in cr.fetchall()}
-    cr.execute(
+    _identified(
+        cr,
         "SELECT 1 FROM ir_model_fields WHERE store AND company_dependent "
-        "AND (relation IN ('discuss.channel', 'discuss.channel.member') OR ttype IN ('reference', 'many2one_reference')) LIMIT 1"
+        "AND (relation = ANY(%s) OR ttype IN ('reference', 'many2one_reference')) LIMIT 1",
+        (),
+        (models,),
     )
     if cr.fetchone():
-        raise RuntimeError("Unsupported company-dependent direct chat reference")
-    cr.execute("SELECT id, model FROM ir_model WHERE model IN ('discuss.channel', 'discuss.channel.member')")
+        raise RuntimeError("Unsupported company-dependent core transition reference")
+    _identified(cr, "SELECT id, model FROM ir_model WHERE model = ANY(%s)", (), (models,))
     model_ids = {model: model_id for model_id, model in cr.fetchall()}
-    if set(model_ids) != {"discuss.channel", "discuss.channel.member"}:
-        raise RuntimeError("Missing direct chat model metadata")
+    if set(model_ids) != set(models):
+        raise RuntimeError("Missing core transition model metadata")
     cr.execute(
         "SELECT field.table_name, field.column_name, field.data_type FROM information_schema.columns field "
         "JOIN information_schema.tables owner ON owner.table_schema = field.table_schema AND owner.table_name = field.table_name "
@@ -298,19 +299,22 @@ def _check_chat_references(cr: Any, groups: list[list[DirectChat]]) -> None:
     columns: dict[str, list[tuple[str, str]]] = {}
     for table, column, data_type in cr.fetchall():
         columns.setdefault(table, []).append((column, data_type))
-    cr.execute(
+    _identified(
+        cr,
         "SELECT name, ttype, relation, relation_table, column2, model, column1 FROM ir_model_fields WHERE store AND "
-        "((relation IN ('discuss.channel', 'discuss.channel.member') AND ttype IN ('many2one', 'many2many')) "
-        "OR (model IN ('discuss.channel', 'discuss.channel.member') AND ttype = 'many2many'))"
+        "((relation = ANY(%s) AND ttype IN ('many2one', 'many2many')) "
+        "OR (model = ANY(%s) AND ttype = 'many2many'))",
+        (),
+        (models, models),
     )
     relational_columns: dict[str, list[tuple[str | None, list[int]]]] = {}
     for name, kind, relation, relation_table, target_column, model, source_column in cr.fetchall():
         endpoints = ((target_column, relation), (source_column, model)) if kind == "many2many" else ((name, relation),)
         for column, target in endpoints:
-            if target not in {"discuss.channel", "discuss.channel.member"}:
+            if target not in models:
                 continue
             if not column or (kind == "many2many" and not relation_table):
-                raise RuntimeError("Unsupported direct chat relation metadata")
+                raise RuntimeError("Unsupported core transition relation metadata")
             owner = relation_table if kind == "many2many" else None
             relational_columns.setdefault(column, []).append((owner, ids[target.replace(".", "_")]))
     cr.execute(
@@ -320,15 +324,18 @@ def _check_chat_references(cr: Any, groups: list[list[DirectChat]]) -> None:
         (list(relational_columns),),
     )
     if cr.fetchone():
-        raise RuntimeError("Unsupported materialized direct chat reference storage")
+        raise RuntimeError("Unsupported materialized core transition reference storage")
     foreign_columns = {(table, column) for table, column, _target in foreign_keys}
     if "ir_default" in columns:
-        cr.execute(
+        _identified(
+            cr,
             "SELECT 1 FROM ir_default value JOIN ir_model_fields field ON field.id = value.field_id "
-            "WHERE field.relation IN ('discuss.channel', 'discuss.channel.member') OR field.ttype IN ('reference', 'many2one_reference') LIMIT 1"
+            "WHERE field.relation = ANY(%s) OR field.ttype IN ('reference', 'many2one_reference') LIMIT 1",
+            (),
+            (models,),
         )
         if cr.fetchone():
-            raise RuntimeError("Unsupported direct chat field default")
+            raise RuntimeError("Unsupported core transition field default")
     references = [f"{model},{record}" for model in model_ids for record in ids[model.replace(".", "_")]]
     json_targets = json.dumps({"targets": [*model_ids, *references]})
     for table, fields in columns.items():
@@ -338,14 +345,14 @@ def _check_chat_references(cr: Any, groups: list[list[DirectChat]]) -> None:
                     if owner is not None and owner != table:
                         continue
                     if data_type not in {"smallint", "integer", "bigint"}:
-                        raise RuntimeError(f"Unsupported direct chat reference column type: {table}.{column}")
+                        raise RuntimeError(f"Unsupported core transition reference column type: {table}.{column}")
                     _identified(cr, "SELECT 1 FROM %s WHERE %s = ANY(%s) LIMIT 1", (table, column), (targets,))
                     if cr.fetchone():
-                        raise RuntimeError(f"Unsupported FK-less direct chat reference: {table}.{column}")
+                        raise RuntimeError(f"Unsupported FK-less core transition reference: {table}.{column}")
             if data_type in {"text", "character varying", "character"}:
                 _identified(cr, "SELECT 1 FROM %s WHERE %s = ANY(%s) LIMIT 1", (table, column), (references,))
                 if cr.fetchone():
-                    raise RuntimeError(f"Referenced direct chat or member: {table}.{column}")
+                    raise RuntimeError(f"Referenced core transition row: {table}.{column}")
             if data_type in {"json", "jsonb"}:
                 _identified(
                     cr,
@@ -354,7 +361,7 @@ def _check_chat_references(cr: Any, groups: list[list[DirectChat]]) -> None:
                     (json_targets,),
                 )
                 if cr.fetchone():
-                    raise RuntimeError(f"Unsupported direct chat JSON reference: {table}.{column}")
+                    raise RuntimeError(f"Unsupported core transition JSON reference: {table}.{column}")
             if column not in indirect_columns:
                 continue
             for model, model_id in model_ids.items():
@@ -375,13 +382,10 @@ def _check_chat_references(cr: Any, groups: list[list[DirectChat]]) -> None:
                     ),
                 )
                 if cr.fetchone():
-                    raise RuntimeError(f"Indirectly referenced direct chat or member: {table}.{column}")
-    cr.execute(
-        "SELECT 1 FROM pg_trigger WHERE tgrelid IN ('discuss_channel'::regclass, 'discuss_channel_member'::regclass) "
-        "AND NOT tgisinternal LIMIT 1"
-    )
+                    raise RuntimeError(f"Indirectly referenced core transition row: {table}.{column}")
+    cr.execute("SELECT 1 FROM pg_trigger WHERE tgrelid = ANY(%s::regclass[]) AND NOT tgisinternal LIMIT 1", (list(ids),))
     if cr.fetchone():
-        raise RuntimeError("Unsupported direct chat deletion trigger")
+        raise RuntimeError("Unsupported core transition deletion trigger")
 
 
 def _empty_chat_plan(cr: Any) -> list[list[DirectChat]]:
@@ -389,7 +393,14 @@ def _empty_chat_plan(cr: Any) -> list[list[DirectChat]]:
     for group in groups:
         _check_chat_state(cr, group)
     if groups:
-        _check_chat_references(cr, groups)
+        _check_references(
+            cr,
+            {
+                "discuss_channel": [channel.values["id"] for group in groups for channel in group],
+                "discuss_channel_member": [member["id"] for group in groups for channel in group for member in channel.members],
+            },
+            {("discuss_channel_member", "channel_id", "discuss_channel")},
+        )
     return groups
 
 
@@ -399,6 +410,61 @@ def _retire_empty_chats(cr: Any, groups: list[list[DirectChat]]) -> None:
             cr.execute("DELETE FROM discuss_channel_member WHERE channel_id = %s", (channel.values["id"],))
             cr.execute("DELETE FROM discuss_channel WHERE id = %s", (channel.values["id"],))
             _logger.info("Retired redundant empty direct chat %s; preserved chat %s", channel.values["id"], group[0].values["id"])
+
+
+def _lunch_plan(cr: Any) -> list[int]:
+    cr.execute("SELECT state FROM ir_module_module WHERE name = 'resource'")
+    installed = cr.fetchone()
+    if installed is None or installed[0] not in {"installed", "to upgrade"}:
+        return []
+    attendances = _rows(cr, "SELECT * FROM resource_calendar_attendance ORDER BY id FOR UPDATE")
+    lunches = [row for row in attendances if row["day_period"] == "lunch"]
+    if not lunches:
+        return []
+    calendars = _rows(cr, "SELECT id, two_weeks_calendar FROM resource_calendar FOR UPDATE")
+    single_week = {row["id"] for row in calendars if row["two_weeks_calendar"] is False or row["two_weeks_calendar"] == 0}
+    for row in attendances:
+        if row["calendar_id"] not in single_week or row["dayofweek"] not in {str(day) for day in range(7)}:
+            raise RuntimeError("Unsupported legacy attendance calendar or weekday")
+        if row["day_period"] not in {"morning", "afternoon", "lunch"}:
+            raise RuntimeError("Unsupported legacy attendance period")
+        if any(row.get(name) is not None for name in ("week_type", "display_type", "date_from", "date_to", "resource_id")):
+            raise RuntimeError("Unsupported legacy attendance recurrence, section, dates or resource")
+        if not all(isinstance(row[name], (int, float)) and isfinite(row[name]) for name in ("hour_from", "hour_to")):
+            raise RuntimeError("Unsupported legacy attendance clock range")
+        if not 0 <= row["hour_from"] < row["hour_to"] <= 24:
+            raise RuntimeError("Unsupported legacy attendance clock range")
+    for lunch in lunches:
+        _require_empty(
+            lunch,
+            {
+                "id",
+                "calendar_id",
+                "name",
+                "dayofweek",
+                "day_period",
+                "hour_from",
+                "hour_to",
+                "sequence",
+                "create_uid",
+                "write_uid",
+                "create_date",
+                "write_date",
+            },
+            {"duration_hours": (0,), "duration_days": (0,)},
+        )
+        if any(
+            row["day_period"] != "lunch"
+            and row["calendar_id"] == lunch["calendar_id"]
+            and row["dayofweek"] == lunch["dayofweek"]
+            and row["hour_from"] < lunch["hour_to"]
+            and lunch["hour_from"] < row["hour_to"]
+            for row in attendances
+        ):
+            raise RuntimeError("Legacy lunch overlaps working attendance")
+    ids = [row["id"] for row in lunches]
+    _check_references(cr, {"resource_calendar_attendance": ids}, set())
+    return ids
 
 
 def migrate(cr: Any, version: str | None) -> None:
@@ -413,6 +479,7 @@ def migrate(cr: Any, version: str | None) -> None:
     website_target = _check_target(cr, "default_website", website, protect=True) if website is not None else None
     inherited_views = [(view, _inherited_view_source(cr, view)) for view in INHERITED_VIEWS]
     empty_chats = _empty_chat_plan(cr)
+    lunches = _lunch_plan(cr)
     if state_target is None:
         _bind_target(cr, TARGET_STATE, state)
     if website is not None and website_target is None:
@@ -424,3 +491,6 @@ def migrate(cr: Any, version: str | None) -> None:
         cr.execute("UPDATE ir_ui_view SET arch_db = %s::jsonb WHERE id = %s", (json.dumps(architectures), record_id))
         _logger.info("Retargeted %s.%s on preserved ir.ui.view row %s", view.module, view.name, record_id)
     _retire_empty_chats(cr, empty_chats)
+    if lunches:
+        _identified(cr, "DELETE FROM resource_calendar_attendance WHERE id = ANY(%s)", (), (lunches,))
+        _logger.info("Removed %s redundant nonworking lunch rows; preserved working intervals", len(lunches))

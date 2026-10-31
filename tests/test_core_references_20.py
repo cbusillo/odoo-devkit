@@ -345,6 +345,7 @@ class DiscussCursor(Cursor):
             return self.cursor.execute("SELECT 1 FROM materialized_references")
         if "FROM pg_trigger" in query:
             query = "SELECT 1 FROM deletion_triggers"
+            parameters = ()
         return super().execute(query, parameters)
 
     def _catalog(self, rows: list[tuple], width: int) -> Any:
@@ -374,7 +375,7 @@ class DiscussCursor(Cursor):
         cr.execute(query, tuple(expanded))
 
 
-class EmptyChatTests(CoreReferenceFixture):
+class EmptyChatFixture(CoreReferenceFixture):
     def setUp(self) -> None:
         super().setUp()
         self.connection.executescript(
@@ -424,6 +425,8 @@ class EmptyChatTests(CoreReferenceFixture):
         tables = [row[0] for row in self.connection.execute("SELECT name FROM sqlite_master WHERE type='table'")]
         return {table: self.connection.execute('SELECT * FROM "' + table + '" ORDER BY rowid').fetchall() for table in tables}
 
+
+class EmptyChatTests(EmptyChatFixture):
     def test_retains_survivor_and_audience_unchanged_and_replays(self) -> None:
         before = self.all_rows()
         self.apply()
@@ -605,6 +608,89 @@ class EmptyChatTests(CoreReferenceFixture):
         with self.assertRaises(RuntimeError):
             self.apply()
         self.assertEqual(self.all_rows(), before)
+
+
+class LunchTests(EmptyChatFixture):
+    def setUp(self) -> None:
+        super().setUp()
+        self.connection.executescript(
+            "CREATE TABLE resource_calendar (id INTEGER PRIMARY KEY, two_weeks_calendar BOOLEAN, hours_per_week REAL);"
+            "CREATE TABLE resource_calendar_attendance (id INTEGER PRIMARY KEY, calendar_id INTEGER REFERENCES resource_calendar(id), "
+            "name TEXT, dayofweek TEXT, hour_from REAL, hour_to REAL, day_period TEXT, duration_hours REAL, duration_days REAL, "
+            "display_type TEXT, week_type TEXT, date_from TEXT, date_to TEXT, resource_id INTEGER, custom_value TEXT);"
+            "INSERT INTO ir_module_module VALUES ('resource','installed','19.0');"
+            "INSERT INTO ir_model VALUES (703,'resource.calendar.attendance');"
+            "INSERT INTO resource_calendar VALUES (61,0,40);"
+            "INSERT INTO resource_calendar_attendance(id,calendar_id,name,dayofweek,hour_from,hour_to,day_period,duration_hours,duration_days) "
+            "VALUES (81,61,'Morning','0',8,12,'morning',4,0.5),"
+            "(82,61,'Break','0',12,13,'lunch',0,0),(83,61,'Afternoon','0',13,17,'afternoon',4,0.5);"
+        )
+
+    def test_gap_work_hours_and_other_bridge_transitions_survive_replay(self) -> None:
+        before = self.all_rows()
+        self.apply()
+        after = self.all_rows()
+        self.assertEqual(
+            after["resource_calendar_attendance"], [row for row in before["resource_calendar_attendance"] if row[0] != 82]
+        )
+        self.assertEqual(after["resource_calendar"], before["resource_calendar"])
+        self.assertEqual(after["discuss_channel"], before["discuss_channel"][:1])
+        self.apply()
+        self.assertEqual(self.all_rows(), after)
+
+    def test_unsupported_calendar_and_lunch_state_refuse_before_all_effects(self) -> None:
+        self.connection.execute("DELETE FROM ir_module_module WHERE name='mail'")
+        for change in (
+            "UPDATE resource_calendar_attendance SET hour_to=14 WHERE id=81",
+            "UPDATE resource_calendar SET two_weeks_calendar=1",
+            "UPDATE resource_calendar_attendance SET week_type='1' WHERE id=81",
+            "UPDATE resource_calendar_attendance SET display_type='line_section' WHERE id=81",
+            "UPDATE resource_calendar_attendance SET date_from='2026-01-01' WHERE id=83",
+            "UPDATE resource_calendar_attendance SET resource_id=9 WHERE id=82",
+            "UPDATE resource_calendar_attendance SET custom_value='retained' WHERE id=82",
+            "UPDATE resource_calendar_attendance SET duration_hours=1 WHERE id=82",
+            "UPDATE resource_calendar_attendance SET duration_hours=NULL WHERE id=82",
+            "UPDATE resource_calendar_attendance SET hour_to=hour_from WHERE id=82",
+            "UPDATE resource_calendar_attendance SET day_period='custom' WHERE id=81",
+            "INSERT INTO mail_message VALUES (1,'resource.calendar.attendance',82,'history')",
+            "INSERT INTO ir_model_data(module,name,model,res_id) VALUES ('custom','break','resource.calendar.attendance',82)",
+            "INSERT INTO ir_model_fields(name,ttype,store,company_dependent,relation) "
+            "VALUES ('custom','many2one',1,1,'resource.calendar.attendance')",
+            "INSERT INTO deletion_triggers VALUES ('custom_delete')",
+        ):
+            with self.subTest(change=change):
+                self.connection.execute("SAVEPOINT lunch")
+                self.connection.execute(change)
+                before = self.all_rows()
+                with self.assertRaises(RuntimeError):
+                    self.apply()
+                self.assertEqual(self.all_rows(), before)
+                self.connection.execute("ROLLBACK TO lunch")
+                self.connection.execute("RELEASE lunch")
+
+    def test_attendance_reference_storage_refuses(self) -> None:
+        self.connection.executescript(
+            "CREATE TABLE custom_owner (attendance_id INTEGER REFERENCES resource_calendar_attendance(id), link TEXT, payload JSON);"
+            "CREATE TABLE custom_relation (owner INTEGER, attendance INTEGER);"
+            "INSERT INTO ir_model_fields(name,ttype,store,relation,model,relation_table,column1,column2) "
+            "VALUES ('attendance_ids','many2many',1,'resource.calendar.attendance','custom.owner','custom_relation','owner','attendance');"
+        )
+        for change in (
+            "INSERT INTO custom_owner(attendance_id) VALUES (82)",
+            "INSERT INTO custom_owner(link) VALUES ('resource.calendar.attendance,82')",
+            "INSERT INTO custom_owner(payload) VALUES ('" + json.dumps({"reference": "resource.calendar.attendance,82"}) + "')",
+            "INSERT INTO custom_relation VALUES (1,82)",
+            "INSERT INTO materialized_references VALUES ('attendance')",
+        ):
+            with self.subTest(change=change):
+                self.connection.execute("SAVEPOINT reference_case")
+                self.connection.execute(change)
+                before = self.all_rows()
+                with self.assertRaises(RuntimeError):
+                    self.apply()
+                self.assertEqual(self.all_rows(), before)
+                self.connection.execute("ROLLBACK TO reference_case")
+                self.connection.execute("RELEASE reference_case")
 
 
 if __name__ == "__main__":
