@@ -191,8 +191,10 @@ class CalendarUsersTests(core.CoreReferenceFixture):
             with self.subTest(planner=planner):
                 with (
                     core.patch_attr(bridge, "_hr_org_chart_action_plan", Mock(return_value=object())),
-                    core.patch_attr(bridge, planner, Mock(side_effect=RuntimeError("unsupported retained input"))),
+                    core.patch_attr(bridge, "_hr_org_chart_link_plan", Mock(return_value=None)),
+                    core.patch_attr(bridge, planner, Mock(side_effect=RuntimeError("unsupported retained input"))) as refusal,
                 ):
                     with self.assertRaises(RuntimeError):
                         self.apply()
+                    refusal.assert_called_once()
                 self.assertEqual(self.snapshot(), before)
