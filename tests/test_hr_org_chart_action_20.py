@@ -122,6 +122,8 @@ class HrOrgChartActionTests(CoreReferenceFixture):
         self.assertEqual(self.snapshot(), before)
 
     def test_prepare_preserves_row_links_and_replays_then_native_loads_mobile_hierarchy(self) -> None:
+        for model in ("ir.actions.act_window.view", "ir.actions.todo"):
+            self.xmlid("unrelated", model.replace(".", "_"), model, self.action, False)
         before = self.snapshot()
         link_source = bridge._reference(self.cursor, "hr_org_chart", "act_hr_employee_public_hierarchy_view")
         self.apply()

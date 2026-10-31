@@ -125,6 +125,16 @@ def _bind_target(cr: Any, name: str, source: Reference, module: str = "base") ->
     _logger.info("Bound core reference %s.%s to preserved %s row %s", module, name, source.model, source.record_id)
 
 
+def _action_aliases(cr: Any, record_id: int) -> set[tuple[str, str, str]]:
+    cr.execute(
+        "SELECT module, name, model FROM ir_model_data WHERE model IN ('ir.actions.actions','ir.actions.act_window',"
+        "'ir.actions.act_window_close','ir.actions.act_url','ir.actions.server','ir.actions.client','ir.actions.report') "
+        "AND res_id = %s FOR UPDATE",
+        (record_id,),
+    )
+    return set(cr.fetchall())
+
+
 def _stock_valuation_action_plan(cr: Any) -> Reference | None:
     cr.execute("SELECT state FROM ir_module_module WHERE name = 'stock_account'")
     installed = cr.fetchone()
@@ -152,12 +162,8 @@ def _stock_valuation_action_plan(cr: Any) -> Reference | None:
     )
     if cr.fetchall() != [("ir_act_client", source.record_id)]:
         raise RuntimeError("Ambiguous stock valuation action storage or path")
-    cr.execute(
-        "SELECT module, name, model FROM ir_model_data WHERE model LIKE 'ir.actions.%%' AND res_id = %s FOR UPDATE",
-        (source.record_id,),
-    )
     aliases = {("stock_account", name, source.model)} | ({("account", name, source.model)} if target is not None else set())
-    if set(cr.fetchall()) != aliases:
+    if _action_aliases(cr, source.record_id) != aliases:
         raise RuntimeError("Customized stock valuation action aliases")
     try:
         context = literal_eval(action["context"])
@@ -240,12 +246,8 @@ def _hr_org_chart_action_plan(cr: Any) -> Reference | None:
     )
     if cr.fetchall() != [("ir_act_window", source.record_id)]:
         raise RuntimeError("Ambiguous Org Chart action storage or path")
-    cr.execute(
-        "SELECT module, name, model FROM ir_model_data WHERE model LIKE 'ir.actions.%%' AND res_id = %s FOR UPDATE",
-        (source.record_id,),
-    )
     aliases = {("hr_org_chart", name, source.model)} | ({("hr", name, source.model)} if target is not None else set())
-    if set(cr.fetchall()) != aliases:
+    if _action_aliases(cr, source.record_id) != aliases:
         raise RuntimeError("Customized Org Chart action aliases")
     for query in (
         "SELECT 1 FROM ir_act_window_group_rel WHERE act_id = %s LIMIT 1",
@@ -332,12 +334,6 @@ def _hr_org_chart_link_plan(cr: Any) -> Reference:
         {"id", "create_uid", "write_uid", "create_date", "write_date"},
         {"sequence": (16,), "view_mode": ("hierarchy",), "act_window_id": (employee_action.record_id,), "multi": (None, False)},
     )
-    cr.execute(
-        "SELECT id FROM ir_act_window_view WHERE act_window_id = %s AND view_mode = %s FOR UPDATE",
-        (employee_action.record_id, "hierarchy"),
-    )
-    if cr.fetchall() != [(source.record_id,)]:
-        raise RuntimeError("Ambiguous Org Chart hierarchy link")
     cr.execute(
         "SELECT module,name,model FROM ir_model_data WHERE model = %s AND res_id = %s FOR UPDATE", (source.model, source.record_id)
     )
