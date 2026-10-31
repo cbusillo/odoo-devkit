@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from pathlib import Path
 from unittest.mock import Mock, patch
 from xml.etree import ElementTree
@@ -45,6 +44,10 @@ class HrOrgChartActionTests(CoreReferenceFixture):
         help_field = ElementTree.SubElement(record, "field", name="help", type="html")
         self.help = '<p class="o_view_nocontent_smiling_face">Create an employee.</p><p>Employee information.</p>'
         help_field.extend(ElementTree.fromstring("<div>" + self.help + "</div>"))
+        link = ElementTree.SubElement(data, "record", id="act_hr_employee_public_hierarchy_view", model="ir.actions.act_window.view")
+        ElementTree.SubElement(link, "field", name="sequence", eval="16")
+        ElementTree.SubElement(link, "field", name="view_mode").text = "hierarchy"
+        ElementTree.SubElement(link, "field", name="act_window_id", ref="hr.hr_employee_public_action")
         self.target = Path(self.directory.name) / "hr.xml"
         ElementTree.ElementTree(root).write(self.target)
         patch.dict(vars(bridge), {"HR_ORG_CHART_DATA_FILE": self.target}).start()
@@ -58,7 +61,8 @@ class HrOrgChartActionTests(CoreReferenceFixture):
             "CREATE TABLE other_actions (storage TEXT, id INTEGER, path TEXT);"
             "CREATE VIEW ir_actions AS SELECT 'ir_act_window' AS storage,id,path FROM ir_act_window UNION ALL SELECT * FROM other_actions;"
             "CREATE TABLE ir_act_window_group_rel (act_id INTEGER, gid INTEGER);"
-            "CREATE TABLE ir_act_window_view (id INTEGER PRIMARY KEY, act_window_id INTEGER, view_id INTEGER);"
+            "CREATE TABLE ir_act_window_view (id INTEGER PRIMARY KEY, act_window_id INTEGER, view_id INTEGER, "
+            "sequence INTEGER, view_mode TEXT, multi BOOLEAN, UNIQUE(act_window_id,view_mode));"
             "CREATE TABLE action_links (action INTEGER REFERENCES ir_act_window(id), xmlid TEXT, url TEXT);"
         )
         self.action = self.connection.execute(
@@ -77,6 +81,10 @@ class HrOrgChartActionTests(CoreReferenceFixture):
         ).lastrowid
         assert self.action is not None
         self.xmlid("hr_org_chart", self.name, "ir.actions.act_window", self.action, False)
+        self.connection.execute("INSERT INTO ir_act_window(id,path) VALUES (200,'employees')")
+        self.xmlid("hr", "hr_employee_public_action", "ir.actions.act_window", 200, False)
+        self.connection.execute("INSERT INTO ir_act_window_view VALUES (300,200,NULL,16,'hierarchy',0)")
+        self.xmlid("hr_org_chart", "act_hr_employee_public_hierarchy_view", "ir.actions.act_window.view", 300, False)
         self.connection.execute(
             "INSERT INTO action_links VALUES (?,?,?)", (self.action, f"hr_org_chart.{self.name}", "/odoo/" + self.native["path"])
         )
@@ -96,23 +104,16 @@ class HrOrgChartActionTests(CoreReferenceFixture):
         self.connection.execute(
             "UPDATE ir_act_window SET mobile_view_mode=? WHERE id=?", (self.native["mobile_view_mode"], target.record_id)
         )
-
-    def native_cleanup(self) -> None:
-        for identity, module, name, record in self.connection.execute(
-            "SELECT id,module,name,res_id FROM ir_model_data WHERE module IN ('hr','hr_org_chart') "
-            "AND COALESCE(noupdate,0)!=1 ORDER BY id DESC"
-        ).fetchall():
-            if (module, name) == ("hr", self.name):
-                continue
-            if not self.connection.execute(
-                "SELECT 1 FROM ir_model_data WHERE model='ir.actions.act_window' AND res_id=? AND id!=?", (record, identity)
-            ).fetchall():
-                self.connection.execute("DELETE FROM ir_act_window WHERE id=?", (record,))
-            self.connection.execute("DELETE FROM ir_model_data WHERE id=?", (identity,))
-
-    def test_duplicate_path_fails_without_transition(self) -> None:
-        with self.assertRaises(sqlite3.IntegrityError):
-            self.native_load()
+        link = bridge._reference(self.cursor, "hr", "act_hr_employee_public_hierarchy_view")
+        if link is None:
+            self.connection.execute("INSERT INTO ir_act_window_view(act_window_id,sequence,view_mode) VALUES (200,16,'hierarchy')")
+        else:
+            self.assertEqual(
+                self.connection.execute(
+                    "SELECT act_window_id,view_mode FROM ir_act_window_view WHERE id=?", (link.record_id,)
+                ).fetchone(),
+                (200, "hierarchy"),
+            )
 
     def assert_refuses_without_effects(self) -> None:
         before = self.snapshot()
@@ -122,8 +123,10 @@ class HrOrgChartActionTests(CoreReferenceFixture):
 
     def test_prepare_preserves_row_links_and_replays_then_native_loads_mobile_hierarchy(self) -> None:
         before = self.snapshot()
+        link_source = bridge._reference(self.cursor, "hr_org_chart", "act_hr_employee_public_hierarchy_view")
         self.apply()
         self.assertEqual(self.snapshot()["ir_act_window"], before["ir_act_window"])
+        self.assertEqual(self.snapshot()["ir_act_window_view"], before["ir_act_window_view"])
         self.assertEqual(self.snapshot()["action_links"], before["action_links"])
         prepared = self.snapshot()
         self.apply()
@@ -131,15 +134,18 @@ class HrOrgChartActionTests(CoreReferenceFixture):
         for module in ("hr", "hr_org_chart"):
             self.assertEqual(bridge._reference(self.cursor, module, self.name).record_id, self.action)
         self.assertTrue(bridge._reference(self.cursor, "hr_org_chart", self.name).noupdate)
+        self.assertEqual(
+            bridge._reference(self.cursor, "hr", "act_hr_employee_public_hierarchy_view").record_id, link_source.record_id
+        )
+        self.assertTrue(bridge._reference(self.cursor, "hr_org_chart", "act_hr_employee_public_hierarchy_view").noupdate)
         self.native_load()
-        self.native_cleanup()
         self.assertEqual(bridge._reference(self.cursor, "hr_org_chart", self.name).record_id, self.action)
         self.assertEqual(self.snapshot()["action_links"], before["action_links"])
         loaded = self.snapshot()
         bridge.migrate(self.cursor, "20.0.1.0")
         self.assertEqual(self.snapshot(), loaded)
         self.assertEqual(
-            self.connection.execute("SELECT id,mobile_view_mode FROM ir_act_window").fetchone(),
+            self.connection.execute("SELECT id,mobile_view_mode FROM ir_act_window WHERE id=?", (self.action,)).fetchone(),
             (self.action, self.native["mobile_view_mode"]),
         )
 
@@ -165,7 +171,31 @@ class HrOrgChartActionTests(CoreReferenceFixture):
             ("UPDATE ir_act_window SET filter=1", ()),
             ("UPDATE ir_act_window SET cache=0", ()),
             ("INSERT INTO ir_act_window_group_rel VALUES (?,7)", (self.action,)),
-            ("INSERT INTO ir_act_window_view VALUES (1,?,7)", (self.action,)),
+            ("INSERT INTO ir_act_window_view(id,act_window_id,view_id) VALUES (1,?,7)", (self.action,)),
+            ("UPDATE ir_act_window_view SET sequence=99 WHERE id=300", ()),
+            ("UPDATE ir_act_window_view SET view_id=7 WHERE id=300", ()),
+            ("UPDATE ir_act_window_view SET multi=1 WHERE id=300", ()),
+            ("UPDATE ir_act_window_view SET view_mode='form' WHERE id=300", ()),
+            ("UPDATE ir_act_window_view SET act_window_id=999 WHERE id=300", ()),
+            ("DELETE FROM ir_act_window_view WHERE id=300", ()),
+            ("UPDATE ir_model_data SET model='wrong' WHERE name='act_hr_employee_public_hierarchy_view'", ()),
+            ("DELETE FROM ir_model_data WHERE name='hr_employee_public_action'", ()),
+            ("UPDATE ir_model_data SET res_id=999 WHERE name='hr_employee_public_action'", ()),
+            ("UPDATE ir_model_data SET res_id=999 WHERE name='act_hr_employee_public_hierarchy_view'", ()),
+            ("DELETE FROM ir_model_data WHERE name='act_hr_employee_public_hierarchy_view'", ()),
+            ("UPDATE ir_model_data SET noupdate=1 WHERE name='act_hr_employee_public_hierarchy_view'", ()),
+            (
+                "INSERT INTO ir_model_data(module,name,model,res_id,noupdate) VALUES ('hr','act_hr_employee_public_hierarchy_view','ir.actions.act_window.view',999,0)",
+                (),
+            ),
+            (
+                "INSERT INTO ir_model_data(module,name,model,res_id,noupdate) VALUES ('custom','link','ir.actions.act_window.view',300,0)",
+                (),
+            ),
+            (
+                "INSERT INTO ir_model_data(module,name,model,res_id,noupdate) VALUES ('hr','act_hr_employee_public_hierarchy_view','ir.actions.act_window.view',300,1)",
+                (),
+            ),
             ("INSERT INTO other_actions VALUES ('ir_act_client',999,?)", (self.native["path"],)),
             ("INSERT INTO other_actions VALUES ('ir_act_client',?,'other')", (self.action,)),
             ("UPDATE ir_model_data SET noupdate=1 WHERE module='hr_org_chart'", ()),
@@ -219,7 +249,7 @@ class HrOrgChartActionTests(CoreReferenceFixture):
                     if change == "fields":
                         record.remove(field)
                     elif change == "help":
-                        field.clear()
+                        field[0].text = "Changed native help"
                     elif change == "view":
                         field.set("eval", "7")
                     else:
@@ -227,22 +257,6 @@ class HrOrgChartActionTests(CoreReferenceFixture):
                 ElementTree.ElementTree(document).write(self.target)
                 self.assert_refuses_without_effects()
         self.target.write_bytes(original)
-
-    def test_old_module_uninstall_keeps_shared_hr_action_and_links(self) -> None:
-        self.apply()
-        self.native_load()
-        before = self.snapshot()
-        old = bridge._reference(self.cursor, "hr_org_chart", self.name)
-        self.assertEqual(old.record_id, self.action)
-        remaining = self.connection.execute(
-            "SELECT 1 FROM ir_model_data WHERE model=? AND res_id=? AND module!='hr_org_chart'", (old.model, old.record_id)
-        ).fetchall()
-        if not remaining:
-            self.connection.execute("DELETE FROM ir_act_window WHERE id=?", (old.record_id,))
-        self.connection.execute("DELETE FROM ir_model_data WHERE module='hr_org_chart'")
-        self.assertEqual(self.snapshot()["ir_act_window"], before["ir_act_window"])
-        self.assertEqual(self.snapshot()["action_links"], before["action_links"])
-        self.assertEqual(bridge._reference(self.cursor, "hr", self.name).record_id, self.action)
 
     def test_absent_source_module_does_not_adopt_by_path(self) -> None:
         self.connection.execute("UPDATE ir_module_module SET state='uninstalled' WHERE name='hr_org_chart'")

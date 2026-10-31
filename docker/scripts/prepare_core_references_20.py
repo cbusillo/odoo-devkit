@@ -299,6 +299,54 @@ def _action_help(value: str) -> str:
     return ElementTree.canonicalize(ElementTree.tostring(document, encoding="unicode"), strip_text=True, with_comments=True)
 
 
+def _hr_org_chart_link_plan(cr: Any) -> Reference:
+    name = "act_hr_employee_public_hierarchy_view"
+    source = _require_source(cr, "hr_org_chart", name, "ir.actions.act_window.view")
+    target = _check_target(cr, name, source, module="hr")
+    if (target is not None and target.noupdate) or (source.noupdate and target is None):
+        raise RuntimeError("Protected Org Chart hierarchy link ownership")
+    employee_action = _require_source(cr, "hr", "hr_employee_public_action", "ir.actions.act_window")
+    cr.execute("SELECT id FROM ir_act_window WHERE id = %s FOR UPDATE", (employee_action.record_id,))
+    if cr.fetchall() != [(employee_action.record_id,)]:
+        raise RuntimeError("Missing public employee action")
+    document = ElementTree.parse(HR_ORG_CHART_DATA_FILE).getroot()
+    records = document.findall(f".//record[@id='{name}']")
+    if len(records) != 1 or records[0].attrib != {"id": name, "model": source.model}:
+        raise RuntimeError("Unsupported native Org Chart hierarchy link")
+    fields = {field.attrib.get("name"): field for field in records[0]}
+    if (
+        set(fields) != {"sequence", "view_mode", "act_window_id"}
+        or len(records[0]) != len(fields)
+        or fields["sequence"].attrib != {"name": "sequence", "eval": "16"}
+        or fields["view_mode"].attrib != {"name": "view_mode"}
+        or fields["view_mode"].text != "hierarchy"
+        or fields["act_window_id"].attrib != {"name": "act_window_id", "ref": "hr.hr_employee_public_action"}
+        or any(len(field) for field in fields.values())
+    ):
+        raise RuntimeError("Changed native Org Chart hierarchy link contract")
+    links = _rows(cr, "SELECT * FROM ir_act_window_view WHERE id = %s FOR UPDATE", (source.record_id,))
+    if len(links) != 1:
+        raise RuntimeError("Missing Org Chart hierarchy link")
+    _require_empty(
+        links[0],
+        {"id", "create_uid", "write_uid", "create_date", "write_date"},
+        {"sequence": (16,), "view_mode": ("hierarchy",), "act_window_id": (employee_action.record_id,), "multi": (None, False)},
+    )
+    cr.execute(
+        "SELECT id FROM ir_act_window_view WHERE act_window_id = %s AND view_mode = %s FOR UPDATE",
+        (employee_action.record_id, "hierarchy"),
+    )
+    if cr.fetchall() != [(source.record_id,)]:
+        raise RuntimeError("Ambiguous Org Chart hierarchy link")
+    cr.execute(
+        "SELECT module,name,model FROM ir_model_data WHERE model = %s AND res_id = %s FOR UPDATE", (source.model, source.record_id)
+    )
+    aliases = {("hr_org_chart", name, source.model)} | ({("hr", name, source.model)} if target is not None else set())
+    if set(cr.fetchall()) != aliases:
+        raise RuntimeError("Customized Org Chart hierarchy link aliases")
+    return source
+
+
 def _inherited_view_source(cr: Any, view: InheritedView) -> tuple[int, dict[str, str]] | None:
     cr.execute("SELECT state FROM ir_module_module WHERE name = %s", (view.module,))
     installed = cr.fetchone()
@@ -745,6 +793,7 @@ def migrate(cr: Any, version: str | None) -> None:
     policies = _policy_xmlid_plan(cr)
     stock_valuation = _stock_valuation_action_plan(cr)
     hr_org_chart = _hr_org_chart_action_plan(cr)
+    hr_org_chart_link = _hr_org_chart_link_plan(cr) if hr_org_chart is not None else None
     _admit_mail(cr)
     if state_target is None:
         _bind_target(cr, TARGET_STATE, state)
@@ -765,3 +814,5 @@ def migrate(cr: Any, version: str | None) -> None:
         _bind_moved_action(cr, stock_valuation, "action_report_stock_valuation", "stock_account", "account")
     if hr_org_chart is not None:
         _bind_moved_action(cr, hr_org_chart, "action_hr_employee_public_org_chart", "hr_org_chart", "hr")
+    if hr_org_chart_link is not None:
+        _bind_moved_action(cr, hr_org_chart_link, "act_hr_employee_public_hierarchy_view", "hr_org_chart", "hr")

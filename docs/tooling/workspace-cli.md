@@ -738,7 +738,11 @@ Notes
   nonempty English HTML help matching the selected native20 definition. It
   refuses changed or translated names/help, context, domain, defaults, attached
   views, group restrictions, extra aliases and conflicting physical storage or
-  ownership before any bridge effect. Other HR records and security stay with
+  ownership before any bridge effect. The matching public employee hierarchy
+  action-view link also transfers its XMLID to HR on the retained row, avoiding
+  the native unique `(action, view mode)` collision. Its owner, action binding,
+  sequence, view reference, defaults and unique pair are qualified before any
+  effects. Other HR records and security stay with
   their existing owners; this action handoff is not a whole-module merge or
   uninstall. Native cleanup keeps the protected old alias, while a later native
   uninstall of only the old module retains the action through its HR XMLID.
