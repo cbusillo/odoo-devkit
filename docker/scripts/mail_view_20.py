@@ -79,6 +79,9 @@ def capture(cr: Any, *, lock: bool = False, root_xmlid: str = ROOT_XMLID, view_x
         aliases[record].append({"xmlid": f"{module}.{name}", "model": model, "noupdate": noupdate})
     cr.execute("SELECT to_jsonb(c) FROM ir_ui_view_custom c WHERE ref_id=ANY(%s) ORDER BY c.id", (identities,))
     customizations = [row[0] for row in cr.fetchall()]
+    cr.execute("SELECT 1 FROM ir_ui_view_group_rel WHERE view_id=ANY(%s) LIMIT 1", (identities,))
+    if cr.fetchone():
+        raise RuntimeError("Deferred view conversion: preserve restricted inheritance family")
     views = []
     for record in records:
         if not aliases[record["id"]]:
@@ -138,7 +141,7 @@ def _render_architecture(arch: ElementTree.Element) -> str:
 def _normalized_architecture(architecture: str) -> str:
     parser = ElementTree.XMLParser(target=ElementTree.TreeBuilder(insert_comments=True))
     root = ElementTree.fromstring(architecture, parser=parser)
-    if root.tag == "data" and not root.attrib and len(root) == 1:
+    if root.tag == "data" and not root.attrib and len(root) == 1 and not (root.text or "").strip():
         root = root[0]
     for element in root.iter():
         if element.text is not None and not element.text.strip():
@@ -149,7 +152,8 @@ def _normalized_architecture(architecture: str) -> str:
 
 
 def _automation_view(reference: dict[str, Any], source_xml: str) -> dict[str, Any]:
-    document = ElementTree.fromstring(source_xml)
+    parser = ElementTree.XMLParser(target=ElementTree.TreeBuilder(insert_comments=True))
+    document = ElementTree.fromstring(source_xml, parser=parser)
     records = document.findall(".//record")
     if len(records) != 1 or records[0].attrib != {"id": "view_server_action_form", "model": "ir.ui.view"}:
         raise RuntimeError("Unsupported source Base Automation view")
@@ -157,7 +161,10 @@ def _automation_view(reference: dict[str, Any], source_xml: str) -> dict[str, An
     if (
         len(records[0]) != len(fields)
         or set(fields) != {"name", "model", "inherit_id", "arch"}
+        or fields["name"].attrib != {"name": "name"}
+        or fields["model"].attrib != {"name": "model"}
         or fields["inherit_id"].attrib != {"name": "inherit_id", "ref": ROOT_XMLID}
+        or fields["arch"].attrib != {"name": "arch", "type": "xml"}
         or fields["model"].text != "ir.actions.server"
     ):
         raise RuntimeError("Unsupported source Base Automation fields or parent")
@@ -174,12 +181,17 @@ def _automation_view(reference: dict[str, Any], source_xml: str) -> dict[str, An
 
 def _qualified_family(profile: dict[str, Any]) -> dict[str, Any]:
     reference = profile["reference"]
-    source = profile["source_family"]
+    binding = profile["source_family"]
+    payload = binding["manifest"].encode()
+    if hashlib.sha256(payload).hexdigest() != binding["manifest_sha256"]:
+        raise RuntimeError("Source closure manifest changed")
+    source = json.loads(payload)
     modules = source["modules"]
     if (
         source["source_image"] != profile["source_image"]
         or "@sha256:" not in source["source_image"]
         or not modules.get("base_automation")
+        or not modules.get("base", "").startswith("19.")
         or any(not isinstance(version, str) or not version for version in modules.values())
         or any(modules.get(name) != version for name, version in reference["modules"].items())
         or any(
@@ -187,19 +199,29 @@ def _qualified_family(profile: dict[str, Any]) -> dict[str, Any]:
         )
     ):
         raise RuntimeError("Unsupported Base Automation source closure")
+    source_xml = binding["base_automation_xml"]
+    if hashlib.sha256(source_xml.encode()).hexdigest() != source["base_automation_xml_sha256"]:
+        raise RuntimeError("Source Base Automation XML changed")
+    defaults = {
+        key: value for key, value in reference["target"].items() if key not in {"name", "model", "arch_fs", "arch_db", "xmlids"}
+    }
+    if source["base_automation_defaults"] != defaults:
+        raise RuntimeError("Unqualified Base Automation defaults")
     expected = copy.deepcopy(reference)
     expected["modules"] = modules
-    expected["views"].append(_automation_view(reference, source["base_automation_xml"]))
+    expected["views"].append(_automation_view(reference, source_xml))
     expected["views"].sort(key=lambda row: json.dumps(row["xmlids"], sort_keys=True))
     return expected
 
 
-def qualify_source_family(profile: dict[str, Any], modules: dict[str, str], automation_source: Path) -> dict[str, Any]:
+def qualify_source_family(
+    profile: dict[str, Any], source_manifest: Path, manifest_sha256: str, automation_source: Path
+) -> dict[str, Any]:
     qualified = copy.deepcopy(profile)
     qualified["source_family"] = {
-        "source_image": profile["source_image"],
-        "modules": dict(modules),
-        "base_automation_xml": automation_source.read_text(),
+        "manifest": source_manifest.read_bytes().decode(),
+        "manifest_sha256": manifest_sha256,
+        "base_automation_xml": automation_source.read_bytes().decode(),
     }
     _qualified_family(qualified)
     return qualified

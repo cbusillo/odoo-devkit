@@ -629,18 +629,26 @@ Notes
   The existing `CM_WEBSITE_MAIL_REFERENCE` and
   `CM_WEBSITE_MAIL_REFERENCE_SHA256` inputs remain the reference contract for
   shared consumers. A missing or changed artifact refuses before effects.
-  A source custodian can use `qualify_source_family(profile, modules,
-  automation_source)` to add the one stock Base Automation extension to that
-  profile without changing its independent reference. `modules` must be the
-  complete separately qualified source module/version closure, bound to the
-  profile's immutable source image; it must preserve every reference component
-  version. `automation_source` is the exact source19
-  `base_automation/views/ir_actions_server_views.xml`. Its declared fields and
-  architecture supply the added view; its other fields must match the
-  independently observed stock Mail view defaults. Qualify those common defaults
-  against the exact source before using this path. The candidate's full family
+  A source custodian can use `qualify_source_family(profile, source_manifest,
+  manifest_sha256, automation_source)` to add the one stock Base Automation
+  extension without changing the independent reference. The separate immutable
+  source manifest contains `source_image`, `modules`,
+  `base_automation_xml_sha256` and `base_automation_defaults`. Its image must
+  match the independent profile's immutable source image; its complete
+  source-derived module/version closure must preserve every reference component
+  version. Supply the manifest's separately recorded digest, never a manifest
+  derived from candidate rows. `automation_source` is the exact source19
+  `base_automation/views/ir_actions_server_views.xml`; its bytes must match the
+  manifest. Its declared fields and architecture supply the added view.
+  `base_automation_defaults` contains the separately source-qualified common
+  fields: all independent target fields except `name`, `model`, `arch_fs`,
+  `arch_db` and `xmlids`. They must match the independent stock Mail defaults.
+  The profile embeds and revalidates both source artifacts. Artifact hashes
+  prove integrity; the custodian still establishes their source provenance.
+  The candidate's full family
   and module closure still have to match, including every extension field,
   alias and locale. Candidate rows never supply stock defaults or architecture.
+  Group restrictions anywhere in the family refuse before effects too.
   The custodian writes a new immutable profile and binds its digest through the
   existing inputs. This adds no general view-rebase support or native19 run.
   When adopting the shared stage, remove the equivalent tenant-owned Mail

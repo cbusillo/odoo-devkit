@@ -89,13 +89,23 @@ class MailAdmissionTests(unittest.TestCase):
             [],
             [("fixture", "source")],
         ]
-        cursor.fetchone.return_value = ("independent",)
+        cursor.fetchone.side_effect = [None, ("independent",)]
 
         captured = MODULE["capture"](cursor, root_xmlid=root_xmlid, view_xmlid=target_xmlid)
 
         self.assertEqual(captured["binding"]["record_id"], target_id)
         self.assertEqual([row["xmlid"] for row in captured["target"]["xmlids"]], [target_xmlid])
         self.assertEqual([row["xmlid"] for row in captured["target"]["parent_xmlids"]], [root_xmlid])
+        cursor.fetchone.side_effect = [(1,)]
+        cursor.fetchall.side_effect = [
+            [(401, "ir.ui.view", root_id, False, root_id)],
+            [(402, "ir.ui.view", target_id, False, target_id)],
+            [(root,), (target,)],
+            [(root_id, *root_xmlid.split("."), "ir.ui.view", False), (target_id, *target_xmlid.split("."), "ir.ui.view", False)],
+            [],
+        ]
+        with self.assertRaises(RuntimeError):
+            MODULE["capture"](cursor, root_xmlid=root_xmlid, view_xmlid=target_xmlid)
 
     def setUp(self) -> None:
         self.target = {
@@ -189,7 +199,8 @@ class SourceFamilyTests(unittest.TestCase):
         MailAdmissionTests.setUp(self)
         self.reference["modules"] = {"base": "19.base", "mail": "19.mail"}
         self.reference["source_image"] = "fixture@sha256:source"
-        self.current["modules"] = dict(self.reference["modules"], base_automation="19.automation", fixture_addon="19.addon")
+        self.source_modules = dict(self.reference["modules"], base_automation="19.automation", fixture_addon="19.addon")
+        self.current["modules"] = dict(self.source_modules)
         self.profile = {"reference": self.reference, "source_image": self.reference.pop("source_image")}
         self.source = (
             '<odoo><data><record id="view_server_action_form" model="ir.ui.view">'
@@ -207,12 +218,28 @@ class SourceFamilyTests(unittest.TestCase):
             xmlids=[{"xmlid": "base_automation.view_server_action_form", "model": "ir.ui.view", "noupdate": False}],
         )
         self.current["views"].append(self.extension)
+        self.source_image = self.profile["source_image"]
 
     def qualified(self) -> dict:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "ir_actions_server_views.xml"
             source.write_text(self.source)
-            return MODULE["qualify_source_family"](self.profile, self.current["modules"], source)
+            manifest = Path(directory) / "source-closure.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "source_image": self.source_image,
+                        "modules": self.source_modules,
+                        "base_automation_xml_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                        "base_automation_defaults": {
+                            key: value
+                            for key, value in self.reference["target"].items()
+                            if key not in {"name", "model", "arch_fs", "arch_db", "xmlids"}
+                        },
+                    }
+                )
+            )
+            return MODULE["qualify_source_family"](self.profile, manifest, hashlib.sha256(manifest.read_bytes()).hexdigest(), source)
 
     def test_static_extension_and_bound_closure_admit_without_replacing_independent_reference(self) -> None:
         original = copy.deepcopy(self.profile)
@@ -233,6 +260,7 @@ class SourceFamilyTests(unittest.TestCase):
             ("priority", 7),
             ("unknown_column", "retained"),
             ("arch_db", {"en_US": "<xpath><p>User edit</p></xpath>"}),
+            ("arch_db", {"en_US": "<data>Retain user text" + self.extension["arch_db"]["en_US"] + "</data>"}),
             ("arch_db", {**self.extension["arch_db"], "fr_FR": "<xpath><p>Traduction</p></xpath>"}),
             ("xmlids", [{"xmlid": "custom.owner", "model": "ir.ui.view", "noupdate": False}]),
             ("xmlids", [dict(self.extension["xmlids"][0], noupdate=True)]),
@@ -263,13 +291,30 @@ class SourceFamilyTests(unittest.TestCase):
                 MODULE["admit_profile"](current, qualified)
 
     def test_source_image_or_independent_component_version_disagreement_refuses(self) -> None:
-        qualified = self.qualified()
-        qualified["source_family"]["source_image"] = "fixture@sha256:another"
-        with self.assertRaises(RuntimeError):
-            MODULE["admit_profile"](self.current, qualified)
-        self.current["modules"]["mail"] = "19.wrong"
+        self.source_image = "fixture@sha256:another"
         with self.assertRaises(RuntimeError):
             self.qualified()
+        self.source_image = self.profile["source_image"]
+        self.source_modules["mail"] = "19.wrong"
+        with self.assertRaises(RuntimeError):
+            self.qualified()
+
+    def test_source_artifact_tamper_refuses_before_admission(self) -> None:
+        for key in ("manifest", "base_automation_xml"):
+            qualified = self.qualified()
+            qualified["source_family"][key] += " "
+            with self.subTest(key=key), self.assertRaises(RuntimeError):
+                MODULE["admit_profile"](self.current, qualified)
+
+    def test_source_comments_survive_comparison_and_added_candidate_comments_refuse(self) -> None:
+        comment = "<!-- source annotation -->"
+        self.source = self.source.replace("<button", comment + "<button")
+        self.extension["arch_db"]["en_US"] = self.extension["arch_db"]["en_US"].replace("<button", comment + "<button")
+        qualified = self.qualified()
+        MODULE["admit_profile"](self.current, qualified)
+        self.extension["arch_db"]["en_US"] = self.extension["arch_db"]["en_US"].replace(comment, "<!-- user annotation -->")
+        with self.assertRaises(RuntimeError):
+            MODULE["admit_profile"](self.current, qualified)
 
 
 class TargetSourceTests(unittest.TestCase):
