@@ -9,6 +9,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest.mock import Mock, patch
 
 MODULE = runpy.run_path(str(Path(__file__).resolve().parents[1] / "docker/scripts/mail_view_20.py"))
@@ -24,7 +25,7 @@ class MailStageTests(unittest.TestCase):
             "INSERT INTO ir_ui_view VALUES (17, 'old architecture', 'retained previous edit', 29);"
             "INSERT INTO ir_model_data VALUES (51, 17, 'retained alias');"
         )
-        current = {
+        current: dict[str, Any] = {
             "database_uuid": "candidate",
             "target": {"arch_db": {"en_US": "old architecture"}},
             "binding": {"record_id": 17, "noupdate": False},
@@ -37,10 +38,12 @@ class MailStageTests(unittest.TestCase):
         cursor = connection.cursor()
 
         class NativeCursor:
-            def execute(self, query: str, parameters: tuple) -> None:
+            @staticmethod
+            def execute(query: str, parameters: tuple) -> None:
                 cursor.execute(query.replace("%s", "?").replace("::jsonb", ""), parameters)
 
-            def fetchone(self) -> tuple | None:
+            @staticmethod
+            def fetchone() -> tuple | None:
                 return cursor.fetchone()
 
         with tempfile.TemporaryDirectory() as directory:
@@ -74,7 +77,36 @@ class MailStageTests(unittest.TestCase):
         self.assertTrue(connection.in_transaction)
 
 
-class MailAdmissionTests(unittest.TestCase):
+class MailFixture(unittest.TestCase):
+    def setUp(self) -> None:
+        self.target: dict[str, Any] = {
+            "active": True,
+            "type": "form",
+            "arch_db": {"en_US": "<data><field name='template_id'/></data>"},
+            "arch_updated": False,
+            "parent_xmlids": [{"xmlid": MODULE["ROOT_XMLID"]}],
+            "xmlids": [{"xmlid": MODULE["VIEW_XMLID"], "noupdate": False}],
+        }
+        self.reference: dict[str, Any] = {
+            "database_uuid": "independently-generated-reference",
+            "target": self.target,
+            "views": [self.target],
+            "modules": {"mail": "source-version"},
+            "binding": {"record_id": 101, "xmlid_id": 102, "noupdate": False},
+            "customizations": [],
+        }
+        self.current = copy.deepcopy(self.reference)
+        self.current["database_uuid"] = "candidate-copy"
+        self.current["binding"].update(record_id=201, xmlid_id=202)
+
+    def assert_refused(self) -> None:
+        before = copy.deepcopy(self.current)
+        with self.assertRaises(RuntimeError):
+            MODULE["admit"](self.current, self.reference, whole_family=True)
+        self.assertEqual(self.current, before)
+
+
+class MailAdmissionTests(MailFixture):
     def test_capture_can_select_an_independent_qweb_inheritance_family(self) -> None:
         root_xmlid, target_xmlid = "fixture.root", "fixture.child"
         root_id, target_id = 301, 302
@@ -107,27 +139,6 @@ class MailAdmissionTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             MODULE["capture"](cursor, root_xmlid=root_xmlid, view_xmlid=target_xmlid)
 
-    def setUp(self) -> None:
-        self.target = {
-            "active": True,
-            "type": "form",
-            "arch_db": {"en_US": "<data><field name='template_id'/></data>"},
-            "arch_updated": False,
-            "parent_xmlids": [{"xmlid": MODULE["ROOT_XMLID"]}],
-            "xmlids": [{"xmlid": MODULE["VIEW_XMLID"], "noupdate": False}],
-        }
-        self.reference = {
-            "database_uuid": "independently-generated-reference",
-            "target": self.target,
-            "views": [self.target],
-            "modules": {"mail": "source-version"},
-            "binding": {"record_id": 101, "xmlid_id": 102, "noupdate": False},
-            "customizations": [],
-        }
-        self.current = copy.deepcopy(self.reference)
-        self.current["database_uuid"] = "candidate-copy"
-        self.current["binding"].update(record_id=201, xmlid_id=202)
-
     def test_cross_database_surrogate_ids_do_not_reject_stock(self) -> None:
         MODULE["admit"](self.current, self.reference, whole_family=True)
 
@@ -155,7 +166,7 @@ class MailAdmissionTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     MODULE["admit"](current, self.reference, whole_family=True)
 
-    def test_reowned_noupdate_and_inherited_edits_are_deferred(self) -> None:
+    def test_ownership_noupdate_and_inherited_edits_are_deferred(self) -> None:
         for field, value in (("xmlids", []), ("type", "qweb")):
             with self.subTest(field=field):
                 current = copy.deepcopy(self.current)
@@ -187,16 +198,10 @@ class MailAdmissionTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             MODULE["admit"](self.current, self.reference, whole_family=False)
 
-    def assert_refused(self) -> None:
-        before = copy.deepcopy(self.current)
-        with self.assertRaises(RuntimeError):
-            MODULE["admit"](self.current, self.reference, whole_family=True)
-        self.assertEqual(self.current, before)
 
-
-class SourceFamilyTests(unittest.TestCase):
+class SourceFamilyTests(MailFixture):
     def setUp(self) -> None:
-        MailAdmissionTests.setUp(self)
+        super().setUp()
         self.reference["modules"] = {"base": "19.base", "mail": "19.mail"}
         self.reference["source_image"] = "fixture@sha256:source"
         self.source_modules = dict(self.reference["modules"], base_automation="19.automation", fixture_addon="19.addon")
@@ -219,6 +224,11 @@ class SourceFamilyTests(unittest.TestCase):
         )
         self.current["views"].append(self.extension)
         self.source_image = self.profile["source_image"]
+        self.source_defaults = {
+            key: value
+            for key, value in self.reference["target"].items()
+            if key not in {"name", "model", "arch_fs", "arch_db", "xmlids"}
+        }
 
     def qualified(self) -> dict:
         with tempfile.TemporaryDirectory() as directory:
@@ -231,11 +241,7 @@ class SourceFamilyTests(unittest.TestCase):
                         "source_image": self.source_image,
                         "modules": self.source_modules,
                         "base_automation_xml_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
-                        "base_automation_defaults": {
-                            key: value
-                            for key, value in self.reference["target"].items()
-                            if key not in {"name", "model", "arch_fs", "arch_db", "xmlids"}
-                        },
+                        "base_automation_defaults": self.source_defaults,
                     }
                 )
             )
@@ -296,6 +302,10 @@ class SourceFamilyTests(unittest.TestCase):
             self.qualified()
         self.source_image = self.profile["source_image"]
         self.source_modules["mail"] = "19.wrong"
+        with self.assertRaises(RuntimeError):
+            self.qualified()
+        self.source_modules["mail"] = self.reference["modules"]["mail"]
+        self.source_defaults["active"] = False
         with self.assertRaises(RuntimeError):
             self.qualified()
 

@@ -613,7 +613,7 @@ def _admit_mail(cr: Any) -> None:
     installed = cr.fetchone()
     if installed is None or installed[0] not in {"installed", "to upgrade"}:
         return
-    from odoo.modules.module import get_module_path
+    get_module_path = import_module("odoo.modules.module").get_module_path
 
     helpers = runpy.run_path(str(Path(__file__).with_name("mail_view_20.py")))
     target = Path(get_module_path("mail")) / "views/ir_actions_server_views.xml"
