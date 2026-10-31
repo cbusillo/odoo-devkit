@@ -229,7 +229,9 @@ def qualify_source_family(
 
 def admit_profile(current: dict[str, Any], profile: dict[str, Any]) -> None:
     if "source_family" not in profile:
-        admit(current, profile["reference"], whole_family=True)
+        contract = profile.get("history", {}).get("source_contract")
+        source_modules = contract["modules"] if contract is not None else None
+        admit(current, profile["reference"], whole_family=True, source_modules=source_modules)
         return
     expected = _qualified_family(profile)
     views = copy.deepcopy(current["views"])
@@ -321,7 +323,9 @@ def load_reference(target_xml: Path) -> dict[str, Any]:
     return profile
 
 
-def admit(current: dict[str, Any], reference: dict[str, Any], *, whole_family: bool) -> None:
+def admit(
+    current: dict[str, Any], reference: dict[str, Any], *, whole_family: bool, source_modules: dict[str, str] | None = None
+) -> None:
     if current["database_uuid"] == reference["database_uuid"]:
         raise RuntimeError("Reference must be generated independently from the candidate")
     if current["customizations"] or current["binding"]["noupdate"]:
@@ -330,8 +334,14 @@ def admit(current: dict[str, Any], reference: dict[str, Any], *, whole_family: b
     reference_target = {field: reference["target"].get(field) for field in MAIL_VIEW_FIELDS}
     if current_target != reference_target:
         raise RuntimeError("Deferred view conversion: modified architecture, translations, binding or parent")
-    if whole_family and (current["views"] != reference["views"] or current["modules"] != reference["modules"]):
-        raise RuntimeError("Deferred view conversion: inherited edits or source module closure differs")
+    if whole_family:
+        expected_modules = reference["modules"] if source_modules is None else source_modules
+        if current["modules"] != expected_modules or any(
+            current["modules"].get(name) != version for name, version in reference["modules"].items()
+        ):
+            raise RuntimeError("Deferred view conversion: source module closure or independent component versions differ")
+        if current["views"] != reference["views"]:
+            raise RuntimeError("Deferred view conversion: inherited edits differ")
 
 
 def admit_before_effects(cr: Any, target_xml: Path) -> None:

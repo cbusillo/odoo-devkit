@@ -107,6 +107,27 @@ class MailFixture(unittest.TestCase):
 
 
 class MailAdmissionTests(MailFixture):
+    def test_bound_source_closure_preserves_independent_family_and_component_versions(self) -> None:
+        self.current["modules"]["tenant_extension"] = "source.extension"
+        profile = {"reference": self.reference, "history": {"source_contract": {"modules": self.current["modules"].copy()}}}
+        before = copy.deepcopy(profile)
+        MODULE["admit_profile"](self.current, profile)
+        self.assertEqual(profile, before)
+        for change in ("component", "extra", "family"):
+            changed = copy.deepcopy(self.current)
+            if change == "component":
+                changed["modules"]["mail"] += ".different"
+                changed_profile = copy.deepcopy(profile)
+                changed_profile["history"]["source_contract"]["modules"] = changed["modules"].copy()
+            else:
+                changed_profile = profile
+                if change == "extra":
+                    changed["modules"]["unexpected"] = "source.unexpected"
+                else:
+                    changed["views"][0]["active"] = False
+            with self.subTest(change=change), self.assertRaises(RuntimeError):
+                MODULE["admit_profile"](changed, changed_profile)
+
     def test_capture_can_select_an_independent_qweb_inheritance_family(self) -> None:
         root_xmlid, target_xmlid = "fixture.root", "fixture.child"
         root_id, target_id = 301, 302

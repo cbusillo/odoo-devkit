@@ -1142,3 +1142,10 @@ or a migration result. Measure file-store input transfer, verification, overlay
 preparation, database restore, and cleanup separately; a shared lower avoids its
 bulk retransfer on subsequent runs but still requires integrity reads. Preserve
 any full-copy headroom refusal rather than inventing a before measurement.
+
+The shared Mail preflight also accepts the website conversion's existing
+`history.source_contract.modules` binding. It compares the complete source
+closure while retaining every independent stock component version and the
+complete stock view family. Website target-module/reference completeness
+checks stay with its existing conversion preflight; the shared stage does not
+replace those checks.
