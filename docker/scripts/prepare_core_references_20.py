@@ -510,6 +510,33 @@ def _lunch_plan(cr: Any) -> list[int]:
     return ids
 
 
+def _policy_xmlid_plan(cr: Any) -> list[int]:
+    cr.execute(
+        "SELECT id, module, name, model FROM ir_model_data data "
+        "WHERE model IN ('ir.rule', 'ir.model.access') AND module NOT IN ('__export__', '__custom__', 'studio_customization') "
+        "AND EXISTS (SELECT 1 FROM ir_module_module owner WHERE owner.name = data.module) ORDER BY id FOR UPDATE"
+    )
+    policies = cr.fetchall()
+    pending = []
+    for record_id, module, name, model in policies:
+        suffix = "_" + model.replace(".", "_")
+        if name.endswith(suffix):
+            continue
+        if _reference(cr, module, name + suffix) is not None:
+            raise RuntimeError(f"Conflicting legacy policy reference {module}.{name + suffix}")
+        pending.append(record_id)
+    return pending
+
+
+def _release_policy_xmlids(cr: Any, policies: list[int]) -> None:
+    # Copyright 2026 Hunki Enterprises BV
+    # License AGPL-3.0 or later (https://www.gnu.org/licenses/agpl).
+    # https://github.com/hbrunn/OpenUpgrade/blob/2d9eb6bab7e7e579953e38d7ad3b96aad6fcc44d/openupgrade_scripts/scripts/base/20.0.1.3/pre-migration.py
+    for record_id in policies:
+        cr.execute("UPDATE ir_model_data SET name = name || '_' || replace(model, '.', '_') WHERE id = %s", (record_id,))
+    _logger.info("Released %s legacy policy XML IDs for native Odoo 20 data loading", len(policies))
+
+
 def migrate(cr: Any, version: str | None) -> None:
     major = (version or "").split(".", 1)[0]
     if major == "20":
@@ -523,6 +550,7 @@ def migrate(cr: Any, version: str | None) -> None:
     inherited_views = [(view, _inherited_view_source(cr, view)) for view in INHERITED_VIEWS]
     empty_chats = _empty_chat_plan(cr)
     lunches = _lunch_plan(cr)
+    policies = _policy_xmlid_plan(cr)
     if state_target is None:
         _bind_target(cr, TARGET_STATE, state)
     if website is not None and website_target is None:
@@ -537,3 +565,4 @@ def migrate(cr: Any, version: str | None) -> None:
     if lunches:
         _identified(cr, "DELETE FROM resource_calendar_attendance WHERE id = ANY(%s)", (), (lunches,))
         _logger.info("Removed %s redundant nonworking lunch rows; preserved working intervals", len(lunches))
+    _release_policy_xmlids(cr, policies)

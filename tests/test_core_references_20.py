@@ -223,6 +223,85 @@ class CoreReferenceTests(CoreReferenceFixture):
             self.assertEqual(self.snapshot(), before)
 
 
+class PolicyXMLIDTests(CoreReferenceFixture):
+    def setUp(self) -> None:
+        super().setUp()
+        self.connection.executescript(
+            "INSERT INTO ir_module_module VALUES ('base','installed','19.0.1.3');"
+            "INSERT INTO ir_module_module VALUES ('studio_customization','installed','19.0.1.0');"
+            "CREATE TABLE ir_model_access (id INTEGER PRIMARY KEY, name TEXT, perm_read BOOLEAN, perm_write BOOLEAN);"
+            "CREATE TABLE ir_rule (id INTEGER PRIMARY KEY, domain_force TEXT, active BOOLEAN);"
+            "CREATE TABLE ir_access (id INTEGER PRIMARY KEY, operation TEXT);"
+            "INSERT INTO ir_model_access VALUES (81,'Retained access',1,0),(82,'Unowned access',0,0);"
+            "INSERT INTO ir_rule VALUES (91,'Retained domain',0);"
+        )
+        self.xmlid("base", "access_decimal_precision_config", "ir.model.access", 81, False)
+        self.xmlid("website", "retained_rule", "ir.rule", 91, True)
+        self.xmlid("__custom__", "custom_access", "ir.model.access", 81, True)
+        self.xmlid("__export__", "exported_rule", "ir.rule", 91, False)
+        self.xmlid("studio_customization", "studio_rule", "ir.rule", 91, True)
+        self.xmlid("missing_owner", "unowned_access", "ir.model.access", 82, False)
+
+    def policies(self) -> dict[str, list[tuple]]:
+        return {
+            table: self.connection.execute("SELECT * FROM " + table + " ORDER BY id").fetchall()
+            for table in ("ir_model_access", "ir_rule", "ir_access")
+        }
+
+    def test_releases_native_names_preserving_legacy_rows_alias_metadata_and_replay(self) -> None:
+        before = self.snapshot()
+        policies = self.policies()
+        self.assertEqual(bridge._reference(self.cursor, "base", "access_decimal_precision_config").model, "ir.model.access")
+        self.apply()
+        for module, name, model, record in (
+            ("base", "access_decimal_precision_config", "ir.model.access", 81),
+            ("website", "retained_rule", "ir.rule", 91),
+        ):
+            self.assertIsNone(bridge._reference(self.cursor, module, name))
+            old = next(row for row in before["ir_model_data"] if row[1:3] == (module, name))
+            retained = self.connection.execute("SELECT * FROM ir_model_data WHERE id=?", (old[0],)).fetchone()
+            self.assertEqual(retained[:2] + retained[3:], old[:2] + old[3:])
+            self.assertEqual(bridge._reference(self.cursor, module, retained[2]).record_id, record)
+            self.assertEqual(retained[3], model)
+        for old in before["ir_model_data"]:
+            if old[1] in {"__custom__", "__export__", "studio_customization", "missing_owner"}:
+                self.assertEqual(self.connection.execute("SELECT * FROM ir_model_data WHERE id=?", (old[0],)).fetchone(), old)
+        self.assertEqual(self.policies(), policies)
+        after = self.snapshot()
+        self.apply()
+        self.assertEqual(self.snapshot(), after)
+        self.connection.execute("INSERT INTO ir_access VALUES (101,'ru')")
+        self.xmlid("base", "access_decimal_precision_config", "ir.access", 101, False)
+        after = self.snapshot()
+        policies = self.policies()
+        self.apply()
+        self.assertEqual(self.snapshot(), after)
+        self.assertEqual(self.policies(), policies)
+
+    def test_destination_collision_refuses_before_every_effect(self) -> None:
+        for model, record, protected in (("ir.model.access", 81, False), ("ir.model.access", 82, True), ("ir.access", 101, False)):
+            self.connection.execute("SAVEPOINT collision")
+            with self.subTest(model=model, record=record, protected=protected):
+                self.xmlid("base", "access_decimal_precision_config_ir_model_access", model, record, protected)
+                before = self.snapshot()
+                policies = self.policies()
+                with self.assertRaises(RuntimeError):
+                    self.apply()
+                self.assertEqual(self.snapshot(), before)
+                self.assertEqual(self.policies(), policies)
+            self.connection.execute("ROLLBACK TO collision")
+            self.connection.execute("RELEASE collision")
+
+    def test_other_reference_refusals_leave_policy_names_untouched(self) -> None:
+        self.connection.execute("UPDATE website SET id=-1")
+        before = self.snapshot()
+        policies = self.policies()
+        with self.assertRaises(RuntimeError):
+            self.apply()
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.policies(), policies)
+
+
 class InheritedViewTests(CoreReferenceFixture):
     module, view_name, model, parent_name, old_selector, new_selector = bridge.INHERITED_VIEWS[0]
 
