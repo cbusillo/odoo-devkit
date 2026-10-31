@@ -16,8 +16,8 @@ bridge = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bridge)
 
 
-def patch_attr(target: Any, name: str, value: Any, *, create: bool = False) -> Any:
-    return patch.object(target, name, value, create=create)
+def patch_attr(target: Any, name: str, value: Any) -> Any:
+    return patch.object(target, name, value)
 
 
 class Cursor:
@@ -323,10 +323,6 @@ class CalendarViewTests(InheritedViewTests):
         return f"<data>{self.old_selector}<filter name='type_team' string='{label}' domain='[]'/></filter></data>"
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class DiscussCursor(Cursor):
     def __init__(self, connection: sqlite3.Connection) -> None:
         super().__init__(connection)
@@ -344,7 +340,7 @@ class DiscussCursor(Cursor):
             rows = []
             for (table,) in self.connection.execute("SELECT name FROM sqlite_master WHERE type='table'"):
                 for column in self.connection.execute('PRAGMA table_info("' + table + '")'):
-                    rows.append((table, column[1], "text" if column[2] == "TEXT" else "integer"))
+                    rows.append((table, column[1], "text" if column[2] == "TEXT" else "jsonb" if column[2] == "JSON" else "integer"))
             return self._catalog(rows, 3)
         if "FROM pg_trigger" in query:
             query = "SELECT 1 FROM deletion_triggers"
@@ -405,8 +401,22 @@ class EmptyChatTests(CoreReferenceFixture):
             "(53,42,101,'closed',0,'2025-01-01T10:00:00','2025-01-01T10:00:01'),"
             "(54,42,202,'closed',0,'2025-01-01T10:00:00','2025-01-01T10:00:01');"
         )
+        self.connection.create_function("jsonb_path_exists", 3, self.json_reference)
         self.cursor = DiscussCursor(self.connection)
-        patch_attr(bridge, "_identified", self.cursor.identified, create=True).start()
+        patch_attr(bridge, "_identified", self.cursor.identified).start()
+
+    @staticmethod
+    def json_reference(value: str | None, _path: str, variables: str) -> bool:
+        targets = json.loads(variables)["targets"]
+
+        def contains(item: Any) -> bool:
+            if isinstance(item, dict):
+                return any(contains(child) for child in item.values())
+            if isinstance(item, list):
+                return any(contains(child) for child in item)
+            return item in targets
+
+        return contains(json.loads(value)) if value else False
 
     def all_rows(self) -> dict[str, list[tuple]]:
         tables = [row[0] for row in self.connection.execute("SELECT name FROM sqlite_master WHERE type='table'")]
@@ -433,10 +443,7 @@ class EmptyChatTests(CoreReferenceFixture):
             "UPDATE discuss_channel SET description='custom'",
             "UPDATE discuss_channel SET custom_value='custom' WHERE id=42",
             "UPDATE discuss_channel SET name='custom'",
-            "UPDATE discuss_channel SET last_interest_dt='2026-01-01' WHERE id=42",
-            "UPDATE discuss_channel SET create_date=NULL WHERE id=42",
             "UPDATE discuss_channel SET active=0 WHERE id=42",
-            "UPDATE discuss_channel_member SET last_interest_dt='2026-01-01' WHERE id=53",
             "UPDATE discuss_channel_member SET custom_channel_name='custom'",
             "UPDATE discuss_channel_member SET custom_notifications='mentions' WHERE id=53",
             "UPDATE discuss_channel_member SET fold_state='open' WHERE id=54",
@@ -445,9 +452,10 @@ class EmptyChatTests(CoreReferenceFixture):
             "UPDATE discuss_channel_member SET fetched_message_id=1 WHERE id=53",
             "UPDATE discuss_channel_member SET last_seen_dt='2025-01-01' WHERE id=53",
             "UPDATE discuss_channel_member SET unpin_dt='2026-01-01' WHERE id=53",
-            "UPDATE discuss_channel_member SET guest_id=303 WHERE id=53",
+            "UPDATE discuss_channel_member SET partner_id=NULL,guest_id=303 WHERE partner_id=101",
             "INSERT INTO ir_model_fields(name,ttype,store,company_dependent,relation) VALUES ('custom','many2one',1,1,'discuss.channel')",
             "INSERT INTO ir_model_fields(name,ttype,store,relation,model) VALUES ('chat_id','many2one',1,'discuss.channel','custom.owner')",
+            "INSERT INTO ir_model_fields(name,ttype,store,company_dependent) VALUES ('custom','reference',1,1)",
             "INSERT INTO deletion_triggers VALUES ('custom_delete')",
         )
         for change in changes:
@@ -518,3 +526,34 @@ class EmptyChatTests(CoreReferenceFixture):
         with self.assertRaises(RuntimeError):
             self.apply()
         self.assertEqual(self.all_rows(), before)
+
+    def test_internal_column_collision_refuses_without_effects(self) -> None:
+        self.connection.execute("ALTER TABLE discuss_channel ADD COLUMN members TEXT")
+        self.connection.execute("UPDATE discuss_channel SET members='custom payload' WHERE id=42")
+        before = self.all_rows()
+        with self.assertRaises(RuntimeError):
+            self.apply()
+        self.assertEqual(self.all_rows(), before)
+
+    def test_properties_and_json_reference_refuse_without_effects(self) -> None:
+        self.connection.execute("CREATE TABLE property_owner (definition JSON, value JSON)")
+        for definition, value in (
+            ([{"name": "chat", "type": "many2one", "comodel": "discuss.channel"}], {"chat": 42}),
+            ([], {"reference": "discuss.channel.member,53"}),
+        ):
+            with self.subTest(value=value):
+                self.connection.execute("DELETE FROM property_owner")
+                self.connection.execute("INSERT INTO property_owner VALUES (?,?)", (json.dumps(definition), json.dumps(value)))
+                before = self.all_rows()
+                with self.assertRaises(RuntimeError):
+                    self.apply()
+                self.assertEqual(self.all_rows(), before)
+
+    def test_default_pin_timestamps_use_visible_state_despite_clock_skew(self) -> None:
+        self.connection.execute("UPDATE discuss_channel_member SET unpin_dt='2025-01-01T10:00:02' WHERE partner_id=202")
+        self.apply()
+        self.assertEqual(len(self.all_rows()["discuss_channel"]), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,7 +1,6 @@
 import csv
 import json
 import logging
-from datetime import datetime
 from importlib import import_module
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -16,6 +15,11 @@ class Reference(NamedTuple):
     model: str
     record_id: int
     noupdate: bool
+
+
+class DirectChat(NamedTuple):
+    values: dict[str, Any]
+    members: list[dict[str, Any]]
 
 
 class InheritedView(NamedTuple):
@@ -143,10 +147,14 @@ def _rows(cr: Any, query: str, parameters: tuple = ()) -> list[dict[str, Any]]:
 
 def _identified(cr: Any, query: str, identifiers: tuple[str, ...], parameters: tuple = ()) -> None:
     sql = import_module("odoo.tools").SQL
-    cr.execute(sql(query, *(sql.identifier(name) for name in identifiers), *parameters))
+    try:
+        names = tuple(sql.identifier(name) for name in identifiers)
+    except (AssertionError, ValueError) as error:
+        raise RuntimeError("Unsupported direct chat reference identifier") from error
+    cr.execute(sql(query, *names, *parameters))
 
 
-def _chat_groups(cr: Any) -> list[list[dict[str, Any]]]:
+def _chat_groups(cr: Any) -> list[list[DirectChat]]:
     cr.execute("SELECT state FROM ir_module_module WHERE name = 'mail'")
     installed = cr.fetchone()
     if installed is None or installed[0] not in {"installed", "to upgrade"}:
@@ -160,14 +168,11 @@ def _chat_groups(cr: Any) -> list[list[dict[str, Any]]]:
     audiences: dict[int, list[dict[str, Any]]] = {channel["id"]: [] for channel in channels}
     for member in members:
         audiences[member["channel_id"]].append(member)
-    groups: dict[tuple, list[dict[str, Any]]] = {}
+    groups: dict[tuple, list[DirectChat]] = {}
     for channel in channels:
         audience = audiences[channel["id"]]
-        if not audience or any(bool(member["partner_id"]) == bool(member["guest_id"]) for member in audience):
-            raise RuntimeError("Unsupported direct chat audience")
         identities = tuple(sorted((member["partner_id"] or 0, member["guest_id"] or 0) for member in audience))
-        channel["members"] = audience
-        groups.setdefault(identities, []).append(channel)
+        groups.setdefault(identities, []).append(DirectChat(channel, audience))
     return [group for group in groups.values() if len(group) > 1]
 
 
@@ -186,16 +191,8 @@ def _pinned(member: dict[str, Any], channel: dict[str, Any]) -> bool:
     )
 
 
-def _check_creation_activity(row: dict[str, Any], fields: tuple[str, ...]) -> None:
-    if not row.get("create_date"):
-        raise RuntimeError("Unknown direct chat creation state")
-    created = datetime.fromisoformat(str(row["create_date"]))
-    if any(row.get(field) is not None and datetime.fromisoformat(str(row[field])) > created for field in fields):
-        raise RuntimeError("Direct chat has activity after creation")
-
-
-def _check_chat_state(cr: Any, group: list[dict[str, Any]]) -> None:
-    identities = [member["partner_id"] for member in group[0]["members"]]
+def _check_chat_state(cr: Any, group: list[DirectChat]) -> None:
+    identities = [member["partner_id"] for member in group[0].members]
     if not 1 <= len(identities) <= 2 or None in identities or len(set(identities)) != len(identities):
         raise RuntimeError("Unsupported duplicate direct chat audience")
     names = []
@@ -207,12 +204,11 @@ def _check_chat_state(cr: Any, group: list[dict[str, Any]]) -> None:
         names.append(row[0])
     generated_names = {", ".join(names), ", ".join(reversed(names))}
     for channel in group:
-        _check_creation_activity(channel, ("last_interest_dt",))
-        if channel["name"] not in generated_names or not channel["active"]:
+        if channel.values["name"] not in generated_names or not channel.values["active"]:
             raise RuntimeError("Customized duplicate direct chat name or visibility")
         _require_empty(
-            channel,
-            {"id", "name", "uuid", "members", "create_uid", "write_uid", "create_date", "write_date", "last_interest_dt"},
+            channel.values,
+            {"id", "name", "uuid", "create_uid", "write_uid", "create_date", "write_date", "last_interest_dt"},
             {
                 "channel_type": ("chat",),
                 "active": (True,),
@@ -225,8 +221,7 @@ def _check_chat_state(cr: Any, group: list[dict[str, Any]]) -> None:
                 "is_pending_chat_request": (None, False),
             },
         )
-        for member in channel["members"]:
-            _check_creation_activity(member, ("last_interest_dt", "unpin_dt"))
+        for member in channel.members:
             _require_empty(
                 member,
                 {
@@ -243,15 +238,15 @@ def _check_chat_state(cr: Any, group: list[dict[str, Any]]) -> None:
                 {"fold_state": ("closed",), "new_message_separator": (0,)},
             )
     survivor = group[0]
-    pinned = {member["partner_id"]: _pinned(member, survivor) for member in survivor["members"]}
-    if any(_pinned(member, channel) != pinned[member["partner_id"]] for channel in group for member in channel["members"]):
+    pinned = {member["partner_id"]: _pinned(member, survivor.values) for member in survivor.members}
+    if any(_pinned(member, channel.values) != pinned[member["partner_id"]] for channel in group for member in channel.members):
         raise RuntimeError("Duplicate direct chats have different sidebar state")
 
 
-def _check_chat_references(cr: Any, groups: list[list[dict[str, Any]]]) -> None:
+def _check_chat_references(cr: Any, groups: list[list[DirectChat]]) -> None:
     ids = {
-        "discuss_channel": [channel["id"] for group in groups for channel in group],
-        "discuss_channel_member": [member["id"] for group in groups for channel in group for member in channel["members"]],
+        "discuss_channel": [channel.values["id"] for group in groups for channel in group],
+        "discuss_channel_member": [member["id"] for group in groups for channel in group for member in channel.members],
     }
     cr.execute(
         "SELECT source_ns.nspname, source.relname, source_col.attname, target.relname, target_col.attname, "
@@ -284,7 +279,7 @@ def _check_chat_references(cr: Any, groups: list[list[dict[str, Any]]]) -> None:
     indirect_columns = {row[0] for row in cr.fetchall()}
     cr.execute(
         "SELECT 1 FROM ir_model_fields WHERE store AND company_dependent "
-        "AND relation IN ('discuss.channel', 'discuss.channel.member') LIMIT 1"
+        "AND (relation IN ('discuss.channel', 'discuss.channel.member') OR ttype IN ('reference', 'many2one_reference')) LIMIT 1"
     )
     if cr.fetchone():
         raise RuntimeError("Unsupported company-dependent direct chat reference")
@@ -293,8 +288,9 @@ def _check_chat_references(cr: Any, groups: list[list[dict[str, Any]]]) -> None:
     if set(model_ids) != {"discuss.channel", "discuss.channel.member"}:
         raise RuntimeError("Missing direct chat model metadata")
     cr.execute(
-        "SELECT table_name, column_name, data_type FROM information_schema.columns "
-        "WHERE table_schema = 'public' ORDER BY table_name, ordinal_position"
+        "SELECT field.table_name, field.column_name, field.data_type FROM information_schema.columns field "
+        "JOIN information_schema.tables owner ON owner.table_schema = field.table_schema AND owner.table_name = field.table_name "
+        "WHERE field.table_schema = 'public' AND owner.table_type = 'BASE TABLE' ORDER BY field.table_name, field.ordinal_position"
     )
     columns: dict[str, list[tuple[str, str]]] = {}
     for table, column, data_type in cr.fetchall():
@@ -313,30 +309,41 @@ def _check_chat_references(cr: Any, groups: list[list[dict[str, Any]]]) -> None:
     if "ir_default" in columns:
         cr.execute(
             "SELECT 1 FROM ir_default value JOIN ir_model_fields field ON field.id = value.field_id "
-            "WHERE field.relation IN ('discuss.channel', 'discuss.channel.member') LIMIT 1"
+            "WHERE field.relation IN ('discuss.channel', 'discuss.channel.member') OR field.ttype IN ('reference', 'many2one_reference') LIMIT 1"
         )
         if cr.fetchone():
             raise RuntimeError("Unsupported direct chat field default")
+    references = [f"{model},{record}" for model in model_ids for record in ids[model.replace(".", "_")]]
+    json_targets = json.dumps({"targets": [*model_ids, *references]})
     for table, fields in columns.items():
         for column, data_type in fields:
             if data_type in {"text", "character varying", "character"}:
-                references = [f"{model},{record}" for model in model_ids for record in ids[model.replace(".", "_")]]
                 _identified(cr, "SELECT 1 FROM %s WHERE %s = ANY(%s) LIMIT 1", (table, column), (references,))
                 if cr.fetchone():
                     raise RuntimeError(f"Referenced direct chat or member: {table}.{column}")
+            if data_type in {"json", "jsonb"}:
+                _identified(
+                    cr,
+                    "SELECT 1 FROM %s WHERE jsonb_path_exists(%s::jsonb, '$.** ? (@ == $targets[*])', %s::jsonb) LIMIT 1",
+                    (table, column),
+                    (json_targets,),
+                )
+                if cr.fetchone():
+                    raise RuntimeError(f"Unsupported direct chat JSON reference: {table}.{column}")
             if column not in indirect_columns:
                 continue
             for model, model_id in model_ids.items():
                 _identified(
                     cr,
-                    "SELECT 1 FROM %s record WHERE to_jsonb(record)->>%s = ANY(%s) AND "
+                    "SELECT 1 FROM %s record WHERE %s = ANY(%s) AND "
                     "(EXISTS (SELECT 1 FROM jsonb_each_text(to_jsonb(record)) value WHERE value.value = %s) "
                     "OR EXISTS (SELECT 1 FROM jsonb_each_text(to_jsonb(record)) value "
                     "WHERE value.key = ANY(%s) AND value.value = %s)) LIMIT 1",
-                    (table,),
+                    (table, column),
                     (
-                        column,
-                        [str(record) for record in ids[model.replace(".", "_")]],
+                        [str(record) for record in ids[model.replace(".", "_")]]
+                        if data_type in {"text", "character varying", "character"}
+                        else ids[model.replace(".", "_")],
                         model,
                         list(model_columns.get(table, ())),
                         str(model_id),
@@ -352,7 +359,7 @@ def _check_chat_references(cr: Any, groups: list[list[dict[str, Any]]]) -> None:
         raise RuntimeError("Unsupported direct chat deletion trigger")
 
 
-def _empty_chat_plan(cr: Any) -> list[list[dict[str, Any]]]:
+def _empty_chat_plan(cr: Any) -> list[list[DirectChat]]:
     groups = _chat_groups(cr)
     for group in groups:
         _check_chat_state(cr, group)
@@ -361,12 +368,12 @@ def _empty_chat_plan(cr: Any) -> list[list[dict[str, Any]]]:
     return groups
 
 
-def _retire_empty_chats(cr: Any, groups: list[list[dict[str, Any]]]) -> None:
+def _retire_empty_chats(cr: Any, groups: list[list[DirectChat]]) -> None:
     for group in groups:
         for channel in group[1:]:
-            cr.execute("DELETE FROM discuss_channel_member WHERE channel_id = %s", (channel["id"],))
-            cr.execute("DELETE FROM discuss_channel WHERE id = %s", (channel["id"],))
-            _logger.info("Retired redundant empty direct chat %s; preserved chat %s", channel["id"], group[0]["id"])
+            cr.execute("DELETE FROM discuss_channel_member WHERE channel_id = %s", (channel.values["id"],))
+            cr.execute("DELETE FROM discuss_channel WHERE id = %s", (channel.values["id"],))
+            _logger.info("Retired redundant empty direct chat %s; preserved chat %s", channel.values["id"], group[0].values["id"])
 
 
 def migrate(cr: Any, version: str | None) -> None:

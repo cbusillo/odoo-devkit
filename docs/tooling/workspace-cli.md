@@ -642,12 +642,15 @@ Notes
   preflight checks every duplicate audience and every stored channel/member
   column. Only redundant empty partner chats with default state and matching
   sidebar visibility qualify. Current partner names must explain their generated
-  chat names; activity after creation, read state, customization, history,
+  chat names; read state, customization, history,
   aliases or incoming references refuse before any bridge write. Unknown populated
   columns, relational storage without a supported foreign key, company-dependent
   references, and custom deletion triggers also refuse. The reference scan covers
   channel and member foreign keys, indirect model references, field defaults,
-  aliases and exact stored Reference values. After all candidates pass, the lowest
+  aliases, exact stored Reference values and JSON references. JSON Properties
+  definitions naming either Discuss model refuse as unsupported storage. The scan
+  reads base tables; report views derive from those rows. Pinning is compared by
+  the native visible-state rule, without comparing application and database clocks. After all candidates pass, the lowest
   channel ID survives unchanged and the redundant chats and their members retire.
   Their old links stop resolving, as permitted by Director decision Q1113; this
   creates no redirects or general chat-merging path. Replay leaves the survivor
