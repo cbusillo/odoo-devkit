@@ -759,7 +759,10 @@ Notes
   custom edits, previous custom architectures, restrictions, children and
   dashboard customizations refuse. The bridge preserves the admitted stock
   18/19 previous architectures and all other columns, replacing only `arch_db`
-  with an empty inheritance spec. Native 20 then loads its own calendar-management
+  with an empty inheritance spec. This preservation covers preparation: later
+  native XML writes can replace stock `arch_prev`, and cleanup removes the
+  retired stock row. Custom previous architectures refuse before that path.
+  Native 20 then loads its own calendar-management
   UI and owns removal of the retired preference XMLID through normal module
   cleanup. No view family is deleted or deactivated by the bridge.
   The shared `docker/scripts/legacy/calendar/res_users_views_19.xml` is the
