@@ -616,6 +616,37 @@ Notes
   retain their existing OpenUpgrade selection. Native 20 rejects
   `--reset-versions` before asset discovery or database access; run it without
   that flag to preserve the installed versions.
+  Native 20 also selects the packaged `docker/scripts/nativeupgrade` root.
+  Its Mail pre-stage reuses the guarded stock-view conversion from
+  [website227](https://github.com/cbusillo/odoo-tenant-cm-website/issues/227).
+  Before any shared bridge effect, `mail_view_20.py` locks and compares the
+  complete server-action inheritance family against the independent source19
+  reference. The Mail stage rechecks its old version, live binding and complete
+  target architecture before replacing only `arch_db` on the same view. The
+  replacement comes from the digest-bound target20 Mail XML; aliases, previous
+  architecture and write attribution remain unchanged. Unknown, edited,
+  translated, rebound, unowned and `noupdate` inputs refuse.
+  The existing `CM_WEBSITE_MAIL_REFERENCE` and
+  `CM_WEBSITE_MAIL_REFERENCE_SHA256` inputs remain the reference contract for
+  shared consumers. A missing or changed artifact refuses before effects.
+  A source custodian can use `qualify_source_family(profile, modules,
+  automation_source)` to add the one stock Base Automation extension to that
+  profile without changing its independent reference. `modules` must be the
+  complete separately qualified source module/version closure, bound to the
+  profile's immutable source image; it must preserve every reference component
+  version. `automation_source` is the exact source19
+  `base_automation/views/ir_actions_server_views.xml`. Its declared fields and
+  architecture supply the added view; its other fields must match the
+  independently observed stock Mail view defaults. Qualify those common defaults
+  against the exact source before using this path. The candidate's full family
+  and module closure still have to match, including every extension field,
+  alias and locale. Candidate rows never supply stock defaults or architecture.
+  The custodian writes a new immutable profile and binds its digest through the
+  existing inputs. This adds no general view-rebase support or native19 run.
+  When adopting the shared stage, remove the equivalent tenant-owned Mail
+  pre-stage and delegate shared helper callers to `mail_view_20.py`; selecting
+  both copies would attempt the same transition twice. Other tenant upgrade
+  roots remain selected.
   Before native security data loads, the bridge releases registered modules'
   legacy `ir.model.access` and `ir.rule` XMLID names using the
   [upstream-derived transition already used by OPW](https://github.com/hbrunn/OpenUpgrade/blob/2d9eb6bab7e7e579953e38d7ad3b96aad6fcc44d/openupgrade_scripts/scripts/base/20.0.1.3/pre-migration.py).

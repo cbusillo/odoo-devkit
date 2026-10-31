@@ -2855,6 +2855,8 @@ with registry.cursor() as cr:
         target_version = self._openupgrade_target_version()
         native_20 = self._is_native_20_upgrade()
         scripts_paths, _ = self._resolve_openupgrade_assets(require_framework=not native_20)
+        if native_20:
+            scripts_paths = [Path(__file__).with_name("nativeupgrade"), *scripts_paths]
         if target_version:
             self.os_env["OPENUPGRADE_TARGET_VERSION"] = target_version
 

@@ -842,6 +842,10 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
             ):
                 runner.run_openupgrade()
                 run_command.assert_called_once()
+                command = shlex.split(run_command.call_args.args[0])
+                selected_roots = command[command.index("--upgrade-path") + 1].split(",")
+                selected_modules = {module for path in selected_roots for module in runner._collect_openupgrade_modules(Path(path))}
+                self.assertIn("mail", selected_modules)
                 settings.openupgrade_target_version = "19.0"
                 with self.assertRaises(odoo_data_workflows.OdooRestorerError):
                     runner.run_openupgrade()
