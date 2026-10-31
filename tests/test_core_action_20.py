@@ -104,6 +104,8 @@ class StockValuationActionTests(CoreReferenceFixture):
             self.connection.execute("DELETE FROM ir_model_data WHERE id=?", (alias_id,))
 
     def test_native_load_and_cleanup_preserve_action_identity_links_and_replay(self) -> None:
+        for model in ("ir.actions.act_window.view", "ir.actions.todo"):
+            self.xmlid("unrelated", model.replace(".", "_"), model, self.action, False)
         before = self.snapshot()
         self.apply()
         prepared = self.snapshot()
