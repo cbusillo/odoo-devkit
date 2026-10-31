@@ -15,7 +15,7 @@ from unittest.mock import Mock, patch
 SCRIPT = Path(__file__).resolve().parents[1] / "docker" / "scripts" / "prepare_core_references_20.py"
 spec = importlib.util.spec_from_file_location("core_references_20", SCRIPT)
 assert spec is not None and spec.loader is not None
-bridge = importlib.util.module_from_spec(spec)
+bridge: Any = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bridge)
 
 
@@ -54,6 +54,7 @@ class Cursor:
 class MailAdmissionWrapperTests(unittest.TestCase):
     def test_installed_mail_delegates_native_target_and_absent_mail_skips(self) -> None:
         cursor = Mock()
+        admit_mail = bridge._admit_mail
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "views/ir_actions_server_views.xml"
@@ -77,11 +78,11 @@ class MailAdmissionWrapperTests(unittest.TestCase):
             ):
                 for state in (None, ("uninstalled",)):
                     cursor.fetchone.return_value = state
-                    bridge._admit_mail(cursor)
+                    admit_mail(cursor)
                     load.assert_not_called()
                 for state in (("installed",), ("to upgrade",)):
                     cursor.fetchone.return_value = state
-                    bridge._admit_mail(cursor)
+                    admit_mail(cursor)
             self.assertEqual(observed, [source.read_text(), source.read_text()])
             self.assertEqual(resolver.call_count, len(observed))
 
