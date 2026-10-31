@@ -16,6 +16,10 @@ bridge = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bridge)
 
 
+def patch_attr(target: Any, name: str, value: Any) -> Any:
+    return patch.object(target, name, value)
+
+
 class Cursor:
     def __init__(self, connection: sqlite3.Connection) -> None:
         self.cursor = connection.cursor()
@@ -60,6 +64,9 @@ class CoreReferenceFixture(unittest.TestCase):
         self.website = self.connection.execute(
             "INSERT INTO website(name,domain,company_id) VALUES ('Retained store','https://store.invalid',91)"
         ).lastrowid
+        assert self.country is not None
+        assert self.state is not None
+        assert self.website is not None
         self.xmlid("base", "in", "res.country", self.country, True)
         self.xmlid("base", bridge.SOURCE_STATE, "res.country.state", self.state, False)
         self.xmlid("website", "default_website", "website", self.website, True)
@@ -72,7 +79,7 @@ class CoreReferenceFixture(unittest.TestCase):
         target = Path(self.directory.name) / "states.csv"
         target.write_text(f"id,country_id:id,name,code\n{bridge.TARGET_STATE},in,Native state,OD\n")
         self.addCleanup(patch.stopall)
-        patch.object(bridge, "STATE_DATA_FILE", target).start()
+        patch_attr(bridge, "STATE_DATA_FILE", target).start()
 
     def xmlid(self, module: str, name: str, model: str, record: int, noupdate: bool) -> None:
         self.connection.execute(
