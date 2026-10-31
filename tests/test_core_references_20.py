@@ -333,8 +333,7 @@ class DiscussCursor(Cursor):
             rows = []
             for (table,) in self.connection.execute("SELECT name FROM sqlite_master WHERE type='table'"):
                 for foreign_key in self.connection.execute('PRAGMA foreign_key_list("' + table + '")'):
-                    if foreign_key[2] in {"discuss_channel", "discuss_channel_member", "ir_model"}:
-                        rows.append(("public", table, foreign_key[3], foreign_key[2], foreign_key[4], 1))
+                    rows.append(("public", table, foreign_key[3], foreign_key[2], foreign_key[4], 1))
             return self._catalog(rows, 6)
         if "FROM information_schema.columns" in query:
             rows = []
@@ -342,6 +341,8 @@ class DiscussCursor(Cursor):
                 for column in self.connection.execute('PRAGMA table_info("' + table + '")'):
                     rows.append((table, column[1], "text" if column[2] == "TEXT" else "jsonb" if column[2] == "JSON" else "integer"))
             return self._catalog(rows, 3)
+        if "FROM pg_class" in query:
+            return self.cursor.execute("SELECT 1 FROM materialized_references")
         if "FROM pg_trigger" in query:
             query = "SELECT 1 FROM deletion_triggers"
         return super().execute(query, parameters)
@@ -384,9 +385,10 @@ class EmptyChatTests(CoreReferenceFixture):
             "custom_notifications TEXT, mute_until_dt TEXT, fetched_message_id INTEGER, seen_message_id INTEGER, "
             "new_message_separator INTEGER, unpin_dt TEXT, last_interest_dt TEXT, last_seen_dt TEXT, create_date TEXT);"
             "CREATE TABLE ir_model (id INTEGER PRIMARY KEY, model TEXT);"
-            "CREATE TABLE ir_model_fields (name TEXT, ttype TEXT, store BOOLEAN, company_dependent BOOLEAN, relation TEXT, model TEXT, relation_table TEXT);"
+            "CREATE TABLE ir_model_fields (name TEXT, ttype TEXT, store BOOLEAN, company_dependent BOOLEAN, relation TEXT, model TEXT, relation_table TEXT, column2 TEXT);"
             "CREATE TABLE mail_message (id INTEGER PRIMARY KEY, model TEXT, res_id INTEGER, body TEXT);"
             "CREATE TABLE deletion_triggers (name TEXT);"
+            "CREATE TABLE materialized_references (name TEXT);"
             "ALTER TABLE res_partner ADD COLUMN name TEXT;"
             "INSERT INTO res_partner(id,name) VALUES (101,'Alice'),(202,'Bob');"
             "INSERT INTO ir_module_module VALUES ('mail','installed','19.0');"
@@ -454,7 +456,6 @@ class EmptyChatTests(CoreReferenceFixture):
             "UPDATE discuss_channel_member SET unpin_dt='2026-01-01' WHERE id=53",
             "UPDATE discuss_channel_member SET partner_id=NULL,guest_id=303 WHERE partner_id=101",
             "INSERT INTO ir_model_fields(name,ttype,store,company_dependent,relation) VALUES ('custom','many2one',1,1,'discuss.channel')",
-            "INSERT INTO ir_model_fields(name,ttype,store,relation,model) VALUES ('chat_id','many2one',1,'discuss.channel','custom.owner')",
             "INSERT INTO ir_model_fields(name,ttype,store,company_dependent) VALUES ('custom','reference',1,1)",
             "INSERT INTO deletion_triggers VALUES ('custom_delete')",
         )
@@ -553,6 +554,34 @@ class EmptyChatTests(CoreReferenceFixture):
         self.connection.execute("UPDATE discuss_channel_member SET unpin_dt='2025-01-01T10:00:02' WHERE partner_id=202")
         self.apply()
         self.assertEqual(len(self.all_rows()["discuss_channel"]), 1)
+
+    def test_virtual_report_metadata_does_not_claim_physical_storage(self) -> None:
+        self.connection.executescript(
+            "CREATE VIEW im_livechat_report_channel AS SELECT id AS channel_id FROM discuss_channel;"
+            "INSERT INTO ir_model_fields(name,ttype,store,relation,model) "
+            "VALUES ('channel_id','many2one',1,'discuss.channel','im_livechat.report.channel'),"
+            "('channel_id','many2one',1,'discuss.channel','inline.query.report');"
+        )
+        self.apply()
+        self.assertEqual(len(self.all_rows()["discuss_channel"]), 1)
+
+    def test_physical_relations_without_fk_and_materialized_storage_refuse(self) -> None:
+        self.connection.executescript(
+            "CREATE TABLE unusual_owner (chat_id INTEGER);"
+            "INSERT INTO unusual_owner VALUES (42);"
+            "INSERT INTO ir_model_fields(name,ttype,store,relation,model) "
+            "VALUES ('chat_id','many2one',1,'discuss.channel','different.table.name');"
+        )
+        before = self.all_rows()
+        with self.assertRaises(RuntimeError):
+            self.apply()
+        self.assertEqual(self.all_rows(), before)
+        self.connection.execute("DELETE FROM unusual_owner")
+        self.connection.execute("INSERT INTO materialized_references VALUES ('chat_id')")
+        before = self.all_rows()
+        with self.assertRaises(RuntimeError):
+            self.apply()
+        self.assertEqual(self.all_rows(), before)
 
 
 if __name__ == "__main__":

@@ -256,11 +256,14 @@ def _check_chat_references(cr: Any, groups: list[list[DirectChat]]) -> None:
         "JOIN pg_attribute source_col ON source_col.attrelid = source.oid AND source_col.attnum = fk.conkey[1] "
         "JOIN pg_attribute target_col ON target_col.attrelid = target.oid AND target_col.attnum = fk.confkey[1] "
         "WHERE fk.contype = 'f' AND target_ns.nspname = 'public' "
-        "AND target.relname IN ('discuss_channel', 'discuss_channel_member', 'ir_model')"
     )
     model_columns: dict[str, set[str]] = {}
     foreign_keys: set[tuple[str, str, str]] = set()
     for schema, table, column, target, target_column, width in cr.fetchall():
+        if target not in ids and target != "ir_model":
+            if schema == "public":
+                foreign_keys.add((table, column, target))
+            continue
         if schema != "public" or target_column != "id" or width != 1:
             raise RuntimeError("Unsupported direct chat reference constraint")
         foreign_keys.add((table, column, target))
@@ -296,16 +299,25 @@ def _check_chat_references(cr: Any, groups: list[list[DirectChat]]) -> None:
     for table, column, data_type in cr.fetchall():
         columns.setdefault(table, []).append((column, data_type))
     cr.execute(
-        "SELECT model, name, ttype, relation, relation_table FROM ir_model_fields WHERE store "
+        "SELECT name, ttype, relation, relation_table, column2 FROM ir_model_fields WHERE store "
         "AND relation IN ('discuss.channel', 'discuss.channel.member') AND ttype IN ('many2one', 'many2many')"
     )
-    for model, name, kind, relation, relation_table in cr.fetchall():
-        table = relation_table if kind == "many2many" else model.replace(".", "_")
-        if not any(
-            owner == table and target == relation.replace(".", "_") and (kind == "many2many" or column == name)
-            for owner, column, target in foreign_keys
-        ):
-            raise RuntimeError(f"Unsupported direct chat relational storage: {model}.{name}")
+    relational_columns: dict[str, list[tuple[str | None, list[int]]]] = {}
+    for name, kind, relation, relation_table, target_column in cr.fetchall():
+        if kind == "many2many" and (not relation_table or not target_column):
+            raise RuntimeError("Unsupported direct chat relation metadata")
+        column = target_column if kind == "many2many" else name
+        owner = relation_table if kind == "many2many" else None
+        relational_columns.setdefault(column, []).append((owner, ids[relation.replace(".", "_")]))
+    cr.execute(
+        "SELECT 1 FROM pg_class relation JOIN pg_namespace schema ON schema.oid = relation.relnamespace "
+        "JOIN pg_attribute field ON field.attrelid = relation.oid WHERE schema.nspname = 'public' "
+        "AND relation.relkind = 'm' AND NOT field.attisdropped AND field.attname = ANY(%s) LIMIT 1",
+        (list(relational_columns),),
+    )
+    if cr.fetchone():
+        raise RuntimeError("Unsupported materialized direct chat reference storage")
+    foreign_columns = {(table, column) for table, column, _target in foreign_keys}
     if "ir_default" in columns:
         cr.execute(
             "SELECT 1 FROM ir_default value JOIN ir_model_fields field ON field.id = value.field_id "
@@ -317,6 +329,13 @@ def _check_chat_references(cr: Any, groups: list[list[DirectChat]]) -> None:
     json_targets = json.dumps({"targets": [*model_ids, *references]})
     for table, fields in columns.items():
         for column, data_type in fields:
+            if (table, column) not in foreign_columns:
+                for owner, targets in relational_columns.get(column, ()):
+                    if owner is not None and owner != table:
+                        continue
+                    _identified(cr, "SELECT 1 FROM %s WHERE %s = ANY(%s) LIMIT 1", (table, column), (targets,))
+                    if cr.fetchone():
+                        raise RuntimeError(f"Unsupported FK-less direct chat reference: {table}.{column}")
             if data_type in {"text", "character varying", "character"}:
                 _identified(cr, "SELECT 1 FROM %s WHERE %s = ANY(%s) LIMIT 1", (table, column), (references,))
                 if cr.fetchone():

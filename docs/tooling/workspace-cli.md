@@ -644,12 +644,15 @@ Notes
   sidebar visibility qualify. Current partner names must explain their generated
   chat names; read state, customization, history,
   aliases or incoming references refuse before any bridge write. Unknown populated
-  columns, relational storage without a supported foreign key, company-dependent
+  columns, physical references without foreign keys, materialized reference
+  storage, company-dependent
   references, and custom deletion triggers also refuse. The reference scan covers
   channel and member foreign keys, indirect model references, field defaults,
   aliases, exact stored Reference values and JSON references. JSON Properties
   definitions naming either Discuss model refuse as unsupported storage. The scan
-  reads base tables; report views derive from those rows. Pinning is compared by
+  reads physical base tables; ordinary views and inline-query reports hold no
+  rows of their own. Relational metadata checks physical columns without guessing
+  a table name from its model; uncertain matches without foreign keys refuse. Pinning is compared by
   the native visible-state rule, without comparing application and database clocks. After all candidates pass, the lowest
   channel ID survives unchanged and the redundant chats and their members retire.
   Their old links stop resolving, as permitted by Director decision Q1113; this
