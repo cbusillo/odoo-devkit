@@ -61,6 +61,11 @@ class MailStageTests(unittest.TestCase):
                     with self.assertRaises(RuntimeError):
                         function(NativeCursor(), version, target)
                 capture.assert_not_called()
+                invalid_reference = dict(reference, modules={"mail": None})
+                with patch.dict(function.__globals__, load_reference=Mock(return_value={"reference": invalid_reference})):
+                    with self.assertRaises(RuntimeError):
+                        function(NativeCursor(), None, target)
+                capture.assert_not_called()
                 changed = copy.deepcopy(current)
                 changed["target"]["arch_db"]["fr_FR"] = "retained translation"
                 capture.return_value = changed
@@ -107,6 +112,15 @@ class MailFixture(unittest.TestCase):
 
 
 class MailAdmissionTests(MailFixture):
+    def test_history_closure_cannot_omit_independent_null_version_module(self) -> None:
+        self.reference["modules"]["unversioned_component"] = None
+        profile = {"reference": self.reference, "history": {"source_contract": {"modules": self.current["modules"].copy()}}}
+        with self.assertRaises(RuntimeError):
+            MODULE["admit_profile"](self.current, profile)
+        self.current["modules"]["unversioned_component"] = None
+        profile["history"]["source_contract"]["modules"] = self.current["modules"].copy()
+        MODULE["admit_profile"](self.current, profile)
+
     def test_bound_source_closure_preserves_independent_family_and_component_versions(self) -> None:
         self.current["modules"]["tenant_extension"] = "source.extension"
         profile = {"reference": self.reference, "history": {"source_contract": {"modules": self.current["modules"].copy()}}}
@@ -209,7 +223,9 @@ class SourceFamilyTests(MailFixture):
         super().setUp()
         self.reference["modules"] = {"base": "19.base", "mail": "19.mail"}
         self.reference["source_image"] = "fixture@sha256:source"
-        self.source_modules = dict(self.reference["modules"], base_automation="19.automation", fixture_addon="19.addon")
+        self.source_modules: dict[str, str | None] = dict(
+            self.reference["modules"], base_automation="19.automation", fixture_addon="19.addon"
+        )
         self.current["modules"] = dict(self.source_modules)
         self.profile = {"reference": self.reference, "source_image": self.reference.pop("source_image")}
         self.source = (
@@ -286,6 +302,25 @@ class SourceFamilyTests(MailFixture):
             with self.subTest(change=change), self.assertRaises(RuntimeError):
                 self.qualified()
             self.profile = original
+
+    def test_manifest_cannot_omit_independent_null_version_and_dual_closures_must_agree(self) -> None:
+        self.reference["modules"]["unversioned_component"] = None
+        with self.assertRaises(RuntimeError):
+            self.qualified()
+        self.source_modules["unversioned_component"] = None
+        self.current["modules"] = self.source_modules.copy()
+        self.profile["history"] = {"source_contract": {"modules": self.source_modules.copy()}}
+        qualified = self.qualified()
+        MODULE["admit_profile"](self.current, qualified)
+        changed = copy.deepcopy(qualified)
+        del changed["history"]["source_contract"]["modules"]["unversioned_component"]
+        with self.assertRaises(RuntimeError):
+            MODULE["admit_profile"](self.current, changed)
+        self.profile["history"]["source_contract"]["modules"]["fixture_addon"] = "changed"
+        before = copy.deepcopy(self.profile)
+        with self.assertRaises(RuntimeError):
+            self.qualified()
+        self.assertEqual(self.profile, before)
 
     def test_missing_optional_module_version_is_preserved_in_exact_bound_closure(self) -> None:
         self.source_modules["fixture_addon"] = None

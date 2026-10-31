@@ -211,13 +211,16 @@ def _qualified_family(profile: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("Source closure manifest changed")
     source = json.loads(payload)
     modules = source["modules"]
+    contract = profile.get("history", {}).get("source_contract")
+    if contract is not None and contract.get("modules") != modules:
+        raise RuntimeError("Source closure and history source contract differ")
     if (
         source["source_image"] != profile["source_image"]
         or "@sha256:" not in source["source_image"]
         or not modules.get("base_automation")
         or not modules.get("base", "").startswith("19.")
         or any(version is not None and (not isinstance(version, str) or not version) for version in modules.values())
-        or any(modules.get(name) != version for name, version in reference["modules"].items())
+        or not reference["modules"].items() <= modules.items()
         or any(
             alias["xmlid"] == "base_automation.view_server_action_form" for view in reference["views"] for alias in view["xmlids"]
         )
@@ -357,9 +360,7 @@ def admit(
         raise RuntimeError("Deferred view conversion: modified architecture, translations, binding or parent")
     if whole_family:
         expected_modules = reference["modules"] if source_modules is None else source_modules
-        if current["modules"] != expected_modules or any(
-            current["modules"].get(name) != version for name, version in reference["modules"].items()
-        ):
+        if current["modules"] != expected_modules or not reference["modules"].items() <= current["modules"].items():
             raise RuntimeError("Deferred view conversion: source module closure or independent component versions differ")
         if current["views"] != reference["views"]:
             raise RuntimeError("Deferred view conversion: inherited edits differ")
@@ -372,7 +373,8 @@ def admit_before_effects(cr: Any, target_xml: Path) -> None:
 
 def migrate_mail(cr: Any, version: str | None, target_xml: Path) -> None:
     profile = load_reference(target_xml)
-    if version != profile["reference"]["modules"].get("mail"):
+    expected_version = profile["reference"]["modules"].get("mail")
+    if not isinstance(expected_version, str) or not expected_version or version != expected_version:
         raise RuntimeError("Mail pre-stage requires the qualified old source version; restore a fresh copy")
     current = capture(cr, lock=True)
     admit(current, profile["reference"], whole_family=False)

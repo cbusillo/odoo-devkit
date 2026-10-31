@@ -648,7 +648,8 @@ Notes
   The SMS anchor must retain its exact ownership, model, form/extension kind,
   parent and all other common fields. This qualifies persisted stock storage,
   not universal creation defaults; no column is ignored or normalized and no
-  candidate row supplies the expected shape.
+  candidate row supplies the expected shape: its diagnosis selects between
+  two independently observed stock storage shapes.
   The profile embeds and revalidates both source artifacts. Artifact hashes
   prove integrity; the custodian still establishes their source provenance.
   The candidate's full family
@@ -664,6 +665,9 @@ Notes
   accepted with exact closure/component and whole-family checks. Its separate
   target-module/reference completeness checks remain in its conversion
   preflight. The shared stage checks the binding, not its original provenance.
+  If both closure bindings are present, they must agree exactly. Build an
+  OPW-specific profile from the retained independent reference without unrelated
+  website history; do not silently discard a website binding inside the helper.
 
   From the artifact's `/venv/bin/python`, qualify an already retained independent
   stock reference without starting Odoo19:
