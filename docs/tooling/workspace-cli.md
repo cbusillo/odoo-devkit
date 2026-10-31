@@ -656,7 +656,13 @@ Notes
   definitions naming either Discuss model refuse as unsupported storage. The scan
   reads physical base tables; ordinary views and inline-query reports hold no
   rows of their own. Relational metadata checks physical columns without guessing
-  a table name from its model; uncertain matches without foreign keys refuse. Pinning is compared by
+  a table name from its model. Many-to-many storage retains its explicit table
+  ownership and integer-type requirement. Ownerless same-name text columns may
+  hold native JSON notification tuples: a database and topic, or a database,
+  known model and record ID with an optional string topic. Candidate model/ID
+  pairs and ambiguous model/Reference/ID prefixes or topics refuse; unrelated tuples stay
+  unchanged. Unknown text encodings, other unsupported types and uncertain
+  populated matches without foreign keys refuse. Pinning is compared by
   the native visible-state rule, without comparing application and database clocks. After all candidates pass, the lowest
   channel ID survives unchanged and the redundant chats and their members retire.
   Their old links stop resolving, as permitted by Director decision Q1113; this
