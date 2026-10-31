@@ -17,6 +17,7 @@ SOURCE_STATE = "state_in_or"
 TARGET_STATE = "state_in_od"
 STATE_DATA_FILE = Path("/odoo/odoo/addons/base/data/res.country.state.csv")
 STOCK_VALUATION_DATA_FILE = Path("/odoo/addons/account/report/account_stock_valuation_report.xml")
+HR_ORG_CHART_DATA_FILE = Path("/odoo/addons/hr/views/hr_employee_public_views.xml")
 _logger = logging.getLogger(__name__)
 
 
@@ -184,11 +185,118 @@ def _stock_valuation_action_plan(cr: Any) -> Reference | None:
     return source
 
 
-def _bind_stock_valuation_action(cr: Any, source: Reference) -> None:
-    name = "action_report_stock_valuation"
-    if _reference(cr, "account", name) is None:
-        _bind_target(cr, name, Reference(source.model, source.record_id, False), module="account")
-    cr.execute("UPDATE ir_model_data SET noupdate = true WHERE module = 'stock_account' AND name = %s", (name,))
+def _bind_moved_action(cr: Any, source: Reference, name: str, source_module: str, target_module: str) -> None:
+    if _reference(cr, target_module, name) is None:
+        _bind_target(cr, name, Reference(source.model, source.record_id, False), module=target_module)
+    cr.execute("UPDATE ir_model_data SET noupdate = true WHERE module = %s AND name = %s", (source_module, name))
+
+
+def _hr_org_chart_action_plan(cr: Any) -> Reference | None:
+    cr.execute("SELECT state FROM ir_module_module WHERE name = 'hr_org_chart'")
+    installed = cr.fetchone()
+    if installed is None or installed[0] not in {"installed", "to upgrade"}:
+        return None
+    cr.execute("SELECT state FROM ir_module_module WHERE name = 'hr'")
+    if cr.fetchone() not in {("installed",), ("to upgrade",)}:
+        raise RuntimeError("Missing native HR owner for Org Chart action")
+    name = "action_hr_employee_public_org_chart"
+    source = _require_source(cr, "hr_org_chart", name, "ir.actions.act_window")
+    target = _check_target(cr, name, source, module="hr")
+    if (target is not None and target.noupdate) or (source.noupdate and target is None):
+        raise RuntimeError("Protected Org Chart action ownership")
+    parser = ElementTree.XMLParser(target=ElementTree.TreeBuilder(insert_comments=True))
+    document = ElementTree.parse(HR_ORG_CHART_DATA_FILE, parser=parser).getroot()
+    records = document.findall(f".//record[@id='{name}']")
+    if document.tag != "odoo" or len(records) != 1 or records[0].attrib != {"id": name, "model": source.model}:
+        raise RuntimeError("Unsupported native Org Chart action definition")
+    if document.attrib or any(parent.attrib for parent in document.iter("data")):
+        raise RuntimeError("Protected native HR data")
+    fields = {field.attrib.get("name"): field for field in records[0]}
+    expected = {"name", "res_model", "path", "view_mode", "mobile_view_mode", "domain", "context", "view_id", "help"}
+    if set(fields) != expected or len(records[0]) != len(expected):
+        raise RuntimeError("Unsupported native Org Chart action fields")
+    native = {key: field.text or "" for key, field in fields.items()}
+    if (
+        native["res_model"] != "hr.employee.public"
+        or native["path"] != "org-chart-public"
+        or native["view_mode"] != "hierarchy,kanban,list,form,graph,pivot"
+        or native["mobile_view_mode"] != "hierarchy"
+        or not native["name"]
+        or fields["view_id"].attrib != {"name": "view_id", "eval": "False"}
+        or len(fields["view_id"])
+        or (fields["view_id"].text or "").strip()
+        or fields["help"].attrib != {"name": "help", "type": "html"}
+        or not len(fields["help"])
+        or any(field.attrib != {"name": key} or len(field) for key, field in fields.items() if key not in {"help", "view_id"})
+    ):
+        raise RuntimeError("Changed native Org Chart action contract")
+    actions = _rows(cr, "SELECT * FROM ir_act_window WHERE id = %s FOR UPDATE", (source.record_id,))
+    if len(actions) != 1:
+        raise RuntimeError("Missing Org Chart action")
+    action = actions[0]
+    cr.execute(
+        "SELECT tableoid::regclass::text, id FROM ir_actions WHERE id = %s OR path = %s FOR UPDATE",
+        (source.record_id, native["path"]),
+    )
+    if cr.fetchall() != [("ir_act_window", source.record_id)]:
+        raise RuntimeError("Ambiguous Org Chart action storage or path")
+    cr.execute(
+        "SELECT module, name, model FROM ir_model_data WHERE model LIKE 'ir.actions.%%' AND res_id = %s FOR UPDATE",
+        (source.record_id,),
+    )
+    aliases = {("hr_org_chart", name, source.model)} | ({("hr", name, source.model)} if target is not None else set())
+    if set(cr.fetchall()) != aliases:
+        raise RuntimeError("Customized Org Chart action aliases")
+    for query in (
+        "SELECT 1 FROM ir_act_window_group_rel WHERE act_id = %s LIMIT 1",
+        "SELECT 1 FROM ir_act_window_view WHERE act_window_id = %s LIMIT 1",
+    ):
+        cr.execute(query, (source.record_id,))
+        if cr.fetchone():
+            raise RuntimeError("Restricted or customized Org Chart action views")
+    try:
+        for value in (action["context"], native["context"]):
+            context = literal_eval(value)
+            if not isinstance(context, dict) or set(context) != {"chat_icon"} or context["chat_icon"] is not True:
+                raise ValueError("Changed context")
+        if literal_eval(action["domain"]) != [] or literal_eval(native["domain"]) != []:
+            raise ValueError("Changed domain")
+        help_values = action["help"]
+        native_help = "".join(ElementTree.tostring(child, encoding="unicode") for child in fields["help"])
+        if (
+            not isinstance(help_values, dict)
+            or set(help_values) != {"en_US"}
+            or _action_help(help_values["en_US"]) != _action_help(native_help)
+        ):
+            raise ValueError("Edited or translated help")
+    except (ValueError, SyntaxError, TypeError, ElementTree.ParseError) as error:
+        raise RuntimeError("Customized Org Chart action context, domain or help") from error
+    _require_empty(
+        action,
+        {"id", "create_uid", "write_uid", "create_date", "write_date", "context", "domain", "help"},
+        {
+            "name": ({"en_US": native["name"]},),
+            "type": (source.model,),
+            "res_model": (native["res_model"],),
+            "path": (native["path"],),
+            "view_mode": (native["view_mode"],),
+            "mobile_view_mode": ("kanban",),
+            "target": ("current",),
+            "binding_type": ("action",),
+            "binding_view_types": ("list,form",),
+            "res_id": (None, 0),
+            "limit": (80,),
+            "filter": (None, False),
+            "cache": (True,),
+        },
+    )
+    return source
+
+
+def _action_help(value: str) -> str:
+    parser = ElementTree.XMLParser(target=ElementTree.TreeBuilder(insert_comments=True))
+    document = ElementTree.fromstring("<div>" + value + "</div>", parser=parser)
+    return ElementTree.canonicalize(ElementTree.tostring(document, encoding="unicode"), strip_text=True, with_comments=True)
 
 
 def _inherited_view_source(cr: Any, view: InheritedView) -> tuple[int, dict[str, str]] | None:
@@ -636,6 +744,7 @@ def migrate(cr: Any, version: str | None) -> None:
     lunches = _lunch_plan(cr)
     policies = _policy_xmlid_plan(cr)
     stock_valuation = _stock_valuation_action_plan(cr)
+    hr_org_chart = _hr_org_chart_action_plan(cr)
     _admit_mail(cr)
     if state_target is None:
         _bind_target(cr, TARGET_STATE, state)
@@ -653,4 +762,6 @@ def migrate(cr: Any, version: str | None) -> None:
         _logger.info("Removed %s redundant nonworking lunch rows; preserved working intervals", len(lunches))
     _release_policy_xmlids(cr, policies)
     if stock_valuation is not None:
-        _bind_stock_valuation_action(cr, stock_valuation)
+        _bind_moved_action(cr, stock_valuation, "action_report_stock_valuation", "stock_account", "account")
+    if hr_org_chart is not None:
+        _bind_moved_action(cr, hr_org_chart, "action_hr_employee_public_org_chart", "hr_org_chart", "hr")

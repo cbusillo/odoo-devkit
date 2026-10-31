@@ -731,6 +731,19 @@ Notes
   before any bridge effects. Preparation replays before native loading; the
   bridge leaves completed major-20 crossings untouched. The target's own XML
   supplies its name, tag and path.
+  The public Org Chart window action moves from `hr_org_chart` to `hr` by the
+  same named binding: the retained action ID, path, incoming references and old
+  protected alias stay intact. Native HR loads its own action, including mobile
+  hierarchy mode. Preparation accepts only the source19 stock action with its
+  nonempty English HTML help matching the selected native20 definition. It
+  refuses changed or translated names/help, context, domain, defaults, attached
+  views, group restrictions, extra aliases and conflicting physical storage or
+  ownership before any bridge effect. Other HR records and security stay with
+  their existing owners; this action handoff is not a whole-module merge or
+  uninstall. Native cleanup keeps the protected old alias, while a later native
+  uninstall of only the old module retains the action through its HR XMLID.
+  Like the stock valuation handoff, preparation replays before native loading;
+  completed major-20 crossings are left to native Odoo.
   The bridge resolves `base.state_in_or` from the source database and adds
   `base.state_in_od` on that same state row, checking the running target's
   own state CSV and the source country binding. With an installed Website,
