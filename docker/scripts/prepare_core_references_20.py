@@ -17,6 +17,7 @@ SOURCE_STATE = "state_in_or"
 TARGET_STATE = "state_in_od"
 STATE_DATA_FILE = Path("/odoo/odoo/addons/base/data/res.country.state.csv")
 STOCK_VALUATION_DATA_FILE = Path("/odoo/addons/account/report/account_stock_valuation_report.xml")
+HR_ORG_CHART_DATA_FILE = Path("/odoo/addons/hr/views/hr_employee_public_views.xml")
 _logger = logging.getLogger(__name__)
 
 
@@ -124,6 +125,16 @@ def _bind_target(cr: Any, name: str, source: Reference, module: str = "base") ->
     _logger.info("Bound core reference %s.%s to preserved %s row %s", module, name, source.model, source.record_id)
 
 
+def _action_aliases(cr: Any, record_id: int) -> set[tuple[str, str, str]]:
+    cr.execute(
+        "SELECT module, name, model FROM ir_model_data WHERE model IN ('ir.actions.actions','ir.actions.act_window',"
+        "'ir.actions.act_window_close','ir.actions.act_url','ir.actions.server','ir.actions.client','ir.actions.report') "
+        "AND res_id = %s FOR UPDATE",
+        (record_id,),
+    )
+    return set(cr.fetchall())
+
+
 def _stock_valuation_action_plan(cr: Any) -> Reference | None:
     cr.execute("SELECT state FROM ir_module_module WHERE name = 'stock_account'")
     installed = cr.fetchone()
@@ -151,12 +162,8 @@ def _stock_valuation_action_plan(cr: Any) -> Reference | None:
     )
     if cr.fetchall() != [("ir_act_client", source.record_id)]:
         raise RuntimeError("Ambiguous stock valuation action storage or path")
-    cr.execute(
-        "SELECT module, name, model FROM ir_model_data WHERE model LIKE 'ir.actions.%%' AND res_id = %s FOR UPDATE",
-        (source.record_id,),
-    )
     aliases = {("stock_account", name, source.model)} | ({("account", name, source.model)} if target is not None else set())
-    if set(cr.fetchall()) != aliases:
+    if _action_aliases(cr, source.record_id) != aliases:
         raise RuntimeError("Customized stock valuation action aliases")
     try:
         context = literal_eval(action["context"])
@@ -184,11 +191,156 @@ def _stock_valuation_action_plan(cr: Any) -> Reference | None:
     return source
 
 
-def _bind_stock_valuation_action(cr: Any, source: Reference) -> None:
-    name = "action_report_stock_valuation"
-    if _reference(cr, "account", name) is None:
-        _bind_target(cr, name, Reference(source.model, source.record_id, False), module="account")
-    cr.execute("UPDATE ir_model_data SET noupdate = true WHERE module = 'stock_account' AND name = %s", (name,))
+def _bind_moved_action(cr: Any, source: Reference, name: str, source_module: str, target_module: str) -> None:
+    if _reference(cr, target_module, name) is None:
+        _bind_target(cr, name, Reference(source.model, source.record_id, False), module=target_module)
+    cr.execute("UPDATE ir_model_data SET noupdate = true WHERE module = %s AND name = %s", (source_module, name))
+
+
+def _hr_org_chart_action_plan(cr: Any) -> Reference | None:
+    cr.execute("SELECT state FROM ir_module_module WHERE name = 'hr_org_chart'")
+    installed = cr.fetchone()
+    if installed is None or installed[0] not in {"installed", "to upgrade"}:
+        return None
+    cr.execute("SELECT state FROM ir_module_module WHERE name = 'hr'")
+    if cr.fetchone() not in {("installed",), ("to upgrade",)}:
+        raise RuntimeError("Missing native HR owner for Org Chart action")
+    name = "action_hr_employee_public_org_chart"
+    source = _require_source(cr, "hr_org_chart", name, "ir.actions.act_window")
+    target = _check_target(cr, name, source, module="hr")
+    if (target is not None and target.noupdate) or (source.noupdate and target is None):
+        raise RuntimeError("Protected Org Chart action ownership")
+    parser = ElementTree.XMLParser(target=ElementTree.TreeBuilder(insert_comments=True))
+    document = ElementTree.parse(HR_ORG_CHART_DATA_FILE, parser=parser).getroot()
+    records = document.findall(f".//record[@id='{name}']")
+    if document.tag != "odoo" or len(records) != 1 or records[0].attrib != {"id": name, "model": source.model}:
+        raise RuntimeError("Unsupported native Org Chart action definition")
+    if document.attrib or any(parent.attrib for parent in document.iter("data")):
+        raise RuntimeError("Protected native HR data")
+    fields = {field.attrib.get("name"): field for field in records[0]}
+    expected = {"name", "res_model", "path", "view_mode", "mobile_view_mode", "domain", "context", "view_id", "help"}
+    if set(fields) != expected or len(records[0]) != len(expected):
+        raise RuntimeError("Unsupported native Org Chart action fields")
+    native = {key: field.text or "" for key, field in fields.items()}
+    if (
+        native["res_model"] != "hr.employee.public"
+        or native["path"] != "org-chart-public"
+        or native["view_mode"] != "hierarchy,kanban,list,form,graph,pivot"
+        or native["mobile_view_mode"] != "hierarchy"
+        or not native["name"]
+        or fields["view_id"].attrib != {"name": "view_id", "eval": "False"}
+        or len(fields["view_id"])
+        or (fields["view_id"].text or "").strip()
+        or fields["help"].attrib != {"name": "help", "type": "html"}
+        or not len(fields["help"])
+        or any(field.attrib != {"name": key} or len(field) for key, field in fields.items() if key not in {"help", "view_id"})
+    ):
+        raise RuntimeError("Changed native Org Chart action contract")
+    actions = _rows(cr, "SELECT * FROM ir_act_window WHERE id = %s FOR UPDATE", (source.record_id,))
+    if len(actions) != 1:
+        raise RuntimeError("Missing Org Chart action")
+    action = actions[0]
+    cr.execute(
+        "SELECT tableoid::regclass::text, id FROM ir_actions WHERE id = %s OR path = %s FOR UPDATE",
+        (source.record_id, native["path"]),
+    )
+    if cr.fetchall() != [("ir_act_window", source.record_id)]:
+        raise RuntimeError("Ambiguous Org Chart action storage or path")
+    aliases = {("hr_org_chart", name, source.model)} | ({("hr", name, source.model)} if target is not None else set())
+    if _action_aliases(cr, source.record_id) != aliases:
+        raise RuntimeError("Customized Org Chart action aliases")
+    for query in (
+        "SELECT 1 FROM ir_act_window_group_rel WHERE act_id = %s LIMIT 1",
+        "SELECT 1 FROM ir_act_window_view WHERE act_window_id = %s LIMIT 1",
+    ):
+        cr.execute(query, (source.record_id,))
+        if cr.fetchone():
+            raise RuntimeError("Restricted or customized Org Chart action views")
+    try:
+        for value in (action["context"], native["context"]):
+            context = literal_eval(value)
+            if not isinstance(context, dict) or set(context) != {"chat_icon"} or context["chat_icon"] is not True:
+                raise ValueError("Changed context")
+        if literal_eval(action["domain"]) != [] or literal_eval(native["domain"]) != []:
+            raise ValueError("Changed domain")
+        help_values = action["help"]
+        native_help = "".join(ElementTree.tostring(child, encoding="unicode") for child in fields["help"])
+        if (
+            not isinstance(help_values, dict)
+            or set(help_values) != {"en_US"}
+            or _action_help(help_values["en_US"]) != _action_help(native_help)
+        ):
+            raise ValueError("Edited or translated help")
+    except (ValueError, SyntaxError, TypeError, ElementTree.ParseError) as error:
+        raise RuntimeError("Customized Org Chart action context, domain or help") from error
+    _require_empty(
+        action,
+        {"id", "create_uid", "write_uid", "create_date", "write_date", "context", "domain", "help"},
+        {
+            "name": ({"en_US": native["name"]},),
+            "type": (source.model,),
+            "res_model": (native["res_model"],),
+            "path": (native["path"],),
+            "view_mode": (native["view_mode"],),
+            "mobile_view_mode": ("kanban",),
+            "target": ("current",),
+            "binding_type": ("action",),
+            "binding_view_types": ("list,form",),
+            "res_id": (None, 0),
+            "limit": (80,),
+            "filter": (None, False),
+            "cache": (True,),
+        },
+    )
+    return source
+
+
+def _action_help(value: str) -> str:
+    parser = ElementTree.XMLParser(target=ElementTree.TreeBuilder(insert_comments=True))
+    document = ElementTree.fromstring("<div>" + value + "</div>", parser=parser)
+    return ElementTree.canonicalize(ElementTree.tostring(document, encoding="unicode"), strip_text=True, with_comments=True)
+
+
+def _hr_org_chart_link_plan(cr: Any) -> Reference:
+    name = "act_hr_employee_public_hierarchy_view"
+    source = _require_source(cr, "hr_org_chart", name, "ir.actions.act_window.view")
+    target = _check_target(cr, name, source, module="hr")
+    if (target is not None and target.noupdate) or (source.noupdate and target is None):
+        raise RuntimeError("Protected Org Chart hierarchy link ownership")
+    employee_action = _require_source(cr, "hr", "hr_employee_public_action", "ir.actions.act_window")
+    cr.execute("SELECT id FROM ir_act_window WHERE id = %s FOR UPDATE", (employee_action.record_id,))
+    if cr.fetchall() != [(employee_action.record_id,)]:
+        raise RuntimeError("Missing public employee action")
+    document = ElementTree.parse(HR_ORG_CHART_DATA_FILE).getroot()
+    records = document.findall(f".//record[@id='{name}']")
+    if len(records) != 1 or records[0].attrib != {"id": name, "model": source.model}:
+        raise RuntimeError("Unsupported native Org Chart hierarchy link")
+    fields = {field.attrib.get("name"): field for field in records[0]}
+    if (
+        set(fields) != {"sequence", "view_mode", "act_window_id"}
+        or len(records[0]) != len(fields)
+        or fields["sequence"].attrib != {"name": "sequence", "eval": "16"}
+        or fields["view_mode"].attrib != {"name": "view_mode"}
+        or fields["view_mode"].text != "hierarchy"
+        or fields["act_window_id"].attrib != {"name": "act_window_id", "ref": "hr.hr_employee_public_action"}
+        or any(len(field) for field in fields.values())
+    ):
+        raise RuntimeError("Changed native Org Chart hierarchy link contract")
+    links = _rows(cr, "SELECT * FROM ir_act_window_view WHERE id = %s FOR UPDATE", (source.record_id,))
+    if len(links) != 1:
+        raise RuntimeError("Missing Org Chart hierarchy link")
+    _require_empty(
+        links[0],
+        {"id", "create_uid", "write_uid", "create_date", "write_date"},
+        {"sequence": (16,), "view_mode": ("hierarchy",), "act_window_id": (employee_action.record_id,), "multi": (None, False)},
+    )
+    cr.execute(
+        "SELECT module,name,model FROM ir_model_data WHERE model = %s AND res_id = %s FOR UPDATE", (source.model, source.record_id)
+    )
+    aliases = {("hr_org_chart", name, source.model)} | ({("hr", name, source.model)} if target is not None else set())
+    if set(cr.fetchall()) != aliases:
+        raise RuntimeError("Customized Org Chart hierarchy link aliases")
+    return source
 
 
 def _inherited_view_source(cr: Any, view: InheritedView) -> tuple[int, dict[str, str]] | None:
@@ -621,6 +773,128 @@ def _admit_mail(cr: Any) -> None:
     helpers["admit_before_effects"](cr, target)
 
 
+def _calendar_stock_views(series: str) -> dict[str, dict[str, ElementTree.Element]]:
+    source = Path(__file__).with_name("legacy") / "calendar" / f"res_users_views_{series}.xml"
+    return {
+        record.attrib["id"]: {field.attrib["name"]: field for field in record.findall("field")}
+        for record in ElementTree.parse(source).findall("./data/record")
+    }
+
+
+def _check_calendar_privacy(cr: Any) -> None:
+    cr.execute("SELECT to_regclass('calendar_calendar'), to_regclass('calendar_user')")
+    if cr.fetchone() != (None, None):
+        raise RuntimeError("Calendar ownership already exists; qualify this crossing separately")
+    cr.execute("SELECT value FROM ir_config_parameter WHERE key = 'calendar.default_privacy' FOR UPDATE")
+    defaults = cr.fetchall()
+    if len(defaults) > 1:
+        raise RuntimeError("Ambiguous Calendar global privacy")
+    fallback = defaults[0][0] if defaults else "public"
+    if fallback not in {"public", "private", "confidential"}:
+        raise RuntimeError("Unsupported Calendar global privacy")
+    cr.execute("SELECT user_id, calendar_default_privacy FROM res_users_settings ORDER BY id FOR UPDATE")
+    settings = cr.fetchall()
+    cr.execute("SELECT id FROM res_users FOR UPDATE")
+    users = {row[0] for row in cr.fetchall()}
+    owners = [row[0] for row in settings]
+    if len(owners) != len(set(owners)) or not set(owners) <= users:
+        raise RuntimeError("Ambiguous Calendar preference owners")
+    if any((privacy or fallback) != fallback for _, privacy in settings):
+        raise RuntimeError("Preserve divergent Calendar privacy before native calendar creation")
+    cr.execute("SELECT 1 FROM calendar_event LIMIT 1")
+    if cr.fetchone():
+        raise RuntimeError("Populated Calendar events require a qualified ownership transition")
+    cr.execute("SELECT 1 FROM calendar_recurrence LIMIT 1")
+    if cr.fetchone():
+        raise RuntimeError("Populated Calendar recurrence requires a qualified ownership transition")
+
+
+def _calendar_view_plan(cr: Any) -> list[int]:
+    cr.execute("SELECT state FROM ir_module_module WHERE name = 'calendar'")
+    installed = cr.fetchone()
+    if installed is None or installed[0] not in {"installed", "to upgrade"}:
+        return []
+    normalize = runpy.run_path(str(Path(__file__).with_name("mail_view_20.py")))["_normalized_architecture"]
+    stock = _calendar_stock_views("19")
+    sources = {name: _require_source(cr, "calendar", name, "ir.ui.view") for name in stock}
+    cr.execute(
+        "LOCK TABLE ir_ui_view, ir_ui_view_custom, ir_ui_view_group_rel, ir_model_data, res_users, res_users_settings, "
+        "ir_config_parameter, calendar_event, calendar_recurrence IN SHARE ROW EXCLUSIVE MODE"
+    )
+    _check_calendar_privacy(cr)
+    previous = _calendar_stock_views("18")
+    changes = []
+    for name, fields in stock.items():
+        source = sources[name]
+        parent_name = fields["inherit_id"].attrib["ref"].removeprefix("base.")
+        parent = _require_source(cr, "base", parent_name, "ir.ui.view")
+        rows = _rows(cr, "SELECT * FROM ir_ui_view WHERE id = %s FOR UPDATE", (source.record_id,))
+        if source.noupdate or parent.noupdate or len(rows) != 1 or rows[0]["inherit_id"] != parent.record_id:
+            raise RuntimeError(f"Unsupported Calendar view ownership or inheritance: {name}")
+        cr.execute("SELECT id FROM ir_ui_view WHERE id = %s FOR UPDATE", (parent.record_id,))
+        if cr.fetchone() is None:
+            raise RuntimeError("Missing Calendar users parent")
+        cr.execute(
+            "SELECT module, name, noupdate FROM ir_model_data WHERE model = 'ir.ui.view' AND res_id = %s", (source.record_id,)
+        )
+        if cr.fetchall() != [("calendar", name, False)]:
+            raise RuntimeError("Customized Calendar view aliases")
+        cr.execute("SELECT 1 FROM ir_ui_view WHERE inherit_id = %s LIMIT 1", (source.record_id,))
+        children = cr.fetchone()
+        cr.execute("SELECT 1 FROM ir_ui_view_custom WHERE ref_id = %s LIMIT 1", (source.record_id,))
+        customizations = cr.fetchone()
+        cr.execute("SELECT 1 FROM ir_ui_view_group_rel WHERE view_id = %s LIMIT 1", (source.record_id,))
+        if children or customizations or cr.fetchone():
+            raise RuntimeError("Preserve dependent, customized or restricted Calendar view")
+        view = rows[0]
+        _require_empty(
+            view,
+            {"id", "inherit_id", "arch_db", "arch_prev", "create_uid", "write_uid", "create_date", "write_date"},
+            {
+                "name": (fields["name"].text,),
+                "model": (fields["model"].text,),
+                "type": ("form",),
+                "mode": ("extension",),
+                "active": (True,),
+                "priority": (16,),
+                "arch_updated": (False,),
+                "arch_fs": ("calendar/views/res_users_views.xml",),
+                "is_seo_optimized": (False,),
+            },
+        )
+        expected = normalize(ElementTree.tostring(fields["arch"][0], encoding="unicode"))
+        old = normalize(ElementTree.tostring(previous[name]["arch"][0], encoding="unicode"))
+        architectures = view["arch_db"]
+        if not isinstance(architectures, dict) or set(architectures) != {"en_US"}:
+            raise RuntimeError("Preserve translated Calendar architecture")
+        try:
+            current = normalize(architectures["en_US"])
+            if view.get("arch_prev") and normalize(view["arch_prev"]) not in {old, expected}:
+                raise RuntimeError("Preserve customized Calendar previous architecture")
+        except (ElementTree.ParseError, TypeError, ValueError) as error:
+            raise RuntimeError("Unsupported Calendar architecture") from error
+        if current == expected:
+            changes.append(source.record_id)
+        elif current != normalize("<data/>"):
+            raise RuntimeError("Preserve customized Calendar architecture")
+    cr.execute(
+        "SELECT 1 FROM ir_ui_view WHERE id NOT IN (%s, %s) AND CAST(arch_db AS TEXT) LIKE %s LIMIT 1",
+        (*[source.record_id for source in sources.values()], "%calendar_default_privacy%"),
+    )
+    if cr.fetchone():
+        raise RuntimeError("Preserve other Calendar preference views")
+    for query in (
+        "SELECT 1 FROM ir_rule WHERE CAST(domain_force AS TEXT) LIKE %s LIMIT 1",
+        "SELECT 1 FROM ir_act_window WHERE CAST(context AS TEXT) LIKE %s OR CAST(domain AS TEXT) LIKE %s LIMIT 1",
+        "SELECT 1 FROM ir_act_server WHERE CAST(code AS TEXT) LIKE %s LIMIT 1",
+        "SELECT 1 FROM ir_filters WHERE CAST(context AS TEXT) LIKE %s OR CAST(domain AS TEXT) LIKE %s LIMIT 1",
+    ):
+        cr.execute(query, ("%calendar_default_privacy%",) * query.count("%s"))
+        if cr.fetchone():
+            raise RuntimeError("Preserve outside Calendar preference references")
+    return changes
+
+
 def migrate(cr: Any, version: str | None) -> None:
     major = (version or "").split(".", 1)[0]
     if major == "20":
@@ -636,7 +910,12 @@ def migrate(cr: Any, version: str | None) -> None:
     lunches = _lunch_plan(cr)
     policies = _policy_xmlid_plan(cr)
     stock_valuation = _stock_valuation_action_plan(cr)
+    calendar_views = _calendar_view_plan(cr)
+    hr_org_chart = _hr_org_chart_action_plan(cr)
+    hr_org_chart_link = _hr_org_chart_link_plan(cr) if hr_org_chart is not None else None
     _admit_mail(cr)
+    for record_id in calendar_views:
+        cr.execute("UPDATE ir_ui_view SET arch_db = %s::jsonb WHERE id = %s", (json.dumps({"en_US": "<data/>"}), record_id))
     if state_target is None:
         _bind_target(cr, TARGET_STATE, state)
     if website is not None and website_target is None:
@@ -653,4 +932,8 @@ def migrate(cr: Any, version: str | None) -> None:
         _logger.info("Removed %s redundant nonworking lunch rows; preserved working intervals", len(lunches))
     _release_policy_xmlids(cr, policies)
     if stock_valuation is not None:
-        _bind_stock_valuation_action(cr, stock_valuation)
+        _bind_moved_action(cr, stock_valuation, "action_report_stock_valuation", "stock_account", "account")
+    if hr_org_chart is not None:
+        _bind_moved_action(cr, hr_org_chart, "action_hr_employee_public_org_chart", "hr_org_chart", "hr")
+    if hr_org_chart_link is not None:
+        _bind_moved_action(cr, hr_org_chart_link, "act_hr_employee_public_hierarchy_view", "hr_org_chart", "hr")

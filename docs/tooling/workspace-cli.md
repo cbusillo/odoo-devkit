@@ -731,6 +731,23 @@ Notes
   before any bridge effects. Preparation replays before native loading; the
   bridge leaves completed major-20 crossings untouched. The target's own XML
   supplies its name, tag and path.
+  The public Org Chart window action moves from `hr_org_chart` to `hr` by the
+  same named binding: the retained action ID, path, incoming references and old
+  protected alias stay intact. Native HR loads its own action, including mobile
+  hierarchy mode. Preparation accepts only the source19 stock action with its
+  nonempty English HTML help matching the selected native20 definition. It
+  refuses changed or translated names/help, context, domain, defaults, attached
+  views, group restrictions, extra aliases and conflicting physical storage or
+  ownership before any bridge effect. The matching public employee hierarchy
+  action-view link also transfers its XMLID to HR on the retained row, avoiding
+  the native unique `(action, view mode)` collision. Its owner, action binding,
+  sequence, view reference, defaults and unique pair are qualified before any
+  effects. Other HR records and security stay with
+  their existing owners; this action handoff is not a whole-module merge or
+  uninstall. Native cleanup keeps the protected old alias, while a later native
+  uninstall of only the old module retains the action through its HR XMLID.
+  Like the stock valuation handoff, preparation replays before native loading;
+  completed major-20 crossings are left to native Odoo.
   The bridge resolves `base.state_in_or` from the source database and adds
   `base.state_in_od` on that same state row, checking the running target's
   own state CSV and the source country binding. With an installed Website,
@@ -753,6 +770,34 @@ Notes
   any bridge write. Replay is unchanged. Each owning module's later native update
   owns its full target architecture and validation; this step does not migrate
   bank or partner data.
+  Installed Calendar also admits exactly its two stock 19 users/privacy
+  extensions before any bridge write. Their complete current architectures,
+  parents, aliases and populated scalar state must qualify; translations,
+  custom edits, previous custom architectures, restrictions, children and
+  dashboard customizations refuse. The bridge preserves the admitted stock
+  18/19 previous architectures and all other columns, replacing only `arch_db`
+  with an empty inheritance spec. This preservation covers preparation: later
+  native XML writes can replace stock `arch_prev`, and cleanup removes the
+  retired stock row. Custom previous architectures refuse before that path.
+  Native 20 then loads its own calendar-management
+  UI and owns removal of the retired preference XMLID through normal module
+  cleanup. No view family is deleted or deactivated by the bridge.
+  The shared `docker/scripts/legacy/calendar/res_users_views_19.xml` is the
+  exact static source from the qualified 19 image; the 18 file is the official
+  [stock history source](https://github.com/odoo/odoo/blob/68d580d3d4703e7190055f7040682942d5f1a24f/addons/calendar/views/res_users_views.xml).
+  These are admission inputs, never target UI templates. Qualification and
+  source bindings are recorded on [Calendar transition #332](https://github.com/cbusillo/odoo-devkit/issues/332).
+  Every effective saved user privacy must equal the global native fallback
+  (`public` when the parameter is absent); divergent preferences or ambiguous
+  settings owners refuse before effects. User settings remain unchanged. This
+  bounded crossing requires absent new calendar ownership tables, empty events
+  and recurrences, and no references to the removed preference in other views,
+  rule domains, window contexts/domains, server code or saved filters. It does
+  not claim absence of every possible dynamic reference. Native 20's calendar
+  initializer is an install hook, so source admission alone proves neither
+  calendar creation during an upgrade nor registry/privacy behavior. Those
+  remain part of the owning migration's actual-data qualification. Preparation
+  can replay before native loading; completed major-20 crossings are untouched.
   Before native Discuss initializes its unique direct-chat audience, the same
   preflight checks every duplicate audience and every stored channel/member
   column. Only redundant empty partner chats with default state and matching
