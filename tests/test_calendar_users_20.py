@@ -185,9 +185,14 @@ class CalendarUsersTests(core.CoreReferenceFixture):
         ):
             self.assert_refused(statement, ("calendar_default_privacy",))
 
-    def test_late_mail_refusal_also_preserves_calendar_architectures(self) -> None:
+    def test_late_planner_refusals_preserve_calendar_architectures(self) -> None:
         before = self.snapshot()
-        with core.patch_attr(bridge, "_admit_mail", Mock(side_effect=RuntimeError("custom Mail family"))):
-            with self.assertRaises(RuntimeError):
-                self.apply()
-        self.assertEqual(self.snapshot(), before)
+        for planner in ("_hr_org_chart_action_plan", "_hr_org_chart_link_plan", "_admit_mail"):
+            with self.subTest(planner=planner):
+                with (
+                    core.patch_attr(bridge, "_hr_org_chart_action_plan", Mock(return_value=object())),
+                    core.patch_attr(bridge, planner, Mock(side_effect=RuntimeError("unsupported retained input"))),
+                ):
+                    with self.assertRaises(RuntimeError):
+                        self.apply()
+                self.assertEqual(self.snapshot(), before)
