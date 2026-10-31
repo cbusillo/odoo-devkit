@@ -134,8 +134,9 @@ def _stock_valuation_action_plan(cr: Any) -> Reference | None:
     target = _check_target(cr, name, source, module="account")
     if (target is not None and target.noupdate) or (source.noupdate and target is None):
         raise RuntimeError("Protected stock valuation action ownership")
-    records = ElementTree.parse(STOCK_VALUATION_DATA_FILE).findall(f"./record[@id='{name}']")
-    if len(records) != 1 or records[0].get("model") != source.model:
+    document = ElementTree.parse(STOCK_VALUATION_DATA_FILE).getroot()
+    records = document.findall(f"./record[@id='{name}']")
+    if document.tag != "odoo" or document.attrib or len(records) != 1 or records[0].attrib != {"id": name, "model": source.model}:
         raise RuntimeError("Unsupported native stock valuation action definition")
     native = {field.attrib["name"]: field.text or "" for field in records[0].findall("field")}
     if set(native) != {"name", "tag", "res_model", "path", "context"} or not all(native.values()):

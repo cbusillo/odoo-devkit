@@ -642,7 +642,13 @@ Notes
   manifest. Its declared fields and architecture supply the added view.
   `base_automation_defaults` contains the separately source-qualified common
   fields: all independent target fields except `name`, `model`, `arch_fs`,
-  `arch_db` and `xmlids`. They must match the independent stock Mail defaults.
+  `arch_db` and `xmlids`. They match the independent stock Mail stored shape,
+  or the exact independent SMS server-action extension shape when its only
+  common-field difference is the legacy `customize_show=False` versus NULL.
+  The SMS anchor must retain its exact ownership, model, form/extension kind,
+  parent and all other common fields. This qualifies persisted stock storage,
+  not universal creation defaults; no column is ignored or normalized and no
+  candidate row supplies the expected shape.
   The profile embeds and revalidates both source artifacts. Artifact hashes
   prove integrity; the custodian still establishes their source provenance.
   The candidate's full family
@@ -651,9 +657,50 @@ Notes
   Group restrictions anywhere in the family refuse before effects too.
   The custodian writes a new immutable profile and binds its digest through the
   existing inputs. This adds no general view-rebase support or native19 run.
+  Optional stored module versions may remain NULL in that exact source closure;
+  every independently referenced component still needs its matching version.
+  This is input metadata, not a stock-view default derived from candidate rows.
+  The website's existing `history.source_contract.modules` binding is also
+  accepted with exact closure/component and whole-family checks. Its separate
+  target-module/reference completeness checks remain in its conversion
+  preflight. The shared stage checks the binding, not its original provenance.
+
+  From the artifact's `/venv/bin/python`, qualify an already retained independent
+  stock reference without starting Odoo19:
+
+  ```python
+  import hashlib
+  import json
+  import runpy
+  from pathlib import Path
+
+  helpers = runpy.run_path("/volumes/scripts/mail_view_20.py")
+  profile = json.loads(Path("/workspace/independent-reference.json").read_bytes())
+  qualified = helpers["qualify_source_family"](
+      profile,
+      Path("/workspace/source-closure.json"),
+      Path("/workspace/source-closure.sha256").read_text().strip(),
+      Path("/workspace/source19/base_automation/views/ir_actions_server_views.xml"),
+  )
+  payload = json.dumps(qualified, sort_keys=True, indent=2).encode() + b"\n"
+  with Path("/workspace/qualified-reference.json").open("xb") as output:
+      output.write(payload)
+  print(hashlib.sha256(payload).hexdigest())
+  ```
+
+  Copy that qualified file into the job through the existing heavy manifest
+  `copies` input and set its job-container `environment` entries
+  `CM_WEBSITE_MAIL_REFERENCE=/workspace/qualified-reference.json` and
+  `CM_WEBSITE_MAIL_REFERENCE_SHA256` to the recorded digest before invoking the
+  existing data workflow. These inherited names are the shared contract for
+  OPW too. The saved independent profile, complete source manifest and its
+  separately supplied digest must be qualified by their custodian before this
+  command; hashing does not establish provenance. A missing independent input
+  remains a source-qualification task, never a new native19 behavior run.
   When adopting the shared stage, remove the equivalent tenant-owned Mail
-  pre-stage and delegate shared helper callers to `mail_view_20.py`; selecting
-  both copies would attempt the same transition twice. Other tenant upgrade
+  execution pre-stage so only `mail_view_20.py` performs the transition;
+  retain tenant-specific reference/completeness helpers. Selecting both
+  execution stages would attempt the same transition twice. Other tenant upgrade
   roots remain selected.
   Before native security data loads, the bridge releases registered modules'
   legacy `ir.model.access` and `ir.rule` XMLID names using the
@@ -1142,10 +1189,3 @@ or a migration result. Measure file-store input transfer, verification, overlay
 preparation, database restore, and cleanup separately; a shared lower avoids its
 bulk retransfer on subsequent runs but still requires integrity reads. Preserve
 any full-copy headroom refusal rather than inventing a before measurement.
-
-The shared Mail preflight also accepts the website conversion's existing
-`history.source_contract.modules` binding. It compares the complete source
-closure while retaining every independent stock component version and the
-complete stock view family. Website target-module/reference completeness
-checks stay with its existing conversion preflight; the shared stage does not
-replace those checks.

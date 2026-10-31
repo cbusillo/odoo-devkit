@@ -180,6 +180,21 @@ class StockValuationActionTests(CoreReferenceFixture):
             self.apply()
         self.assertEqual(self.snapshot(), before)
 
+    def test_protected_native_target_refuses_before_any_effect(self) -> None:
+        target = bridge.STOCK_VALUATION_DATA_FILE
+        original = target.read_bytes()
+        for level in ("root", "record"):
+            document = ElementTree.fromstring(original)
+            protected = document if level == "root" else document.find("record")
+            assert protected is not None
+            protected.set("noupdate", "1")
+            ElementTree.ElementTree(document).write(target)
+            before = self.snapshot()
+            with self.subTest(level=level), self.assertRaises(RuntimeError):
+                self.apply()
+            self.assertEqual(self.snapshot(), before)
+        target.write_bytes(original)
+
     def test_absent_stock_account_does_not_adopt_actions_by_path(self) -> None:
         self.connection.execute("UPDATE ir_module_module SET state='uninstalled' WHERE name='stock_account'")
         self.apply()

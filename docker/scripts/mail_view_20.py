@@ -47,11 +47,11 @@ def _binding(cr: Any, xmlid: str, *, lock: bool) -> dict[str, Any]:
     return {"xmlid_id": identity, "model": model, "record_id": record, "noupdate": noupdate}
 
 
-def capture(cr: Any, *, lock: bool = False, root_xmlid: str = ROOT_XMLID, view_xmlid: str = VIEW_XMLID) -> dict[str, Any]:
+def capture(cr: Any, *, lock: bool = False) -> dict[str, Any]:
     if lock:
         cr.execute("LOCK TABLE ir_ui_view, ir_ui_view_custom, ir_model_data IN SHARE ROW EXCLUSIVE MODE")
-    root = _binding(cr, root_xmlid, lock=lock)
-    target = _binding(cr, view_xmlid, lock=lock)
+    root = _binding(cr, ROOT_XMLID, lock=lock)
+    target = _binding(cr, VIEW_XMLID, lock=lock)
     cr.execute(
         """
         WITH RECURSIVE family AS (
@@ -91,7 +91,7 @@ def capture(cr: Any, *, lock: bool = False, root_xmlid: str = ROOT_XMLID, view_x
         values["parent_xmlids"] = aliases.get(record["inherit_id"], [])
         views.append(values)
     views.sort(key=lambda row: json.dumps(row["xmlids"], sort_keys=True))
-    target_row = next(row for row in views if any(alias["xmlid"] == view_xmlid for alias in row["xmlids"]))
+    target_row = next(row for row in views if any(alias["xmlid"] == VIEW_XMLID for alias in row["xmlids"]))
     cr.execute("SELECT value FROM ir_config_parameter WHERE key='database.uuid'")
     uuid = cr.fetchone()
     if not uuid or not uuid[0]:
@@ -151,7 +151,30 @@ def _normalized_architecture(architecture: str) -> str:
     return ElementTree.canonicalize(ElementTree.tostring(root, encoding="unicode"), with_comments=True)
 
 
-def _automation_view(reference: dict[str, Any], source_xml: str) -> dict[str, Any]:
+def _common_view_defaults(view: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in view.items() if key not in {"name", "model", "arch_fs", "arch_db", "xmlids"}}
+
+
+def _qualify_automation_defaults(reference: dict[str, Any], defaults: dict[str, Any]) -> None:
+    baseline = _common_view_defaults(reference["target"])
+    if defaults == baseline:
+        return
+    alias = [{"xmlid": "sms.ir_actions_server_view_form", "model": "ir.ui.view", "noupdate": False}]
+    siblings = [view for view in reference["views"] if view["xmlids"] == alias]
+    alternate = dict(baseline, customize_show=False)
+    if (
+        baseline.get("customize_show") is not None
+        or len(siblings) != 1
+        or siblings[0].get("model") != "ir.actions.server"
+        or siblings[0].get("mode") != "extension"
+        or siblings[0].get("type") != "form"
+        or _common_view_defaults(siblings[0]) != alternate
+        or defaults != alternate
+    ):
+        raise RuntimeError("Unqualified Base Automation defaults")
+
+
+def _automation_view(reference: dict[str, Any], source_xml: str, defaults: dict[str, Any]) -> dict[str, Any]:
     parser = ElementTree.XMLParser(target=ElementTree.TreeBuilder(insert_comments=True))
     document = ElementTree.fromstring(source_xml, parser=parser)
     records = document.findall(".//record")
@@ -169,6 +192,7 @@ def _automation_view(reference: dict[str, Any], source_xml: str) -> dict[str, An
     ):
         raise RuntimeError("Unsupported source Base Automation fields or parent")
     view = copy.deepcopy(reference["target"])
+    view.update(defaults)
     view.update(
         name=fields["name"].text,
         model=fields["model"].text,
@@ -192,7 +216,7 @@ def _qualified_family(profile: dict[str, Any]) -> dict[str, Any]:
         or "@sha256:" not in source["source_image"]
         or not modules.get("base_automation")
         or not modules.get("base", "").startswith("19.")
-        or any(not isinstance(version, str) or not version for version in modules.values())
+        or any(version is not None and (not isinstance(version, str) or not version) for version in modules.values())
         or any(modules.get(name) != version for name, version in reference["modules"].items())
         or any(
             alias["xmlid"] == "base_automation.view_server_action_form" for view in reference["views"] for alias in view["xmlids"]
@@ -202,14 +226,11 @@ def _qualified_family(profile: dict[str, Any]) -> dict[str, Any]:
     source_xml = binding["base_automation_xml"]
     if hashlib.sha256(source_xml.encode()).hexdigest() != source["base_automation_xml_sha256"]:
         raise RuntimeError("Source Base Automation XML changed")
-    defaults = {
-        key: value for key, value in reference["target"].items() if key not in {"name", "model", "arch_fs", "arch_db", "xmlids"}
-    }
-    if source["base_automation_defaults"] != defaults:
-        raise RuntimeError("Unqualified Base Automation defaults")
+    defaults = source["base_automation_defaults"]
+    _qualify_automation_defaults(reference, defaults)
     expected = copy.deepcopy(reference)
     expected["modules"] = modules
-    expected["views"].append(_automation_view(reference, source_xml))
+    expected["views"].append(_automation_view(reference, source_xml, defaults))
     expected["views"].sort(key=lambda row: json.dumps(row["xmlids"], sort_keys=True))
     return expected
 
@@ -324,7 +345,7 @@ def load_reference(target_xml: Path) -> dict[str, Any]:
 
 
 def admit(
-    current: dict[str, Any], reference: dict[str, Any], *, whole_family: bool, source_modules: dict[str, str] | None = None
+    current: dict[str, Any], reference: dict[str, Any], *, whole_family: bool, source_modules: dict[str, str | None] | None = None
 ) -> None:
     if current["database_uuid"] == reference["database_uuid"]:
         raise RuntimeError("Reference must be generated independently from the candidate")

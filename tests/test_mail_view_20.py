@@ -128,37 +128,21 @@ class MailAdmissionTests(MailFixture):
             with self.subTest(change=change), self.assertRaises(RuntimeError):
                 MODULE["admit_profile"](changed, changed_profile)
 
-    def test_capture_can_select_an_independent_qweb_inheritance_family(self) -> None:
-        root_xmlid, target_xmlid = "fixture.root", "fixture.child"
+    def test_restricted_inheritance_family_refuses(self) -> None:
         root_id, target_id = 301, 302
-        root = {"id": root_id, "inherit_id": None, "name": "Fixture root", "type": "qweb", "arch_db": {"en_US": "<t/>"}}
-        target = dict(root, id=target_id, inherit_id=root_id, name="Fixture child")
+        root = {"id": root_id, "inherit_id": None}
+        target = {"id": target_id, "inherit_id": root_id}
         cursor = Mock()
         cursor.fetchall.side_effect = [
             [(401, "ir.ui.view", root_id, False, root_id)],
             [(402, "ir.ui.view", target_id, False, target_id)],
             [(root,), (target,)],
-            [(root_id, *root_xmlid.split("."), "ir.ui.view", False), (target_id, *target_xmlid.split("."), "ir.ui.view", False)],
-            [],
-            [("fixture", "source")],
-        ]
-        cursor.fetchone.side_effect = [None, ("independent",)]
-
-        captured = MODULE["capture"](cursor, root_xmlid=root_xmlid, view_xmlid=target_xmlid)
-
-        self.assertEqual(captured["binding"]["record_id"], target_id)
-        self.assertEqual([row["xmlid"] for row in captured["target"]["xmlids"]], [target_xmlid])
-        self.assertEqual([row["xmlid"] for row in captured["target"]["parent_xmlids"]], [root_xmlid])
-        cursor.fetchone.side_effect = [(1,)]
-        cursor.fetchall.side_effect = [
-            [(401, "ir.ui.view", root_id, False, root_id)],
-            [(402, "ir.ui.view", target_id, False, target_id)],
-            [(root,), (target,)],
-            [(root_id, *root_xmlid.split("."), "ir.ui.view", False), (target_id, *target_xmlid.split("."), "ir.ui.view", False)],
+            [(root_id, "base", "view_server_action_form", "ir.ui.view", False)],
             [],
         ]
+        cursor.fetchone.return_value = (1,)
         with self.assertRaises(RuntimeError):
-            MODULE["capture"](cursor, root_xmlid=root_xmlid, view_xmlid=target_xmlid)
+            MODULE["capture"](cursor)
 
     def test_cross_database_surrogate_ids_do_not_reject_stock(self) -> None:
         MODULE["admit"](self.current, self.reference, whole_family=True)
@@ -267,6 +251,50 @@ class SourceFamilyTests(MailFixture):
                 )
             )
             return MODULE["qualify_source_family"](self.profile, manifest, hashlib.sha256(manifest.read_bytes()).hexdigest(), source)
+
+    def test_independent_sms_storage_shape_qualifies_only_legacy_customize_flag(self) -> None:
+        sms = copy.deepcopy(self.target)
+        sms.update(
+            model="ir.actions.server",
+            mode="extension",
+            customize_show=False,
+            xmlids=[{"xmlid": "sms.ir_actions_server_view_form", "model": "ir.ui.view", "noupdate": False}],
+        )
+        self.target.update(model="ir.actions.server", mode="extension", customize_show=None)
+        self.current["target"].update(self.target)
+        self.extension.update(mode="extension", customize_show=False)
+        self.reference["views"].append(sms)
+        self.current["views"].append(copy.deepcopy(sms))
+        self.source_defaults.update(mode="extension", customize_show=False)
+        qualified = self.qualified()
+        MODULE["admit_profile"](self.current, qualified)
+        for change in ("missing", "protected", "rebound", "other-default", "manifest"):
+            changed = copy.deepcopy(self.profile)
+            changed_sms = changed["reference"]["views"][-1]
+            if change == "missing":
+                changed["reference"]["views"].pop()
+            elif change == "protected":
+                changed_sms["xmlids"][0]["noupdate"] = True
+            elif change == "rebound":
+                changed_sms["model"] = "different.model"
+            elif change == "other-default":
+                changed_sms["active"] = False
+            else:
+                self.source_defaults["customize_show"] = True
+            original = self.profile
+            self.profile = changed
+            with self.subTest(change=change), self.assertRaises(RuntimeError):
+                self.qualified()
+            self.profile = original
+
+    def test_missing_optional_module_version_is_preserved_in_exact_bound_closure(self) -> None:
+        self.source_modules["fixture_addon"] = None
+        self.current["modules"] = self.source_modules.copy()
+        qualified = self.qualified()
+        MODULE["admit_profile"](self.current, qualified)
+        self.current["modules"]["fixture_addon"] = "newly-versioned"
+        with self.assertRaises(RuntimeError):
+            MODULE["admit_profile"](self.current, qualified)
 
     def test_static_extension_and_bound_closure_admit_without_replacing_independent_reference(self) -> None:
         original = copy.deepcopy(self.profile)
