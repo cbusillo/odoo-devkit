@@ -219,6 +219,7 @@ class InheritedViewTests(CoreReferenceFixture):
             "arch_prev TEXT, arch_updated BOOLEAN, active BOOLEAN, priority INTEGER, write_uid INTEGER)"
         )
         parent = self.connection.execute("INSERT INTO ir_ui_view(model) VALUES (?)", (self.model,)).lastrowid
+        assert parent is not None
         self.xmlid("base", self.parent_name, "ir.ui.view", parent, False)
         child = self.connection.execute(
             "INSERT INTO ir_ui_view VALUES (NULL,?,?,'primary',?,'Retained history',1,1,14,71)",
@@ -228,11 +229,12 @@ class InheritedViewTests(CoreReferenceFixture):
                 json.dumps(
                     {
                         "en_US": self.architecture("Custom"),
-                        "fr_FR": self.architecture("Personnalise"),
+                        "fr_FR": self.architecture("Translated"),
                     }
                 ),
             ),
         ).lastrowid
+        assert child is not None
         self.xmlid(self.module, self.view_name, "ir.ui.view", child, False)
         self.xmlid("custom", "retained_view", "ir.ui.view", child, True)
         self.connection.execute("INSERT INTO ir_module_module VALUES (?,?,'19.0.1.0')", (self.module, state))
