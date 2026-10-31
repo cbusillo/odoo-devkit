@@ -630,6 +630,16 @@ Notes
   already using it needs product-owned disposition before native loading.
   When adopting the shared step, remove the equivalent tenant pre-migration
   rename so the later native module migration cannot append the suffix again.
+  For the code-owned stock valuation client action moved from `stock_account`
+  to `account`, the same preflight binds the native target XMLID to the existing
+  action. It preserves the action ID, path and incoming links, then lets native
+  Account data update the report model and context. The old XMLID remains
+  protected against end-of-load cleanup, so both XMLID links stay usable.
+  This is one named ownership handoff, never a merge by matching paths.
+  Conflicting targets, protected originals, extra aliases, ambiguous physical
+  storage, custom fields or context, and edited or translated names refuse
+  before any bridge effects. Source and fully loaded target shapes both replay;
+  the target's own XML supplies its name, tag and path.
   The bridge resolves `base.state_in_or` from the source database and adds
   `base.state_in_od` on that same state row, checking the running target's
   own state CSV and the source country binding. With an installed Website,

@@ -4,15 +4,18 @@
 import csv
 import json
 import logging
+from ast import literal_eval
 from datetime import datetime
 from importlib import import_module
 from math import isfinite
 from pathlib import Path
 from typing import Any, NamedTuple
+from xml.etree import ElementTree
 
 SOURCE_STATE = "state_in_or"
 TARGET_STATE = "state_in_od"
 STATE_DATA_FILE = Path("/odoo/odoo/addons/base/data/res.country.state.csv")
+STOCK_VALUATION_DATA_FILE = Path("/odoo/addons/account/report/account_stock_valuation_report.xml")
 _logger = logging.getLogger(__name__)
 
 
@@ -71,12 +74,12 @@ def _require_source(cr: Any, module: str, name: str, model: str) -> Reference:
     return reference
 
 
-def _check_target(cr: Any, name: str, source: Reference, *, protect: bool = False) -> Reference | None:
-    target = _reference(cr, "base", name)
+def _check_target(cr: Any, name: str, source: Reference, *, protect: bool = False, module: str = "base") -> Reference | None:
+    target = _reference(cr, module, name)
     if target is not None and (
         target.model != source.model or target.record_id != source.record_id or (protect and not target.noupdate)
     ):
-        raise RuntimeError(f"Conflicting core reference base.{name}")
+        raise RuntimeError(f"Conflicting core reference {module}.{name}")
     return target
 
 
@@ -112,12 +115,80 @@ def _website_source(cr: Any) -> Reference | None:
     return source
 
 
-def _bind_target(cr: Any, name: str, source: Reference) -> None:
+def _bind_target(cr: Any, name: str, source: Reference, module: str = "base") -> None:
     cr.execute(
-        "INSERT INTO ir_model_data (module, name, model, res_id, noupdate) VALUES ('base', %s, %s, %s, %s)",
-        (name, source.model, source.record_id, source.noupdate),
+        "INSERT INTO ir_model_data (module, name, model, res_id, noupdate) VALUES (%s, %s, %s, %s, %s)",
+        (module, name, source.model, source.record_id, source.noupdate),
     )
-    _logger.info("Bound core reference base.%s to preserved %s row %s", name, source.model, source.record_id)
+    _logger.info("Bound core reference %s.%s to preserved %s row %s", module, name, source.model, source.record_id)
+
+
+def _stock_valuation_action_plan(cr: Any) -> Reference | None:
+    cr.execute("SELECT state FROM ir_module_module WHERE name = 'stock_account'")
+    installed = cr.fetchone()
+    if installed is None or installed[0] not in {"installed", "to upgrade"}:
+        return None
+    name = "action_report_stock_valuation"
+    source = _require_source(cr, "stock_account", name, "ir.actions.client")
+    target = _check_target(cr, name, source, module="account")
+    if (target is not None and target.noupdate) or (source.noupdate and target is None):
+        raise RuntimeError("Protected stock valuation action ownership")
+    records = ElementTree.parse(STOCK_VALUATION_DATA_FILE).findall(f"./record[@id='{name}']")
+    if len(records) != 1 or records[0].get("model") != source.model:
+        raise RuntimeError("Unsupported native stock valuation action definition")
+    native = {field.attrib["name"]: field.text or "" for field in records[0].findall("field")}
+    if set(native) != {"name", "tag", "res_model", "path", "context"} or not all(native.values()):
+        raise RuntimeError("Unsupported native stock valuation action fields")
+    actions = _rows(cr, "SELECT * FROM ir_act_client WHERE id = %s FOR UPDATE", (source.record_id,))
+    if len(actions) != 1:
+        raise RuntimeError("Missing stock valuation action")
+    action = actions[0]
+    cr.execute(
+        "SELECT tableoid::regclass::text, id FROM ir_actions WHERE id = %s OR path = %s FOR UPDATE",
+        (source.record_id, native["path"]),
+    )
+    if cr.fetchall() != [("ir_act_client", source.record_id)]:
+        raise RuntimeError("Ambiguous stock valuation action storage or path")
+    cr.execute(
+        "SELECT module, name, model FROM ir_model_data WHERE model LIKE 'ir.actions.%%' AND res_id = %s FOR UPDATE",
+        (source.record_id,),
+    )
+    aliases = {("stock_account", name, source.model)} | ({("account", name, source.model)} if target is not None else set())
+    if set(cr.fetchall()) != aliases:
+        raise RuntimeError("Customized stock valuation action aliases")
+    try:
+        context = literal_eval(action["context"])
+        native_context = literal_eval(native["context"])
+    except (ValueError, SyntaxError, TypeError) as error:
+        raise RuntimeError("Unsupported stock valuation action context") from error
+    old_model = "stock_account.stock.valuation.report"
+    if native["res_model"] != "account.stock.valuation.report" or native_context != {"model": native["res_model"]}:
+        raise RuntimeError("Unsupported native stock valuation report model")
+    if action["res_model"] not in {old_model, native["res_model"]} or context != {"model": action["res_model"]}:
+        raise RuntimeError("Customized stock valuation report model or context")
+    if action["res_model"] != old_model and target is None:
+        raise RuntimeError("Unowned converted stock valuation action")
+    _require_empty(
+        action,
+        {"id", "create_uid", "write_uid", "create_date", "write_date", "res_model", "context"},
+        {
+            "name": ({"en_US": native["name"]},),
+            "type": (source.model,),
+            "tag": (native["tag"],),
+            "path": (native["path"],),
+            "target": ("current",),
+            "binding_type": ("action",),
+            "binding_view_types": ("list,form",),
+        },
+    )
+    return source
+
+
+def _bind_stock_valuation_action(cr: Any, source: Reference) -> None:
+    name = "action_report_stock_valuation"
+    if _reference(cr, "account", name) is None:
+        _bind_target(cr, name, Reference(source.model, source.record_id, False), module="account")
+    cr.execute("UPDATE ir_model_data SET noupdate = true WHERE module = 'stock_account' AND name = %s", (name,))
 
 
 def _inherited_view_source(cr: Any, view: InheritedView) -> tuple[int, dict[str, str]] | None:
@@ -552,6 +623,7 @@ def migrate(cr: Any, version: str | None) -> None:
     empty_chats = _empty_chat_plan(cr)
     lunches = _lunch_plan(cr)
     policies = _policy_xmlid_plan(cr)
+    stock_valuation = _stock_valuation_action_plan(cr)
     if state_target is None:
         _bind_target(cr, TARGET_STATE, state)
     if website is not None and website_target is None:
@@ -567,3 +639,5 @@ def migrate(cr: Any, version: str | None) -> None:
         _identified(cr, "DELETE FROM resource_calendar_attendance WHERE id = ANY(%s)", (), (lunches,))
         _logger.info("Removed %s redundant nonworking lunch rows; preserved working intervals", len(lunches))
     _release_policy_xmlids(cr, policies)
+    if stock_valuation is not None:
+        _bind_stock_valuation_action(cr, stock_valuation)
