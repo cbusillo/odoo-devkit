@@ -142,7 +142,7 @@ def view_findings(record: dict[str, Any], target: dict[str, Any]) -> list[dict[s
         except ElementTree.ParseError:
             results.append(finding("invalid-xml", language))
             continue
-        results += walk_view(root, record.get("model", ""), target)
+        results += walk_view(root, record.get("model", ""), target, record.get("action_bindings", {}))
         if record.get("type") == "qweb":
             results.append(finding("qweb-render-unexecuted", state="data-dependent/unreached"))
     if record.get("website_scope"):
@@ -151,10 +151,14 @@ def view_findings(record: dict[str, Any], target: dict[str, Any]) -> list[dict[s
         results.append(finding("inactive-view-native-limits", state="data-dependent/unreached"))
     if record.get("order_unreproducible"):
         results.append(finding("upgrade-order-unreproducible", state="conditional"))
+    if record.get("type") and record["type"] not in target.get("view_types", []):
+        results.append(finding("unsupported-view-type", record["type"]))
     return results
 
 
-def walk_view(element: ElementTree.Element, model: str, target: dict[str, Any]) -> list[dict[str, str]]:
+def walk_view(
+    element: ElementTree.Element, model: str, target: dict[str, Any], action_bindings: dict[str, list[str]]
+) -> list[dict[str, str]]:
     results = []
     name = element.get("name", "")
     child_model = model
@@ -169,14 +173,16 @@ def walk_view(element: ElementTree.Element, model: str, target: dict[str, Any]) 
         if name not in target.get("models", {}).get(model, {}).get("methods", []):
             results.append(finding("method-unresolved", model + "." + name, state="data-dependent/unreached"))
     if element.tag == "button" and element.get("type") == "action" and name.isdigit():
-        results.append(finding("numeric-action-binding-unavailable", state="dependency-blocked"))
+        bindings = action_bindings.get(name, [])
+        if not bindings:
+            results.append(finding("numeric-action-binding-unavailable", name, state="data-dependent/unreached"))
+        elif not any(target.get("xmlids", {}).get(xmlid, {}).get("model", "").startswith("ir.actions.") for xmlid in bindings):
+            results.append(finding("numeric-action-target-unavailable", name, state="data-dependent/unreached"))
     for attribute, value in element.attrib.items():
         for xmlid in REFERENCE.findall(value):
             results += xmlid_findings(target, xmlid)
         if attribute in EXPRESSION_FIELDS:
-            expression_model = (
-                child_model if element.tag in {"field", "groupby"} and attribute in {"domain", "context", "filter_domain"} else model
-            )
+            expression_model = child_model if element.tag in {"field", "groupby"} and attribute in {"domain", "context"} else model
             results += expression_findings(value, attribute, expression_model, target)
         if attribute in {"attrs", "states"}:
             results.append(finding("obsolete-view-attribute", attribute))
@@ -188,7 +194,7 @@ def walk_view(element: ElementTree.Element, model: str, target: dict[str, Any]) 
     if element.tag == "attribute" and name in EXPRESSION_FIELDS:
         results += expression_findings(element.text or "", name, model, target)
     for child in element:
-        results += walk_view(child, child_model, target)
+        results += walk_view(child, child_model, target, action_bindings)
     return results
 
 
@@ -238,6 +244,9 @@ def reference_findings(record: dict[str, Any], target: dict[str, Any]) -> list[d
 
 def action_findings(record: dict[str, Any], target: dict[str, Any], paths: dict[str, list[str]]) -> list[dict[str, str]]:
     results = []
+    for attribute in ("context", "domain"):
+        if record.get(attribute):
+            results.append(finding("action-expression-unvalidated", attribute, state="data-dependent/unreached"))
     action_type = record.get("type", "")
     if action_type not in target.get("models", {}):
         results.append(finding("missing-action-class", action_type))
@@ -278,6 +287,10 @@ def families(views: list[dict[str, Any]]) -> tuple[list[list[dict[str, Any]]], s
 def record_findings(
     bucket: str, record: dict[str, Any], target: dict[str, Any], paths: dict[str, list[str]]
 ) -> list[dict[str, str]]:
+    if (bucket == "views" and native_replacement(record, target, "ir.ui.view")) or (
+        bucket == "actions" and native_replacement(record, target, record.get("type", ""))
+    ):
+        return []
     results = reference_findings(record, target)
     if (
         bucket == "modules"
@@ -297,7 +310,7 @@ def record_findings(
     if bucket == "xmlids":
         actual = target.get("xmlids", {}).get(record["key"])
         if actual is None:
-            results.append(finding("missing-xmlid", record["key"]))
+            results.append(finding("xmlid-upgrade-disposition-unresolved", record["key"], state="data-dependent/unreached"))
         elif record.get("record_model", record.get("model")) and actual["model"] != record.get("record_model", record.get("model")):
             results.append(finding("moved-xmlid-model", record["key"]))
     if bucket == "actions":
@@ -337,10 +350,22 @@ def qualified_coverage(record: dict[str, Any], target: dict[str, Any]) -> list[d
 
 def covered_findings(record: dict[str, Any], results: list[dict[str, str]], target: dict[str, Any]) -> None:
     for coverage in qualified_coverage(record, target):
+        model = target.get("xmlids", {}).get(coverage.get("reference"), {}).get("model", "")
+        if model and coverage.get("code") == "native20-stock-replacement" and native_replacement(record, target, model):
+            results.append(finding("native20-stock-replacement", coverage["reference"], state="candidate-covered"))
         for result in results:
             if result["code"] == coverage.get("code") and result["reference"] == coverage.get("reference"):
                 result["state"] = "candidate-covered"
                 result["issue"] = coverage.get("issue", "")
+
+
+def native_replacement(row: dict[str, Any], target: dict[str, Any], model: str) -> bool:
+    return any(
+        item.get("code") == "native20-stock-replacement"
+        and item.get("reference") in row.get("xmlids", [])
+        and target.get("xmlids", {}).get(item.get("reference"), {}).get("model") == model
+        for item in qualified_coverage(row, target)
+    )
 
 
 def collect_static(inventory: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
@@ -367,6 +392,7 @@ def collect_static(inventory: dict[str, Any], target: dict[str, Any]) -> dict[st
         "components": [],
         "coverage": {},
         "schema_gaps": inventory.get("schema_gaps", {}),
+        "out_of_scope": inventory.get("out_of_scope", {}),
         "limitations": ["empty-target-not-real-upgrade", "dynamic-code-not-executed", "no-product-coverage-without-actual-inputs"],
     }
     known_views = {row["key"] for row in inventory["records"].get("views", [])}
@@ -375,7 +401,7 @@ def collect_static(inventory: dict[str, Any], target: dict[str, Any]) -> dict[st
         rows = inventory["records"].get(bucket, [])
         for row in rows:
             results = record_findings(bucket, row, target, paths)
-            if bucket == "views" and row.get("parent"):
+            if bucket == "views" and row.get("parent") and not native_replacement(row, target, "ir.ui.view"):
                 if row["parent"] not in known_views and row["parent"] not in target.get("xmlids", {}):
                     results.append(finding("missing-view-parent", row["parent"], state="dependency-blocked"))
             if row["key"] in cyclic and bucket == "views":
@@ -420,6 +446,10 @@ def collect_static(inventory: dict[str, Any], target: dict[str, Any]) -> dict[st
 def recount(report: dict[str, Any], inventory: dict[str, Any]) -> None:
     for bucket in sorted(set(BUCKETS) | set(inventory["records"]) | set(inventory["totals"])):
         rows = [row for row in report["components"] if row["bucket"] == bucket]
+        for row in rows:
+            row["checked"] = row.get("checked", False) and not any(
+                item["state"] in {"data-dependent/unreached", "dependency-blocked"} for item in row["findings"]
+            )
         states = Counter(state for row in rows for state in {item["state"] for item in row["findings"]})
         total = inventory["totals"].get(bucket)
         report["coverage"][bucket] = {
@@ -429,7 +459,7 @@ def recount(report: dict[str, Any], inventory: dict[str, Any]) -> None:
             "checked": sum(row["checked"] for row in rows),
             **dict(states),
             "static-findings": sum(any(item["state"] == "static-only" for item in row["findings"]) for row in rows),
-            "static-only": sum(row["native"] == "unreached" for row in rows),
+            "native-unreached": sum(row["native"] == "unreached" for row in rows),
             "native-checked": sum(row["native"] == "checked" for row in rows),
         }
         if total is None:

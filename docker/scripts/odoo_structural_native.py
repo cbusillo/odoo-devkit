@@ -13,10 +13,11 @@ from contextlib import contextmanager
 from functools import partial
 from pathlib import Path
 from typing import Any
+from xml.etree import ElementTree
 
-from odoo_release_inventory import module_graph
+from odoo_release_inventory import build_inventory, module_graph
 from odoo_release_plan import digest, verify_image_declaration
-from odoo_structural_census import collect_static, families, finding, qualified_coverage, recount, validate_inventory
+from odoo_structural_census import collect_static, families, finding, native_replacement, recount, validate_inventory
 
 _logger = logging.getLogger(__name__)
 SAFE_MANUAL_TYPES = {"char", "text", "html", "integer", "float", "boolean", "date", "datetime", "many2one", "selection"}
@@ -73,29 +74,41 @@ def reverse_closure(failed: set[str], graph: dict[str, set[str]]) -> set[str]:
     return result
 
 
-def declared_files(declaration: dict[str, Any], platform: str) -> dict[str, str]:
+def declared_files(
+    declaration: dict[str, Any], platform: str, roots: list[Path], *, evidence: Path = Path("/opt/launchplane/evidence")
+) -> dict[tuple[str, str], str]:
     prefix = "platforms/" + platform.replace("/", "_") + "/"
     result = {}
     for source in declaration.get("sources", []):
-        for file in source["files"]:
+        files = source["files"]
+        if source["input_name"] in {"base:runtime", "base:devtools"}:
+            role = source["input_name"].removeprefix("base:")
+            files = json.loads((evidence / f"base-{role}-inventory.json").read_text())
+            rebound = build_inventory(
+                {"addon_paths": list(map(str, roots)), "sources": [{**source, "roots": list(map(str, roots)), "files": files}]}
+            )["sources"][0]
+            if rebound != source:
+                raise ValueError("Baked base inventory differs from its artifact declaration")
+        for file in files:
             if file["path"].startswith("platforms/") and not file["path"].startswith(prefix):
                 continue
             path = file["path"].removeprefix(prefix)
-            if path in result and result[path] != file["sha256"]:
+            key = source["input_name"], path
+            if key in result and result[key] != file["sha256"]:
                 raise ValueError("Conflicting artifact source hashes")
-            result[path] = file["sha256"]
+            result[key] = file["sha256"]
     return result
 
 
-def verify_file(path: Path, files: dict[str, str]) -> str:
+def verify_file(path: Path, files: dict[tuple[str, str], str]) -> str:
     actual = path.resolve().as_posix()
-    expected = {value for name, value in files.items() if actual.lstrip("/") == name or actual.endswith("/" + name)}
+    expected = {value for (_source, name), value in files.items() if actual.lstrip("/") == name or actual.endswith("/" + name)}
     if len(expected) != 1 or hashlib.sha256(path.read_bytes()).hexdigest() not in expected:
         raise ValueError("Running source file is not bound to the candidate artifact: " + path.name)
     return next(iter(expected))
 
 
-def check_native_sources(declaration: dict[str, Any], platform: str, migration_paths: list[str]) -> dict[str, str]:
+def check_native_sources(files: dict[tuple[str, str], str], migration_paths: list[str]) -> dict[str, str]:
     import odoo.addons.base.models.ir_actions as actions
     import odoo.addons.base.models.ir_ui_view as views
     import odoo.modules.loading as loading
@@ -107,10 +120,8 @@ def check_native_sources(declaration: dict[str, Any], platform: str, migration_p
 
     if release.version_info[0] != 20:
         raise ValueError("Structural native probes require the selected Community20 target")
-    files = declared_files(declaration, platform)
-    for module in (registry, loading, convert, views, actions, environments, sql_db):
-        verify_file(Path(inspect.getfile(module)), files)
-    return {path: verify_file(Path(path), files) for path in migration_paths}
+    paths = [Path(inspect.getfile(module)) for module in (registry, loading, convert, views, actions, environments, sql_db)]
+    return {str(path): verify_file(path, files) for path in [*paths, *map(Path, migration_paths)]}
 
 
 def registry_surface(
@@ -142,7 +153,6 @@ def registry_surface(
         "action_paths": paths,
         "view_types": [value for value, _label in env["ir.ui.view"]._fields["type"]._description_selection(env)],
         "migration_sources": migration_sources,
-        "source_hashes": list(declared_files(candidate["artifact"]["release_compatibility"], candidate["platform"]).values()),
     }
 
 
@@ -395,7 +405,29 @@ class DisposableCensus:
                 yield env
             finally:
                 cursor.rollback()
-                env.invalidate_all(flush=False)
+
+
+def bind_view_actions(env: Any, row: dict[str, Any], architecture: str) -> str:
+    try:
+        root = ElementTree.fromstring(architecture)
+    except ElementTree.ParseError:
+        return architecture
+    changed = False
+    for button in root.iter("button"):
+        name = button.get("name", "")
+        if button.get("type") != "action" or not name.isdigit():
+            continue
+        matches = [env.ref(xmlid, raise_if_not_found=False) for xmlid in row.get("action_bindings", {}).get(name, [])]
+        matches = [record for record in matches if record]
+        if (
+            not matches
+            or len({(record._name, record.id) for record in matches}) != 1
+            or not matches[0]._name.startswith("ir.actions.")
+        ):
+            raise ProbeUnreached("Numeric action identity is unavailable", code="numeric-action-target-unavailable")
+        button.set("name", str(matches[0].id))
+        changed = True
+    return ElementTree.tostring(root, encoding="unicode") if changed else architecture
 
 
 def load_view_family(
@@ -405,14 +437,13 @@ def load_view_family(
         raise ProbeUnreached("Target language is not active", code="target-language-unavailable")
     env = env(context={**env.context, "lang": language})
     identities: dict[str, Any] = {}
+    retained_matches: set[str] = set()
     pending = sorted(rows, key=lambda row: (row.get("priority", 16), row.get("source_order", 0)))
     keys = {row["key"] for row in rows}
     while pending:
         row = next((item for item in pending if item.get("parent") not in keys or item["parent"] in identities), None)
         if row is None:
             raise ProbeUnreached("Cyclic view family")
-        if language not in row.get("architectures", {}) or language in row.get("changed_languages", []) or row.get("website_scope"):
-            raise ProbeUnreached("Language or website variant is not bound to this empty target")
         matches = [env.ref(xmlid, raise_if_not_found=False) for xmlid in row.get("xmlids", [])]
         matches = [record for record in matches if record]
         if matches and (len({record.id for record in matches}) != 1 or any(record._name != "ir.ui.view" for record in matches)):
@@ -421,10 +452,16 @@ def load_view_family(
             identities[row["key"]] = matches[0]
             pending.remove(row)
             continue
-        if matches and not (row.get("noupdate") or row.get("arch_updated") or row.get("customization_present")):
+        if language not in row.get("architectures", {}) or language in row.get("changed_languages", []) or row.get("website_scope"):
+            raise ProbeUnreached("Language or website variant is not bound to this empty target")
+        if matches and not row.get("noupdate"):
             raise ProbeUnreached("Matched stock view requires a source-qualified upgrade disposition")
-        values = {key: row[key] for key in ("model", "type", "mode", "priority", "active", "arch_fs", "arch_updated") if key in row}
-        values.update(name="census:" + row["key"], arch=row["architectures"][language], inherit_id=False)
+        if matches:
+            retained_matches.add(row["key"])
+        values = {key: row[key] for key in ("model", "type", "mode", "priority", "active") if key in row}
+        values.update(
+            name="census:" + row["key"], arch=bind_view_actions(env, row, row["architectures"][language]), inherit_id=False
+        )
         if row.get("view_key"):
             values["key"] = row["view_key"]
         if row.get("parent"):
@@ -454,10 +491,10 @@ def load_view_family(
             view._check_xml()
         except Exception as error:
             raise ViewFailure(key, attribution="family") from error
-    ordered: dict[tuple[str, int], list[dict[str, Any]]] = {}
+    ordered: dict[tuple[str, int, bool], list[dict[str, Any]]] = {}
     for row in rows:
-        if "source_order" in row:
-            ordered.setdefault((row.get("parent", ""), row.get("priority", 16)), []).append(row)
+        if "source_order" in row and row["key"] not in (replacements or set()):
+            ordered.setdefault((row.get("parent", ""), row.get("priority", 16), row["key"] in retained_matches), []).append(row)
     changed = any(
         sorted(siblings, key=lambda row: row["source_order"]) != sorted(siblings, key=lambda row: identities[row["key"]].id)
         for siblings in ordered.values()
@@ -466,9 +503,15 @@ def load_view_family(
 
 
 def load_action(env: Any, row: dict[str, Any], *, replace_native: bool = False) -> None:
+    kind = row["type"]
+    matches = [env.ref(xmlid, raise_if_not_found=False) for xmlid in row.get("xmlids", [])]
+    matches = [record for record in matches if record]
+    if matches and (len({record.id for record in matches}) != 1 or any(record._name != kind for record in matches)):
+        raise ProbeUnreached("Moved or ambiguous action class", code="moved-action-class")
+    if matches and replace_native:
+        return
     if not all(literal_expression(row.get(name)) for name in ("context", "domain")):
         raise ProbeUnreached("Action expression needs data or execution", code="action-expression-unexecuted")
-    kind = row["type"]
     if (
         kind not in {"ir.actions.act_window", "ir.actions.act_window_close"}
         or row.get("withheld")
@@ -476,12 +519,6 @@ def load_action(env: Any, row: dict[str, Any], *, replace_native: bool = False) 
         or row.get("view_references")
     ):
         raise ProbeUnreached("Action needs unavailable retained data, identity or executable behavior")
-    matches = [env.ref(xmlid, raise_if_not_found=False) for xmlid in row.get("xmlids", [])]
-    matches = [record for record in matches if record]
-    if matches and (len({record.id for record in matches}) != 1 or any(record._name != kind for record in matches)):
-        raise ProbeUnreached("Moved or ambiguous action class", code="moved-action-class")
-    if matches and replace_native:
-        return
     if matches and not row.get("noupdate"):
         raise ProbeUnreached("Matched stock action requires a source-qualified upgrade disposition")
     values = {key: row[key] for key in ("path", "view_mode", "target", "context", "domain") if key in row}
@@ -495,6 +532,8 @@ def load_action(env: Any, row: dict[str, Any], *, replace_native: bool = False) 
             env[kind].create(values)
     except Exception as error:
         raise ViewFailure(row["key"]) from error
+    if row.get("context") or row.get("domain"):
+        raise ProbeUnreached("Action creation does not validate context/domain semantics", code="action-expression-unvalidated")
 
 
 def run_probe(session: DisposableCensus, components: list[dict[str, Any]], probe: Any, *, label: str = "structure") -> None:
@@ -512,10 +551,19 @@ def run_probe(session: DisposableCensus, components: list[dict[str, Any]], probe
             component["findings"].append(finding("deadline-unreached", state="data-dependent/unreached"))
     except ViewFailure as error:
         _logger.exception("Native family failed during %s", error.attribution)
+        if error.attribution == "family":
+            session.report.setdefault("family_failures", []).append(
+                {
+                    "members": [component["key"] for component in components],
+                    "validation_record": error.key,
+                    "case": label,
+                    "state": "native-reproduced",
+                }
+            )
         for component in components:
             if component["key"] == error.key and error.attribution == "operation":
                 outcomes[component["key"]] = "native-reproduced"
-                component["findings"].append(finding("native-validation-error", state="native-reproduced"))
+                component["findings"].append(finding("native-validation-error", error.attribution, state="native-reproduced"))
             else:
                 component["findings"].append(finding("family-validation-unreached", state="dependency-blocked"))
     except ProbeUnreached as error:
@@ -562,15 +610,6 @@ def unreached_report(inventory: dict[str, Any], candidate: dict[str, Any]) -> di
     return report
 
 
-def native_replacement(row: dict[str, Any], target: dict[str, Any], model: str) -> bool:
-    return any(
-        item.get("code") == "native20-stock-replacement"
-        and item.get("reference") in row.get("xmlids", [])
-        and target.get("xmlids", {}).get(item.get("reference"), {}).get("model") == model
-        for item in qualified_coverage(row, target)
-    )
-
-
 def collect_native(
     inventory: dict[str, Any],
     candidate: dict[str, Any],
@@ -584,18 +623,25 @@ def collect_native(
 
     validate_inventory(inventory)
     artifact = candidate["artifact"]
-    verify_image_declaration(declaration, artifact["release_compatibility"], platform=candidate["platform"])
-    migration_sources = check_native_sources(declaration, candidate["platform"], candidate["migration_sources"])
-    graph = module_graph(roots)
-    declared = {row["name"]: set(row["depends"]) for row in artifact["release_compatibility"]["modules"]}
-    if artifact["release_compatibility"].get("complete") is not True or declared != graph:
-        raise ValueError("Candidate module graph differs from actual addon paths")
     margin = min(30.0, max(0.0, deadline - time.monotonic()) / 10)
     session = DisposableCensus(deadline - margin, output=output)
     session.inventory = inventory
     session.report = unreached_report(inventory, candidate)
     session.checkpoint()
     try:
+        try:
+            verify_image_declaration(declaration, artifact["release_compatibility"], platform=candidate["platform"])
+            migration_sources = check_native_sources(
+                declared_files(declaration, candidate["platform"], roots), candidate["migration_sources"]
+            )
+            graph = module_graph(roots)
+            declared = {row["name"]: set(row["depends"]) for row in artifact["release_compatibility"]["modules"]}
+            if artifact["release_compatibility"].get("complete") is not True or declared != graph:
+                raise ValueError("Candidate module graph differs from actual addon paths")
+        except (ValueError, OSError, KeyError, TypeError):
+            for row in session.report["components"]:
+                row["findings"].append(finding("candidate-source-binding-unavailable", state="dependency-blocked"))
+            raise
         try:
             registry = session.build(set(candidate["intended_modules"]), inventory, graph)
         except Exception as error:
@@ -620,6 +666,7 @@ def collect_native(
         ]
         session.report = report = collect_static(inventory, target)
         report.update(
+            native_sources=migration_sources,
             bootstrap=session.bootstrap,
             intended_modules=sorted(candidate["intended_modules"]),
             source_install_roots=artifact.get("odoo_install_modules"),
@@ -631,18 +678,18 @@ def collect_native(
         view_families, _cyclic = families(inventory["records"].get("views", []))
         for family in view_families:
             components = [by_key["views", row["key"]] for row in family]
-            if any(row.get("withheld") or row.get("website_scope") for row in family) or any(
-                item["state"] == "dependency-blocked" for component in components for item in component["findings"]
+            replacements = {row["key"] for row in family if native_replacement(row, target, "ir.ui.view")}
+            blocked = any(item["state"] == "dependency-blocked" for component in components for item in component["findings"])
+            if blocked or any(
+                (row.get("withheld") or row.get("website_scope")) and row["key"] not in replacements for row in family
             ):
                 for component in components:
-                    component["findings"].append(finding("family-baseline-unavailable", state="dependency-blocked"))
+                    component["findings"].append(
+                        finding("family-baseline-unavailable", state="dependency-blocked" if blocked else "data-dependent/unreached")
+                    )
                 session.checkpoint()
                 continue
-            replacements = {row["key"] for row in family if native_replacement(row, target, "ir.ui.view")}
-            for row in family:
-                if row["key"] in replacements:
-                    by_key["views", row["key"]]["findings"].append(finding("native20-stock-replacement", state="candidate-covered"))
-            languages = set().union(*(row.get("architectures", {}) for row in family))
+            languages = set().union(*(row.get("architectures", {}) for row in family if row["key"] not in replacements)) or {"en_US"}
             for language in sorted(languages):
                 run_probe(
                     session,
@@ -650,12 +697,6 @@ def collect_native(
                     partial(load_view_family, rows=family, language=language, replacements=replacements),
                     label=language,
                 )
-            for row in family:
-                if row.get("active") is False:
-                    by_key["views", row["key"]]["native"] = "unreached"
-                    for check in by_key["views", row["key"]].get("native_checks", []):
-                        if check["state"] == "checked":
-                            check["state"] = "inactive-unreached"
         for row in inventory["records"].get("actions", []):
             if row.get("type") not in {"ir.actions.act_window", "ir.actions.act_window_close"}:
                 continue

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import hashlib
 import inspect
+import json
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -22,7 +23,7 @@ from odoo import release
 from odoo.tests import tagged
 from odoo.tests.common import TransactionCase
 from odoo.tools import config
-from odoo_release_inventory import module_graph
+from odoo_release_inventory import build_inventory, classify_files, module_graph
 from psycopg2.errors import ReadOnlySqlTransaction
 
 
@@ -50,26 +51,39 @@ class TestStructuralCensus(TransactionCase):
         if release.version_info[0] != 20:
             self.skipTest("Native structural census targets Community20")
         self.roots = [Path(path) for path in odoo.addons.__path__]
-        graph = module_graph(self.roots)
         fixture = Path("/opt/extra_addons/ci_census_good/actions.xml")
         paths = [
             Path(inspect.getfile(module)) for module in (registry_source, loading, convert, views, actions, environments, sql_db)
         ] + [fixture]
-        self.declaration: dict[str, Any] = {
-            "complete": True,
-            "modules": [{"name": key, "depends": sorted(value)} for key, value in graph.items()],
-            "sources": [
-                {
-                    "input_name": "synthetic-native-files",
-                    "repository": "fixture/native",
-                    "commit": "synthetic-fixture",
-                    "files": [
-                        {"path": path.resolve().as_posix().lstrip("/"), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
-                        for path in paths
-                    ],
-                }
-            ],
-        }
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        evidence = Path(temporary.name)
+        files = classify_files({path.resolve().as_posix().lstrip("/"): path.read_bytes() for path in paths})[0]
+        (evidence / "base-runtime-inventory.json").write_text(json.dumps(files))
+        self.declaration = build_inventory(
+            {
+                "addon_paths": list(map(str, self.roots)),
+                "sources": [
+                    {
+                        "input_name": "base:runtime",
+                        "repository": "fixture/native",
+                        "commit": "synthetic-fixture",
+                        "roots": list(map(str, self.roots)),
+                        "files": files,
+                    }
+                ],
+            }
+        )
+        original_declared_files = native.declared_files
+        binding_patch = patch.object(
+            native,
+            "declared_files",
+            side_effect=lambda declaration, platform, roots: original_declared_files(
+                declaration, platform, roots, evidence=evidence
+            ),
+        )
+        binding_patch.start()
+        self.addCleanup(binding_patch.stop)
         self.artifact: dict[str, Any] = {
             "artifact_id": "synthetic-fixture",
             "release_compatibility": self.declaration,
@@ -79,7 +93,7 @@ class TestStructuralCensus(TransactionCase):
             "artifact": self.artifact,
             "platform": "linux/amd64",
             "intended_modules": ["ci_census_good", "ci_census_dependent"],
-            "migration_sources": [],
+            "migration_sources": [str(fixture)],
         }
 
     def test_real_loader_failures_manual_reload_view_families_and_actions_collect_together(self) -> None:
@@ -101,7 +115,7 @@ class TestStructuralCensus(TransactionCase):
                 view(
                     "calendar.retained", '<form><field name="calendar_default_privacy"/><field name="census_second_missing"/></form>'
                 ),
-                view("hr.retained", '<form><field name="employee_id"/></form>'),
+                view("hr.retained", '<hierarchy><field name="name"/></hierarchy>', type="form"),
                 view("family.root", '<form><field name="name"/></form>', source_order=1),
                 view(
                     "family.broken",
@@ -160,13 +174,17 @@ class TestStructuralCensus(TransactionCase):
             '<form><field name="name"/><field name="login"/></form>',
             xmlids=["ci_census_good.stock_view"],
             noupdate=False,
-            arch_updated=False,
+            arch_updated=True,
+            customization_present=True,
         )
         root["candidate_coverage"] = [
             {
                 "candidate": census.digest(self.artifact),
                 "record_sha256": census.digest(root),
-                "source_sha256": self.declaration["sources"][0]["files"][-1]["sha256"],
+                "source_sha256": native.verify_file(
+                    Path(self.candidate["migration_sources"][0]),
+                    native.declared_files(self.declaration, self.candidate["platform"], self.roots),
+                ),
                 "guard_receipt": "synthetic-root-stock-qualification",
                 "code": "native20-stock-replacement",
                 "reference": "ci_census_good.stock_view",

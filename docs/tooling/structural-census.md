@@ -15,11 +15,13 @@ records. No baseline/file-store restore is needed for the collector.
 
 `docker/scripts/odoo_structural_extract.py` owns the column allowlist in `TABLES`.
 It reads technical modules/dependencies, model/field declarations and inheritance,
-XMLIDs/noupdate, every stock/custom/inactive view and language architecture,
+technical XMLIDs/noupdate, every stock/custom/inactive view and language architecture,
 parent/priority/source order/group and website bindings, all action classes and
 view relations, menus, filters/defaults, automation, templates and QWeb counts.
-The inherited action table accounts for unknown action subclasses too. Existing
-ACL ownership work is reused; this is not a rights-equivalence oracle.
+The inherited action table accounts for unknown action subclasses too. XMLID
+names are selected only for technical models, including the actual action
+subclasses. Other XMLID rows are counted without selecting their names or IDs.
+Existing ACL ownership work is reused; this is not a rights-equivalence oracle.
 
 Use a dedicated new cursor, before any query, in root's existing extraction job:
 
@@ -33,8 +35,10 @@ private_inventory = project_private_inventory(private_tables)
 The extractor establishes one repeatable, read-only snapshot. It returns code,
 compute, URL and history **presence**, never raw code, URLs or `arch_prev` text.
 It reads no business tables. The shared projector maps IDs, XMLIDs, view topology,
-action subclasses and relation rows into one schema; product owners do not need
-another parser. Original IDs remain private technical order/identity evidence.
+action subclasses and relation rows into one schema; `out_of_scope.nontechnical_xmlids`
+keeps the excluded count separate from technical XMLID totals. Unknown scope
+counts remain unknown. Product owners do not need another parser. Original IDs
+remain private technical order/identity evidence.
 
 Both returns are **unscreened private material**. Architecture, domains, context,
 translations, XPath and even technical identifiers can contain business values
@@ -66,14 +70,22 @@ so available/uninstalled source rows are not mistaken for installed requirements
 Views retain `parent`, `mode`, `type`, `model`, `active`, `priority`,
 `source_order`, per-XMLID noupdate, `arch_updated`, history/customization presence,
 `groups`, optional `view_key` and `website_scope`, plus `architectures` by language
-and `changed_languages`. Website variants without actual target identity/context
-remain untested; they are not combined into a generic family.
+and `changed_languages`. `action_bindings` maps the original numeric button names
+to technical action XMLIDs. Original architecture and numeric IDs stay intact in
+the private input; only the disposable probe resolves bound buttons to target IDs.
+An unresolved target action stays untested. Website variants without actual
+target identity/context remain untested; they are not combined into a generic family.
 
 Fields retain technical `name`, `model`, `state`, `ttype`, `relation`, `related`,
 `depends`, compute presence, safe selection values and flags. Actions retain the
 actual class as `type`, target as `model`, `path`, `view_mode`/relation modes,
 view references and safe context/domain. Unknown or executable classes remain
 counted. Stored Python/server actions/compute code are never executed.
+Window-action creation checks native model/path/view-mode constraints, but does
+not validate context/domain semantics. Retained expressions remain explicitly
+untested even when they are literals; their safe creation still runs so native
+constraint failures can be collected. Qualified stock replacement uses the actual
+target action and does not audit discarded old expressions.
 QWeb rows refer to their canonical view row rather than copying its architecture.
 
 For static checking, the target surface has an exact `binding`, `surface`,
@@ -90,10 +102,16 @@ python /volumes/scripts/odoo_structural_census.py \
 
 Every retained view is statically inventoried, including obsolete stock such as
 the Calendar regression. Inheritance fragments whose model cannot be inferred
-are marked native-required; relational field domains use the comodel. Dynamic
+are marked native-required; relational field `domain`/`context` use the comodel,
+while search `filter_domain` uses the view model. Unsupported view types remain
+structural findings, including retained hierarchy/form mismatches. Dynamic
 expressions/code, numeric action IDs without target binding, withheld text and
 auxiliary sources are visible gaps. Static blockers and native-unreached counts
-are separate. `checked` excludes records with untested/blocked material.
+are separate: `static-findings` counts components with static blockers, and
+`native-unreached` counts components without complete native checks. The finding
+state counts keep their own names. `checked` excludes records with untested/blocked
+material and is recalculated at each checkpoint. Missing technical XMLIDs on an
+empty target require an upgrade disposition; business XMLIDs are outside scope.
 
 ## Native caller and stock dispositions
 
@@ -127,8 +145,17 @@ report = collect_native(
 is read from `/opt/launchplane/evidence/release-compatibility.json` in that image.
 The existing release verifier binds them. The artifact digest supplies the
 candidate identity. Native registry/loading/converter/view/action/cache/transaction
-sources and each migration/rename path are checked against existing declared file
-hashes; no second caller-supplied native hash catalog is maintained. Old19/18
+sources and each migration/rename path are checked against the existing
+namespaced inventories. For `base:runtime` and `base:devtools`, the collector reads
+`/opt/launchplane/evidence/base-runtime-inventory.json` and
+`base-devtools-inventory.json` (the existing lists of classified file records),
+then reuses `build_inventory` with the actual addon paths to reproduce each
+`source-inventory.sha256` declaration. Other source namespaces retain their
+existing declared files. The actual loaded core files and all requested source
+paths must match those bound records; `native_sources` records their hashes.
+A stock/migration attestation may use a verified source path from any namespace:
+include every such proof path in `migration_sources`. No caller hash catalog is
+maintained. Binding failures are checkpointed before raising. Old19/18
 sources are static references only. Missing binding is not guessed.
 
 Keep source `odoo_install_modules`, the full intended target roots, the actual
@@ -147,10 +174,14 @@ source and actual old flags. A row's existing `candidate_coverage` can record
 `native20-stock-replacement`: exact artifact digest in `candidate`, release
 `digest(row_without_candidate_coverage)` in `record_sha256`, a declared
 `source_sha256`, the qualified `guard_receipt`, and matching XMLID in `reference`.
-The collector uses the actual target record unchanged, so custom extensions are
-checked against20. This is root's attestation of an already-proven guard, not a
-new guard evaluator. Other covered findings match their exact `code`/`reference`
+The collector uses the actual target record unchanged and does not scan the
+discarded old architecture as a blocker, so custom extensions are checked against20.
+This is root's attestation of an already-proven guard, not a new guard evaluator.
+Other covered findings match their exact `code`/`reference`
 and may link their owning `issue`. Changed inputs invalidate the annotation.
+Only `noupdate` qualifies a matched stock view with no replacement disposition
+for a retained overlay. `arch_updated` and per-user customization copies do not
+prove retention.
 An absent target XMLID is never blanket-excluded; retained obsolete stock is
 probed as retained. Unqualified matched stock stays explicitly unreached.
 No custom diff is rewritten onto a new stock view.
@@ -163,7 +194,7 @@ preparation, never business data or stored-code execution.
 
 View/action probes make no schema changes. Each family/language or non-executable
 window action uses a fresh native cursor/transaction on that owned baseline,
-then full rollback and environment invalidation. Odoo20 transaction rollback
+then full rollback. Odoo20 transaction rollback
 restores its ORM-cache layers; these sources are pinned above. No per-family DB
 clone or registry reload is needed. The regression primes XMLID caches and proves
 both row and cache isolation. Schema changes are confined to baseline preparation.
@@ -171,13 +202,18 @@ A candidate override that changes schema during a view/action write needs separa
 qualification rather than this data-only probe contract.
 
 A view family includes its actual root, extensions and sibling primary views.
-An unchanged native constraint failure leaves that original family unreached;
-independent families continue. Static scanning can find several bad references
-inside one family; native validation still stops at its first error. This does
+An operation failure is attributed to that operation. A final combined-family
+validation failure is recorded separately in `family_failures` as native-reproduced,
+with the validation record and all family members; individual members remain
+unreached because the cause is not isolated. Independent families continue.
+Static scanning can find several bad references inside one family; native
+validation still stops at its first error. This does
 not promise every latent native error behind a failed dependency. No diagnostic
 fragment removal, deactivation, forced readiness or validation bypass occurs.
-Warnings/errors are retained privately with source/logger/severity. Actual
-relative-order inversions are conditional; equal priorities alone are not a
+Warnings/errors are retained privately with source/logger/severity. Order
+comparisons keep retained matches and newly created siblings separate; native
+and source IDs do not share one ordering. Reproduced relative-order
+inversions are conditional; equal priorities alone are not a
 blocker. Real-upgrade loaded-view filtering/order remains final-proof territory.
 Inactive/translated/website/QWeb/action/data-dependent limits remain explicit.
 Per-user UI reads, if needed later, must follow native pruned architecture.

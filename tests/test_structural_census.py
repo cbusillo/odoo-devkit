@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import sys
 import tempfile
 import time
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
+from xml.etree import ElementTree
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "docker/scripts"
 sys.path.insert(0, str(SCRIPTS))
@@ -57,7 +61,7 @@ class StaticCensusTests(unittest.TestCase):
         packet = inventory(
             views=[
                 view("calendar.legacy", '<form><field name="calendar_default_privacy"/><field name="missing_second"/></form>'),
-                view("hr.legacy", '<form><field name="employee_id"/></form>'),
+                view("hr.legacy", '<hierarchy><field name="name"/></hierarchy>', type="hierarchy"),
                 view("custom.valid", '<form><field name="name"/></form>'),
             ]
         )
@@ -293,7 +297,7 @@ class CoverageRegressionTests(unittest.TestCase):
         report = census.collect_static(packet, target())
         self.assertEqual(report["coverage"]["views"]["checked"], 2)
         self.assertEqual(report["coverage"]["views"]["static-findings"], 1)
-        self.assertEqual(report["coverage"]["views"]["static-only"], 3)
+        self.assertEqual(report["coverage"]["views"]["native-unreached"], 3)
 
     def test_reduced_and_missing_manual_baselines_stay_blocked(self) -> None:
         selected = target()
@@ -314,13 +318,16 @@ class CoverageRegressionTests(unittest.TestCase):
         packet = inventory(
             views=[
                 view("template", '<kanban><t t-out="record.name"/></kanban>'),
-                view("attribute", '<data><attribute name="domain">[("gone", "=", False)]</attribute></data>'),
+                view(
+                    "attribute",
+                    '<field name="partner_id" position="attributes"><attribute name="domain">[("gone", "=", False)]</attribute></field>',
+                ),
                 view("button", '<form><button name="1234" type="action"/></form>'),
             ]
         )
         report = census.collect_static(packet, target())
         codes = {item["code"] for row in report["components"] for item in row["findings"]}
-        self.assertTrue({"template-expression-unexecuted", "missing-field", "numeric-action-binding-unavailable"} <= codes)
+        self.assertTrue({"template-expression-unexecuted", "field-model-unresolved", "numeric-action-binding-unavailable"} <= codes)
 
     def test_private_projector_keeps_identity_topology_flags_classes_and_unknown_totals(self) -> None:
         extracted = {
@@ -383,7 +390,7 @@ class CoverageRegressionTests(unittest.TestCase):
             root = Path(directory)
             source = root / "source.py"
             source.write_text("original source")
-            files = {source.as_posix().lstrip("/"): hashlib.sha256(source.read_bytes()).hexdigest()}
+            files = {("fixture", source.as_posix().lstrip("/")): hashlib.sha256(source.read_bytes()).hexdigest()}
             native.verify_file(source, files)
             source.write_text("changed source")
             with self.assertRaises(ValueError):
@@ -393,8 +400,6 @@ class CoverageRegressionTests(unittest.TestCase):
             session.checkpoint()
             with self.assertRaises(ValueError):
                 session.drop("foreign")
-            import json
-
             self.assertEqual(json.loads((root / "report.json").read_text())["components"], session.report["components"])
 
     def test_field_metadata_booleans_are_not_expressions(self) -> None:
@@ -422,6 +427,330 @@ class CoverageRegressionTests(unittest.TestCase):
         self.assertFalse(native.native_replacement(row, selected, "ir.ui.view"))
         self.assertTrue(native.literal_expression("{'default_name': False}"))
         self.assertFalse(native.literal_expression("{'default_name': callable() }"))
+
+
+class NativeView:
+    _name = "ir.ui.view"
+
+    def __init__(self, record_id: int, *, fail_validation: bool = False) -> None:
+        self.id = record_id
+        self.values: dict[str, Any] = {}
+        self.fail_validation = fail_validation
+
+    def write(self, values: dict[str, Any]) -> None:
+        self.values.update(values)
+
+    def _check_xml(self) -> None:
+        if self.fail_validation:
+            raise ValueError("Invalid final combined family")
+
+
+class ViewEnvironment:
+    def __init__(self, references: dict[str, Any] | None = None) -> None:
+        self.context: dict[str, Any] = {}
+        self.references = references or {}
+        self.created: list[NativeView] = []
+
+    def __call__(self, *, context: dict[str, Any]) -> ViewEnvironment:
+        self.context = context
+        return self
+
+    def __getitem__(self, model: str) -> Any:
+        if model == "res.lang":
+            return SimpleNamespace(search_count=lambda _domain: 1)
+        if model == "ir.ui.view":
+            return SimpleNamespace(create=self.create)
+        raise KeyError(model)
+
+    def ref(self, xmlid: str, *, raise_if_not_found: bool = True) -> Any:
+        record = self.references.get(xmlid)
+        if record is None and raise_if_not_found:
+            raise ValueError(xmlid)
+        return record
+
+    def create(self, values: dict[str, Any]) -> NativeView:
+        record = NativeView(100 + len(self.created))
+        record.write(values)
+        self.created.append(record)
+        return record
+
+
+class ReviewedRegressionTests(unittest.TestCase):
+    def test_literal_action_expressions_remain_untested_after_native_creation(self) -> None:
+        created = []
+
+        class Environment:
+            @staticmethod
+            def __getitem__(_model: str) -> Any:
+                return SimpleNamespace(create=created.append)
+
+        for attribute in ("context", "domain"):
+            row = {"key": "custom.action", "type": "ir.actions.act_window", "model": "res.users", attribute: "5"}
+            report = census.collect_static(inventory(actions=[row]), target())
+            component = report["components"][0]
+            self.assertFalse(component["checked"])
+            self.assertIn(
+                ("action-expression-unvalidated", attribute, "data-dependent/unreached"),
+                {(item["code"], item["reference"], item["state"]) for item in component["findings"]},
+            )
+            with self.assertRaises(native.ProbeUnreached):
+                native.load_action(Environment(), row)
+        self.assertEqual(len(created), 2)
+
+    def test_aggregate_base_receipts_are_namespaced_and_bind_actual_files(self) -> None:
+        from odoo_release_inventory import build_inventory
+        from odoo_release_inventory import inventory as source_inventory
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = []
+            for role in ("runtime", "devtools"):
+                code = root / role
+                code.mkdir()
+                (code / "README.md").write_text(role)
+                files = source_inventory([code])[0]
+                (root / f"base-{role}-inventory.json").write_text(json.dumps(files))
+                sources.append(
+                    {
+                        "input_name": "base:" + role,
+                        "repository": "fixture/" + role,
+                        "commit": role,
+                        "roots": [str(root)],
+                        "files": files,
+                    }
+                )
+            addon = root / "addon"
+            addon.mkdir()
+            migration = addon / "migration.py"
+            migration.write_text("synthetic migration source")
+            sources.append({"input_name": "addon:fixture", "repository": "fixture/addon", "commit": "addon", "roots": [str(addon)]})
+            source = root / "runtime/README.md"
+            declaration = build_inventory({"addon_paths": [str(root)], "sources": sources})
+            files = native.declared_files(declaration, "linux/amd64", [root], evidence=root)
+            native.verify_file(source, files)
+            native.verify_file(migration, files)
+            migration.write_text("drifted addon migration")
+            with self.assertRaises(ValueError):
+                native.verify_file(migration, files)
+            self.assertEqual(len(files), len(sources))
+            source.write_text("changed after immutable receipt")
+            with self.assertRaises(ValueError):
+                native.verify_file(source, files)
+            receipt = root / "base-runtime-inventory.json"
+            values = json.loads(receipt.read_text())
+            values[0]["sha256"] = hashlib.sha256(source.read_bytes()).hexdigest()
+            receipt.write_text(json.dumps(values))
+            with self.assertRaises(ValueError):
+                native.declared_files(declaration, "linux/amd64", [root], evidence=root)
+
+    def test_extraction_counts_business_xmlids_without_reading_their_names(self) -> None:
+        class SQLText:
+            def __init__(self, value: str) -> None:
+                self.value = value
+
+            def __str__(self) -> str:
+                return self.value
+
+            def format(self, *args: Any) -> SQLText:
+                return SQLText(self.value.format(*map(str, args)))
+
+            def join(self, iterable: Any) -> SQLText:
+                return SQLText(self.value.join(map(str, iterable)))
+
+        class Cursor:
+            rows: list[tuple[Any, ...]]
+
+            def execute(self, query: Any, parameters: Any = None) -> None:
+                statement = str(query)
+                bindings = tuple(parameters or ())
+                if "information_schema" in statement:
+                    if not bindings:
+                        raise AssertionError("Table binding is required")
+                    table = bindings[0]
+                    columns = {"ir_model_data": ["module", "name", "model", "res_id", "noupdate"], "ir_actions": ["id", "type"]}
+                    self.rows = [(column,) for column in columns.get(table, [])]
+                elif "count(*)" in statement:
+                    self.rows = [(8,)]
+                elif "FROM ir_actions" in statement:
+                    self.rows = [(5, "custom.action")]
+                elif "FROM ir_model_data" in statement:
+                    if not bindings:
+                        raise AssertionError("Technical model scope is required")
+                    if "WHERE model = ANY(%s)" not in statement or "custom.action" not in bindings[0]:
+                        raise AssertionError("Business XMLID names must never be selected")
+                    self.rows = [("fixture", "action", "custom.action", 5, False)]
+                else:
+                    self.rows = []
+
+            def fetchall(self) -> list[tuple[Any, ...]]:
+                return self.rows
+
+            def fetchone(self) -> tuple[Any, ...]:
+                return self.rows[0]
+
+        sql = SimpleNamespace(SQL=SQLText, Identifier=SQLText)
+        with patch.dict(sys.modules, {"psycopg2": SimpleNamespace(sql=sql)}):
+            extracted = extract.extract_private_technical(Cursor(), "synthetic")
+        projected = extract.project_private_inventory(extracted)
+        self.assertEqual(projected["out_of_scope"]["nontechnical_xmlids"], 8)
+        self.assertEqual([row["key"] for row in projected["records"]["xmlids"]], ["fixture.action"])
+        self.assertEqual(projected["totals"]["xmlids"], 1)
+
+    def test_filter_domain_uses_search_model_and_domain_uses_comodel(self) -> None:
+        selected = target()
+        row = view(
+            "search",
+            "<search><field name=\"partner_id\" filter_domain=\"[('partner_id', 'child_of', raw_value)]\" domain=\"[('name', '=', False)]\"/></search>",
+        )
+        results = census.collect_static(inventory(views=[row]), selected)["components"][0]["findings"]
+        self.assertFalse(any(item["code"] == "missing-field" for item in results))
+        row["architectures"]["en_US"] = (
+            "<search><field name=\"partner_id\" filter_domain=\"[('name_on_partner_only', '=', False)]\"/></search>"
+        )
+        selected["models"]["res.partner"]["fields"]["name_on_partner_only"] = {}
+        results = census.collect_static(inventory(views=[row]), selected)["components"][0]["findings"]
+        self.assertIn("res.users.name_on_partner_only", {item["reference"] for item in results})
+
+    def test_stock_edit_flags_do_not_authorize_overlay_and_noupdate_does(self) -> None:
+        for flags in ({"arch_updated": True}, {"customization_present": True}, {"noupdate": False}):
+            stock = NativeView(5)
+            env = ViewEnvironment({"base.stock": stock})
+            row = view("stock", "<form/>", xmlids=["base.stock"], **flags)
+            with self.assertRaises(native.ProbeUnreached):
+                native.load_view_family(env, [row], "en_US")
+            self.assertFalse(stock.values)
+        stock = NativeView(5)
+        row = view("retained", "<form/>", xmlids=["base.stock"], noupdate=True, arch_fs="old/file.xml", arch_updated=False)
+        native.load_view_family(ViewEnvironment({"base.stock": stock}), [row], "en_US")
+        self.assertEqual(stock.values["arch"], row["architectures"]["en_US"])
+        self.assertNotIn("arch_fs", stock.values)
+        self.assertNotIn("arch_updated", stock.values)
+
+    def test_qualified_stock_replacement_drops_old_arch_findings_and_old_language_requirements(self) -> None:
+        selected = target()
+        selected["xmlids"]["base.stock"] = {"model": "ir.ui.view"}
+        row = view("stock", '<form attrs="{}"><field name="obsolete"/></form>', xmlids=["base.stock"])
+        row["architectures"] = {"old_language": row["architectures"]["en_US"]}
+        row["candidate_coverage"] = [
+            {
+                "candidate": selected["binding"],
+                "record_sha256": census.digest(row),
+                "source_sha256": next(iter(selected["migration_sources"].values())),
+                "guard_receipt": "qualified",
+                "code": "native20-stock-replacement",
+                "reference": "base.stock",
+            }
+        ]
+        report = census.collect_static(inventory(views=[row]), selected)
+        self.assertEqual({item["code"] for item in report["components"][0]["findings"]}, {"native20-stock-replacement"})
+        stock = NativeView(5)
+        native.load_view_family(ViewEnvironment({"base.stock": stock}), [row], "en_US", replacements={row["key"]})
+        self.assertFalse(stock.values)
+        row["architectures"]["old_language"] += " "
+        report = census.collect_static(inventory(views=[row]), selected)
+        self.assertIn("obsolete-view-attribute", {item["code"] for item in report["components"][0]["findings"]})
+
+    def test_numeric_actions_bind_by_technical_identity_without_mutating_original_architecture(self) -> None:
+        arch = '<form><button name="1234" type="action"/><field name="name"/></form>'
+        extracted = {
+            "binding": "synthetic",
+            "tables": {
+                "ir_model_data": {
+                    "count": 2,
+                    "rows": [
+                        {"module": "base", "name": "action", "model": "ir.actions.act_window", "res_id": 1234},
+                        {"module": "__export__", "name": "private_business_identifier", "model": "res.partner", "res_id": 1234},
+                    ],
+                },
+                "ir_actions": {"count": 1, "rows": [{"id": 1234, "type": "ir.actions.act_window"}]},
+                "ir_ui_view": {"count": 1, "rows": [{"id": 10, "model": "res.users", "arch_db": arch, "type": "form"}]},
+            },
+        }
+        projected = extract.project_private_inventory(extracted)
+        row = projected["records"]["views"][0]
+        self.assertEqual(row["action_bindings"], {"1234": ["base.action"]})
+        self.assertNotIn("private_business_identifier", json.dumps(projected))
+        self.assertEqual(projected["out_of_scope"]["nontechnical_xmlids"], 1)
+        self.assertEqual(projected["totals"]["xmlids"], 1)
+        action = SimpleNamespace(id=7, _name="ir.actions.act_window")
+        env = ViewEnvironment({"base.action": action})
+        bound_arch = native.bind_view_actions(env, row, arch)
+        button = ElementTree.fromstring(bound_arch).find("button")
+        assert button is not None
+        self.assertEqual(button.get("name"), str(action.id))
+        self.assertEqual(row["architectures"]["en_US"], arch)
+        with self.assertRaises(native.ProbeUnreached):
+            native.bind_view_actions(ViewEnvironment(), row, arch)
+        selected = target()
+        report = census.collect_static(projected, selected)
+        self.assertIn(
+            "numeric-action-target-unavailable",
+            {item["code"] for component in report["components"] if component["bucket"] == "views" for item in component["findings"]},
+        )
+
+    def test_final_family_failure_is_observed_without_claiming_culprit_and_checked_counts_update(self) -> None:
+        class Session(native.DisposableCensus):
+            @staticmethod
+            @contextmanager
+            def probe() -> Any:
+                yield object()
+
+        source = inventory(views=[view("root", "<form/>"), view("child", "<form/>")])
+        report = census.collect_static(source, target())
+        session = Session(time.monotonic() + 60)
+        session.report = report
+
+        def fail(_env: Any) -> None:
+            raise native.ViewFailure("root", attribution="family")
+
+        with self.assertLogs("odoo_structural_native", level="ERROR"):
+            native.run_probe(session, report["components"], fail)
+        census.recount(report, source)
+        self.assertEqual({row["native"] for row in report["components"]}, {"unreached"})
+        self.assertEqual(report["family_failures"][0]["state"], "native-reproduced")
+        self.assertEqual(report["family_failures"][0]["validation_record"], "root")
+        self.assertEqual(set(report["family_failures"][0]["members"]), {"root", "child"})
+        self.assertEqual(report["coverage"]["views"]["checked"], 0)
+        self.assertEqual(report["coverage"]["views"]["native-unreached"], 2)
+        report["components"][0]["findings"].append(census.finding("deadline-unreached", state="data-dependent/unreached"))
+        census.recount(report, source)
+        self.assertEqual(report["coverage"]["views"]["checked"], 0)
+
+    def test_replaced_action_uses_target_without_old_expression_or_path_blockers(self) -> None:
+        selected = target()
+        selected["xmlids"]["base.action"] = {"model": "ir.actions.act_window"}
+        selected["action_paths"] = {"old-conflict": ["base.other_action"]}
+        row: dict[str, Any] = {
+            "key": "old.action",
+            "xmlids": ["base.action"],
+            "type": "ir.actions.act_window",
+            "model": "res.users",
+            "context": "ref('old.missing')",
+            "path": "old-conflict",
+            "view_mode": "tree",
+            "res_id": 42,
+        }
+        row["candidate_coverage"] = [
+            {
+                "candidate": selected["binding"],
+                "record_sha256": census.digest(row),
+                "source_sha256": next(iter(selected["migration_sources"].values())),
+                "guard_receipt": "qualified",
+                "code": "native20-stock-replacement",
+                "reference": "base.action",
+            }
+        ]
+        report = census.collect_static(inventory(actions=[row]), selected)
+        self.assertEqual({item["code"] for item in report["components"][0]["findings"]}, {"native20-stock-replacement"})
+        env = ViewEnvironment({"base.action": SimpleNamespace(_name="ir.actions.act_window", id=5)})
+        native.load_action(env, row, replace_native=True)
+        self.assertFalse(env.created)
+
+    def test_mixed_native_and_created_sibling_ids_are_not_comparable(self) -> None:
+        native_row = view("stock", "<form/>", xmlids=["base.stock"], noupdate=True, parent="root", source_order=3)
+        created_row = view("new", "<form/>", parent="root", source_order=2)
+        env = ViewEnvironment({"base.stock": NativeView(5)})
+        self.assertFalse(native.load_view_family(env, [view("root", "<form/>", source_order=1), created_row, native_row], "en_US"))
 
 
 if __name__ == "__main__":

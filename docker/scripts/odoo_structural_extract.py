@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from xml.etree import ElementTree
 
 TABLES = {
     "ir_module_module": ("name", "state", "latest_version"),
@@ -53,6 +54,31 @@ TABLES = {
     "base_automation": ("model_id", "trigger", "filter_pre_domain", "filter_domain", "active"),
     "mail_template": ("model_id", "report_template_ids", "lang"),
 }
+TECHNICAL_XMLID_MODELS = {
+    "ir.module.module",
+    "ir.model",
+    "ir.model.fields",
+    "ir.model.fields.selection",
+    "ir.model.access",
+    "ir.rule",
+    "ir.model.constraint",
+    "ir.model.relation",
+    "ir.ui.view",
+    "ir.ui.menu",
+    "res.groups",
+    "res.lang",
+    "ir.filters",
+    "ir.default",
+    "base.automation",
+    "mail.template",
+    "ir.actions.actions",
+    "ir.actions.act_window",
+    "ir.actions.act_window_close",
+    "ir.actions.server",
+    "ir.actions.report",
+    "ir.actions.client",
+    "ir.actions.act_url",
+}
 
 
 def extract_private_technical(cursor: Any, binding: str) -> dict[str, Any]:
@@ -62,7 +88,9 @@ def extract_private_technical(cursor: Any, binding: str) -> dict[str, Any]:
         raise ValueError("Source binding is required before root extraction")
     cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
     extracted: dict[str, Any] = {"binding": binding, "screened": False, "tables": {}}
-    for table, allowlist in TABLES.items():
+    technical_models = set(TECHNICAL_XMLID_MODELS)
+    for table in [name for name in TABLES if name != "ir_model_data"] + ["ir_model_data"]:
+        allowlist = TABLES[table]
         cursor.execute(
             "SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=%s",
             (table,),
@@ -90,10 +118,17 @@ def extract_private_technical(cursor: Any, binding: str) -> dict[str, Any]:
             extracted["tables"][table] = {"count": None, "gap": "structural-columns-unavailable"}
             continue
         order = sql.Identifier("id" if "id" in present else selected[0])
-        query = sql.SQL("SELECT {} FROM {} ORDER BY {}").format(columns, sql.Identifier(table), order)
-        cursor.execute(query)
+        predicate = sql.SQL(" WHERE model = ANY(%s)") if table == "ir_model_data" else sql.SQL("")
+        parameters = (sorted(technical_models),) if table == "ir_model_data" else None
+        query = sql.SQL("SELECT {} FROM {}{} ORDER BY {}").format(columns, sql.Identifier(table), predicate, order)
+        cursor.execute(query, parameters)
         rows = [dict(zip(output_names, row, strict=True)) for row in cursor.fetchall()]
         extracted["tables"][table] = {"count": len(rows), "rows": rows, "withheld_columns": sorted(set(allowlist) - present)}
+        if table == "ir_actions":
+            technical_models.update(row["type"] for row in rows if row.get("type"))
+        if table == "ir_model_data":
+            cursor.execute("SELECT count(*) FROM ir_model_data WHERE NOT (model = ANY(%s))", parameters)
+            extracted["out_of_scope"] = {"nontechnical_xmlids": cursor.fetchone()[0]}
     return extracted
 
 
@@ -104,10 +139,24 @@ def project_private_inventory(extracted: dict[str, Any]) -> dict[str, Any]:
     records: dict[str, list[dict[str, Any]]] = {bucket: [] for bucket in BUCKETS}
     totals: dict[str, int | None] = {}
     aliases: dict[tuple[str, int], list[dict[str, Any]]] = {}
+    technical_models = TECHNICAL_XMLID_MODELS | {row["type"] for row in tables.get("ir_actions", {}).get("rows", [])}
+    excluded_xmlids = 0
     for row in tables.get("ir_model_data", {}).get("rows", []):
+        if row["model"] not in technical_models:
+            excluded_xmlids += 1
+            continue
         xmlid = row["module"] + "." + row["name"]
         aliases.setdefault((row["model"], row["res_id"]), []).append({"xmlid": xmlid, "noupdate": row.get("noupdate")})
-        records["xmlids"].append({"key": xmlid, "record_model": row["model"], "owners": [row["module"]]})
+        records["xmlids"].append(
+            {"key": xmlid, "record_model": row["model"], "owners": [] if row["module"].startswith("__") else [row["module"]]}
+        )
+    action_models = {row["type"] for row in tables.get("ir_actions", {}).get("rows", [])} | {
+        model for model in technical_models if model.startswith("ir.actions.")
+    }
+    action_aliases: dict[str, set[str]] = {}
+    for (model, record_id), bindings in aliases.items():
+        if model in action_models:
+            action_aliases.setdefault(str(record_id), set()).update(item["xmlid"] for item in bindings)
 
     def base(source_row: dict[str, Any], record_model: str, prefix: str) -> dict[str, Any]:
         owned_bindings = aliases.get((record_model, source_row["id"]), [])
@@ -117,7 +166,8 @@ def project_private_inventory(extracted: dict[str, Any]) -> dict[str, Any]:
             "noupdate_by_xmlid": {item["xmlid"]: item["noupdate"] for item in owned_bindings},
             "noupdate": all(item["noupdate"] for item in owned_bindings) if owned_bindings else None,
             "owners": sorted(
-                {item["xmlid"].split(".")[0] for item in owned_bindings} | set((source_row.get("modules") or "").split(",")) - {""}
+                {item["xmlid"].split(".")[0] for item in owned_bindings if not item["xmlid"].startswith("__")}
+                | set((source_row.get("modules") or "").split(",")) - {""}
             ),
         }
 
@@ -174,6 +224,18 @@ def project_private_inventory(extracted: dict[str, Any]) -> dict[str, Any]:
         if row["id"] in unbound_groups:
             values["withheld"] = ["unbound-group-identity"]
         projected = {**base(row, "ir.ui.view", "view"), **values}
+        action_ids: set[str] = set()
+        for architecture in values["architectures"].values():
+            try:
+                elements = ElementTree.fromstring(architecture).iter("button")
+                action_ids.update(
+                    element.get("name", "")
+                    for element in elements
+                    if element.get("type") == "action" and element.get("name", "").isdigit()
+                )
+            except (ElementTree.ParseError, TypeError):
+                continue
+        projected["action_bindings"] = {action_id: sorted(action_aliases.get(action_id, set())) for action_id in sorted(action_ids)}
         records["views"].append(projected)
         if row.get("type") == "qweb":
             records["qweb"].append({"key": projected["key"], "source_view": projected["key"]})
@@ -235,6 +297,8 @@ def project_private_inventory(extracted: dict[str, Any]) -> dict[str, Any]:
     }
     for bucket, table in sources.items():
         totals[bucket] = tables.get(table, {}).get("count")
+    if totals["xmlids"] is not None:
+        totals["xmlids"] -= excluded_xmlids
     totals["qweb"] = len(records["qweb"]) if totals.get("views") is not None else None
     action_totals: dict[str, int] = {}
     for row in records["actions"]:
@@ -245,6 +309,11 @@ def project_private_inventory(extracted: dict[str, Any]) -> dict[str, Any]:
         "records": records,
         "totals": totals,
         "action_totals": action_totals,
+        "out_of_scope": {
+            "nontechnical_xmlids": None
+            if totals["xmlids"] is None
+            else extracted.get("out_of_scope", {}).get("nontechnical_xmlids", 0) + excluded_xmlids
+        },
         "schema_gaps": {
             table: {key: value for key, value in values.items() if key in {"gap", "withheld_columns"}}
             for table, values in tables.items()
