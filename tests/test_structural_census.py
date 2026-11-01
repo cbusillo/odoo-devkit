@@ -440,6 +440,23 @@ class NativeView:
     def write(self, values: dict[str, Any]) -> None:
         self.values.update(values)
 
+    @property
+    def mode(self) -> str:
+        return self.values.get("mode", "primary")
+
+    @property
+    def priority(self) -> int:
+        return self.values.get("priority", 16)
+
+    @property
+    def active(self) -> bool:
+        return self.values.get("active", True)
+
+    @property
+    def inherit_id(self) -> Any:
+        parent_id = self.values.get("inherit_id")
+        return SimpleNamespace(id=parent_id) if parent_id else False
+
     def _check_xml(self) -> None:
         if self.fail_validation:
             raise ValueError("Invalid final combined family")
@@ -508,6 +525,17 @@ class ReviewedRegressionTests(unittest.TestCase):
                 code = root / role
                 code.mkdir()
                 (code / "README.md").write_text(role)
+                if role == "runtime":
+                    module = code / "fixture_module"
+                    peer = code / "fixture_peer"
+                    module.mkdir()
+                    (peer / "static").mkdir(parents=True)
+                    (module / "__manifest__.py").write_text(repr({"depends": [], "data": ["views.xml"]}))
+                    (peer / "__manifest__.py").write_text(repr({"depends": []}))
+                    (module / "views.xml").write_text(
+                        '<odoo><record id="menu" model="ir.ui.menu"><field name="web_icon">fixture_peer,static/icon.png</field></record></odoo>'
+                    )
+                    (peer / "static/icon.png").write_bytes(b"synthetic resource")
                 files = source_inventory([code])[0]
                 (root / f"base-{role}-inventory.json").write_text(json.dumps(files))
                 sources.append(
@@ -525,14 +553,17 @@ class ReviewedRegressionTests(unittest.TestCase):
             migration.write_text("synthetic migration source")
             sources.append({"input_name": "addon:fixture", "repository": "fixture/addon", "commit": "addon", "roots": [str(addon)]})
             source = root / "runtime/README.md"
-            declaration = build_inventory({"addon_paths": [str(root)], "sources": sources})
-            files = native.declared_files(declaration, "linux/amd64", [root], evidence=root)
+            roots = [root / "runtime"]
+            declaration = build_inventory({"addon_paths": list(map(str, roots)), "sources": sources})
+            files = native.declared_files(declaration, "linux/amd64", roots, evidence=root)
+            native.verify_file(root / "runtime/fixture_peer/static/icon.png", files)
+            with self.assertRaises(ValueError):
+                native.declared_files(declaration, "linux/amd64", [root], evidence=root)
             native.verify_file(source, files)
             native.verify_file(migration, files)
             migration.write_text("drifted addon migration")
             with self.assertRaises(ValueError):
                 native.verify_file(migration, files)
-            self.assertEqual(len(files), len(sources))
             source.write_text("changed after immutable receipt")
             with self.assertRaises(ValueError):
                 native.verify_file(source, files)
@@ -541,7 +572,7 @@ class ReviewedRegressionTests(unittest.TestCase):
             values[0]["sha256"] = hashlib.sha256(source.read_bytes()).hexdigest()
             receipt.write_text(json.dumps(values))
             with self.assertRaises(ValueError):
-                native.declared_files(declaration, "linux/amd64", [root], evidence=root)
+                native.declared_files(declaration, "linux/amd64", roots, evidence=root)
 
     def test_extraction_counts_business_xmlids_without_reading_their_names(self) -> None:
         class SQLText:
@@ -567,12 +598,35 @@ class ReviewedRegressionTests(unittest.TestCase):
                     if not bindings:
                         raise AssertionError("Table binding is required")
                     table = bindings[0]
-                    columns = {"ir_model_data": ["module", "name", "model", "res_id", "noupdate"], "ir_actions": ["id", "type"]}
+                    columns = {
+                        "ir_model_data": ["module", "name", "model", "res_id", "noupdate"],
+                        "ir_actions": ["id", "type"],
+                        "ir_model_fields": ["id", "model", "name", "state", "ttype", "relation", "domain", "on_delete", "size"],
+                        "ir_cron": ["id", "ir_actions_server_id", "active", "priority", "cron_name", "user_id", "nextcall"],
+                    }
                     self.rows = [(column,) for column in columns.get(table, [])]
                 elif "count(*)" in statement:
                     self.rows = [(8,)]
                 elif "FROM ir_actions" in statement:
                     self.rows = [(5, "custom.action")]
+                elif "FROM ir_model_fields" in statement:
+                    self.rows = [
+                        (
+                            10,
+                            "res.users",
+                            "x_relation",
+                            "manual",
+                            "many2one",
+                            "res.partner",
+                            "[('gone', '=', False)]",
+                            "restrict",
+                            64,
+                        )
+                    ]
+                elif "FROM ir_cron" in statement:
+                    if any(name in statement for name in ("cron_name", "user_id", "nextcall")):
+                        raise AssertionError("Scheduled action business/operator values must not be selected")
+                    self.rows = [(1, 5, True, 7)]
                 elif "FROM ir_model_data" in statement:
                     if not bindings:
                         raise AssertionError("Technical model scope is required")
@@ -595,6 +649,28 @@ class ReviewedRegressionTests(unittest.TestCase):
         self.assertEqual(projected["out_of_scope"]["nontechnical_xmlids"], 8)
         self.assertEqual([row["key"] for row in projected["records"]["xmlids"]], ["fixture.action"])
         self.assertEqual(projected["totals"]["xmlids"], 1)
+        field = projected["records"]["fields"][0]
+        created: list[dict[str, Any]] = []
+
+        class ManualEnvironment:
+            @staticmethod
+            def __contains__(_model: str) -> bool:
+                return True
+
+            @staticmethod
+            def __getitem__(model: str) -> Any:
+                return {
+                    "res.users": SimpleNamespace(_fields={}),
+                    "ir.model": SimpleNamespace(_get_id=lambda _name: 1),
+                    "ir.model.fields": SimpleNamespace(create=created.extend),
+                }[model]
+
+        self.assertFalse(native.prepare_manual(ManualEnvironment(), projected))
+        self.assertEqual(
+            {name: created[0][name] for name in ("domain", "on_delete", "size")},
+            {name: field[name] for name in ("domain", "on_delete", "size")},
+        )
+        self.assertEqual(projected["records"]["automation"][0]["source_action"], "action:5")
 
     def test_filter_domain_uses_search_model_and_domain_uses_comodel(self) -> None:
         selected = target()
@@ -654,6 +730,7 @@ class ReviewedRegressionTests(unittest.TestCase):
         arch = '<form><button name="1234" type="action"/><field name="name"/></form>'
         extracted = {
             "binding": "synthetic",
+            "out_of_scope": {"nontechnical_xmlids": 0},
             "tables": {
                 "ir_model_data": {
                     "count": 2,
@@ -746,11 +823,192 @@ class ReviewedRegressionTests(unittest.TestCase):
         native.load_action(env, row, replace_native=True)
         self.assertFalse(env.created)
 
-    def test_mixed_native_and_created_sibling_ids_are_not_comparable(self) -> None:
-        native_row = view("stock", "<form/>", xmlids=["base.stock"], noupdate=True, parent="root", source_order=3)
-        created_row = view("new", "<form/>", parent="root", source_order=2)
+    def test_extension_order_compares_created_and_native_siblings_at_actual_parent_and_priority(self) -> None:
+        architecture = '<field name="name" position="attributes"><attribute name="string">Synthetic</attribute></field>'
+        root = view("root", '<form><field name="name"/></form>', source_order=1)
+        native_row = view(
+            "stock", architecture, xmlids=["base.stock"], noupdate=True, parent="root", source_order=3, mode="extension"
+        )
+        created_row = view("new", architecture, parent="root", source_order=2, mode="extension")
         env = ViewEnvironment({"base.stock": NativeView(5)})
-        self.assertFalse(native.load_view_family(env, [view("root", "<form/>", source_order=1), created_row, native_row], "en_US"))
+        findings = native.load_view_family(env, [root, created_row, native_row], "en_US")
+        self.assertEqual([(item["code"], item["state"]) for item in findings], [("relative-view-order-unreproduced", "conditional")])
+        stock = NativeView(5)
+        stock.values.update(mode="extension", active=True, inherit_id=100, priority=32)
+        native_row["priority"] = 16
+        created_row["priority"] = 32
+        env = ViewEnvironment({"base.stock": stock})
+        self.assertTrue(native.load_view_family(env, [root, created_row, native_row], "en_US", replacements={"stock"}))
+        stock.values["priority"] = 24
+        env = ViewEnvironment({"base.stock": stock})
+        self.assertFalse(native.load_view_family(env, [root, created_row, native_row], "en_US", replacements={"stock"}))
+
+    def test_unannotated_rows_do_not_hash_for_candidate_coverage(self) -> None:
+        with patch.object(census, "digest", side_effect=AssertionError("unannotated row was hashed")):
+            self.assertFalse(census.qualified_coverage(view("unannotated", "<form/>"), target()))
+
+    def test_checkpoint_throttles_normal_progress_and_forces_latest_error_or_final_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "report.json"
+            session = native.DisposableCensus(time.monotonic() + 60, output=path)
+            report: dict[str, Any] = {"components": []}
+            session.report = report
+            with patch.object(native.time, "monotonic", return_value=100.0):
+                session.checkpoint(force=True)
+            report["progress"] = "pending"
+            with patch.object(native.time, "monotonic", return_value=100.0 + native.CHECKPOINT_INTERVAL / 2):
+                session.checkpoint()
+                self.assertNotIn("progress", json.loads(path.read_text()))
+                session.checkpoint(force=True)
+                self.assertEqual(json.loads(path.read_text())["progress"], "pending")
+            report["progress"] = "complete"
+            with patch.object(native.time, "monotonic", return_value=100.0 + native.CHECKPOINT_INTERVAL * 2):
+                session.checkpoint()
+            self.assertEqual(json.loads(path.read_text())["progress"], "complete")
+
+    def test_missing_xmlid_scope_is_unknown_without_identifying_excluded_business_rows(self) -> None:
+        unscoped: dict[str, Any] = {"binding": "synthetic", "tables": {"ir_model_data": {"count": 0}}}
+        self.assertIsNone(extract.project_private_inventory(unscoped)["out_of_scope"]["nontechnical_xmlids"])
+        unscoped["out_of_scope"] = {"nontechnical_xmlids": None}
+        self.assertIsNone(extract.project_private_inventory(unscoped)["out_of_scope"]["nontechnical_xmlids"])
+        for count in (None, 9, 0):
+            source = inventory(menus=[{"key": "menu", "references": [{"kind": "xmlid", "name": "synthetic.absent"}]}])
+            source["out_of_scope"] = {"nontechnical_xmlids": count}
+            findings = census.collect_static(source, target())["components"][0]["findings"]
+            codes = {item["code"] for item in findings}
+            self.assertEqual("xmlid-scope-unresolved" in codes, count != 0)
+            self.assertEqual("missing-xmlid" in codes, count == 0)
+        selected = target()
+        selected["nontechnical_xmlids"] = None
+        selected["blocked_modules"] = ["blocked"]
+        selected["retained_xmlids"] = {"technical.missing"}
+        self.assertEqual(census.xmlid_findings(selected, "blocked.reference")[0]["state"], "dependency-blocked")
+        self.assertEqual(census.xmlid_findings(selected, "technical.missing")[0]["code"], "retained-xmlid-native-unavailable")
+
+    def test_unqualified_stock_keeps_old_structural_findings_and_distinct_disposition(self) -> None:
+        selected = target()
+        selected["xmlids"]["base.stock"] = {"model": "ir.ui.view"}
+        row = view("stock", '<form attrs="{}"><field name="gone"/></form>', xmlids=["base.stock"], noupdate=False)
+        report = census.collect_static(inventory(views=[row]), selected)
+        codes = {item["code"] for item in report["components"][0]["findings"]}
+        self.assertTrue({"stock-upgrade-disposition-required", "missing-field", "obsolete-view-attribute"} <= codes)
+        self.assertNotIn("static-only", report["coverage"]["views"])
+        with self.assertRaises(native.ProbeUnreached) as error:
+            native.load_view_family(ViewEnvironment({"base.stock": NativeView(5)}), [row], "en_US")
+        self.assertEqual(error.exception.code, "stock-upgrade-disposition-required")
+
+    def test_translation_fallback_uses_unchanged_base_and_keeps_withheld_languages_unreached(self) -> None:
+        root = view("root", "<form/>")
+        root["architectures"]["fr_FR"] = "<form/>"
+        extension = view("extension", "<data/>", parent="root", mode="extension")
+        original = copy.deepcopy(extension)
+        env = ViewEnvironment()
+        native.load_view_family(env, [root, extension], "fr_FR")
+        self.assertEqual(env.created[1].values["arch"], extension["architectures"]["en_US"])
+        self.assertEqual(extension, original)
+        for values in (
+            {"changed_languages": ["fr_FR"]},
+            {"changed_languages": ["en_US"]},
+            {"withheld": ["architecture"]},
+            {"architectures": {"en_US": "<data/>", "fr_FR": None}},
+        ):
+            with self.assertRaises(native.ProbeUnreached) as error:
+                native.view_architecture({**extension, **values}, "fr_FR")
+            self.assertEqual(error.exception.code, "view-architecture-unavailable")
+
+    def test_field_domains_use_relation_and_unknown_expression_shapes_stay_unvalidated(self) -> None:
+        selected = target()
+        selected["models"]["res.users"]["fields"]["x_relation"] = {"relation": "res.partner"}
+        field = {
+            "key": "manual.relation",
+            "model": "res.users",
+            "name": "x_relation",
+            "ttype": "many2one",
+            "state": "manual",
+            "relation": "res.partner",
+            "domain": "[('gone', '=', False)]",
+            "context": "{'default_name': False}",
+        }
+        report = census.collect_static(inventory(fields=[field]), selected)
+        self.assertEqual(
+            {item["reference"] for item in report["components"][0]["findings"] if item["code"] == "missing-field"},
+            {"res.partner.gone"},
+        )
+        field["domain"] = "5"
+        report = census.collect_static(inventory(fields=[field]), selected)
+        self.assertFalse(report["components"][0]["checked"])
+        self.assertIn("expression-shape-unvalidated", {item["code"] for item in report["components"][0]["findings"]})
+        self.assertFalse(native.manual_supported(field))
+        field["domain"] = "[('name', '=', False)]"
+        self.assertTrue(native.manual_supported(field))
+
+    def test_partial_automation_keeps_scheduled_action_links_and_each_source_total(self) -> None:
+        extracted: dict[str, Any] = {
+            "binding": "synthetic",
+            "tables": {
+                "base_automation": {"count": None, "gap": "table-unavailable"},
+                "ir_cron": {
+                    "count": 2,
+                    "rows": [
+                        {"id": 1, "ir_actions_server_id": 4, "active": True, "priority": 5},
+                        {"id": 2, "ir_actions_server_id": 5, "active": False, "priority": 9},
+                    ],
+                },
+                "ir_model_data": {
+                    "count": 1,
+                    "rows": [{"module": "base", "name": "technical_server", "model": "ir.actions.server", "res_id": 4}],
+                },
+            },
+        }
+        source = extract.project_private_inventory(extracted)
+        selected = target()
+        selected["xmlids"]["base.technical_server"] = {"model": "ir.actions.server"}
+        report = census.collect_static(source, selected)
+        self.assertEqual(report["automation_totals"], {"base_automation": None, "ir_cron": 2})
+        unavailable = native.unreached_report(source, {"artifact": {"synthetic": True}})
+        self.assertEqual(unavailable["automation_totals"], report["automation_totals"])
+        self.assertEqual(unavailable["schema_gaps"], source["schema_gaps"])
+        coverage = report["coverage"]["automation"]
+        self.assertIsNone(coverage["total"])
+        self.assertIsNone(coverage["withheld"])
+        self.assertEqual(coverage["inventoried"], len(source["records"]["automation"]))
+        self.assertEqual(coverage["gap"], "source-total-missing")
+        rows = source["records"]["automation"]
+        self.assertEqual(rows[0]["references"], [{"kind": "xmlid", "name": "base.technical_server"}])
+        self.assertEqual(rows[1]["source_action"], "action:5")
+        self.assertIn(
+            "unsupported-reference",
+            {item["code"] for row in report["components"] if row["bucket"] == "automation" for item in row["findings"]},
+        )
+        extracted["tables"]["base_automation"]["count"] = 0
+        complete_counts = extract.project_private_inventory(extracted)
+        self.assertEqual(complete_counts["totals"]["automation"], len(rows))
+
+    def test_probe_unreached_causes_keep_their_specific_codes(self) -> None:
+        cases = [
+            (
+                lambda: native.load_view_family(ViewEnvironment(), [view("orphan", "<data/>", parent="absent")], "en_US"),
+                "retained-parent-unavailable",
+            ),
+            (
+                lambda: native.load_view_family(ViewEnvironment(), [view("website", "<form/>", website_scope="synthetic")], "en_US"),
+                "website-variant-unbound",
+            ),
+            (
+                lambda: native.load_action(ViewEnvironment(), {"key": "action", "type": "ir.actions.act_window", "res_id": 5}),
+                "action-record-data-unavailable",
+            ),
+            (
+                lambda: native.load_action(
+                    ViewEnvironment(), {"key": "action", "type": "ir.actions.act_window", "view_references": ["absent"]}
+                ),
+                "action-view-identity-unavailable",
+            ),
+        ]
+        for operation, code in cases:
+            with self.assertRaises(native.ProbeUnreached) as error:
+                operation()
+            self.assertEqual(error.exception.code, code)
 
 
 if __name__ == "__main__":

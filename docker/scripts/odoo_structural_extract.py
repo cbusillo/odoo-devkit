@@ -22,6 +22,9 @@ TABLES = {
         "readonly",
         "modules",
         "index",
+        "domain",
+        "on_delete",
+        "size",
     ),
     "ir_model_data": ("module", "name", "model", "res_id", "noupdate"),
     "ir_model_fields_selection": ("field_id", "value", "sequence"),
@@ -52,6 +55,7 @@ TABLES = {
     "ir_filters": ("model_id", "domain", "context", "action_id", "active"),
     "ir_default": ("field_id", "condition"),
     "base_automation": ("model_id", "trigger", "filter_pre_domain", "filter_domain", "active"),
+    "ir_cron": ("ir_actions_server_id", "active", "priority"),
     "mail_template": ("model_id", "report_template_ids", "lang"),
 }
 TECHNICAL_XMLID_MODELS = {
@@ -70,6 +74,7 @@ TECHNICAL_XMLID_MODELS = {
     "ir.filters",
     "ir.default",
     "base.automation",
+    "ir.cron",
     "mail.template",
     "ir.actions.actions",
     "ir.actions.act_window",
@@ -286,6 +291,20 @@ def project_private_inventory(extracted: dict[str, Any]) -> dict[str, Any]:
             if bucket == "templates" and values.get("lang"):
                 values["expression"] = values.pop("lang")
             records[bucket].append({"key": bucket + ":" + str(row["id"]), **values})
+    for row in tables.get("ir_cron", {}).get("rows", []):
+        action_id = row.get("ir_actions_server_id")
+        bindings = aliases.get(("ir.actions.server", action_id), [])
+        values = {**base(row, "ir.cron", "cron"), **{name: row[name] for name in ("active", "priority") if name in row}}
+        if action_id:
+            values["source_action"] = "action:" + str(action_id)
+            values["references"] = (
+                [{"kind": "xmlid", "name": item["xmlid"]} for item in bindings]
+                if bindings
+                else [{"kind": "unbound-action", "name": ""}]
+            )
+        else:
+            values["withheld"] = ["scheduled-action-identity"]
+        records["automation"].append(values)
     sources = {
         "modules": "ir_module_module",
         "models": "ir_model",
@@ -297,22 +316,28 @@ def project_private_inventory(extracted: dict[str, Any]) -> dict[str, Any]:
     }
     for bucket, table in sources.items():
         totals[bucket] = tables.get(table, {}).get("count")
+    automation_totals = {table: tables.get(table, {}).get("count") for table in ("base_automation", "ir_cron")}
+    totals["automation"] = (
+        sum(automation_totals.values()) if all(isinstance(value, int) for value in automation_totals.values()) else None
+    )
     if totals["xmlids"] is not None:
         totals["xmlids"] -= excluded_xmlids
     totals["qweb"] = len(records["qweb"]) if totals.get("views") is not None else None
     action_totals: dict[str, int] = {}
     for row in records["actions"]:
         action_totals[row["type"]] = action_totals.get(row["type"], 0) + 1
+    nontechnical_xmlids = extracted.get("out_of_scope", {}).get("nontechnical_xmlids")
     return {
         "binding": extracted["binding"],
         "screened": False,
         "records": records,
         "totals": totals,
         "action_totals": action_totals,
+        "automation_totals": automation_totals,
         "out_of_scope": {
             "nontechnical_xmlids": None
-            if totals["xmlids"] is None
-            else extracted.get("out_of_scope", {}).get("nontechnical_xmlids", 0) + excluded_xmlids
+            if totals["xmlids"] is None or nontechnical_xmlids is None
+            else nontechnical_xmlids + excluded_xmlids
         },
         "schema_gaps": {
             table: {key: value for key, value in values.items() if key in {"gap", "withheld_columns"}}

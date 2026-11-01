@@ -69,6 +69,8 @@ def xmlid_findings(target: dict[str, Any], xmlid: str) -> list[dict[str, str]]:
         return [finding("xmlid-baseline-blocked", xmlid, state="dependency-blocked")]
     if xmlid in target.get("retained_xmlids", []):
         return [finding("retained-xmlid-native-unavailable", xmlid, state="dependency-blocked")]
+    if target.get("nontechnical_xmlids") is None or target["nontechnical_xmlids"] > 0:
+        return [finding("xmlid-scope-unresolved", xmlid, state="data-dependent/unreached")]
     return [finding("missing-xmlid", xmlid)]
 
 
@@ -94,6 +96,10 @@ def expression_findings(value: str, kind: str, model: str, target: dict[str, Any
     except (SyntaxError, ValueError, TypeError):
         return [finding("unsupported-expression", kind, state="data-dependent/unreached")]
     results = domain_findings(tree.body, model, target) if kind.endswith("domain") else []
+    if (kind.endswith("domain") and not isinstance(tree.body, (ast.List, ast.Tuple))) or (
+        kind == "context" and not isinstance(tree.body, ast.Dict)
+    ):
+        results.append(finding("expression-shape-unvalidated", kind, state="data-dependent/unreached"))
     for node in ast.walk(tree):
         if isinstance(node, ast.Dict) and kind == "context":
             for key, child in zip(node.keys, node.values, strict=True):
@@ -198,7 +204,7 @@ def walk_view(
     return results
 
 
-def reference_findings(record: dict[str, Any], target: dict[str, Any]) -> list[dict[str, str]]:
+def reference_findings(record: dict[str, Any], target: dict[str, Any], *, field_declaration: bool = False) -> list[dict[str, str]]:
     results = []
     model = record.get("model", "")
     if model and model not in target.get("models", {}):
@@ -221,7 +227,8 @@ def reference_findings(record: dict[str, Any], target: dict[str, Any]) -> list[d
             results.append(finding("unsupported-reference", kind, state="data-dependent/unreached"))
     for attribute in EXPRESSION_FIELDS:
         if record.get(attribute) and (attribute not in {"readonly", "required"} or isinstance(record[attribute], str)):
-            results += expression_findings(record[attribute], attribute, model, target)
+            expression_model = record.get("relation", "") if field_declaration and attribute in {"domain", "context"} else model
+            results += expression_findings(record[attribute], attribute, expression_model, target)
     for attribute in CODE_FIELDS:
         if record.get(attribute):
             results.append(finding("stored-code-unexecuted", attribute, state="data-dependent/unreached"))
@@ -291,7 +298,12 @@ def record_findings(
         bucket == "actions" and native_replacement(record, target, record.get("type", ""))
     ):
         return []
-    results = reference_findings(record, target)
+    results = reference_findings(record, target, field_declaration=bucket == "fields")
+    if bucket in {"views", "actions"} and not record.get("noupdate"):
+        model = "ir.ui.view" if bucket == "views" else record.get("type", "")
+        for xmlid in record.get("xmlids", []):
+            if target.get("xmlids", {}).get(xmlid, {}).get("model") == model:
+                results.append(finding("stock-upgrade-disposition-required", xmlid, state="data-dependent/unreached"))
     if (
         bucket == "modules"
         and record.get("state", "installed") not in {"uninstalled", "uninstallable"}
@@ -329,13 +341,15 @@ def validate_inventory(inventory: dict[str, Any]) -> None:
         if len(keys) != len(set(keys)):
             raise ValueError(f"Duplicate technical keys in {bucket}")
         total = inventory["totals"].get(bucket)
-        if total is None and not rows:
+        if total is None:
             continue
         if not isinstance(total, int) or total < len(rows):
             raise ValueError(f"Missing or inconsistent source total for {bucket}")
 
 
 def qualified_coverage(record: dict[str, Any], target: dict[str, Any]) -> list[dict[str, Any]]:
+    if not record.get("candidate_coverage"):
+        return []
     fingerprint = digest({key: value for key, value in record.items() if key != "candidate_coverage"})
     hashes = {*target.get("migration_sources", {}).values(), *target.get("source_hashes", [])}
     return [
@@ -375,7 +389,8 @@ def collect_static(inventory: dict[str, Any], target: dict[str, Any]) -> dict[st
     source_fields: dict[str, list[str]] = {}
     target = {
         **target,
-        "retained_xmlids": [row["key"] for row in inventory["records"].get("xmlids", [])],
+        "retained_xmlids": {row["key"] for row in inventory["records"].get("xmlids", [])},
+        "nontechnical_xmlids": inventory.get("out_of_scope", {}).get("nontechnical_xmlids"),
         "source_fields": source_fields,
     }
     for row in inventory["records"].get("fields", []):
@@ -393,6 +408,7 @@ def collect_static(inventory: dict[str, Any], target: dict[str, Any]) -> dict[st
         "coverage": {},
         "schema_gaps": inventory.get("schema_gaps", {}),
         "out_of_scope": inventory.get("out_of_scope", {}),
+        "automation_totals": inventory.get("automation_totals", {}),
         "limitations": ["empty-target-not-real-upgrade", "dynamic-code-not-executed", "no-product-coverage-without-actual-inputs"],
     }
     known_views = {row["key"] for row in inventory["records"].get("views", [])}
@@ -444,13 +460,17 @@ def collect_static(inventory: dict[str, Any], target: dict[str, Any]) -> dict[st
 
 
 def recount(report: dict[str, Any], inventory: dict[str, Any]) -> None:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in report["components"]:
+        grouped.setdefault(row["bucket"], []).append(row)
     for bucket in sorted(set(BUCKETS) | set(inventory["records"]) | set(inventory["totals"])):
-        rows = [row for row in report["components"] if row["bucket"] == bucket]
+        rows = grouped.get(bucket, [])
         for row in rows:
             row["checked"] = row.get("checked", False) and not any(
                 item["state"] in {"data-dependent/unreached", "dependency-blocked"} for item in row["findings"]
             )
         states = Counter(state for row in rows for state in {item["state"] for item in row["findings"]})
+        static_findings = states.pop("static-only", 0)
         total = inventory["totals"].get(bucket)
         report["coverage"][bucket] = {
             "total": total,
@@ -458,7 +478,7 @@ def recount(report: dict[str, Any], inventory: dict[str, Any]) -> None:
             "withheld": None if total is None else total - len(rows),
             "checked": sum(row["checked"] for row in rows),
             **dict(states),
-            "static-findings": sum(any(item["state"] == "static-only" for item in row["findings"]) for row in rows),
+            "static-findings": static_findings,
             "native-unreached": sum(row["native"] == "unreached" for row in rows),
             "native-checked": sum(row["native"] == "checked" for row in rows),
         }

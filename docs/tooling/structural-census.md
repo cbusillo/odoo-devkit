@@ -17,7 +17,9 @@ records. No baseline/file-store restore is needed for the collector.
 It reads technical modules/dependencies, model/field declarations and inheritance,
 technical XMLIDs/noupdate, every stock/custom/inactive view and language architecture,
 parent/priority/source order/group and website bindings, all action classes and
-view relations, menus, filters/defaults, automation, templates and QWeb counts.
+view relations, menus, filters/defaults, automation, scheduled-action references,
+templates and QWeb counts. Scheduled actions expose only technical ID, server-action
+link, active flag and priority; no names, operators, schedules or code are selected.
 The inherited action table accounts for unknown action subclasses too. XMLID
 names are selected only for technical models, including the actual action
 subclasses. Other XMLID rows are counted without selecting their names or IDs.
@@ -60,11 +62,15 @@ Public output is counts, technical causes and owning issue links only.
 
 ## Canonical private inputs
 
-The projector returns `binding`, `records`, `totals`, `action_totals` and
-`schema_gaps`. `records` uses the buckets in `odoo_structural_census.BUCKETS`.
+The projector returns `binding`, `records`, `totals`, `action_totals`,
+`automation_totals`, `out_of_scope` and `schema_gaps`. `records` uses the buckets in `odoo_structural_census.BUCKETS`.
 Each row has a stable `key`; rows can include `owners`, `xmlids`, typed
 `references` (`kind`, `name`, optional `model`), `withheld` and `minimized`.
-Missing source totals are unknown, never zero. The module bucket retains states,
+Missing source totals are unknown, never zero, including buckets that contain
+known emitted rows. `automation_totals` retains `base_automation` and `ir_cron`
+counts separately; the combined automation total stays unknown if either count
+is unknown. Scheduled rows retain their `source_action` link and any bound
+technical action XMLID. The module bucket retains states,
 so available/uninstalled source rows are not mistaken for installed requirements.
 
 Views retain `parent`, `mode`, `type`, `model`, `active`, `priority`,
@@ -73,11 +79,18 @@ Views retain `parent`, `mode`, `type`, `model`, `active`, `priority`,
 and `changed_languages`. `action_bindings` maps the original numeric button names
 to technical action XMLIDs. Original architecture and numeric IDs stay intact in
 the private input; only the disposable probe resolves bound buttons to target IDs.
-An unresolved target action stays untested. Website variants without actual
+An unresolved target action stays untested. A missing translation uses unchanged
+`en_US` architecture, matching native20 fallback. Explicitly withheld/changed
+languages or a withheld/changed fallback remain untested. Website variants without actual
 target identity/context remain untested; they are not combined into a generic family.
 
 Fields retain technical `name`, `model`, `state`, `ttype`, `relation`, `related`,
-`depends`, compute presence, safe selection values and flags. Actions retain the
+`depends`, compute presence, safe selection values, `domain`, `on_delete`, `size`
+and flags. Field-declaration `domain`/`context` references use the relation model.
+Nonliteral manual domains and scalar literal domains stay unavailable for baseline
+preparation; expression shapes outside known domain/context containers stay
+unvalidated, without executing them or declaring their runtime behavior invalid.
+Actions retain the
 actual class as `type`, target as `model`, `path`, `view_mode`/relation modes,
 view references and safe context/domain. Unknown or executable classes remain
 counted. Stored Python/server actions/compute code are never executed.
@@ -109,7 +122,11 @@ expressions/code, numeric action IDs without target binding, withheld text and
 auxiliary sources are visible gaps. Static blockers and native-unreached counts
 are separate: `static-findings` counts components with static blockers, and
 `native-unreached` counts components without complete native checks. The finding
-state counts keep their own names. `checked` excludes records with untested/blocked
+state counts keep their own names, with `static-only` represented solely by
+`static-findings`. An unbound XMLID reference with a nonzero or unknown excluded
+count is `xmlid-scope-unresolved`: the count does not identify it as a business
+XMLID. Known technical identities and blocked owners retain separate findings.
+`checked` excludes records with untested/blocked
 material and is recalculated at each checkpoint. Missing technical XMLIDs on an
 empty target require an upgrade disposition; business XMLIDs are outside scope.
 
@@ -183,7 +200,11 @@ Only `noupdate` qualifies a matched stock view with no replacement disposition
 for a retained overlay. `arch_updated` and per-user customization copies do not
 prove retention.
 An absent target XMLID is never blanket-excluded; retained obsolete stock is
-probed as retained. Unqualified matched stock stays explicitly unreached.
+probed as retained. Unqualified matched stock carries
+`stock-upgrade-disposition-required` alongside its original structural findings,
+so discarded-definition candidates remain distinguishable from retained failures.
+Known unreached causes have separate codes for stock disposition, architecture,
+website, parent, groups and action data/identity.
 No custom diff is rewritten onto a new stock view.
 
 Safe manual declarations enter an empty committed baseline in a batch followed
@@ -211,15 +232,22 @@ validation still stops at its first error. This does
 not promise every latent native error behind a failed dependency. No diagnostic
 fragment removal, deactivation, forced readiness or validation bypass occurs.
 Warnings/errors are retained privately with source/logger/severity. Order
-comparisons keep retained matches and newly created siblings separate; native
-and source IDs do not share one ordering. Reproduced relative-order
-inversions are conditional; equal priorities alone are not a
-blocker. Real-upgrade loaded-view filtering/order remains final-proof territory.
+comparisons use active extension siblings at their actual target parent and
+priority, including attested replacements. Real upgrades preserve original IDs;
+a created sibling that precedes a native sibling in source order can follow it
+in the disposable target. Reproduced inversions are conditional; equal priorities
+alone are not a blocker. Native20 extensions with no source row have no old ID
+to compare; their ordering and real-upgrade loaded-view filtering remain
+final-proof territory.
 Inactive/translated/website/QWeb/action/data-dependent limits remain explicit.
 Per-user UI reads, if needed later, must follow native pruned architecture.
 
-The single private report is checkpointed before/through bootstrap and after
-components. The work deadline reserves10% of remaining time, capped at30seconds,
+The single private report is checkpointed initially, around bootstrap, on fatal
+propagated errors and at final cleanup. Ordinary family/action progress
+and handled component diagnostics write at most once per30seconds, bounding repeated
+whole-report serialization. A forced stop can lose the intervening progress;
+atomic writes preserve the prior checkpoint. The report retains unknown totals
+and each automation source count even when no registry can be built. The work deadline reserves10% of remaining time, capped at30seconds,
 for cleanup; the queue's process deadline remains the outer bound. Cleanup only
 accepts this invocation's generated databases. A cleanup failure records
 `incomplete`, retains findings/owned names in the report and raises; the existing

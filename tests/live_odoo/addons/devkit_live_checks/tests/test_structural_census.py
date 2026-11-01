@@ -54,7 +54,7 @@ class TestStructuralCensus(TransactionCase):
         fixture = Path("/opt/extra_addons/ci_census_good/actions.xml")
         paths = [
             Path(inspect.getfile(module)) for module in (registry_source, loading, convert, views, actions, environments, sql_db)
-        ] + [fixture]
+        ] + [fixture.parent / "__manifest__.py", fixture]
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         evidence = Path(temporary.name)

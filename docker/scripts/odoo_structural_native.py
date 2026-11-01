@@ -21,6 +21,7 @@ from odoo_structural_census import collect_static, families, finding, native_rep
 
 _logger = logging.getLogger(__name__)
 SAFE_MANUAL_TYPES = {"char", "text", "html", "integer", "float", "boolean", "date", "datetime", "many2one", "selection"}
+CHECKPOINT_INTERVAL = 30.0
 
 
 class ViewFailure(ValueError):
@@ -156,14 +157,13 @@ def registry_surface(
     }
 
 
-def literal_expression(value: Any) -> bool:
+def literal_expression(value: Any, *, allowed_types: tuple[type, ...] = (object,)) -> bool:
     if not value:
         return True
     try:
-        ast.literal_eval(value)
+        return isinstance(ast.literal_eval(value), allowed_types)
     except (ValueError, TypeError, SyntaxError):
         return False
-    return True
 
 
 def manual_supported(row: dict[str, Any]) -> bool:
@@ -176,7 +176,7 @@ def manual_supported(row: dict[str, Any]) -> bool:
             for item in selection
         ):
             return False
-    return literal_expression(row.get("domain"))
+    return literal_expression(row.get("domain"), allowed_types=(list, tuple))
 
 
 def prepare_manual(env: Any, inventory: dict[str, Any]) -> set[tuple[str, str]]:
@@ -240,11 +240,15 @@ class DisposableCensus:
         self.manual_blocked: set[tuple[str, str]] = set()
         self.report: dict[str, Any] = {}
         self.inventory: dict[str, Any] | None = None
+        self.last_checkpoint: float | None = None
         self.thread: Any = threading.current_thread()
         self.previous_dbname = getattr(self.thread, "dbname", None)
 
-    def checkpoint(self) -> None:
+    def checkpoint(self, *, force: bool = False) -> None:
         if self.output is None:
+            return
+        now = time.monotonic()
+        if not force and self.last_checkpoint is not None and now - self.last_checkpoint < CHECKPOINT_INTERVAL:
             return
         if self.inventory is not None:
             recount(self.report, self.inventory)
@@ -254,6 +258,7 @@ class DisposableCensus:
         temporary = self.output.with_suffix(self.output.suffix + ".tmp")
         temporary.write_text(json.dumps(self.report, indent=2) + "\n")
         temporary.replace(self.output)
+        self.last_checkpoint = now
 
     def check_deadline(self) -> None:
         if time.monotonic() >= self.deadline:
@@ -340,12 +345,12 @@ class DisposableCensus:
             previous_level = loader.level
             loader.setLevel(logging.INFO)
             logging.getLogger().addHandler(log)
-            self.checkpoint()
+            self.checkpoint(force=True)
             try:
                 if db.exist(name):
                     raise ValueError("Generated census database already exists")
                 self.owned.add(name)
-                self.checkpoint()
+                self.checkpoint(force=True)
                 db._create_empty_database(name)
                 registry = Registry.new(name, install_modules=sorted(current), new_db_demo=False)
                 if not registry.ready:
@@ -367,7 +372,7 @@ class DisposableCensus:
                 self.bootstrap += [{"module": item, "state": "dependency-blocked"} for item in sorted(removed - {failed})]
                 if name in self.owned:
                     self.drop(name)
-                self.checkpoint()
+                self.checkpoint(force=True)
                 if not removed:
                     raise
                 excluded.add(failed)
@@ -387,7 +392,7 @@ class DisposableCensus:
             self.bootstrap.append(
                 {"modules": sorted(installed), "state": "conditional" if self.conditional else "checked", "logs": log.events}
             )
-            self.checkpoint()
+            self.checkpoint(force=True)
             return registry
         raise ValueError("No healthy independent module closure")
 
@@ -430,6 +435,19 @@ def bind_view_actions(env: Any, row: dict[str, Any], architecture: str) -> str:
     return ElementTree.tostring(root, encoding="unicode") if changed else architecture
 
 
+def view_architecture(row: dict[str, Any], language: str) -> str:
+    variants = row.get("architectures", {})
+    changed = row.get("changed_languages", [])
+    if row.get("withheld") or language in changed:
+        raise ProbeUnreached("Architecture input was withheld or changed", code="view-architecture-unavailable")
+    if language in variants:
+        if variants[language]:
+            return variants[language]
+    elif variants.get("en_US") and "en_US" not in changed:
+        return variants["en_US"]
+    raise ProbeUnreached("Architecture input is unavailable", code="view-architecture-unavailable")
+
+
 def load_view_family(
     env: Any, rows: list[dict[str, Any]], language: str, *, replacements: set[str] | None = None
 ) -> list[dict[str, str]]:
@@ -437,13 +455,12 @@ def load_view_family(
         raise ProbeUnreached("Target language is not active", code="target-language-unavailable")
     env = env(context={**env.context, "lang": language})
     identities: dict[str, Any] = {}
-    retained_matches: set[str] = set()
     pending = sorted(rows, key=lambda row: (row.get("priority", 16), row.get("source_order", 0)))
     keys = {row["key"] for row in rows}
     while pending:
         row = next((item for item in pending if item.get("parent") not in keys or item["parent"] in identities), None)
         if row is None:
-            raise ProbeUnreached("Cyclic view family")
+            raise ProbeUnreached("Cyclic view family", code="view-inheritance-cycle")
         matches = [env.ref(xmlid, raise_if_not_found=False) for xmlid in row.get("xmlids", [])]
         matches = [record for record in matches if record]
         if matches and (len({record.id for record in matches}) != 1 or any(record._name != "ir.ui.view" for record in matches)):
@@ -452,29 +469,28 @@ def load_view_family(
             identities[row["key"]] = matches[0]
             pending.remove(row)
             continue
-        if language not in row.get("architectures", {}) or language in row.get("changed_languages", []) or row.get("website_scope"):
-            raise ProbeUnreached("Language or website variant is not bound to this empty target")
+        if row.get("website_scope"):
+            raise ProbeUnreached("Website variant is not bound to this empty target", code="website-variant-unbound")
+        architecture = view_architecture(row, language)
         if matches and not row.get("noupdate"):
-            raise ProbeUnreached("Matched stock view requires a source-qualified upgrade disposition")
-        if matches:
-            retained_matches.add(row["key"])
+            raise ProbeUnreached(
+                "Matched stock view requires a source-qualified upgrade disposition", code="stock-upgrade-disposition-required"
+            )
         values = {key: row[key] for key in ("model", "type", "mode", "priority", "active") if key in row}
-        values.update(
-            name="census:" + row["key"], arch=bind_view_actions(env, row, row["architectures"][language]), inherit_id=False
-        )
+        values.update(name="census:" + row["key"], arch=bind_view_actions(env, row, architecture), inherit_id=False)
         if row.get("view_key"):
             values["key"] = row["view_key"]
         if row.get("parent"):
             parent = identities.get(row["parent"]) or env.ref(row["parent"], raise_if_not_found=False)
             if not parent:
-                raise ProbeUnreached("Retained parent is unavailable")
+                raise ProbeUnreached("Retained parent is unavailable", code="retained-parent-unavailable")
             values["inherit_id"] = parent.id
         if "groups" in row:
             from odoo import Command
 
             groups = [env.ref(xmlid, raise_if_not_found=False) for xmlid in row["groups"]]
             if any(not group or group._name != "res.groups" for group in groups):
-                raise ProbeUnreached("Retained groups are unavailable")
+                raise ProbeUnreached("Retained groups are unavailable", code="retained-groups-unavailable")
             values["group_ids"] = [Command.set([group.id for group in groups])]
         try:
             if matches:
@@ -491,12 +507,14 @@ def load_view_family(
             view._check_xml()
         except Exception as error:
             raise ViewFailure(key, attribution="family") from error
-    ordered: dict[tuple[str, int, bool], list[dict[str, Any]]] = {}
+    ordered: dict[int, list[dict[str, Any]]] = {}
     for row in rows:
-        if "source_order" in row and row["key"] not in (replacements or set()):
-            ordered.setdefault((row.get("parent", ""), row.get("priority", 16), row["key"] in retained_matches), []).append(row)
+        view = identities[row["key"]]
+        if "source_order" in row and view.mode == "extension" and view.active and view.inherit_id:
+            ordered.setdefault(view.inherit_id.id, []).append(row)
     changed = any(
-        sorted(siblings, key=lambda row: row["source_order"]) != sorted(siblings, key=lambda row: identities[row["key"]].id)
+        sorted(siblings, key=lambda row: (identities[row["key"]].priority, row["source_order"]))
+        != sorted(siblings, key=lambda row: (identities[row["key"]].priority, identities[row["key"]].id))
         for siblings in ordered.values()
     )
     return [finding("relative-view-order-unreproduced", state="conditional")] if changed else []
@@ -512,15 +530,18 @@ def load_action(env: Any, row: dict[str, Any], *, replace_native: bool = False) 
         return
     if not all(literal_expression(row.get(name)) for name in ("context", "domain")):
         raise ProbeUnreached("Action expression needs data or execution", code="action-expression-unexecuted")
-    if (
-        kind not in {"ir.actions.act_window", "ir.actions.act_window_close"}
-        or row.get("withheld")
-        or row.get("res_id")
-        or row.get("view_references")
-    ):
-        raise ProbeUnreached("Action needs unavailable retained data, identity or executable behavior")
+    if kind not in {"ir.actions.act_window", "ir.actions.act_window_close"}:
+        raise ProbeUnreached("Action behavior is not executed", code="action-behavior-unexecuted")
+    if row.get("withheld"):
+        raise ProbeUnreached("Action input is withheld", code="action-input-withheld")
+    if row.get("res_id"):
+        raise ProbeUnreached("Action requires retained record data", code="action-record-data-unavailable")
+    if row.get("view_references"):
+        raise ProbeUnreached("Action view identity is unavailable", code="action-view-identity-unavailable")
     if matches and not row.get("noupdate"):
-        raise ProbeUnreached("Matched stock action requires a source-qualified upgrade disposition")
+        raise ProbeUnreached(
+            "Matched stock action requires a source-qualified upgrade disposition", code="stock-upgrade-disposition-required"
+        )
     values = {key: row[key] for key in ("path", "view_mode", "target", "context", "domain") if key in row}
     values.update(name="census:" + row["key"], type=kind)
     if kind == "ir.actions.act_window":
@@ -600,6 +621,9 @@ def unreached_report(inventory: dict[str, Any], candidate: dict[str, Any]) -> di
         "candidate": digest(candidate["artifact"]),
         "coverage": {},
         "target_surface": "unavailable",
+        "automation_totals": inventory.get("automation_totals", {}),
+        "schema_gaps": inventory.get("schema_gaps", {}),
+        "out_of_scope": inventory.get("out_of_scope", {}),
         "components": [
             {"bucket": bucket, "key": row["key"], "checked": False, "native": "unreached", "findings": []}
             for bucket, rows in inventory["records"].items()
@@ -627,7 +651,7 @@ def collect_native(
     session = DisposableCensus(deadline - margin, output=output)
     session.inventory = inventory
     session.report = unreached_report(inventory, candidate)
-    session.checkpoint()
+    session.checkpoint(force=True)
     try:
         try:
             verify_image_declaration(declaration, artifact["release_compatibility"], platform=candidate["platform"])
@@ -715,4 +739,4 @@ def collect_native(
             raise
         finally:
             recount(session.report, inventory)
-            session.checkpoint()
+            session.checkpoint(force=True)
