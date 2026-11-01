@@ -44,22 +44,33 @@ def finding(code: str, reference: str = "", *, state: str = "static-only") -> di
 
 
 def resolve_field(target: dict[str, Any], model: str, path: str) -> bool:
+    return bool(path) and not field_findings(target, model, path)
+
+
+def walk_field(target: dict[str, Any], model: str, path: str) -> tuple[dict[str, Any] | None, list[dict[str, str]]]:
+    if not path:
+        return None, []
+    if not model:
+        return None, [finding("field-model-unresolved", path, state="data-dependent/unreached")]
+    original = model + "." + path
+    field = None
     for name in path.split("."):
+        reference = model + "." + name
+        if model in target.get("pending_models", []):
+            return None, [finding("model-baseline-pending", model, state="data-dependent/unreached")]
+        if reference in target.get("pending_fields", []):
+            return None, [finding("field-baseline-pending", reference, state="data-dependent/unreached")]
+        if model in target.get("blocked_models", []) or reference in target.get("blocked_fields", []):
+            return None, [finding("field-baseline-blocked", reference, state="dependency-blocked")]
         field = target.get("models", {}).get(model, {}).get("fields", {}).get(name)
         if field is None:
-            return False
+            return None, [finding("missing-field", original)]
         model = field.get("relation", "")
-    return True
+    return field, []
 
 
 def field_findings(target: dict[str, Any], model: str, path: str) -> list[dict[str, str]]:
-    if not path:
-        return []
-    if not model:
-        return [finding("field-model-unresolved", path, state="data-dependent/unreached")]
-    if model in target.get("blocked_models", []) or model + "." + path.split(".")[0] in target.get("blocked_fields", []):
-        return [finding("field-baseline-blocked", model + "." + path, state="dependency-blocked")]
-    return [] if resolve_field(target, model, path) else [finding("missing-field", model + "." + path)]
+    return walk_field(target, model, path)[1]
 
 
 def xmlid_findings(target: dict[str, Any], xmlid: str, *, technical: bool = False) -> list[dict[str, str]]:
@@ -82,12 +93,9 @@ def domain_findings(node: ast.AST, model: str, target: dict[str, Any]) -> list[d
     if len(node.elts) == 3:
         name, operator, value = node.elts
         if isinstance(name, ast.Constant) and isinstance(name.value, str) and isinstance(operator, ast.Constant):
-            results = field_findings(target, model, name.value)
-            if operator.value in {"any", "not any", "any!", "not any!"}:
-                related = model
-                for part in name.value.split("."):
-                    related = target.get("models", {}).get(related, {}).get("fields", {}).get(part, {}).get("relation", "")
-                results += domain_findings(value, related, target)
+            field, results = walk_field(target, model, name.value)
+            if operator.value in {"any", "not any", "any!", "not any!"} and field is not None:
+                results += domain_findings(value, field.get("relation", ""), target)
             return results
     return [result for child in node.elts for result in domain_findings(child, model, target)]
 
@@ -111,10 +119,18 @@ def expression_findings(value: str, kind: str, model: str, target: dict[str, Any
                 for prefix in ("default_", "search_default_"):
                     if key.value.startswith(prefix):
                         name = key.value.removeprefix(prefix)
-                        if prefix == "search_default_" and not resolve_field(target, model, name):
+                        references = field_findings(target, model, name)
+                        if (
+                            prefix == "search_default_"
+                            and references
+                            and not any(
+                                item["code"] in {"field-baseline-pending", "model-baseline-pending", "field-baseline-blocked"}
+                                for item in references
+                            )
+                        ):
                             results.append(finding("search-filter-unresolved", name, state="data-dependent/unreached"))
                         else:
-                            results += field_findings(target, model, name)
+                            results += references
                 if key.value == "group_by" and isinstance(child, ast.Constant) and isinstance(child.value, str):
                     results += field_findings(target, model, child.value.split(":")[0])
         if isinstance(node, ast.Call):
@@ -211,7 +227,9 @@ def walk_view(
 def reference_findings(record: dict[str, Any], target: dict[str, Any], *, field_declaration: bool = False) -> list[dict[str, str]]:
     results = []
     model = record.get("model", "")
-    if model and model not in target.get("models", {}):
+    if model in target.get("pending_models", []):
+        results.append(finding("model-baseline-pending", model, state="data-dependent/unreached"))
+    elif model and model not in target.get("models", {}):
         state = "dependency-blocked" if model in target.get("blocked_models", []) else "static-only"
         results.append(finding("missing-model", model, state=state))
     for owner in record.get("owners", []):
@@ -225,7 +243,9 @@ def reference_findings(record: dict[str, Any], target: dict[str, Any], *, field_
             results += xmlid_findings(target, name)
         elif kind in {"model", "module"}:
             key = {"model": "models", "module": "modules"}[kind]
-            if name not in target.get(key, {}):
+            if kind == "model" and name in target.get("pending_models", []):
+                results.append(finding("model-baseline-pending", name, state="data-dependent/unreached"))
+            elif name not in target.get(key, {}):
                 results.append(finding("missing-" + kind, name))
         else:
             results.append(finding("unsupported-reference", kind, state="data-dependent/unreached"))
@@ -245,7 +265,14 @@ def reference_findings(record: dict[str, Any], target: dict[str, Any], *, field_
                 continue
             for node in ast.walk(code):
                 if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id in {"record", "self"}:
-                    results += field_findings(target, model, node.attr)
+                    if node.attr in target.get("models", {}).get(model, {}).get("fields", {}) or node.attr in target.get(
+                        "source_fields", {}
+                    ).get(model, []):
+                        results += field_findings(target, model, node.attr)
+                    elif node.attr not in target.get("models", {}).get(model, {}).get("methods", []):
+                        results.append(
+                            finding("stored-attribute-unresolved", model + "." + node.attr, state="data-dependent/unreached")
+                        )
     for attribute in record.get("minimized", []):
         results.append(finding("minimized-input", attribute, state="data-dependent/unreached"))
     for attribute in record.get("withheld", []):
@@ -370,7 +397,10 @@ def covered_findings(record: dict[str, Any], results: list[dict[str, str]], targ
     for coverage in qualified_coverage(record, target):
         model = target.get("xmlids", {}).get(coverage.get("reference"), {}).get("model", "")
         if model and coverage.get("code") == "native20-stock-replacement" and native_replacement(record, target, model):
-            results.append(finding("native20-stock-replacement", coverage["reference"], state="candidate-covered"))
+            if not any(
+                item["code"] == "native20-stock-replacement" and item["reference"] == coverage["reference"] for item in results
+            ):
+                results.append(finding("native20-stock-replacement", coverage["reference"], state="candidate-covered"))
         for result in results:
             if result["code"] == coverage.get("code") and result["reference"] == coverage.get("reference"):
                 result["state"] = "candidate-covered"
@@ -402,7 +432,7 @@ def collect_static(inventory: dict[str, Any], target: dict[str, Any]) -> dict[st
         source_fields.setdefault(row.get("model", ""), []).append(row.get("name", ""))
     paths: dict[str, list[str]] = {}
     for row in inventory["records"].get("actions", []):
-        if row.get("path"):
+        if row.get("path") and not native_replacement(row, target, row.get("type", "")):
             paths.setdefault(row["path"], []).append(row["key"])
     report: dict[str, Any] = {
         "inventory": digest(inventory),

@@ -98,6 +98,9 @@ Actions retain the
 actual class as `type`, target as `model`, `path`, `view_mode`/relation modes,
 view references and safe context/domain. Unknown or executable classes remain
 counted. Stored Python/server actions/compute code are never executed.
+Stored-code attribute scans identify only target/source-proven fields; methods
+and unknown ORM attributes are not reported as missing fields. Unknown
+attributes remain unresolved and code remains unexecuted.
 Window-action creation checks native model/path/view-mode constraints, but does
 not validate context/domain semantics. Retained expressions remain explicitly
 untested even when they are literals; their safe creation still runs so native
@@ -204,6 +207,10 @@ discarded old architecture as a blocker, so custom extensions are checked agains
 This is root's attestation of an already-proven guard, not a new guard evaluator.
 Other covered findings match their exact `code`/`reference`
 and may link their owning `issue`. Changed inputs invalidate the annotation.
+Coverage is also classified after native observations. The original
+`native_checks` and native failure state remain visible; a covered error never
+turns the original family into a pass. Discarded replacement-action paths do not
+compete with custom paths; the target's action paths remain authoritative.
 Only `noupdate` qualifies a matched stock view with no replacement disposition
 for a retained overlay. `arch_updated` and per-user customization copies do not
 prove retention.
@@ -217,15 +224,19 @@ No custom diff is rewritten onto a new stock view.
 
 The healthy pre-manual target is statically diagnosed and checkpointed before
 schema preparation, with manual-dependent material marked pending. Safe manual
-declarations enter a committed baseline in a batch followed by one registry
-reload. Missing relation models and known missing related paths are blocked
-before creation; prefixes supplied by another safe declaration in the batch
-remain for native setup to resolve. Failure rolls back and reloads the last
-committed baseline before individual declarations are diagnosed. Successful
-fallback rows reuse native model setup; only failed rows require a recovery
-reload, followed by one final committed-baseline reload. A deadline is not a
-declaration failure and never starts another reload. On manual timeout the
-pre-manual static report survives with explicit manual/native deadline gaps;
+declarations enter a committed baseline in a batch. Missing relation models,
+related paths, known type/comodel mismatches and non-searchable existing hops
+are blocked before creation. Pending declarations supply their declared relation
+and type for the remaining path check; native setup still owns full validation.
+Failure rolls back and reloads the last committed baseline before individual
+declarations are diagnosed in dependency-ready order, with finite progress and
+the same deadline. Every successful schema-changing commit can reload the
+registry through native signaling; the driver retrieves that current registry
+without another explicit success reload. Those native loads still cost time.
+A deadline is not a declaration failure and never starts another explicit
+reload. Field paths check every model and hop for pending versus genuinely
+blocked material. On a manual deadline or setup failure the pre-manual static
+report survives with the specific unreached cause on every dependent bucket;
 the possibly changed registry is not probed. Stored compute, callable
 selection/domain and unsupported declarations remain blocked. This is schema
 preparation, never business data or stored-code execution.
@@ -240,6 +251,12 @@ A candidate override that changes schema during a view/action write needs separa
 qualification rather than this data-only probe contract.
 
 A view family includes its actual root, extensions and sibling primary views.
+Native grouping uses the healthy target's technical ID/parent map for matched
+stock that stays native, including qualified reparented replacements. Retained
+`noupdate` and newly created rows keep their source parents. Grouping and load
+dependencies follow those effective ancestors without rewriting original
+fragments, including source ancestors reached through native-only intermediate
+views. Missing, ambiguous or cyclic effective topology stays unreached.
 An operation failure is attributed to that operation. A final combined-family
 validation failure is recorded separately in `family_failures` as native-reproduced,
 with the validation record and all family members; individual members remain

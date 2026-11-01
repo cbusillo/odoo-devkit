@@ -17,7 +17,15 @@ from xml.etree import ElementTree
 
 from odoo_release_inventory import build_inventory, module_graph
 from odoo_release_plan import digest, verify_image_declaration
-from odoo_structural_census import collect_static, families, finding, native_replacement, recount, validate_inventory
+from odoo_structural_census import (
+    collect_static,
+    covered_findings,
+    families,
+    finding,
+    native_replacement,
+    recount,
+    validate_inventory,
+)
 
 _logger = logging.getLogger(__name__)
 SAFE_MANUAL_TYPES = {"char", "text", "html", "integer", "float", "boolean", "date", "datetime", "many2one", "selection"}
@@ -153,6 +161,10 @@ def registry_surface(
         "modules": {name: sorted(graph.get(name, set())) for name in installed},
         "action_paths": paths,
         "view_types": [value for value, _label in env["ir.ui.view"]._fields["type"]._description_selection(env)],
+        "view_parents": {
+            str(view.id): str(view.inherit_id.id) if view.inherit_id else ""
+            for view in env["ir.ui.view"].with_context(active_test=False).search([])
+        },
         "migration_sources": migration_sources,
     }
 
@@ -179,7 +191,7 @@ def manual_supported(row: dict[str, Any]) -> bool:
     return literal_expression(row.get("domain"), allowed_types=(list, tuple))
 
 
-def manual_dependencies_available(env: Any, row: dict[str, Any], pending: set[tuple[str, str]]) -> bool:
+def manual_dependencies_available(env: Any, row: dict[str, Any], pending: dict[tuple[str, str], dict[str, Any]]) -> bool:
     model = row["model"]
     if model not in env or (row.get("relation") and row["relation"] not in env):
         return False
@@ -188,14 +200,29 @@ def manual_dependencies_available(env: Any, row: dict[str, Any], pending: set[tu
         return True
     if not isinstance(related, str):
         return False
-    for name in related.split("."):
+    names = related.split(".")
+    field_type, relation = "", ""
+    for index, name in enumerate(names):
         if model not in env:
             return False
         field = env[model]._fields.get(name)
         if field is None:
-            return (model, name) in pending
-        model = getattr(field, "comodel_name", "") or ""
-    return True
+            declaration_key = model, name
+            if declaration_key not in pending:
+                return False
+            declaration = pending[declaration_key]
+            field_type = declaration["ttype"]
+            relation = declaration.get("relation") or ""
+            searchable = declaration.get("store", True) or bool(declaration.get("related"))
+        else:
+            field_type = field.type
+            relation = getattr(field, "comodel_name", "") or ""
+            searchable = getattr(field, "store", True) or getattr(field, "_description_searchable", False)
+        if index < len(names) - 1:
+            if not relation or not searchable:
+                return False
+            model = relation
+    return field_type == row["ttype"] and relation == (row.get("relation") or "")
 
 
 def prepare_manual(env: Any, inventory: dict[str, Any]) -> set[tuple[str, str]]:
@@ -212,13 +239,19 @@ def prepare_manual(env: Any, inventory: dict[str, Any]) -> set[tuple[str, str]]:
     if models:
         env["ir.model"].create(models)
     pending = {
-        (row["model"], row["name"])
+        (row["model"], row["name"]): row
         for row in inventory["records"].get("fields", [])
         if row.get("state") == "manual"
         and manual_supported(row)
         and row["model"] in env
         and (not row.get("relation") or row["relation"] in env)
     }
+    while True:
+        invalid = {key for key, row in pending.items() if not manual_dependencies_available(env, row, pending)}
+        if not invalid:
+            break
+        for key in invalid:
+            del pending[key]
     values_list = []
     for row in inventory["records"].get("fields", []):
         if row.get("state") != "manual":
@@ -326,34 +359,49 @@ class DisposableCensus:
             Registry.delete(self.baseline)
             return Registry.new(self.baseline)
 
-        def apply(selected: dict[str, Any]) -> None:
+        def apply(selected: dict[str, Any]) -> Any:
             self.check_deadline()
-            with registry.cursor() as cursor:
-                self.manual_blocked.update(prepare_manual(api.Environment(cursor, SUPERUSER_ID, {}), selected))
-                cursor.commit()
+            with registry.cursor() as apply_cursor:
+                self.manual_blocked.update(prepare_manual(api.Environment(apply_cursor, SUPERUSER_ID, {}), selected))
+                apply_cursor.commit()
+            self.check_deadline()
+            return Registry(self.baseline)
 
         try:
-            apply(inventory)
+            registry = apply(inventory)
         except TimeoutError:
             raise
         except Exception:
             _logger.exception("Batched manual declarations failed; rebuilding the committed empty baseline")
             registry = reload_committed()
             for bucket in ("models", "fields"):
-                for row in inventory["records"].get(bucket, []):
-                    if row.get("state") != "manual":
-                        continue
+                remaining = [row for row in inventory["records"].get(bucket, []) if row.get("state") == "manual"]
+                while remaining:
                     self.check_deadline()
+                    with registry.cursor() as cursor:
+                        env = api.Environment(cursor, SUPERUSER_ID, {})
+                        selected_row: dict[str, Any] = next(
+                            (
+                                item
+                                for item in remaining
+                                if bucket == "models" or not manual_supported(item) or manual_dependencies_available(env, item, {})
+                            ),
+                            {},
+                        )
+                    if not selected_row:
+                        self.manual_blocked.update((bucket, item["key"]) for item in remaining)
+                        break
+                    remaining.remove(selected_row)
                     try:
-                        apply({"records": {bucket: [row]}})
+                        registry = apply({"records": {bucket: [selected_row]}})
                     except TimeoutError:
                         raise
                     except Exception:
                         _logger.exception("Manual declaration unavailable in the empty baseline")
-                        self.manual_blocked.add((bucket, row["key"]))
+                        self.manual_blocked.add((bucket, selected_row["key"]))
                         registry = reload_committed()
                     self.checkpoint()
-        return reload_committed()
+        return registry
 
     def build(self, modules: set[str], graph: dict[str, set[str]]) -> Any:
         from odoo import SUPERUSER_ID, api
@@ -483,8 +531,62 @@ def view_architecture(row: dict[str, Any], language: str) -> str:
     raise ProbeUnreached("Architecture input is unavailable", code="view-architecture-unavailable")
 
 
+def native_view_families(rows: list[dict[str, Any]], target: dict[str, Any]) -> tuple[list[list[dict[str, Any]]], dict[str, str]]:
+    if not rows:
+        return [], {}
+    source = {row["key"]: row for row in rows}
+    native_parents = target.get("view_parents", {})
+    identities: dict[str, str] = {}
+    for row in rows:
+        matches = {
+            target["xmlids"][xmlid].get("key", "")
+            for xmlid in row.get("xmlids", [])
+            if target.get("xmlids", {}).get(xmlid, {}).get("model") == "ir.ui.view"
+        }
+        if len(matches) > 1:
+            raise ProbeUnreached("Retained view identities are ambiguous", code="native-family-topology-unavailable")
+        for identity in matches:
+            if identity in identities or identity not in native_parents:
+                raise ProbeUnreached("Retained view topology is unavailable", code="native-family-topology-unavailable")
+            identities[identity] = row["key"]
+    source_identities = {key: identity for identity, key in identities.items()}
+
+    def native_key(native_identity: str) -> str:
+        if not native_identity:
+            return ""
+        if native_identity not in native_parents:
+            raise ProbeUnreached("Native ancestor topology is unavailable", code="native-family-topology-unavailable")
+        key = identities.get(native_identity, "native:" + native_identity)
+        if native_identity not in identities and key in source:
+            raise ProbeUnreached("Native topology identity conflicts with a source key", code="native-family-topology-unavailable")
+        return key
+
+    parents = {native_key(identity): native_key(parent) for identity, parent in native_parents.items() if identity not in identities}
+    for row in rows:
+        parent = row.get("parent", "")
+        identity = source_identities.get(row["key"])
+        if identity is not None and (not row.get("noupdate") or native_replacement(row, target, "ir.ui.view")):
+            parent = native_key(native_parents[identity])
+        elif parent not in source and target.get("xmlids", {}).get(parent, {}).get("model") == "ir.ui.view":
+            parent = native_key(target["xmlids"][parent]["key"])
+        parents[row["key"]] = parent
+    grouped, cyclic = families([{"key": key, "parent": parent} for key, parent in parents.items()])
+    if cyclic:
+        raise ProbeUnreached("Effective native inheritance is cyclic", code="native-family-topology-unavailable")
+    return [
+        [source[row["key"]] for row in group if row["key"] in source]
+        for group in grouped
+        if any(row["key"] in source for row in group)
+    ], parents
+
+
 def load_view_family(
-    env: Any, rows: list[dict[str, Any]], language: str, *, replacements: set[str] | None = None
+    env: Any,
+    rows: list[dict[str, Any]],
+    language: str,
+    *,
+    replacements: set[str] | None = None,
+    parent_keys: dict[str, str] | None = None,
 ) -> list[dict[str, str]]:
     if not env["res.lang"].search_count([("code", "=", language), ("active", "=", True)]):
         raise ProbeUnreached("Target language is not active", code="target-language-unavailable")
@@ -492,8 +594,21 @@ def load_view_family(
     identities: dict[str, Any] = {}
     pending = sorted(rows, key=lambda row: (row.get("priority", 16), row.get("source_order", 0)))
     keys = {row["key"] for row in rows}
+    effective_parents = parent_keys or {}
+    dependencies = {}
+    for item in rows:
+        ancestor = effective_parents.get(item["key"], item.get("parent", ""))
+        visited = set()
+        while ancestor not in keys and ancestor in effective_parents:
+            if ancestor in visited:
+                raise ProbeUnreached("Native ancestor topology is cyclic", code="native-family-topology-unavailable")
+            visited.add(ancestor)
+            ancestor = effective_parents[ancestor]
+        dependencies[item["key"]] = ancestor
     while pending:
-        row = next((item for item in pending if item.get("parent") not in keys or item["parent"] in identities), None)
+        row = next(
+            (item for item in pending if dependencies[item["key"]] not in keys or dependencies[item["key"]] in identities), None
+        )
         if row is None:
             raise ProbeUnreached("Cyclic view family", code="view-inheritance-cycle")
         matches = [env.ref(xmlid, raise_if_not_found=False) for xmlid in row.get("xmlids", [])]
@@ -687,6 +802,7 @@ def collect_native(
     session.inventory = inventory
     session.report = unreached_report(inventory, candidate)
     session.checkpoint(force=True)
+    coverage_target: dict[str, Any] | None = None
     try:
         try:
             verify_image_declaration(declaration, artifact["release_compatibility"], platform=candidate["platform"])
@@ -710,6 +826,7 @@ def collect_native(
             return session.report
         with registry.cursor() as cursor:
             target = registry_surface(api.Environment(cursor, SUPERUSER_ID, {}), candidate, graph, migration_sources)
+        coverage_target = target
         blocked_modules = {row["module"] for row in session.bootstrap if row.get("module") and row.get("state") != "checked"}
         evidence = dict(
             native_sources=migration_sources,
@@ -719,7 +836,9 @@ def collect_native(
             actual_installed_modules=sorted(target["modules"]),
         )
 
-        def target_with_baseline(surface: dict[str, Any], manual_unavailable: set[tuple[str, str]]) -> dict[str, Any]:
+        def target_with_baseline(
+            surface: dict[str, Any], manual_unavailable: set[tuple[str, str]], manual_pending: set[tuple[str, str]]
+        ) -> dict[str, Any]:
             return {
                 **surface,
                 "blocked_modules": blocked_modules,
@@ -734,6 +853,14 @@ def collect_native(
                     for row in inventory["records"].get("fields", [])
                     if ("fields", row["key"]) in manual_unavailable or set(row.get("owners", [])) & blocked_modules
                 ],
+                "pending_models": [
+                    row["model"] for row in inventory["records"].get("models", []) if ("models", row["key"]) in manual_pending
+                ],
+                "pending_fields": [
+                    row["model"] + "." + row["name"]
+                    for row in inventory["records"].get("fields", [])
+                    if ("fields", row["key"]) in manual_pending
+                ],
             }
 
         pending = {
@@ -743,7 +870,7 @@ def collect_native(
             if row.get("state") == "manual"
         }
         if pending:
-            session.report = collect_static(inventory, target_with_baseline(target, pending))
+            session.report = collect_static(inventory, target_with_baseline(target, session.manual_blocked, pending))
             session.report.update(evidence)
             for component in session.report["components"]:
                 if (component["bucket"], component["key"]) in pending:
@@ -751,24 +878,33 @@ def collect_native(
             session.checkpoint(force=True)
             try:
                 registry = session.manual_baseline(registry, inventory)
-            except TimeoutError:
-                _logger.exception("Manual baseline deadline reached; the healthy pre-manual static census is retained")
+            except Exception as error:
+                _logger.exception("Manual baseline unavailable; the healthy pre-manual static census is retained")
+                code = "manual-baseline-deadline-unreached" if isinstance(error, TimeoutError) else "manual-baseline-unreached"
                 for component in session.report["components"]:
                     for item in component["findings"]:
-                        if item["code"] == "manual-baseline-pending":
-                            item["code"] = "manual-baseline-deadline-unreached"
+                        if item["code"] in {"manual-baseline-pending", "model-baseline-pending", "field-baseline-pending"}:
+                            item["code"] = code
+                            item["exception"] = type(error).__name__
                     if component["bucket"] in {"views", "actions"}:
-                        component["findings"].append(finding("deadline-unreached", state="data-dependent/unreached"))
+                        component["findings"].append(finding(code, type(error).__name__, state="data-dependent/unreached"))
                 return session.report
             with registry.cursor() as cursor:
                 target = registry_surface(api.Environment(cursor, SUPERUSER_ID, {}), candidate, graph, migration_sources)
-        target = target_with_baseline(target, session.manual_blocked)
+            coverage_target = target
+        target = target_with_baseline(target, session.manual_blocked, set())
         session.report = report = collect_static(inventory, target)
         report.update(evidence)
         by_key = {(row["bucket"], row["key"]): row for row in report["components"]}
         for bucket, key in session.manual_blocked:
             by_key[bucket, key]["findings"].append(finding("manual-baseline-unavailable", state="dependency-blocked"))
-        view_families, _cyclic = families(inventory["records"].get("views", []))
+        try:
+            view_families, parent_keys = native_view_families(inventory["records"].get("views", []), target)
+        except ProbeUnreached as error:
+            for component in report["components"]:
+                if component["bucket"] == "views":
+                    component["findings"].append(finding(error.code, state="data-dependent/unreached"))
+            view_families, parent_keys = [], {}
         for family in view_families:
             components = [by_key["views", row["key"]] for row in family]
             replacements = {row["key"] for row in family if native_replacement(row, target, "ir.ui.view")}
@@ -787,7 +923,7 @@ def collect_native(
                 run_probe(
                     session,
                     components,
-                    partial(load_view_family, rows=family, language=language, replacements=replacements),
+                    partial(load_view_family, rows=family, language=language, replacements=replacements, parent_keys=parent_keys),
                     label=language,
                 )
         for row in inventory["records"].get("actions", []):
@@ -807,5 +943,10 @@ def collect_native(
             _logger.exception("Native census cleanup failed; retained findings are checkpointed")
             raise
         finally:
+            if coverage_target is not None:
+                components = {(row["bucket"], row["key"]): row for row in session.report["components"]}
+                for bucket, rows in inventory["records"].items():
+                    for row in rows:
+                        covered_findings(row, components[bucket, row["key"]]["findings"], coverage_target)
             recount(session.report, inventory)
             session.checkpoint(force=True)

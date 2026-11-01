@@ -8,6 +8,7 @@ import tempfile
 import time
 import unittest
 from contextlib import contextmanager
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -126,7 +127,8 @@ class StaticCensusTests(unittest.TestCase):
                     "related": "partner_id.gone",
                     "depends": ["partner_id.name"],
                     "compute": "record.deleted",
-                }
+                },
+                {"key": "old.deleted", "model": "res.users", "name": "deleted", "ttype": "char", "state": "base"},
             ],
             filters=[
                 {
@@ -174,6 +176,27 @@ class StaticCensusTests(unittest.TestCase):
         report = census.collect_static(packet, target())
         codes = {item["code"] for row in report["components"] for item in row["findings"]}
         self.assertTrue({"stored-code-unexecuted", "unexecuted-expression-call"} <= codes)
+        selected = target()
+        selected["models"]["res.users"]["methods"] = ["write"]
+        packet = inventory(
+            fields=[{"key": "old.field", "model": "res.users", "name": "x_removed", "ttype": "char"}],
+            automation=[
+                {
+                    "key": "attributes",
+                    "model": "res.users",
+                    "code": "record.write({'name': 'synthetic'}); x = record.env; y = record.ids; z = record.x_removed",
+                }
+            ],
+        )
+        report = census.collect_static(packet, selected)
+        stored = next(row for row in report["components"] if row["key"] == "attributes")
+        self.assertEqual(
+            {item["reference"] for item in stored["findings"] if item["code"] == "missing-field"}, {"res.users.x_removed"}
+        )
+        self.assertEqual(
+            {item["reference"] for item in stored["findings"] if item["code"] == "stored-attribute-unresolved"},
+            {"res.users.env", "res.users.ids"},
+        )
 
     def test_candidate_coverage_is_bound_to_guard_source_record_and_candidate(self) -> None:
         row = view("calendar.legacy", '<form><field name="gone"/></form>')
@@ -497,7 +520,14 @@ class ReviewedRegressionTests(unittest.TestCase):
     def test_missing_manual_relations_and_related_paths_do_not_poison_a_safe_batch(self) -> None:
         created: list[dict[str, Any]] = []
         models = {
-            "res.users": SimpleNamespace(_fields={"partner_id": SimpleNamespace(type="many2one", comodel_name="res.partner")}),
+            "res.users": SimpleNamespace(
+                _fields={
+                    "partner_id": SimpleNamespace(type="many2one", comodel_name="res.partner"),
+                    "unsearchable_partner": SimpleNamespace(
+                        type="many2one", comodel_name="res.partner", store=False, _description_searchable=False
+                    ),
+                }
+            ),
             "res.partner": SimpleNamespace(_fields={"name": SimpleNamespace(type="char")}),
             "ir.model": SimpleNamespace(_get_id=lambda _name: 1),
             "ir.model.fields": SimpleNamespace(create=created.extend),
@@ -518,35 +548,117 @@ class ReviewedRegressionTests(unittest.TestCase):
             {"key": "pending_path", "name": "x_pending", "ttype": "char", "related": "x_partner.name"},
             {"key": "partner", "name": "x_partner", "ttype": "many2one", "relation": "res.partner"},
             {"key": "safe_path", "name": "x_name", "ttype": "char", "related": "partner_id.name"},
+            {"key": "bad_pending", "name": "x_bad_pending", "ttype": "char", "related": "x_partner.gone"},
+            {"key": "bad_type", "name": "x_bad_type", "ttype": "integer", "related": "partner_id.name"},
+            {"key": "bad_comodel", "name": "x_bad_comodel", "ttype": "many2one", "related": "partner_id", "relation": "res.users"},
+            {"key": "bad_search", "name": "x_bad_search", "ttype": "char", "related": "unsearchable_partner.name"},
         ]
         source = inventory(fields=[{**row, "state": "manual", "model": "res.users"} for row in fields])
         blocked = native.prepare_manual(Environment(), source)
-        self.assertEqual(blocked, {("fields", "removed"), ("fields", "gone_path")})
+        self.assertEqual(
+            blocked, {("fields", key) for key in ("removed", "gone_path", "bad_pending", "bad_type", "bad_comodel", "bad_search")}
+        )
         self.assertEqual({row["name"] for row in created}, {"x_pending", "x_partner", "x_name"})
 
-    def test_manual_row_successes_do_not_repeat_registry_reload_after_batch_failure(self) -> None:
+    def test_manual_success_returns_the_registry_selected_by_native_commit_signaling(self) -> None:
         registry = MagicMock()
-        factory = SimpleNamespace(delete=MagicMock(), new=MagicMock(return_value=registry))
+        factory = MagicMock(return_value=registry)
+        committed: list[Any] = []
+
+        def new_registry(_name: str) -> Any:
+            signaled = MagicMock()
+            factory.return_value = signaled
+            return signaled
+
+        def commit() -> None:
+            committed.append(factory.new("synthetic"))
+
+        factory.new.side_effect = new_registry
+        registry.cursor.return_value.__enter__.return_value.commit.side_effect = commit
         modules = {
             "odoo": SimpleNamespace(SUPERUSER_ID=1, api=SimpleNamespace(Environment=lambda *_args: object())),
             "odoo.orm.registry": SimpleNamespace(Registry=factory),
         }
-        source = inventory(fields=[{"key": str(index), "state": "manual"} for index in range(5)])
+        source = inventory(fields=[{"key": "safe", "state": "manual"}])
         session = native.DisposableCensus(time.monotonic() + 60)
         session.baseline = "synthetic"
-        applied = []
+        with patch.dict(sys.modules, modules), patch.object(native, "prepare_manual", return_value=set()):
+            current = session.manual_baseline(registry, source)
+        self.assertIs(current, committed[-1])
+        self.assertIs(current, factory.return_value)
+        factory.delete.assert_not_called()
+        self.assertFalse(session.manual_blocked)
 
-        def apply(_env: Any, selected: dict[str, Any]) -> set[tuple[str, str]]:
-            if len(selected["records"]["fields"]) > 1:
-                raise ValueError("Synthetic batched declaration failure")
-            applied.extend(row["key"] for row in selected["records"]["fields"])
-            return set()
+    def test_manual_fallback_prepares_prefixes_before_valid_related_fields(self) -> None:
+        created: list[str] = []
+        model_fields: dict[str, Any] = {}
+        models = {
+            "res.users": SimpleNamespace(_fields=model_fields),
+            "res.partner": SimpleNamespace(_fields={"name": SimpleNamespace(type="char")}),
+            "ir.model": SimpleNamespace(_get_id=lambda _name: 1),
+        }
 
-        with patch.dict(sys.modules, modules), patch.object(native, "prepare_manual", side_effect=apply):
+        def create(values: list[dict[str, Any]]) -> None:
+            for value in values:
+                created.append(value["name"])
+                model_fields[value["name"]] = SimpleNamespace(
+                    type=value["ttype"], comodel_name=value.get("relation", ""), store=True
+                )
+
+        models["ir.model.fields"] = SimpleNamespace(create=create)
+
+        class Environment:
+            @staticmethod
+            def __contains__(model: str) -> bool:
+                return model in models
+
+            @staticmethod
+            def __getitem__(model: str) -> Any:
+                return models[model]
+
+        registry = MagicMock()
+        factory = MagicMock(return_value=registry)
+        factory.new.return_value = registry
+        modules = {
+            "odoo": SimpleNamespace(SUPERUSER_ID=1, api=SimpleNamespace(Environment=lambda *_args: Environment())),
+            "odoo.orm.registry": SimpleNamespace(Registry=factory),
+        }
+        source = inventory(
+            fields=[
+                {
+                    "key": "related",
+                    "model": "res.users",
+                    "name": "x_related",
+                    "ttype": "char",
+                    "state": "manual",
+                    "related": "x_prefix.name",
+                },
+                {
+                    "key": "prefix",
+                    "model": "res.users",
+                    "name": "x_prefix",
+                    "ttype": "many2one",
+                    "state": "manual",
+                    "relation": "res.partner",
+                },
+            ]
+        )
+        original = native.prepare_manual
+        attempted = False
+
+        def fail_batch_once(env: Any, selected: dict[str, Any]) -> set[tuple[str, str]]:
+            nonlocal attempted
+            if not attempted:
+                attempted = True
+                raise ValueError("Synthetic batch failure")
+            return original(env, selected)
+
+        session = native.DisposableCensus(time.monotonic() + 60)
+        session.baseline = "synthetic"
+        with patch.dict(sys.modules, modules), patch.object(native, "prepare_manual", side_effect=fail_batch_once):
             with self.assertLogs("odoo_structural_native", level="ERROR"):
-                self.assertIs(session.manual_baseline(registry, source), registry)
-        self.assertEqual(applied, [row["key"] for row in source["records"]["fields"]])
-        self.assertEqual(factory.new.call_count, 2)
+                session.manual_baseline(registry, source)
+        self.assertEqual(created, ["x_prefix", "x_related"])
         self.assertFalse(session.manual_blocked)
 
     def test_manual_timeout_is_not_a_declaration_failure_or_a_registry_reload(self) -> None:
@@ -584,10 +696,21 @@ class ReviewedRegressionTests(unittest.TestCase):
             session.manual_baseline(registry, source)
         factory.new.assert_not_called()
 
-    def test_manual_deadline_retains_healthy_static_diagnosis_without_probing_mutated_registry(self) -> None:
+    def test_manual_setup_failures_retain_pending_causes_across_reference_buckets(self) -> None:
         source = inventory(
-            fields=[{"key": "manual", "state": "manual", "name": "x_safe", "model": "res.users", "ttype": "char"}],
+            models=[{"key": "manual.model", "model": "x_pending", "state": "manual"}],
+            fields=[
+                {"key": "manual", "state": "manual", "name": "x_safe", "model": "res.users", "ttype": "char"},
+                {"key": "tier", "state": "manual", "name": "x_tier", "model": "res.partner", "ttype": "char"},
+                {"key": "pending.field", "model": "x_pending", "name": "x_name", "ttype": "char"},
+            ],
             views=[view("bad", '<form><field name="gone"/></form>')],
+            filters=[{"key": "through.filter", "model": "res.users", "domain": "[('partner_id.x_tier', '=', 'fixture')]"}],
+            defaults=[
+                {"key": "through.default", "references": [{"kind": "field", "model": "res.users", "name": "partner_id.x_tier"}]}
+            ],
+            automation=[{"key": "through.auto", "references": [{"kind": "model", "name": "x_pending"}]}],
+            menus=[{"key": "through.menu", "model": "x_pending"}],
         )
         artifact = {"release_compatibility": {"complete": True, "modules": [{"name": "base", "depends": []}]}}
         candidate = {"artifact": artifact, "platform": "linux/amd64", "intended_modules": ["base"], "migration_sources": []}
@@ -595,33 +718,62 @@ class ReviewedRegressionTests(unittest.TestCase):
         modules = {"odoo": SimpleNamespace(SUPERUSER_ID=1, api=SimpleNamespace(Environment=lambda *_args: object()))}
         report_path = Path(self.enterContext(tempfile.TemporaryDirectory())) / "report.json"
 
-        def manual_deadline(_registry: Any, _source: Any) -> Any:
+        dependents = {"through.filter", "through.default", "through.auto", "through.menu", "pending.field"}
+
+        def manual_failure(setup_error: Exception, _registry: Any, _source: Any) -> Any:
             saved = json.loads(report_path.read_text())
             checkpoint_components = {row["key"]: row for row in saved["components"]}
             self.assertIn("missing-field", {item["code"] for item in checkpoint_components["bad"]["findings"]})
             self.assertIn("manual-baseline-pending", {item["code"] for item in checkpoint_components["manual"]["findings"]})
-            raise TimeoutError("deadline")
+            for dependent_key in dependents:
+                self.assertFalse(
+                    any(
+                        item["code"] in {"missing-field", "missing-model"} or item["state"] == "dependency-blocked"
+                        for item in checkpoint_components[dependent_key]["findings"]
+                    )
+                )
+            raise setup_error
 
-        with (
-            patch.dict(sys.modules, modules),
-            patch.object(native, "verify_image_declaration"),
-            patch.object(native, "declared_files", return_value={}),
-            patch.object(native, "check_native_sources", return_value={}),
-            patch.object(native, "module_graph", return_value={"base": set()}),
-            patch.object(native.DisposableCensus, "build", return_value=registry),
-            patch.object(native.DisposableCensus, "manual_baseline", side_effect=manual_deadline),
-            patch.object(native, "registry_surface", return_value=target()) as surface,
-            patch.object(native, "run_probe") as probe,
-            self.assertLogs("odoo_structural_native", level="ERROR"),
-        ):
-            report = native.collect_native(source, candidate, [], declaration={}, deadline=time.monotonic() + 60, output=report_path)
-        surface.assert_called_once()
-        probe.assert_not_called()
-        components = {row["key"]: row for row in report["components"]}
-        self.assertIn("missing-field", {item["code"] for item in components["bad"]["findings"]})
-        self.assertIn("manual-baseline-deadline-unreached", {item["code"] for item in components["manual"]["findings"]})
-        self.assertNotIn("manual-baseline-unavailable", {item["code"] for item in components["manual"]["findings"]})
-        self.assertEqual(report["cleanup"], "complete")
+        for failure in (TimeoutError("deadline"), RuntimeError("native registry unavailable")):
+            with (
+                patch.dict(sys.modules, modules),
+                patch.object(native, "verify_image_declaration"),
+                patch.object(native, "declared_files", return_value={}),
+                patch.object(native, "check_native_sources", return_value={}),
+                patch.object(native, "module_graph", return_value={"base": set()}),
+                patch.object(native.DisposableCensus, "build", return_value=registry),
+                patch.object(native.DisposableCensus, "manual_baseline", side_effect=partial(manual_failure, failure)),
+                patch.object(native, "registry_surface", return_value=target()) as surface,
+                patch.object(native, "run_probe") as probe,
+                self.assertLogs("odoo_structural_native", level="ERROR"),
+            ):
+                report = native.collect_native(
+                    source, candidate, [], declaration={}, deadline=time.monotonic() + 60, output=report_path
+                )
+            surface.assert_called_once()
+            probe.assert_not_called()
+            components = {row["key"]: row for row in report["components"]}
+            self.assertIn("missing-field", {item["code"] for item in components["bad"]["findings"]})
+            code = "manual-baseline-deadline-unreached" if isinstance(failure, TimeoutError) else "manual-baseline-unreached"
+            for key in dependents | {"manual", "manual.model"}:
+                self.assertIn(code, {item["code"] for item in components[key]["findings"]})
+                self.assertFalse(any(item["state"] == "dependency-blocked" for item in components[key]["findings"]))
+            self.assertEqual(report["cleanup"], "complete")
+
+    def test_dotted_field_paths_keep_later_pending_and_blocked_hops_distinct(self) -> None:
+        selected = target()
+        selected["pending_fields"] = ["res.partner.x_tier"]
+        findings = census.field_findings(selected, "res.users", "partner_id.x_tier")
+        self.assertEqual(
+            [(item["code"], item["state"]) for item in findings], [("field-baseline-pending", "data-dependent/unreached")]
+        )
+        selected["pending_fields"] = []
+        selected["blocked_fields"] = ["res.partner.x_tier"]
+        findings = census.field_findings(selected, "res.users", "partner_id.x_tier")
+        self.assertEqual([(item["code"], item["state"]) for item in findings], [("field-baseline-blocked", "dependency-blocked")])
+        selected["models"]["res.users"]["fields"]["x_relation"] = {"relation": "x_pending"}
+        selected["pending_models"] = ["x_pending"]
+        self.assertEqual(census.field_findings(selected, "res.users", "x_relation.x_name")[0]["code"], "model-baseline-pending")
 
     def test_typed_stale_xmlids_are_structural_only_when_the_technical_inventory_is_complete(self) -> None:
         row = view(
@@ -968,7 +1120,7 @@ class ReviewedRegressionTests(unittest.TestCase):
     def test_replaced_action_uses_target_without_old_expression_or_path_blockers(self) -> None:
         selected = target()
         selected["xmlids"]["base.action"] = {"model": "ir.actions.act_window"}
-        selected["action_paths"] = {"old-conflict": ["base.other_action"]}
+        selected["action_paths"] = {"new-stock": ["base.action"]}
         row: dict[str, Any] = {
             "key": "old.action",
             "xmlids": ["base.action"],
@@ -989,11 +1141,113 @@ class ReviewedRegressionTests(unittest.TestCase):
                 "reference": "base.action",
             }
         ]
-        report = census.collect_static(inventory(actions=[row]), selected)
+        custom = {"key": "custom.action", "type": "ir.actions.act_window", "model": "res.users", "path": row["path"]}
+        report = census.collect_static(inventory(actions=[row, custom]), selected)
         self.assertEqual({item["code"] for item in report["components"][0]["findings"]}, {"native20-stock-replacement"})
+        self.assertNotIn("action-path-conflict", {item["code"] for item in report["components"][1]["findings"]})
+        census.covered_findings(row, report["components"][0]["findings"], selected)
+        self.assertEqual(len(report["components"][0]["findings"]), 1)
         env = ViewEnvironment({"base.action": SimpleNamespace(_name="ir.actions.act_window", id=5)})
         native.load_action(env, row, replace_native=True)
         self.assertFalse(env.created)
+
+    def test_native_reparenting_combines_original_roots_without_rewriting_source_rows(self) -> None:
+        selected = target()
+        selected["view_parents"] = {"1": "", "2": "1"}
+        selected["xmlids"].update(
+            {"base.first": {"model": "ir.ui.view", "key": "1"}, "base.second": {"model": "ir.ui.view", "key": "2"}}
+        )
+        rows = [
+            view("first", "<form/>", xmlids=["base.first"], source_order=2),
+            view("second", "<form/>", xmlids=["base.second"], source_order=1),
+            view("custom.first", "<data/>", parent="first", mode="extension"),
+            view("custom.second", "<data/>", parent="second", mode="extension"),
+        ]
+        for row in rows[:2]:
+            row["candidate_coverage"] = [
+                {
+                    "candidate": selected["binding"],
+                    "record_sha256": census.digest(row),
+                    "source_sha256": next(iter(selected["migration_sources"].values())),
+                    "guard_receipt": "qualified",
+                    "code": "native20-stock-replacement",
+                    "reference": row["xmlids"][0],
+                }
+            ]
+        original = copy.deepcopy(rows)
+        groups, parents = native.native_view_families(rows, selected)
+        self.assertEqual([{row["key"] for row in group} for group in groups], [{row["key"] for row in rows}])
+        self.assertEqual(parents["second"], "first")
+        self.assertEqual(rows, original)
+        middle_target = {**selected, "view_parents": {"1": "", "2": "3", "3": "1"}}
+        retained_rows = copy.deepcopy(rows)
+        retained_rows[0].pop("candidate_coverage")
+        retained_rows[0]["noupdate"] = True
+        retained_rows[0]["architectures"]["en_US"] = '<form><field name="name"/></form>'
+        retained_root = NativeView(1)
+        native_child = NativeView(2)
+        native_child.values.update(mode="extension", inherit_id=3)
+
+        class AncestorEnvironment(ViewEnvironment):
+            def create(self, values: dict[str, Any]) -> NativeView:
+                if not retained_root.values.get("arch"):
+                    raise ValueError("Retained source ancestor has not been prepared")
+                return super().create(values)
+
+        middle_groups, middle_parents = native.native_view_families(retained_rows, middle_target)
+        middle_env = AncestorEnvironment({"base.first": retained_root, "base.second": native_child})
+        native.load_view_family(middle_env, middle_groups[0], "en_US", replacements={"second"}, parent_keys=middle_parents)
+        self.assertEqual(len(middle_env.created), 2)
+        del selected["view_parents"]["1"]
+        with self.assertRaises(native.ProbeUnreached):
+            native.native_view_families(rows, selected)
+
+    def test_observed_native_failure_can_be_covered_without_clearing_original_family(self) -> None:
+        artifact = {"release_compatibility": {"complete": True, "modules": [{"name": "base", "depends": []}]}}
+        selected = target()
+        selected["binding"] = census.digest(artifact)
+        selected["view_parents"] = {}
+        root = view("guarded", "<form/>")
+        root["candidate_coverage"] = [
+            {
+                "candidate": selected["binding"],
+                "record_sha256": census.digest(root),
+                "source_sha256": next(iter(selected["migration_sources"].values())),
+                "guard_receipt": "qualified",
+                "code": "native-validation-error",
+                "reference": "operation",
+            }
+        ]
+        source = inventory(views=[root, view("child", "<data/>", parent="guarded", mode="extension")])
+        candidate = {"artifact": artifact, "platform": "linux/amd64", "intended_modules": ["base"], "migration_sources": []}
+        modules = {"odoo": SimpleNamespace(SUPERUSER_ID=1, api=SimpleNamespace(Environment=lambda *_args: object()))}
+
+        @contextmanager
+        def probe(_session: Any) -> Any:
+            yield object()
+
+        with (
+            patch.dict(sys.modules, modules),
+            patch.object(native, "verify_image_declaration"),
+            patch.object(native, "declared_files", return_value={}),
+            patch.object(native, "check_native_sources", return_value=selected["migration_sources"]),
+            patch.object(native, "module_graph", return_value={"base": set()}),
+            patch.object(native.DisposableCensus, "build", return_value=MagicMock()),
+            patch.object(native.DisposableCensus, "probe", probe),
+            patch.object(native, "registry_surface", return_value=selected),
+            patch.object(native, "load_view_family", side_effect=native.ViewFailure("guarded")),
+            self.assertLogs("odoo_structural_native", level="ERROR"),
+        ):
+            report = native.collect_native(source, candidate, [], declaration={}, deadline=time.monotonic() + 60)
+        components = {row["key"]: row for row in report["components"]}
+        self.assertEqual(components["guarded"]["native"], "native-reproduced")
+        self.assertEqual(components["guarded"]["native_checks"][0]["state"], "native-reproduced")
+        self.assertEqual(
+            next(item for item in components["guarded"]["findings"] if item["code"] == "native-validation-error")["state"],
+            "candidate-covered",
+        )
+        self.assertEqual(components["child"]["native"], "unreached")
+        self.assertEqual(report["coverage"]["views"]["native-checked"], 0)
 
     def test_extension_order_compares_created_and_native_siblings_at_actual_parent_and_priority(self) -> None:
         architecture = '<field name="name" position="attributes"><attribute name="string">Synthetic</attribute></field>'
