@@ -45,9 +45,7 @@ def view(key: str, architecture: str, **values: Any) -> dict[str, Any]:
 
 
 @tagged("standard", "post_install", "-at_install")
-class TestStructuralCensus(TestCase):
-    """The collector owns disposable registries, without an outer ORM transaction."""
-
+class TestStructuralCensusOwnedRegistries(TestCase):
     test_module = __name__.split(".")[2]
 
     def setUp(self) -> None:
