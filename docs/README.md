@@ -36,6 +36,8 @@ lanes live in `launchplane`.
   linked-worktree Python inspection preparation.
 - [tooling/addon-ci.md](tooling/addon-ci.md) for disposable addon suites and
   live devkit startup/restore checks with planted-fault proof.
+- [tooling/structural-census.md](tooling/structural-census.md) for root-screened
+  technical metadata and consolidated Community20 structural diagnostics.
 - [../.github/github.json](../.github/github.json) for validation commands and
   repository routing. Dependency commands are documented in the workspace CLI
   guide above.
