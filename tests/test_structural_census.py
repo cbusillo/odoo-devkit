@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from xml.etree import ElementTree
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "docker/scripts"
@@ -463,10 +463,11 @@ class NativeView:
 
 
 class ViewEnvironment:
-    def __init__(self, references: dict[str, Any] | None = None) -> None:
+    def __init__(self, references: dict[str, Any] | None = None, *, languages: set[str] | None = None) -> None:
         self.context: dict[str, Any] = {}
         self.references = references or {}
         self.created: list[NativeView] = []
+        self.languages = {"en_US"} if languages is None else languages
 
     def __call__(self, *, context: dict[str, Any]) -> ViewEnvironment:
         self.context = context
@@ -474,7 +475,7 @@ class ViewEnvironment:
 
     def __getitem__(self, model: str) -> Any:
         if model == "res.lang":
-            return SimpleNamespace(search_count=lambda _domain: 1)
+            return SimpleNamespace(search_count=lambda domain: int(domain[0][2] in self.languages))
         if model == "ir.ui.view":
             return SimpleNamespace(create=self.create)
         raise KeyError(model)
@@ -493,6 +494,177 @@ class ViewEnvironment:
 
 
 class ReviewedRegressionTests(unittest.TestCase):
+    def test_missing_manual_relations_and_related_paths_do_not_poison_a_safe_batch(self) -> None:
+        created: list[dict[str, Any]] = []
+        models = {
+            "res.users": SimpleNamespace(_fields={"partner_id": SimpleNamespace(type="many2one", comodel_name="res.partner")}),
+            "res.partner": SimpleNamespace(_fields={"name": SimpleNamespace(type="char")}),
+            "ir.model": SimpleNamespace(_get_id=lambda _name: 1),
+            "ir.model.fields": SimpleNamespace(create=created.extend),
+        }
+
+        class Environment:
+            @staticmethod
+            def __contains__(model: str) -> bool:
+                return model in models
+
+            @staticmethod
+            def __getitem__(model: str) -> Any:
+                return models[model]
+
+        fields = [
+            {"key": "removed", "name": "x_removed", "ttype": "many2one", "relation": "removed.model"},
+            {"key": "gone_path", "name": "x_gone", "ttype": "char", "related": "partner_id.gone"},
+            {"key": "pending_path", "name": "x_pending", "ttype": "char", "related": "x_partner.name"},
+            {"key": "partner", "name": "x_partner", "ttype": "many2one", "relation": "res.partner"},
+            {"key": "safe_path", "name": "x_name", "ttype": "char", "related": "partner_id.name"},
+        ]
+        source = inventory(fields=[{**row, "state": "manual", "model": "res.users"} for row in fields])
+        blocked = native.prepare_manual(Environment(), source)
+        self.assertEqual(blocked, {("fields", "removed"), ("fields", "gone_path")})
+        self.assertEqual({row["name"] for row in created}, {"x_pending", "x_partner", "x_name"})
+
+    def test_manual_row_successes_do_not_repeat_registry_reload_after_batch_failure(self) -> None:
+        registry = MagicMock()
+        factory = SimpleNamespace(delete=MagicMock(), new=MagicMock(return_value=registry))
+        modules = {
+            "odoo": SimpleNamespace(SUPERUSER_ID=1, api=SimpleNamespace(Environment=lambda *_args: object())),
+            "odoo.orm.registry": SimpleNamespace(Registry=factory),
+        }
+        source = inventory(fields=[{"key": str(index), "state": "manual"} for index in range(5)])
+        session = native.DisposableCensus(time.monotonic() + 60)
+        session.baseline = "synthetic"
+        applied = []
+
+        def apply(_env: Any, selected: dict[str, Any]) -> set[tuple[str, str]]:
+            if len(selected["records"]["fields"]) > 1:
+                raise ValueError("Synthetic batched declaration failure")
+            applied.extend(row["key"] for row in selected["records"]["fields"])
+            return set()
+
+        with patch.dict(sys.modules, modules), patch.object(native, "prepare_manual", side_effect=apply):
+            with self.assertLogs("odoo_structural_native", level="ERROR"):
+                self.assertIs(session.manual_baseline(registry, source), registry)
+        self.assertEqual(applied, [row["key"] for row in source["records"]["fields"]])
+        self.assertEqual(factory.new.call_count, 2)
+        self.assertFalse(session.manual_blocked)
+
+    def test_manual_timeout_is_not_a_declaration_failure_or_a_registry_reload(self) -> None:
+        registry = MagicMock()
+        factory = SimpleNamespace(delete=MagicMock(), new=MagicMock(return_value=registry))
+        modules = {
+            "odoo": SimpleNamespace(SUPERUSER_ID=1, api=SimpleNamespace(Environment=lambda *_args: object())),
+            "odoo.orm.registry": SimpleNamespace(Registry=factory),
+        }
+        source = inventory(fields=[{"key": "manual", "state": "manual"}])
+        for failures, reloads in (([TimeoutError("deadline")], 0), ([ValueError("batch"), TimeoutError("deadline")], 1)):
+            session = native.DisposableCensus(time.monotonic() + 60)
+            session.baseline = "synthetic"
+            factory.new.reset_mock()
+            factory.delete.reset_mock()
+            with patch.dict(sys.modules, modules), patch.object(native, "prepare_manual", side_effect=failures):
+                if reloads:
+                    with self.assertLogs("odoo_structural_native", level="ERROR"), self.assertRaises(TimeoutError):
+                        session.manual_baseline(registry, source)
+                else:
+                    with self.assertRaises(TimeoutError):
+                        session.manual_baseline(registry, source)
+            self.assertEqual(factory.new.call_count, reloads)
+            self.assertFalse(session.manual_blocked)
+        session = native.DisposableCensus(time.monotonic() + 60)
+        session.baseline = "synthetic"
+        factory.new.reset_mock()
+        with (
+            patch.dict(sys.modules, modules),
+            patch.object(native, "prepare_manual", side_effect=ValueError("batch")),
+            patch.object(session, "check_deadline", side_effect=[None, TimeoutError("deadline")]),
+            self.assertLogs("odoo_structural_native", level="ERROR"),
+            self.assertRaises(TimeoutError),
+        ):
+            session.manual_baseline(registry, source)
+        factory.new.assert_not_called()
+
+    def test_manual_deadline_retains_healthy_static_diagnosis_without_probing_mutated_registry(self) -> None:
+        source = inventory(
+            fields=[{"key": "manual", "state": "manual", "name": "x_safe", "model": "res.users", "ttype": "char"}],
+            views=[view("bad", '<form><field name="gone"/></form>')],
+        )
+        artifact = {"release_compatibility": {"complete": True, "modules": [{"name": "base", "depends": []}]}}
+        candidate = {"artifact": artifact, "platform": "linux/amd64", "intended_modules": ["base"], "migration_sources": []}
+        registry = MagicMock()
+        modules = {"odoo": SimpleNamespace(SUPERUSER_ID=1, api=SimpleNamespace(Environment=lambda *_args: object()))}
+        report_path = Path(self.enterContext(tempfile.TemporaryDirectory())) / "report.json"
+
+        def manual_deadline(_registry: Any, _source: Any) -> Any:
+            saved = json.loads(report_path.read_text())
+            checkpoint_components = {row["key"]: row for row in saved["components"]}
+            self.assertIn("missing-field", {item["code"] for item in checkpoint_components["bad"]["findings"]})
+            self.assertIn("manual-baseline-pending", {item["code"] for item in checkpoint_components["manual"]["findings"]})
+            raise TimeoutError("deadline")
+
+        with (
+            patch.dict(sys.modules, modules),
+            patch.object(native, "verify_image_declaration"),
+            patch.object(native, "declared_files", return_value={}),
+            patch.object(native, "check_native_sources", return_value={}),
+            patch.object(native, "module_graph", return_value={"base": set()}),
+            patch.object(native.DisposableCensus, "build", return_value=registry),
+            patch.object(native.DisposableCensus, "manual_baseline", side_effect=manual_deadline),
+            patch.object(native, "registry_surface", return_value=target()) as surface,
+            patch.object(native, "run_probe") as probe,
+            self.assertLogs("odoo_structural_native", level="ERROR"),
+        ):
+            report = native.collect_native(source, candidate, [], declaration={}, deadline=time.monotonic() + 60, output=report_path)
+        surface.assert_called_once()
+        probe.assert_not_called()
+        components = {row["key"]: row for row in report["components"]}
+        self.assertIn("missing-field", {item["code"] for item in components["bad"]["findings"]})
+        self.assertIn("manual-baseline-deadline-unreached", {item["code"] for item in components["manual"]["findings"]})
+        self.assertNotIn("manual-baseline-unavailable", {item["code"] for item in components["manual"]["findings"]})
+        self.assertEqual(report["cleanup"], "complete")
+
+    def test_typed_stale_xmlids_are_structural_only_when_the_technical_inventory_is_complete(self) -> None:
+        row = view(
+            "typed",
+            '<form groups="x.stale_group"><button name="%(x.stale_action)d" type="action"/></form>',
+            context="{'default_name': ref('x.business_or_stale')}",
+        )
+        source = inventory(views=[row])
+        source["out_of_scope"] = {"nontechnical_xmlids": 12}
+        report = census.collect_static(source, target())
+        findings = {item["reference"]: item for item in report["components"][0]["findings"] if item["reference"]}
+        for name in ("x.stale_group", "x.stale_action"):
+            self.assertEqual(findings[name]["code"], "missing-xmlid")
+        self.assertEqual(findings["x.business_or_stale"]["code"], "xmlid-scope-unresolved")
+        source["totals"]["xmlids"] = 1
+        report = census.collect_static(source, target())
+        self.assertFalse(any(item["code"] == "missing-xmlid" for item in report["components"][0]["findings"]))
+        source["records"]["xmlids"] = [{"key": "base.hidden", "withheld": ["name"]}]
+        report = census.collect_static(source, target())
+        view_component = next(component for component in report["components"] if component["bucket"] == "views")
+        self.assertFalse(any(item["code"] == "missing-xmlid" for item in view_component["findings"]))
+
+    def test_unavailable_target_language_does_not_claim_fallback_was_probed(self) -> None:
+        row = view("translated", "<form/>")
+        row["architectures"]["fr_FR"] = "<form/>"
+        with self.assertRaises(native.ProbeUnreached) as error:
+            native.load_view_family(ViewEnvironment(), [row], "fr_FR")
+        self.assertEqual(error.exception.code, "target-language-unavailable")
+
+    def test_stock_action_disposition_precedes_other_unreached_reasons(self) -> None:
+        row = {
+            "key": "stock",
+            "type": "ir.actions.act_window",
+            "xmlids": ["base.stock"],
+            "context": "ref('x.dynamic')",
+            "withheld": ["domain"],
+            "view_references": ["base.view"],
+        }
+        env = ViewEnvironment({"base.stock": SimpleNamespace(id=1, _name="ir.actions.act_window")})
+        with self.assertRaises(native.ProbeUnreached) as error:
+            native.load_action(env, row)
+        self.assertEqual(error.exception.code, "stock-upgrade-disposition-required")
+
     def test_literal_action_expressions_remain_untested_after_native_creation(self) -> None:
         created = []
 
@@ -630,7 +802,7 @@ class ReviewedRegressionTests(unittest.TestCase):
                 elif "FROM ir_model_data" in statement:
                     if not bindings:
                         raise AssertionError("Technical model scope is required")
-                    if "WHERE model = ANY(%s)" not in statement or "custom.action" not in bindings[0]:
+                    if "custom.action" not in bindings[0] or "res.partner" in bindings[0]:
                         raise AssertionError("Business XMLID names must never be selected")
                     self.rows = [("fixture", "action", "custom.action", 5, False)]
                 else:
@@ -902,7 +1074,7 @@ class ReviewedRegressionTests(unittest.TestCase):
         root["architectures"]["fr_FR"] = "<form/>"
         extension = view("extension", "<data/>", parent="root", mode="extension")
         original = copy.deepcopy(extension)
-        env = ViewEnvironment()
+        env = ViewEnvironment(languages={"en_US", "fr_FR"})
         native.load_view_family(env, [root, extension], "fr_FR")
         self.assertEqual(env.created[1].values["arch"], extension["architectures"]["en_US"])
         self.assertEqual(extension, original)

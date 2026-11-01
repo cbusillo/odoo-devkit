@@ -79,9 +79,13 @@ Views retain `parent`, `mode`, `type`, `model`, `active`, `priority`,
 and `changed_languages`. `action_bindings` maps the original numeric button names
 to technical action XMLIDs. Original architecture and numeric IDs stay intact in
 the private input; only the disposable probe resolves bound buttons to target IDs.
-An unresolved target action stays untested. A missing translation uses unchanged
-`en_US` architecture, matching native20 fallback. Explicitly withheld/changed
-languages or a withheld/changed fallback remain untested. Website variants without actual
+An unresolved target action stays untested. The default empty baseline activates
+only `en_US`; other source languages remain `target-language-unavailable` and
+prevent an overall native pass for that family. If the target already has the
+requested language active, missing translations use unchanged `en_US`
+architecture, matching native20 fallback. No language activation flow is added.
+Explicitly withheld/changed languages or a withheld/changed fallback remain
+untested. Website variants without actual
 target identity/context remain untested; they are not combined into a generic family.
 
 Fields retain technical `name`, `model`, `state`, `ttype`, `relation`, `related`,
@@ -126,6 +130,10 @@ state counts keep their own names, with `static-only` represented solely by
 `static-findings`. An unbound XMLID reference with a nonzero or unknown excluded
 count is `xmlid-scope-unresolved`: the count does not identify it as a business
 XMLID. Known technical identities and blocked owners retain separate findings.
+Groups and action-button references have a known technical type, so an absent
+reference is a static blocker when the technical XMLID bucket is complete and
+unmodified. Incomplete/withheld technical inventories and untyped expression
+references retain scope uncertainty.
 `checked` excludes records with untested/blocked
 material and is recalculated at each checkpoint. Missing technical XMLIDs on an
 empty target require an upgrade disposition; business XMLIDs are outside scope.
@@ -207,9 +215,18 @@ Known unreached causes have separate codes for stock disposition, architecture,
 website, parent, groups and action data/identity.
 No custom diff is rewritten onto a new stock view.
 
-Safe manual declarations enter an empty committed baseline in a batch followed
-by registry reload. Failure rolls back and reloads the last committed baseline;
-only then are individual declarations diagnosed. Stored compute, callable
+The healthy pre-manual target is statically diagnosed and checkpointed before
+schema preparation, with manual-dependent material marked pending. Safe manual
+declarations enter a committed baseline in a batch followed by one registry
+reload. Missing relation models and known missing related paths are blocked
+before creation; prefixes supplied by another safe declaration in the batch
+remain for native setup to resolve. Failure rolls back and reloads the last
+committed baseline before individual declarations are diagnosed. Successful
+fallback rows reuse native model setup; only failed rows require a recovery
+reload, followed by one final committed-baseline reload. A deadline is not a
+declaration failure and never starts another reload. On manual timeout the
+pre-manual static report survives with explicit manual/native deadline gaps;
+the possibly changed registry is not probed. Stored compute, callable
 selection/domain and unsupported declarations remain blocked. This is schema
 preparation, never business data or stored-code execution.
 

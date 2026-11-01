@@ -179,6 +179,25 @@ def manual_supported(row: dict[str, Any]) -> bool:
     return literal_expression(row.get("domain"), allowed_types=(list, tuple))
 
 
+def manual_dependencies_available(env: Any, row: dict[str, Any], pending: set[tuple[str, str]]) -> bool:
+    model = row["model"]
+    if model not in env or (row.get("relation") and row["relation"] not in env):
+        return False
+    related = row.get("related")
+    if not related:
+        return True
+    if not isinstance(related, str):
+        return False
+    for name in related.split("."):
+        if model not in env:
+            return False
+        field = env[model]._fields.get(name)
+        if field is None:
+            return (model, name) in pending
+        model = getattr(field, "comodel_name", "") or ""
+    return True
+
+
 def prepare_manual(env: Any, inventory: dict[str, Any]) -> set[tuple[str, str]]:
     blocked: set[tuple[str, str]] = {
         ("models", row["key"])
@@ -192,11 +211,19 @@ def prepare_manual(env: Any, inventory: dict[str, Any]) -> set[tuple[str, str]]:
     ]
     if models:
         env["ir.model"].create(models)
+    pending = {
+        (row["model"], row["name"])
+        for row in inventory["records"].get("fields", [])
+        if row.get("state") == "manual"
+        and manual_supported(row)
+        and row["model"] in env
+        and (not row.get("relation") or row["relation"] in env)
+    }
     values_list = []
     for row in inventory["records"].get("fields", []):
         if row.get("state") != "manual":
             continue
-        if not manual_supported(row) or row["model"] not in env:
+        if not manual_supported(row) or not manual_dependencies_available(env, row, pending):
             blocked.add(("fields", row["key"]))
             continue
         if row["name"] in env[row["model"]]._fields:
@@ -291,6 +318,14 @@ class DisposableCensus:
         from odoo import SUPERUSER_ID, api
         from odoo.orm.registry import Registry
 
+        if not any(row.get("state") == "manual" for bucket in ("models", "fields") for row in inventory["records"].get(bucket, [])):
+            return registry
+
+        def reload_committed() -> Any:
+            self.check_deadline()
+            Registry.delete(self.baseline)
+            return Registry.new(self.baseline)
+
         def apply(selected: dict[str, Any]) -> None:
             self.check_deadline()
             with registry.cursor() as cursor:
@@ -299,10 +334,11 @@ class DisposableCensus:
 
         try:
             apply(inventory)
+        except TimeoutError:
+            raise
         except Exception:
             _logger.exception("Batched manual declarations failed; rebuilding the committed empty baseline")
-            Registry.delete(self.baseline)
-            registry = Registry.new(self.baseline)
+            registry = reload_committed()
             for bucket in ("models", "fields"):
                 for row in inventory["records"].get(bucket, []):
                     if row.get("state") != "manual":
@@ -310,16 +346,16 @@ class DisposableCensus:
                     self.check_deadline()
                     try:
                         apply({"records": {bucket: [row]}})
+                    except TimeoutError:
+                        raise
                     except Exception:
                         _logger.exception("Manual declaration unavailable in the empty baseline")
                         self.manual_blocked.add((bucket, row["key"]))
-                    Registry.delete(self.baseline)
-                    registry = Registry.new(self.baseline)
+                        registry = reload_committed()
                     self.checkpoint()
-        Registry.delete(self.baseline)
-        return Registry.new(self.baseline)
+        return reload_committed()
 
-    def build(self, modules: set[str], inventory: dict[str, Any], graph: dict[str, set[str]]) -> Any:
+    def build(self, modules: set[str], graph: dict[str, set[str]]) -> Any:
         from odoo import SUPERUSER_ID, api
         from odoo.modules import db
         from odoo.modules.module import Manifest
@@ -388,7 +424,6 @@ class DisposableCensus:
                 installed = set(env["ir.module.module"].search([("state", "=", "installed")]).mapped("name"))
                 if not current <= installed:
                     raise ValueError("Native loader left intended modules uninstalled")
-            registry = self.manual_baseline(registry, inventory)
             self.bootstrap.append(
                 {"modules": sorted(installed), "state": "conditional" if self.conditional else "checked", "logs": log.events}
             )
@@ -528,6 +563,10 @@ def load_action(env: Any, row: dict[str, Any], *, replace_native: bool = False) 
         raise ProbeUnreached("Moved or ambiguous action class", code="moved-action-class")
     if matches and replace_native:
         return
+    if matches and not row.get("noupdate"):
+        raise ProbeUnreached(
+            "Matched stock action requires a source-qualified upgrade disposition", code="stock-upgrade-disposition-required"
+        )
     if not all(literal_expression(row.get(name)) for name in ("context", "domain")):
         raise ProbeUnreached("Action expression needs data or execution", code="action-expression-unexecuted")
     if kind not in {"ir.actions.act_window", "ir.actions.act_window_close"}:
@@ -538,10 +577,6 @@ def load_action(env: Any, row: dict[str, Any], *, replace_native: bool = False) 
         raise ProbeUnreached("Action requires retained record data", code="action-record-data-unavailable")
     if row.get("view_references"):
         raise ProbeUnreached("Action view identity is unavailable", code="action-view-identity-unavailable")
-    if matches and not row.get("noupdate"):
-        raise ProbeUnreached(
-            "Matched stock action requires a source-qualified upgrade disposition", code="stock-upgrade-disposition-required"
-        )
     values = {key: row[key] for key in ("path", "view_mode", "target", "context", "domain") if key in row}
     values.update(name="census:" + row["key"], type=kind)
     if kind == "ir.actions.act_window":
@@ -667,7 +702,7 @@ def collect_native(
                 row["findings"].append(finding("candidate-source-binding-unavailable", state="dependency-blocked"))
             raise
         try:
-            registry = session.build(set(candidate["intended_modules"]), inventory, graph)
+            registry = session.build(set(candidate["intended_modules"]), graph)
         except Exception as error:
             _logger.exception("No healthy target is available")
             for row in session.report["components"]:
@@ -676,26 +711,60 @@ def collect_native(
         with registry.cursor() as cursor:
             target = registry_surface(api.Environment(cursor, SUPERUSER_ID, {}), candidate, graph, migration_sources)
         blocked_modules = {row["module"] for row in session.bootstrap if row.get("module") and row.get("state") != "checked"}
-        target["blocked_modules"] = blocked_modules
-        target["conditional"] = session.conditional
-        target["blocked_models"] = [
-            row["model"]
-            for row in inventory["records"].get("models", [])
-            if set(row.get("owners", [])) & blocked_modules or ("models", row["key"]) in session.manual_blocked
-        ]
-        target["blocked_fields"] = [
-            row["model"] + "." + row["name"]
-            for row in inventory["records"].get("fields", [])
-            if ("fields", row["key"]) in session.manual_blocked or set(row.get("owners", [])) & blocked_modules
-        ]
-        session.report = report = collect_static(inventory, target)
-        report.update(
+        evidence = dict(
             native_sources=migration_sources,
             bootstrap=session.bootstrap,
             intended_modules=sorted(candidate["intended_modules"]),
             source_install_roots=artifact.get("odoo_install_modules"),
             actual_installed_modules=sorted(target["modules"]),
         )
+
+        def target_with_baseline(surface: dict[str, Any], manual_unavailable: set[tuple[str, str]]) -> dict[str, Any]:
+            return {
+                **surface,
+                "blocked_modules": blocked_modules,
+                "conditional": session.conditional,
+                "blocked_models": [
+                    row["model"]
+                    for row in inventory["records"].get("models", [])
+                    if set(row.get("owners", [])) & blocked_modules or ("models", row["key"]) in manual_unavailable
+                ],
+                "blocked_fields": [
+                    row["model"] + "." + row["name"]
+                    for row in inventory["records"].get("fields", [])
+                    if ("fields", row["key"]) in manual_unavailable or set(row.get("owners", [])) & blocked_modules
+                ],
+            }
+
+        pending = {
+            (bucket, row["key"])
+            for bucket in ("models", "fields")
+            for row in inventory["records"].get(bucket, [])
+            if row.get("state") == "manual"
+        }
+        if pending:
+            session.report = collect_static(inventory, target_with_baseline(target, pending))
+            session.report.update(evidence)
+            for component in session.report["components"]:
+                if (component["bucket"], component["key"]) in pending:
+                    component["findings"].append(finding("manual-baseline-pending", state="data-dependent/unreached"))
+            session.checkpoint(force=True)
+            try:
+                registry = session.manual_baseline(registry, inventory)
+            except TimeoutError:
+                _logger.exception("Manual baseline deadline reached; the healthy pre-manual static census is retained")
+                for component in session.report["components"]:
+                    for item in component["findings"]:
+                        if item["code"] == "manual-baseline-pending":
+                            item["code"] = "manual-baseline-deadline-unreached"
+                    if component["bucket"] in {"views", "actions"}:
+                        component["findings"].append(finding("deadline-unreached", state="data-dependent/unreached"))
+                return session.report
+            with registry.cursor() as cursor:
+                target = registry_surface(api.Environment(cursor, SUPERUSER_ID, {}), candidate, graph, migration_sources)
+        target = target_with_baseline(target, session.manual_blocked)
+        session.report = report = collect_static(inventory, target)
+        report.update(evidence)
         by_key = {(row["bucket"], row["key"]): row for row in report["components"]}
         for bucket, key in session.manual_blocked:
             by_key[bucket, key]["findings"].append(finding("manual-baseline-unavailable", state="dependency-blocked"))

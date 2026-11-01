@@ -62,13 +62,15 @@ def field_findings(target: dict[str, Any], model: str, path: str) -> list[dict[s
     return [] if resolve_field(target, model, path) else [finding("missing-field", model + "." + path)]
 
 
-def xmlid_findings(target: dict[str, Any], xmlid: str) -> list[dict[str, str]]:
+def xmlid_findings(target: dict[str, Any], xmlid: str, *, technical: bool = False) -> list[dict[str, str]]:
     if xmlid in target.get("xmlids", {}):
         return []
     if xmlid.split(".")[0] in target.get("blocked_modules", []):
         return [finding("xmlid-baseline-blocked", xmlid, state="dependency-blocked")]
     if xmlid in target.get("retained_xmlids", []):
         return [finding("retained-xmlid-native-unavailable", xmlid, state="dependency-blocked")]
+    if technical and target.get("technical_xmlids_complete"):
+        return [finding("missing-xmlid", xmlid)]
     if target.get("nontechnical_xmlids") is None or target["nontechnical_xmlids"] > 0:
         return [finding("xmlid-scope-unresolved", xmlid, state="data-dependent/unreached")]
     return [finding("missing-xmlid", xmlid)]
@@ -186,7 +188,9 @@ def walk_view(
             results.append(finding("numeric-action-target-unavailable", name, state="data-dependent/unreached"))
     for attribute, value in element.attrib.items():
         for xmlid in REFERENCE.findall(value):
-            results += xmlid_findings(target, xmlid)
+            results += xmlid_findings(
+                target, xmlid, technical=element.tag == "button" and element.get("type") == "action" and attribute == "name"
+            )
         if attribute in EXPRESSION_FIELDS:
             expression_model = child_model if element.tag in {"field", "groupby"} and attribute in {"domain", "context"} else model
             results += expression_findings(value, attribute, expression_model, target)
@@ -194,7 +198,7 @@ def walk_view(
             results.append(finding("obsolete-view-attribute", attribute))
         if attribute == "groups":
             for xmlid in value.split(","):
-                results += xmlid_findings(target, xmlid.strip().lstrip("!"))
+                results += xmlid_findings(target, xmlid.strip().lstrip("!"), technical=True)
         if attribute.startswith("t-"):
             results.append(finding("template-expression-unexecuted", attribute, state="data-dependent/unreached"))
     if element.tag == "attribute" and name in EXPRESSION_FIELDS:
@@ -220,7 +224,7 @@ def reference_findings(record: dict[str, Any], target: dict[str, Any], *, field_
         elif kind == "xmlid":
             results += xmlid_findings(target, name)
         elif kind in {"model", "module"}:
-            key = {"xmlid": "xmlids", "model": "models", "module": "modules"}[kind]
+            key = {"model": "models", "module": "modules"}[kind]
             if name not in target.get(key, {}):
                 results.append(finding("missing-" + kind, name))
         else:
@@ -387,12 +391,13 @@ def collect_static(inventory: dict[str, Any], target: dict[str, Any]) -> dict[st
     if not target.get("binding"):
         raise ValueError("An exact candidate binding is required")
     source_fields: dict[str, list[str]] = {}
-    target = {
-        **target,
-        "retained_xmlids": {row["key"] for row in inventory["records"].get("xmlids", [])},
-        "nontechnical_xmlids": inventory.get("out_of_scope", {}).get("nontechnical_xmlids"),
-        "source_fields": source_fields,
-    }
+    target = target.copy()
+    target["retained_xmlids"] = {row["key"] for row in inventory["records"].get("xmlids", [])}
+    target["technical_xmlids_complete"] = inventory["totals"].get("xmlids") == len(
+        inventory["records"].get("xmlids", [])
+    ) and not any(row.get("withheld") or row.get("minimized") for row in inventory["records"].get("xmlids", []))
+    target["nontechnical_xmlids"] = inventory.get("out_of_scope", {}).get("nontechnical_xmlids")
+    target["source_fields"] = source_fields
     for row in inventory["records"].get("fields", []):
         source_fields.setdefault(row.get("model", ""), []).append(row.get("name", ""))
     paths: dict[str, list[str]] = {}

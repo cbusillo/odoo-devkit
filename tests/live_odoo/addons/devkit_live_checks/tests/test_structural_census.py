@@ -19,7 +19,7 @@ import odoo.tools.convert as convert
 import odoo_structural_census as census
 import odoo_structural_extract as extract
 import odoo_structural_native as native
-from odoo import release
+from odoo import SUPERUSER_ID, api, release
 from odoo.tests import tagged
 from odoo.tests.common import TransactionCase
 from odoo.tools import config
@@ -217,7 +217,8 @@ class TestStructuralCensus(TransactionCase):
         )
         try:
             with patch.dict(config.options, {"test_enable": False}):
-                session.build({"base"}, source, module_graph(self.roots))
+                registry = session.build({"base"}, module_graph(self.roots))
+                session.manual_baseline(registry, source)
                 with session.probe() as env:
                     created = env["ir.ui.view"].create(
                         {"name": "probe only", "model": "res.users", "arch": '<form><field name="name"/></form>'}
@@ -239,12 +240,26 @@ class TestStructuralCensus(TransactionCase):
         session = native.DisposableCensus(time.monotonic() + 180)
         try:
             with patch.dict(config.options, {"test_enable": False}):
-                registry = session.build({"base"}, packet(), module_graph(self.roots))
+                registry = session.build({"base"}, module_graph(self.roots))
+                excluded_name = "synthetic_nontechnical_marker"
+                with registry.cursor() as cursor:
+                    env = api.Environment(cursor, SUPERUSER_ID, {})
+                    env["ir.model.data"].create(
+                        {
+                            "module": "census_fixture",
+                            "name": excluded_name,
+                            "model": "res.partner",
+                            "res_id": env.ref("base.main_partner").id,
+                        }
+                    )
+                    cursor.commit()
                 with registry.cursor() as cursor:
                     exported = extract.extract_private_technical(cursor, "synthetic-owned-empty")
                     self.assertFalse(exported["screened"])
                     self.assertNotIn("res_partner", exported["tables"])
                     self.assertNotIn("name", exported["tables"]["ir_ui_view"]["rows"][0])
+                    self.assertNotIn(excluded_name, {row["name"] for row in exported["tables"]["ir_model_data"]["rows"]})
+                    self.assertGreater(exported["out_of_scope"]["nontechnical_xmlids"], 0)
                     with self.assertRaises(ReadOnlySqlTransaction), cursor.savepoint(flush=False):
                         cursor.execute("UPDATE ir_ui_view SET priority=priority")
         finally:
