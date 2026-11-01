@@ -11,7 +11,9 @@ import odoo.addons
 import odoo.addons.base.models.ir_actions as actions
 import odoo.addons.base.models.ir_ui_view as views
 import odoo.modules.loading as loading
+import odoo.orm.environments as environments
 import odoo.orm.registry as registry_source
+import odoo.sql_db as sql_db
 import odoo.tools.convert as convert
 import odoo_structural_census as census
 import odoo_structural_extract as extract
@@ -49,24 +51,39 @@ class TestStructuralCensus(TransactionCase):
             self.skipTest("Native structural census targets Community20")
         self.roots = [Path(path) for path in odoo.addons.__path__]
         graph = module_graph(self.roots)
-        self.declaration = {
+        fixture = Path("/opt/extra_addons/ci_census_good/actions.xml")
+        paths = [
+            Path(inspect.getfile(module)) for module in (registry_source, loading, convert, views, actions, environments, sql_db)
+        ] + [fixture]
+        self.declaration: dict[str, Any] = {
             "complete": True,
             "modules": [{"name": key, "depends": sorted(value)} for key, value in graph.items()],
-            "sources": [],
+            "sources": [
+                {
+                    "input_name": "synthetic-native-files",
+                    "repository": "fixture/native",
+                    "commit": "synthetic-fixture",
+                    "files": [
+                        {"path": path.resolve().as_posix().lstrip("/"), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+                        for path in paths
+                    ],
+                }
+            ],
         }
-        self.candidate = {
-            "binding": "synthetic-native-target",
-            "platform": "linux/amd64",
+        self.artifact: dict[str, Any] = {
+            "artifact_id": "synthetic-fixture",
             "release_compatibility": self.declaration,
+            "odoo_install_modules": ["ci_census_good", "ci_census_dependent"],
+        }
+        self.candidate: dict[str, Any] = {
+            "artifact": self.artifact,
+            "platform": "linux/amd64",
             "intended_modules": ["ci_census_good", "ci_census_dependent"],
-            "migration_sources": {},
-            "native_sources": {
-                key: hashlib.sha256(Path(inspect.getfile(module)).read_bytes()).hexdigest()
-                for key, module in zip(native.NATIVE_ROLES, (registry_source, loading, convert, views, actions), strict=True)
-            },
+            "migration_sources": [],
         }
 
     def test_real_loader_failures_manual_reload_view_families_and_actions_collect_together(self) -> None:
+        self.candidate["intended_modules"].append("ci_census_missing")
         source = packet(
             modules=[{"key": name} for name in self.candidate["intended_modules"]],
             fields=[
@@ -95,6 +112,7 @@ class TestStructuralCensus(TransactionCase):
                 ),
                 view("family.descendant", "<data/>", parent="family.broken", mode="extension", source_order=3),
                 view("later.valid", '<form><field name="x_census_baseline"/></form>'),
+                view("manual.blocked", '<form><field name="x_census_code"/></form>'),
             ],
             actions=[
                 {
@@ -116,7 +134,6 @@ class TestStructuralCensus(TransactionCase):
             report = native.collect_native(
                 source, self.candidate, self.roots, declaration=self.declaration, deadline=time.monotonic() + 300
             )
-        self.assertFalse(report["clear"])
         self.assertTrue(
             any(row.get("module") == "ci_census_bad" and row["state"] == "native-reproduced" for row in report["bootstrap"])
         )
@@ -133,9 +150,49 @@ class TestStructuralCensus(TransactionCase):
         self.assertTrue(any(item["state"] == "conditional" for item in components["later.valid"]["findings"]))
         self.assertEqual(components["mail.legacy_action"]["native"], "native-reproduced")
         self.assertEqual(components["stored.server"]["native"], "unreached")
+        self.assertEqual(components["manual.blocked"]["native"], "unreached")
+        self.assertTrue(any(row.get("module") == "ci_census_missing" and row["state"] == "missing" for row in report["bootstrap"]))
         self.assertTrue(any(item["code"] == "manual-baseline-unavailable" for item in components["manual.code"]["findings"]))
 
-    def test_clone_rollback_and_registry_cache_cannot_contaminate_next_family(self) -> None:
+    def test_stock20_root_is_preserved_so_custom_extension_failure_is_not_masked(self) -> None:
+        root = view(
+            "stock.old",
+            '<form><field name="name"/><field name="login"/></form>',
+            xmlids=["ci_census_good.stock_view"],
+            noupdate=False,
+            arch_updated=False,
+        )
+        root["candidate_coverage"] = [
+            {
+                "candidate": census.digest(self.artifact),
+                "record_sha256": census.digest(root),
+                "source_sha256": self.declaration["sources"][0]["files"][-1]["sha256"],
+                "guard_receipt": "synthetic-root-stock-qualification",
+                "code": "native20-stock-replacement",
+                "reference": "ci_census_good.stock_view",
+            }
+        ]
+        source = packet(
+            views=[
+                root,
+                view(
+                    "custom.extension",
+                    '<xpath expr="//field[@name=\'login\']" position="after"><field name="name"/></xpath>',
+                    parent="stock.old",
+                    mode="extension",
+                ),
+            ]
+        )
+        candidate = {**self.candidate, "intended_modules": ["ci_census_good"]}
+        with patch.dict(config.options, {"test_enable": False}):
+            report = native.collect_native(
+                source, candidate, self.roots, declaration=self.declaration, deadline=time.monotonic() + 180
+            )
+        components = {row["key"]: row for row in report["components"]}
+        self.assertEqual(components["custom.extension"]["native"], "native-reproduced")
+        self.assertTrue(any(item["code"] == "native20-stock-replacement" for item in components["stock.old"]["findings"]))
+
+    def test_transaction_rollback_and_registry_cache_cannot_contaminate_next_family(self) -> None:
         session = native.DisposableCensus(time.monotonic() + 180)
         source = packet(
             fields=[{"key": "manual.safe", "model": "res.users", "name": "x_census_isolation", "state": "manual", "ttype": "char"}]
@@ -144,11 +201,16 @@ class TestStructuralCensus(TransactionCase):
             with patch.dict(config.options, {"test_enable": False}):
                 session.build({"base"}, source, module_graph(self.roots))
                 with session.probe() as env:
-                    env["ir.ui.view"].create(
+                    created = env["ir.ui.view"].create(
                         {"name": "probe only", "model": "res.users", "arch": '<form><field name="name"/></form>'}
                     )
+                    env["ir.model.data"].create(
+                        {"module": "census_fixture", "name": "ephemeral", "model": "ir.ui.view", "res_id": created.id}
+                    )
+                    self.assertEqual(env.ref("census_fixture.ephemeral").id, created.id)
                     self.assertIn("x_census_isolation", env["res.users"]._fields)
                 with session.probe() as env:
+                    self.assertFalse(env.ref("census_fixture.ephemeral", raise_if_not_found=False))
                     self.assertFalse(env["ir.ui.view"].search([("name", "=", "probe only")]))
                     self.assertIn("x_census_isolation", env["res.users"]._fields)
         finally:

@@ -26,7 +26,16 @@ BUCKETS = (
     "qweb",
 )
 CODE_FIELDS = ("code", "compute", "condition", "python", "expression")
-EXPRESSION_FIELDS = ("context", "domain", "invisible", "readonly", "required", "column_invisible", "filter_domain")
+EXPRESSION_FIELDS = (
+    "context",
+    "domain",
+    "invisible",
+    "readonly",
+    "required",
+    "column_invisible",
+    "filter_domain",
+    "filter_pre_domain",
+)
 REFERENCE = re.compile(r"%\(([^)]+)\)[ds]")
 
 
@@ -48,7 +57,19 @@ def field_findings(target: dict[str, Any], model: str, path: str) -> list[dict[s
         return []
     if not model:
         return [finding("field-model-unresolved", path, state="data-dependent/unreached")]
+    if model in target.get("blocked_models", []) or model + "." + path.split(".")[0] in target.get("blocked_fields", []):
+        return [finding("field-baseline-blocked", model + "." + path, state="dependency-blocked")]
     return [] if resolve_field(target, model, path) else [finding("missing-field", model + "." + path)]
+
+
+def xmlid_findings(target: dict[str, Any], xmlid: str) -> list[dict[str, str]]:
+    if xmlid in target.get("xmlids", {}):
+        return []
+    if xmlid.split(".")[0] in target.get("blocked_modules", []):
+        return [finding("xmlid-baseline-blocked", xmlid, state="dependency-blocked")]
+    if xmlid in target.get("retained_xmlids", []):
+        return [finding("retained-xmlid-native-unavailable", xmlid, state="dependency-blocked")]
+    return [finding("missing-xmlid", xmlid)]
 
 
 def domain_findings(node: ast.AST, model: str, target: dict[str, Any]) -> list[dict[str, str]]:
@@ -92,12 +113,14 @@ def expression_findings(value: str, kind: str, model: str, target: dict[str, Any
             if isinstance(node.func, ast.Name) and node.func.id == "ref" and len(node.args) == 1:
                 argument = node.args[0]
                 if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
-                    if argument.value not in target.get("xmlids", {}):
-                        results.append(finding("missing-xmlid", argument.value))
+                    results += xmlid_findings(target, argument.value)
             results.append(finding("unexecuted-expression-call", kind, state="data-dependent/unreached"))
         if isinstance(node, ast.Name) and kind not in {"domain", "filter_domain", "context"}:
             if node.id not in {"parent", "context", "uid", "id", "True", "False", "None"}:
-                results += field_findings(target, model, node.id)
+                if resolve_field(target, model, node.id) or node.id in target.get("source_fields", {}).get(model, []):
+                    results += field_findings(target, model, node.id)
+                else:
+                    results.append(finding("expression-name-unresolved", state="data-dependent/unreached"))
         elif isinstance(node, ast.Name):
             results.append(finding("data-dependent-expression", kind, state="data-dependent/unreached"))
         if isinstance(node, (ast.Attribute, ast.Subscript, ast.ListComp, ast.DictComp, ast.GeneratorExp, ast.Lambda)):
@@ -119,9 +142,11 @@ def view_findings(record: dict[str, Any], target: dict[str, Any]) -> list[dict[s
         except ElementTree.ParseError:
             results.append(finding("invalid-xml", language))
             continue
-        results += walk_view(root, record.get("model", ""), target, record.get("type") == "qweb")
+        results += walk_view(root, record.get("model", ""), target)
         if record.get("type") == "qweb":
             results.append(finding("qweb-render-unexecuted", state="data-dependent/unreached"))
+    if record.get("website_scope"):
+        results.append(finding("website-variant-unbound", state="data-dependent/unreached"))
     if record.get("active") is False:
         results.append(finding("inactive-view-native-limits", state="data-dependent/unreached"))
     if record.get("order_unreproducible"):
@@ -129,35 +154,41 @@ def view_findings(record: dict[str, Any], target: dict[str, Any]) -> list[dict[s
     return results
 
 
-def walk_view(element: ElementTree.Element, model: str, target: dict[str, Any], qweb: bool) -> list[dict[str, str]]:
+def walk_view(element: ElementTree.Element, model: str, target: dict[str, Any]) -> list[dict[str, str]]:
     results = []
     name = element.get("name", "")
     child_model = model
-    if element.tag == "field" and name:
+    fragment = bool(element.get("position")) or element.tag == "xpath"
+    if fragment:
+        child_model = ""
+        results.append(finding("inheritance-fragment-native-required", state="data-dependent/unreached"))
+    elif element.tag in {"field", "groupby"} and name:
         results += field_findings(target, model, name)
-        child_model = target.get("models", {}).get(model, {}).get("fields", {}).get(name, {}).get("relation", model)
+        child_model = target.get("models", {}).get(model, {}).get("fields", {}).get(name, {}).get("relation", "")
     if element.tag == "button" and element.get("type") == "object":
         if name not in target.get("models", {}).get(model, {}).get("methods", []):
             results.append(finding("method-unresolved", model + "." + name, state="data-dependent/unreached"))
-    if element.tag == "xpath":
-        results.append(finding("xpath-native-required"))
+    if element.tag == "button" and element.get("type") == "action" and name.isdigit():
+        results.append(finding("numeric-action-binding-unavailable", state="dependency-blocked"))
     for attribute, value in element.attrib.items():
         for xmlid in REFERENCE.findall(value):
-            if xmlid not in target.get("xmlids", {}):
-                results.append(finding("missing-xmlid", xmlid))
+            results += xmlid_findings(target, xmlid)
         if attribute in EXPRESSION_FIELDS:
-            results += expression_findings(value, attribute, model, target)
+            expression_model = (
+                child_model if element.tag in {"field", "groupby"} and attribute in {"domain", "context", "filter_domain"} else model
+            )
+            results += expression_findings(value, attribute, expression_model, target)
         if attribute in {"attrs", "states"}:
             results.append(finding("obsolete-view-attribute", attribute))
         if attribute == "groups":
             for xmlid in value.split(","):
-                xmlid = xmlid.strip().lstrip("!")
-                if xmlid not in target.get("xmlids", {}):
-                    results.append(finding("missing-xmlid", xmlid))
-        if attribute.startswith("t-") and qweb:
-            results.append(finding("qweb-expression-unexecuted", attribute, state="data-dependent/unreached"))
+                results += xmlid_findings(target, xmlid.strip().lstrip("!"))
+        if attribute.startswith("t-"):
+            results.append(finding("template-expression-unexecuted", attribute, state="data-dependent/unreached"))
+    if element.tag == "attribute" and name in EXPRESSION_FIELDS:
+        results += expression_findings(element.text or "", name, model, target)
     for child in element:
-        results += walk_view(child, child_model, target, qweb)
+        results += walk_view(child, child_model, target)
     return results
 
 
@@ -165,7 +196,8 @@ def reference_findings(record: dict[str, Any], target: dict[str, Any]) -> list[d
     results = []
     model = record.get("model", "")
     if model and model not in target.get("models", {}):
-        results.append(finding("missing-model", model))
+        state = "dependency-blocked" if model in target.get("blocked_models", []) else "static-only"
+        results.append(finding("missing-model", model, state=state))
     for owner in record.get("owners", []):
         if owner not in target.get("modules", {}):
             results.append(finding("missing-owner-module", owner))
@@ -173,14 +205,16 @@ def reference_findings(record: dict[str, Any], target: dict[str, Any]) -> list[d
         kind, name = reference["kind"], reference["name"]
         if kind == "field":
             results += field_findings(target, reference.get("model", model), name)
-        elif kind in {"xmlid", "model", "module"}:
+        elif kind == "xmlid":
+            results += xmlid_findings(target, name)
+        elif kind in {"model", "module"}:
             key = {"xmlid": "xmlids", "model": "models", "module": "modules"}[kind]
             if name not in target.get(key, {}):
                 results.append(finding("missing-" + kind, name))
         else:
             results.append(finding("unsupported-reference", kind, state="data-dependent/unreached"))
     for attribute in EXPRESSION_FIELDS:
-        if record.get(attribute):
+        if record.get(attribute) and (attribute not in {"readonly", "required"} or isinstance(record[attribute], str)):
             results += expression_findings(record[attribute], attribute, model, target)
     for attribute in CODE_FIELDS:
         if record.get(attribute):
@@ -195,6 +229,8 @@ def reference_findings(record: dict[str, Any], target: dict[str, Any]) -> list[d
             for node in ast.walk(code):
                 if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id in {"record", "self"}:
                     results += field_findings(target, model, node.attr)
+    for attribute in record.get("minimized", []):
+        results.append(finding("minimized-input", attribute, state="data-dependent/unreached"))
     for attribute in record.get("withheld", []):
         results.append(finding("withheld-input", attribute, state="data-dependent/unreached"))
     return results
@@ -206,7 +242,8 @@ def action_findings(record: dict[str, Any], target: dict[str, Any], paths: dict[
     if action_type not in target.get("models", {}):
         results.append(finding("missing-action-class", action_type))
     modes = record.get("view_mode", "").split(",") if record.get("view_mode") else []
-    for mode in modes:
+    additional_modes = record.get("view_modes", [])
+    for mode in [*modes, *additional_modes]:
         if mode not in target.get("view_types", []):
             results.append(finding("unsupported-view-mode", mode))
     if len(set(modes)) != len(modes):
@@ -242,19 +279,26 @@ def record_findings(
     bucket: str, record: dict[str, Any], target: dict[str, Any], paths: dict[str, list[str]]
 ) -> list[dict[str, str]]:
     results = reference_findings(record, target)
-    if bucket == "modules" and record["key"] not in target.get("modules", {}):
+    if (
+        bucket == "modules"
+        and record.get("state", "installed") not in {"uninstalled", "uninstallable"}
+        and record["key"] not in target.get("modules", {})
+    ):
         results.append(finding("missing-module", record["key"]))
     if bucket == "fields":
         results += field_findings(target, record.get("model", ""), record.get("name", ""))
+        actual = target.get("models", {}).get(record.get("model", ""), {}).get("fields", {}).get(record.get("name", ""))
+        if actual and record.get("ttype") and actual.get("type") and actual["type"] != record["ttype"]:
+            results.append(finding("field-type-changed", record["model"] + "." + record["name"]))
         for path in (record.get("related", ""), *record.get("depends", [])):
             results += field_findings(target, record.get("model", ""), path)
-    if bucket in {"views", "qweb"}:
+    if bucket == "views" or bucket == "qweb" and not record.get("source_view"):
         results += view_findings(record, target)
     if bucket == "xmlids":
         actual = target.get("xmlids", {}).get(record["key"])
         if actual is None:
             results.append(finding("missing-xmlid", record["key"]))
-        elif record.get("record_model") and actual["model"] != record["record_model"]:
+        elif record.get("record_model", record.get("model")) and actual["model"] != record.get("record_model", record.get("model")):
             results.append(finding("moved-xmlid-model", record["key"]))
     if bucket == "actions":
         results += action_findings(record, target, paths)
@@ -272,18 +316,27 @@ def validate_inventory(inventory: dict[str, Any]) -> None:
         if len(keys) != len(set(keys)):
             raise ValueError(f"Duplicate technical keys in {bucket}")
         total = inventory["totals"].get(bucket)
+        if total is None and not rows:
+            continue
         if not isinstance(total, int) or total < len(rows):
             raise ValueError(f"Missing or inconsistent source total for {bucket}")
 
 
+def qualified_coverage(record: dict[str, Any], target: dict[str, Any]) -> list[dict[str, Any]]:
+    fingerprint = digest({key: value for key, value in record.items() if key != "candidate_coverage"})
+    hashes = {*target.get("migration_sources", {}).values(), *target.get("source_hashes", [])}
+    return [
+        item
+        for item in record.get("candidate_coverage", [])
+        if item.get("candidate") == target.get("binding")
+        and item.get("record_sha256") == fingerprint
+        and item.get("guard_receipt")
+        and item.get("source_sha256") in hashes
+    ]
+
+
 def covered_findings(record: dict[str, Any], results: list[dict[str, str]], target: dict[str, Any]) -> None:
-    for coverage in record.get("candidate_coverage", []):
-        if coverage.get("candidate") != target.get("binding") or coverage.get("record_sha256") != digest(
-            {key: value for key, value in record.items() if key != "candidate_coverage"}
-        ):
-            continue
-        if not coverage.get("guard_receipt") or coverage.get("source_sha256") not in target.get("migration_sources", {}).values():
-            continue
+    for coverage in qualified_coverage(record, target):
         for result in results:
             if result["code"] == coverage.get("code") and result["reference"] == coverage.get("reference"):
                 result["state"] = "candidate-covered"
@@ -294,6 +347,14 @@ def collect_static(inventory: dict[str, Any], target: dict[str, Any]) -> dict[st
     validate_inventory(inventory)
     if not target.get("binding"):
         raise ValueError("An exact candidate binding is required")
+    source_fields: dict[str, list[str]] = {}
+    target = {
+        **target,
+        "retained_xmlids": [row["key"] for row in inventory["records"].get("xmlids", [])],
+        "source_fields": source_fields,
+    }
+    for row in inventory["records"].get("fields", []):
+        source_fields.setdefault(row.get("model", ""), []).append(row.get("name", ""))
     paths: dict[str, list[str]] = {}
     for row in inventory["records"].get("actions", []):
         if row.get("path"):
@@ -305,6 +366,7 @@ def collect_static(inventory: dict[str, Any], target: dict[str, Any]) -> dict[st
         "target_surface": target.get("surface", "static"),
         "components": [],
         "coverage": {},
+        "schema_gaps": inventory.get("schema_gaps", {}),
         "limitations": ["empty-target-not-real-upgrade", "dynamic-code-not-executed", "no-product-coverage-without-actual-inputs"],
     }
     known_views = {row["key"] for row in inventory["records"].get("views", [])}
@@ -318,11 +380,19 @@ def collect_static(inventory: dict[str, Any], target: dict[str, Any]) -> dict[st
                     results.append(finding("missing-view-parent", row["parent"], state="dependency-blocked"))
             if row["key"] in cyclic and bucket == "views":
                 results.append(finding("view-inheritance-cycle", state="dependency-blocked"))
+            if (bucket == "modules" and row["key"] in target.get("blocked_modules", [])) or set(row.get("owners", [])) & set(
+                target.get("blocked_modules", [])
+            ):
+                for result in results:
+                    if result["code"].startswith("missing-"):
+                        result["state"] = "dependency-blocked"
+            if target.get("conditional"):
+                results.append(finding("reduced-module-set", state="conditional"))
             covered_findings(row, results, target)
             component: dict[str, Any] = {
                 "bucket": bucket,
                 "key": row["key"],
-                "checked": True,
+                "checked": not any(item["state"] in {"data-dependent/unreached", "dependency-blocked"} for item in results),
                 "native": "unreached",
                 "findings": results,
             }
@@ -358,12 +428,12 @@ def recount(report: dict[str, Any], inventory: dict[str, Any]) -> None:
             "withheld": None if total is None else total - len(rows),
             "checked": sum(row["checked"] for row in rows),
             **dict(states),
+            "static-findings": sum(any(item["state"] == "static-only" for item in row["findings"]) for row in rows),
             "static-only": sum(row["native"] == "unreached" for row in rows),
             "native-checked": sum(row["native"] == "checked" for row in rows),
         }
         if total is None:
             report["coverage"][bucket]["gap"] = "source-total-missing"
-    report["clear"] = False
     classes = Counter(row.get("type", "unknown") for row in inventory["records"].get("actions", []))
     report["action_classes"] = {
         name: {"inventoried": count, "total": inventory.get("action_totals", {}).get(name)} for name, count in classes.items()
@@ -380,7 +450,7 @@ def main() -> None:
     args = parser.parse_args()
     report = collect_static(json.loads(args.inventory.read_text()), json.loads(args.target.read_text()))
     args.output.write_text(json.dumps(report, indent=2) + "\n")
-    print(json.dumps({"coverage": report["coverage"], "clear": report["clear"]}))
+    print(json.dumps({"coverage": report["coverage"]}))
 
 
 if __name__ == "__main__":

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import inspect
+import json
 import logging
+import threading
 import time
 import uuid
 from collections.abc import Iterator
@@ -12,29 +15,31 @@ from pathlib import Path
 from typing import Any
 
 from odoo_release_inventory import module_graph
-from odoo_release_plan import verify_image_declaration
-from odoo_structural_census import collect_static, digest, families, finding, recount, validate_inventory
+from odoo_release_plan import digest, verify_image_declaration
+from odoo_structural_census import collect_static, families, finding, qualified_coverage, recount, validate_inventory
 
 _logger = logging.getLogger(__name__)
-NATIVE_ROLES = ("registry", "loading", "convert", "views", "actions")
-SAFE_MANUAL_TYPES = {"char", "text", "html", "integer", "float", "boolean", "date", "datetime", "many2one"}
+SAFE_MANUAL_TYPES = {"char", "text", "html", "integer", "float", "boolean", "date", "datetime", "many2one", "selection"}
 
 
 class ViewFailure(ValueError):
-    def __init__(self, key: str) -> None:
+    def __init__(self, key: str, *, attribution: str = "operation") -> None:
         super().__init__("Native retained family validation failed")
         self.key = key
+        self.attribution = attribution
 
 
 class ProbeUnreached(ValueError):
-    pass
+    def __init__(self, message: str, *, code: str = "native-probe-unreached") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class NativeLog(logging.Handler):
     def __init__(self) -> None:
         super().__init__(logging.DEBUG)
         self.failed_module = ""
-        self.warnings = 0
+        self.events: list[dict[str, str]] = []
 
     def emit(self, record: logging.LogRecord) -> None:
         if (
@@ -42,12 +47,13 @@ class NativeLog(logging.Handler):
             and record.msg == "Loading module %s (%d/%d)"
             and isinstance(record.args, tuple)
             and record.args
+            and isinstance(record.args[0], str)
         ):
-            self.failed_module = str(record.args[0])
+            self.failed_module = record.args[0]
         if record.name == "odoo.modules.loading" and str(record.msg).startswith("Module %s loaded in"):
             self.failed_module = ""
-        if record.levelno == logging.WARNING:
-            self.warnings += 1
+        if record.levelno >= logging.WARNING:
+            self.events.append({"logger": record.name, "severity": record.levelname, "message": record.getMessage()})
 
 
 def closure(roots: set[str], graph: dict[str, set[str]]) -> set[str]:
@@ -67,27 +73,49 @@ def reverse_closure(failed: set[str], graph: dict[str, set[str]]) -> set[str]:
     return result
 
 
-def check_native_sources(candidate: dict[str, Any]) -> None:
+def declared_files(declaration: dict[str, Any], platform: str) -> dict[str, str]:
+    prefix = "platforms/" + platform.replace("/", "_") + "/"
+    result = {}
+    for source in declaration.get("sources", []):
+        for file in source["files"]:
+            if file["path"].startswith("platforms/") and not file["path"].startswith(prefix):
+                continue
+            path = file["path"].removeprefix(prefix)
+            if path in result and result[path] != file["sha256"]:
+                raise ValueError("Conflicting artifact source hashes")
+            result[path] = file["sha256"]
+    return result
+
+
+def verify_file(path: Path, files: dict[str, str]) -> str:
+    actual = path.resolve().as_posix()
+    expected = {value for name, value in files.items() if actual.lstrip("/") == name or actual.endswith("/" + name)}
+    if len(expected) != 1 or hashlib.sha256(path.read_bytes()).hexdigest() not in expected:
+        raise ValueError("Running source file is not bound to the candidate artifact: " + path.name)
+    return next(iter(expected))
+
+
+def check_native_sources(declaration: dict[str, Any], platform: str, migration_paths: list[str]) -> dict[str, str]:
     import odoo.addons.base.models.ir_actions as actions
     import odoo.addons.base.models.ir_ui_view as views
     import odoo.modules.loading as loading
+    import odoo.orm.environments as environments
     import odoo.orm.registry as registry
+    import odoo.sql_db as sql_db
     import odoo.tools.convert as convert
     from odoo import release
 
     if release.version_info[0] != 20:
         raise ValueError("Structural native probes require the selected Community20 target")
-    actual = dict(zip(NATIVE_ROLES, (registry, loading, convert, views, actions), strict=True))
-    for role, module in actual.items():
-        expected = candidate["native_sources"][role]
-        if hashlib.sha256(Path(inspect.getfile(module)).read_bytes()).hexdigest() != expected:
-            raise ValueError(f"Candidate native source differs: {role}")
-    for path, expected in candidate["migration_sources"].items():
-        if hashlib.sha256(Path(path).read_bytes()).hexdigest() != expected:
-            raise ValueError("Candidate migration source differs")
+    files = declared_files(declaration, platform)
+    for module in (registry, loading, convert, views, actions, environments, sql_db):
+        verify_file(Path(inspect.getfile(module)), files)
+    return {path: verify_file(Path(path), files) for path in migration_paths}
 
 
-def registry_surface(env: Any, candidate: dict[str, Any], graph: dict[str, set[str]]) -> dict[str, Any]:
+def registry_surface(
+    env: Any, candidate: dict[str, Any], graph: dict[str, set[str]], migration_sources: dict[str, str]
+) -> dict[str, Any]:
     models = {
         name: {
             "fields": {
@@ -106,71 +134,120 @@ def registry_surface(env: Any, candidate: dict[str, Any], graph: dict[str, set[s
         paths.setdefault(action.path, []).append(action.get_external_id().get(action.id) or "native:" + str(action.id))
     installed = set(env["ir.module.module"].search([("state", "=", "installed")]).mapped("name"))
     return {
-        "binding": candidate["binding"],
+        "binding": digest(candidate["artifact"]),
         "surface": "native-empty20",
         "models": models,
         "xmlids": xmlids,
         "modules": {name: sorted(graph.get(name, set())) for name in installed},
         "action_paths": paths,
         "view_types": [value for value, _label in env["ir.ui.view"]._fields["type"]._description_selection(env)],
-        "migration_sources": candidate["migration_sources"],
+        "migration_sources": migration_sources,
+        "source_hashes": list(declared_files(candidate["artifact"]["release_compatibility"], candidate["platform"]).values()),
     }
 
 
+def literal_expression(value: Any) -> bool:
+    if not value:
+        return True
+    try:
+        ast.literal_eval(value)
+    except (ValueError, TypeError, SyntaxError):
+        return False
+    return True
+
+
 def manual_supported(row: dict[str, Any]) -> bool:
-    return (
-        row.get("ttype") in SAFE_MANUAL_TYPES
-        and not row.get("compute")
-        and not row.get("related")
-        and not row.get("depends")
-        and not row.get("withheld")
-        and not row.get("selection")
-        and not row.get("domain")
-    )
+    if row.get("ttype") not in SAFE_MANUAL_TYPES or row.get("compute") or row.get("withheld"):
+        return False
+    if row.get("ttype") == "selection" and not row.get("related"):
+        selection = row.get("selection")
+        if not isinstance(selection, list) or any(
+            not isinstance(item, (list, tuple)) or len(item) != 2 or not all(isinstance(value, str) for value in item)
+            for item in selection
+        ):
+            return False
+    return literal_expression(row.get("domain"))
 
 
-def prepare_manual(env: Any, inventory: dict[str, Any]) -> set[str]:
-    blocked = set()
-    for row in inventory["records"].get("models", []):
-        if row.get("state") != "manual":
-            continue
-        model = row["model"]
-        if model not in env:
-            env["ir.model"].create({"name": model, "model": model, "state": "manual"})
+def prepare_manual(env: Any, inventory: dict[str, Any]) -> set[tuple[str, str]]:
+    blocked: set[tuple[str, str]] = {
+        ("models", row["key"])
+        for row in inventory["records"].get("models", [])
+        if row.get("state") == "manual" and row.get("withheld")
+    }
+    models = [
+        {"name": row["model"], "model": row["model"], "state": "manual"}
+        for row in inventory["records"].get("models", [])
+        if row.get("state") == "manual" and row["model"] not in env and not row.get("withheld")
+    ]
+    if models:
+        env["ir.model"].create(models)
+    values_list = []
     for row in inventory["records"].get("fields", []):
         if row.get("state") != "manual":
             continue
         if not manual_supported(row) or row["model"] not in env:
-            blocked.add(row["key"])
+            blocked.add(("fields", row["key"]))
             continue
         if row["name"] in env[row["model"]]._fields:
+            if env[row["model"]]._fields[row["name"]].type != row["ttype"]:
+                blocked.add(("fields", row["key"]))
             continue
         values = {
             key: row[key]
-            for key in ("name", "ttype", "relation", "required", "readonly", "store", "index", "size", "on_delete")
+            for key in (
+                "name",
+                "ttype",
+                "relation",
+                "related",
+                "domain",
+                "required",
+                "readonly",
+                "store",
+                "index",
+                "size",
+                "on_delete",
+            )
             if key in row
         }
-        values.update(
-            field_description=row["name"],
-            state="manual",
-            model_id=env["ir.model"]._get_id(row["model"]),
-        )
-        env["ir.model.fields"].create(values)
+        if row.get("selection"):
+            values["selection"] = repr(row["selection"])
+        values.update(field_description=row["name"], state="manual", model_id=env["ir.model"]._get_id(row["model"]))
+        values_list.append(values)
+    if values_list:
+        env["ir.model.fields"].create(values_list)
     return blocked
 
 
 class DisposableCensus:
-    def __init__(self, deadline: float) -> None:
+    def __init__(self, deadline: float, *, output: Path | None = None) -> None:
         self.deadline = deadline
+        self.output = output
         self.owned: set[str] = set()
         self.baseline = ""
         self.conditional = False
         self.bootstrap: list[dict[str, Any]] = []
         self.manual_blocked: set[tuple[str, str]] = set()
+        self.report: dict[str, Any] = {}
+        self.inventory: dict[str, Any] | None = None
+        self.thread: Any = threading.current_thread()
+        self.previous_dbname = getattr(self.thread, "dbname", None)
+
+    def checkpoint(self) -> None:
+        if self.output is None:
+            return
+        if self.inventory is not None:
+            recount(self.report, self.inventory)
+        self.report["bootstrap"] = self.bootstrap
+        self.report["owned_databases"] = sorted(self.owned)
+        self.output.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.output.with_suffix(self.output.suffix + ".tmp")
+        temporary.write_text(json.dumps(self.report, indent=2) + "\n")
+        temporary.replace(self.output)
 
     def check_deadline(self) -> None:
         if time.monotonic() >= self.deadline:
-            raise TimeoutError("Census deadline reached; remaining components are unreached")
+            raise TimeoutError("Census work deadline reached; remaining components are unreached")
 
     def allocate(self) -> str:
         self.check_deadline()
@@ -186,12 +263,51 @@ class DisposableCensus:
         self.owned.remove(name)
 
     def close(self) -> None:
-        for name in tuple(self.owned):
-            self.drop(name)
+        try:
+            for name in tuple(self.owned):
+                self.drop(name)
+        finally:
+            if self.previous_dbname is not None:
+                self.thread.dbname = self.previous_dbname
+            elif hasattr(self.thread, "dbname"):
+                del self.thread.dbname
+
+    def manual_baseline(self, registry: Any, inventory: dict[str, Any]) -> Any:
+        from odoo import SUPERUSER_ID, api
+        from odoo.orm.registry import Registry
+
+        def apply(selected: dict[str, Any]) -> None:
+            self.check_deadline()
+            with registry.cursor() as cursor:
+                self.manual_blocked.update(prepare_manual(api.Environment(cursor, SUPERUSER_ID, {}), selected))
+                cursor.commit()
+
+        try:
+            apply(inventory)
+        except Exception:
+            _logger.exception("Batched manual declarations failed; rebuilding the committed empty baseline")
+            Registry.delete(self.baseline)
+            registry = Registry.new(self.baseline)
+            for bucket in ("models", "fields"):
+                for row in inventory["records"].get(bucket, []):
+                    if row.get("state") != "manual":
+                        continue
+                    self.check_deadline()
+                    try:
+                        apply({"records": {bucket: [row]}})
+                    except Exception:
+                        _logger.exception("Manual declaration unavailable in the empty baseline")
+                        self.manual_blocked.add((bucket, row["key"]))
+                    Registry.delete(self.baseline)
+                    registry = Registry.new(self.baseline)
+                    self.checkpoint()
+        Registry.delete(self.baseline)
+        return Registry.new(self.baseline)
 
     def build(self, modules: set[str], inventory: dict[str, Any], graph: dict[str, set[str]]) -> Any:
         from odoo import SUPERUSER_ID, api
         from odoo.modules import db
+        from odoo.modules.module import Manifest
         from odoo.orm.registry import Registry
         from odoo.tools import config
 
@@ -205,16 +321,21 @@ class DisposableCensus:
             {"module": name, "state": "missing" if name in missing else "dependency-blocked"} for name in sorted(blocked)
         ]
         self.conditional = bool(blocked)
+        excluded: set[str] = set()
         while current:
             self.check_deadline()
             name = self.allocate()
             log = NativeLog()
             loader = logging.getLogger("odoo.modules.loading")
-            loader.addHandler(log)
+            previous_level = loader.level
+            loader.setLevel(logging.INFO)
+            logging.getLogger().addHandler(log)
+            self.checkpoint()
             try:
                 if db.exist(name):
                     raise ValueError("Generated census database already exists")
                 self.owned.add(name)
+                self.checkpoint()
                 db._create_empty_database(name)
                 registry = Registry.new(name, install_modules=sorted(current), new_db_demo=False)
                 if not registry.ready:
@@ -222,112 +343,102 @@ class DisposableCensus:
             except Exception as error:
                 _logger.exception("Native census registry initialization failed")
                 failed = log.failed_module
-                removed = reverse_closure({failed}, graph) & current if failed in current else set()
-                self.bootstrap.append({"module": failed, "state": "native-reproduced", "exception": type(error).__name__})
+                removal = reverse_closure({failed}, graph)
+                if failed in graph and failed not in current and failed not in excluded:
+                    automatic = (Manifest.for_addon(failed) or {}).get("auto_install", False)
+                    requirements = graph[failed] if automatic is True else set(automatic or [])
+                    trigger = sorted((current & requirements) - {"base"})
+                    if trigger:
+                        removal |= reverse_closure({trigger[0]}, graph)
+                removed = removal & current if failed in graph and failed not in excluded else set()
+                self.bootstrap.append(
+                    {"module": failed, "state": "native-reproduced", "exception": type(error).__name__, "logs": log.events}
+                )
                 self.bootstrap += [{"module": item, "state": "dependency-blocked"} for item in sorted(removed - {failed})]
                 if name in self.owned:
                     self.drop(name)
+                self.checkpoint()
                 if not removed:
                     raise
+                excluded.add(failed)
                 current -= removed
                 self.conditional = True
                 continue
             finally:
-                loader.removeHandler(log)
+                logging.getLogger().removeHandler(log)
+                loader.setLevel(previous_level)
             self.baseline = name
             with registry.cursor() as cursor:
                 env = api.Environment(cursor, SUPERUSER_ID, {})
                 installed = set(env["ir.module.module"].search([("state", "=", "installed")]).mapped("name"))
                 if not current <= installed:
                     raise ValueError("Native loader left intended modules uninstalled")
-            for bucket in ("models", "fields"):
-                for row in inventory["records"].get(bucket, []):
-                    if row.get("state") != "manual":
-                        continue
-                    try:
-                        with registry.cursor() as cursor:
-                            env = api.Environment(cursor, SUPERUSER_ID, {})
-                            refused = prepare_manual(env, {"records": {bucket: [row]}})
-                            if refused:
-                                self.manual_blocked.add((bucket, row["key"]))
-                            cursor.commit()
-                    except Exception:
-                        _logger.exception("Manual census declaration could not enter the empty baseline")
-                        self.manual_blocked.add((bucket, row["key"]))
-                    Registry.delete(name)
-                    registry = Registry.new(name)
+            registry = self.manual_baseline(registry, inventory)
             self.bootstrap.append(
-                {"modules": sorted(installed), "state": "conditional" if self.conditional else "checked", "warnings": log.warnings}
+                {"modules": sorted(installed), "state": "conditional" if self.conditional else "checked", "logs": log.events}
             )
+            self.checkpoint()
             return registry
         raise ValueError("No healthy independent module closure")
 
     @contextmanager
     def probe(self) -> Iterator[Any]:
         from odoo import SUPERUSER_ID, api
-        from odoo.modules import db
         from odoo.orm.registry import Registry
 
+        self.check_deadline()
         if self.baseline not in self.owned:
             raise ValueError("A census-owned committed empty baseline is required")
-        name = self.allocate()
-        if db.exist(name):
-            raise ValueError("Generated census database already exists")
-        self.owned.add(name)
-        try:
-            db.duplicate(self.baseline, name)
-            with Registry(name).cursor() as cursor:
-                env = api.Environment(cursor, SUPERUSER_ID, {})
-                try:
-                    yield env
-                finally:
-                    cursor.rollback()
-                    env.invalidate_all(flush=False)
-        finally:
-            if name in self.owned:
-                self.drop(name)
+        with Registry(self.baseline).cursor() as cursor:
+            env = api.Environment(cursor, SUPERUSER_ID, {})
+            try:
+                yield env
+            finally:
+                cursor.rollback()
+                env.invalidate_all(flush=False)
 
 
-def native_view_values(env: Any, row: dict[str, Any], identities: dict[str, Any], language: str) -> dict[str, Any]:
-    values = {
-        key: row[key] for key in ("model", "type", "mode", "priority", "active", "key", "arch_fs", "arch_updated") if key in row
-    }
-    values.pop("key", None)
-    values["arch"] = row["architectures"][language]
-    values["name"] = "census:" + row["key"]
-    values["inherit_id"] = False
-    if "view_key" in row:
-        values["key"] = row["view_key"]
-    if "groups" in row:
-        from odoo import Command
-
-        groups = [env.ref(xmlid, raise_if_not_found=False) for xmlid in row["groups"]]
-        if any(not group or group._name != "res.groups" for group in groups):
-            raise ProbeUnreached("Retained view groups are unavailable")
-        values["group_ids"] = [Command.set([group.id for group in groups])]
-    if row.get("parent"):
-        parent = identities.get(row["parent"]) or env.ref(row["parent"], raise_if_not_found=False)
-        if not parent:
-            raise ProbeUnreached("Retained view parent is unavailable")
-        values["inherit_id"] = parent.id
-    return values
-
-
-def load_view_family(env: Any, rows: list[dict[str, Any]], language: str) -> list[dict[str, str]]:
+def load_view_family(
+    env: Any, rows: list[dict[str, Any]], language: str, *, replacements: set[str] | None = None
+) -> list[dict[str, str]]:
+    if not env["res.lang"].search_count([("code", "=", language), ("active", "=", True)]):
+        raise ProbeUnreached("Target language is not active", code="target-language-unavailable")
+    env = env(context={**env.context, "lang": language})
     identities: dict[str, Any] = {}
     pending = sorted(rows, key=lambda row: (row.get("priority", 16), row.get("source_order", 0)))
     keys = {row["key"] for row in rows}
     while pending:
-        eligible = next((row for row in pending if row.get("parent") not in keys or row["parent"] in identities), None)
-        if eligible is None:
+        row = next((item for item in pending if item.get("parent") not in keys or item["parent"] in identities), None)
+        if row is None:
             raise ProbeUnreached("Cyclic view family")
-        if language not in eligible.get("architectures", {}) or language in eligible.get("changed_languages", []):
-            raise ProbeUnreached("Incomplete language family")
-        values = native_view_values(env, eligible, identities, language)
-        matches = [env.ref(xmlid, raise_if_not_found=False) for xmlid in eligible.get("xmlids", [])]
+        if language not in row.get("architectures", {}) or language in row.get("changed_languages", []) or row.get("website_scope"):
+            raise ProbeUnreached("Language or website variant is not bound to this empty target")
+        matches = [env.ref(xmlid, raise_if_not_found=False) for xmlid in row.get("xmlids", [])]
         matches = [record for record in matches if record]
         if matches and (len({record.id for record in matches}) != 1 or any(record._name != "ir.ui.view" for record in matches)):
-            raise ProbeUnreached("Ambiguous retained view identity")
+            raise ProbeUnreached("Moved or ambiguous retained view identity", code="moved-view-class")
+        if matches and row["key"] in (replacements or set()):
+            identities[row["key"]] = matches[0]
+            pending.remove(row)
+            continue
+        if matches and not (row.get("noupdate") or row.get("arch_updated") or row.get("customization_present")):
+            raise ProbeUnreached("Matched stock view requires a source-qualified upgrade disposition")
+        values = {key: row[key] for key in ("model", "type", "mode", "priority", "active", "arch_fs", "arch_updated") if key in row}
+        values.update(name="census:" + row["key"], arch=row["architectures"][language], inherit_id=False)
+        if row.get("view_key"):
+            values["key"] = row["view_key"]
+        if row.get("parent"):
+            parent = identities.get(row["parent"]) or env.ref(row["parent"], raise_if_not_found=False)
+            if not parent:
+                raise ProbeUnreached("Retained parent is unavailable")
+            values["inherit_id"] = parent.id
+        if "groups" in row:
+            from odoo import Command
+
+            groups = [env.ref(xmlid, raise_if_not_found=False) for xmlid in row["groups"]]
+            if any(not group or group._name != "res.groups" for group in groups):
+                raise ProbeUnreached("Retained groups are unavailable")
+            values["group_ids"] = [Command.set([group.id for group in groups])]
         try:
             if matches:
                 view = matches[0]
@@ -335,54 +446,64 @@ def load_view_family(env: Any, rows: list[dict[str, Any]], language: str) -> lis
             else:
                 view = env["ir.ui.view"].create(values)
         except Exception as error:
-            raise ViewFailure(eligible["key"]) from error
-        identities[eligible["key"]] = view
-        pending.remove(eligible)
+            raise ViewFailure(row["key"]) from error
+        identities[row["key"]] = view
+        pending.remove(row)
     for key, view in identities.items():
         try:
             view._check_xml()
         except Exception as error:
-            raise ViewFailure(key) from error
+            raise ViewFailure(key, attribution="family") from error
     ordered: dict[tuple[str, int], list[dict[str, Any]]] = {}
     for row in rows:
         if "source_order" in row:
             ordered.setdefault((row.get("parent", ""), row.get("priority", 16)), []).append(row)
-    changed_order = any(
+    changed = any(
         sorted(siblings, key=lambda row: row["source_order"]) != sorted(siblings, key=lambda row: identities[row["key"]].id)
         for siblings in ordered.values()
     )
-    return [finding("relative-view-order-unreproduced", state="conditional")] if changed_order else []
+    return [finding("relative-view-order-unreproduced", state="conditional")] if changed else []
 
 
-def load_action(env: Any, row: dict[str, Any]) -> None:
-    action_type = row["type"]
-    if action_type not in {"ir.actions.act_window", "ir.actions.act_window_close"}:
-        raise ProbeUnreached("Only non-executable window action structure is probed")
-    if row.get("withheld") or row.get("res_id") or row.get("view_references"):
-        raise ProbeUnreached("Action requires unavailable retained data or view family")
-    values = {key: row[key] for key in ("path", "res_model", "view_mode", "target", "context", "domain") if key in row}
-    values.update(name="census:" + row["key"], type=action_type)
-    if action_type == "ir.actions.act_window":
-        values["res_model"] = row.get("model", row.get("res_model", ""))
+def load_action(env: Any, row: dict[str, Any], *, replace_native: bool = False) -> None:
+    if not all(literal_expression(row.get(name)) for name in ("context", "domain")):
+        raise ProbeUnreached("Action expression needs data or execution", code="action-expression-unexecuted")
+    kind = row["type"]
+    if (
+        kind not in {"ir.actions.act_window", "ir.actions.act_window_close"}
+        or row.get("withheld")
+        or row.get("res_id")
+        or row.get("view_references")
+    ):
+        raise ProbeUnreached("Action needs unavailable retained data, identity or executable behavior")
     matches = [env.ref(xmlid, raise_if_not_found=False) for xmlid in row.get("xmlids", [])]
     matches = [record for record in matches if record]
-    if matches:
-        if len({record.id for record in matches}) != 1 or any(record._name != action_type for record in matches):
-            raise ProbeUnreached("Moved or ambiguous action identity")
+    if matches and (len({record.id for record in matches}) != 1 or any(record._name != kind for record in matches)):
+        raise ProbeUnreached("Moved or ambiguous action class", code="moved-action-class")
+    if matches and replace_native:
+        return
+    if matches and not row.get("noupdate"):
+        raise ProbeUnreached("Matched stock action requires a source-qualified upgrade disposition")
+    values = {key: row[key] for key in ("path", "view_mode", "target", "context", "domain") if key in row}
+    values.update(name="census:" + row["key"], type=kind)
+    if kind == "ir.actions.act_window":
+        values["res_model"] = row.get("model", row.get("res_model", ""))
     try:
         if matches:
             matches[0].write(values)
         else:
-            env[action_type].create(values)
+            env[kind].create(values)
     except Exception as error:
         raise ViewFailure(row["key"]) from error
 
 
 def run_probe(session: DisposableCensus, components: list[dict[str, Any]], probe: Any, *, label: str = "structure") -> None:
     log = NativeLog()
-    root = logging.getLogger()
-    root.addHandler(log)
     outcomes = {component["key"]: "unreached" for component in components}
+    for component in components:
+        if session.conditional:
+            component["findings"].append(finding("reduced-module-set", state="conditional"))
+    logging.getLogger().addHandler(log)
     try:
         with session.probe() as env:
             additional = probe(env) or []
@@ -390,99 +511,167 @@ def run_probe(session: DisposableCensus, components: list[dict[str, Any]], probe
         for component in components:
             component["findings"].append(finding("deadline-unreached", state="data-dependent/unreached"))
     except ViewFailure as error:
-        _logger.exception("Native census component failed")
+        _logger.exception("Native family failed during %s", error.attribution)
         for component in components:
-            if component["key"] == error.key:
+            if component["key"] == error.key and error.attribution == "operation":
                 outcomes[component["key"]] = "native-reproduced"
-                component["native"] = "native-reproduced"
                 component["findings"].append(finding("native-validation-error", state="native-reproduced"))
             else:
-                component["findings"].append(finding("family-validation-unreached", error.key, state="dependency-blocked"))
+                component["findings"].append(finding("family-validation-unreached", state="dependency-blocked"))
+    except ProbeUnreached as error:
+        for component in components:
+            component["findings"].append(finding(error.code, state="data-dependent/unreached"))
     except Exception as error:
-        _logger.exception("Native census probe was not reached")
+        _logger.exception("Native probe was not reached")
         for component in components:
             component["findings"].append(finding("native-probe-unreached", type(error).__name__, state="data-dependent/unreached"))
     else:
         for component in components:
-            outcomes[component["key"]] = "checked"
+            if component.get("facts", {}).get("active") is not False:
+                outcomes[component["key"]] = "checked"
             component["findings"].extend(additional)
-            if component["native"] != "native-reproduced":
-                component["native"] = "checked"
-            if session.conditional:
-                component["findings"].append(finding("reduced-module-set", state="conditional"))
     finally:
-        root.removeHandler(log)
+        logging.getLogger().removeHandler(log)
         for component in components:
             component.setdefault("native_checks", []).append({"case": label, "state": outcomes[component["key"]]})
             states = {check["state"] for check in component["native_checks"]}
             component["native"] = (
                 "native-reproduced" if "native-reproduced" in states else "checked" if states == {"checked"} else "unreached"
             )
-        if log.warnings:
-            for component in components:
-                component["findings"].append(finding("native-warning", str(log.warnings), state="warning"))
+            if log.events:
+                component.setdefault("native_logs", []).extend(log.events)
+            if any(item["severity"] == "WARNING" for item in log.events):
+                component["findings"].append(finding("native-warning", state="warning"))
+        session.checkpoint()
+
+
+def unreached_report(inventory: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
+    report = {
+        "inventory": digest(inventory),
+        "source": inventory["binding"],
+        "candidate": digest(candidate["artifact"]),
+        "coverage": {},
+        "target_surface": "unavailable",
+        "components": [
+            {"bucket": bucket, "key": row["key"], "checked": False, "native": "unreached", "findings": []}
+            for bucket, rows in inventory["records"].items()
+            for row in rows
+        ],
+    }
+    recount(report, inventory)
+    return report
+
+
+def native_replacement(row: dict[str, Any], target: dict[str, Any], model: str) -> bool:
+    return any(
+        item.get("code") == "native20-stock-replacement"
+        and item.get("reference") in row.get("xmlids", [])
+        and target.get("xmlids", {}).get(item.get("reference"), {}).get("model") == model
+        for item in qualified_coverage(row, target)
+    )
 
 
 def collect_native(
-    inventory: dict[str, Any], candidate: dict[str, Any], roots: list[Path], *, declaration: dict[str, Any], deadline: float
+    inventory: dict[str, Any],
+    candidate: dict[str, Any],
+    roots: list[Path],
+    *,
+    declaration: dict[str, Any],
+    deadline: float,
+    output: Path | None = None,
 ) -> dict[str, Any]:
     from odoo import SUPERUSER_ID, api
 
     validate_inventory(inventory)
-    check_native_sources(candidate)
-    verify_image_declaration(declaration, candidate["release_compatibility"], platform=candidate["platform"])
+    artifact = candidate["artifact"]
+    verify_image_declaration(declaration, artifact["release_compatibility"], platform=candidate["platform"])
+    migration_sources = check_native_sources(declaration, candidate["platform"], candidate["migration_sources"])
     graph = module_graph(roots)
-    declared = {row["name"]: set(row["depends"]) for row in candidate["release_compatibility"]["modules"]}
-    if candidate["release_compatibility"].get("complete") is not True or declared != graph:
+    declared = {row["name"]: set(row["depends"]) for row in artifact["release_compatibility"]["modules"]}
+    if artifact["release_compatibility"].get("complete") is not True or declared != graph:
         raise ValueError("Candidate module graph differs from actual addon paths")
-    session = DisposableCensus(deadline)
+    margin = min(30.0, max(0.0, deadline - time.monotonic()) / 10)
+    session = DisposableCensus(deadline - margin, output=output)
+    session.inventory = inventory
+    session.report = unreached_report(inventory, candidate)
+    session.checkpoint()
     try:
         try:
             registry = session.build(set(candidate["intended_modules"]), inventory, graph)
         except Exception as error:
-            _logger.exception("No healthy empty target is available for this census")
-            report = {
-                "inventory": digest(inventory),
-                "source": inventory["binding"],
-                "candidate": candidate["binding"],
-                "bootstrap": session.bootstrap,
-                "target_surface": "unavailable",
-                "coverage": {},
-                "components": [
-                    {
-                        "bucket": bucket,
-                        "key": row["key"],
-                        "checked": False,
-                        "native": "unreached",
-                        "findings": [finding("target-registry-unavailable", type(error).__name__, state="dependency-blocked")],
-                    }
-                    for bucket, rows in inventory["records"].items()
-                    for row in rows
-                ],
-            }
-            recount(report, inventory)
-            return report
+            _logger.exception("No healthy target is available")
+            for row in session.report["components"]:
+                row["findings"].append(finding("target-registry-unavailable", type(error).__name__, state="dependency-blocked"))
+            return session.report
         with registry.cursor() as cursor:
-            target = registry_surface(api.Environment(cursor, SUPERUSER_ID, {}), candidate, graph)
-        report = collect_static(inventory, target)
-        report["bootstrap"] = session.bootstrap
-        report["intended_modules"] = sorted(candidate["intended_modules"])
+            target = registry_surface(api.Environment(cursor, SUPERUSER_ID, {}), candidate, graph, migration_sources)
+        blocked_modules = {row["module"] for row in session.bootstrap if row.get("module") and row.get("state") != "checked"}
+        target["blocked_modules"] = blocked_modules
+        target["conditional"] = session.conditional
+        target["blocked_models"] = [
+            row["model"]
+            for row in inventory["records"].get("models", [])
+            if set(row.get("owners", [])) & blocked_modules or ("models", row["key"]) in session.manual_blocked
+        ]
+        target["blocked_fields"] = [
+            row["model"] + "." + row["name"]
+            for row in inventory["records"].get("fields", [])
+            if ("fields", row["key"]) in session.manual_blocked or set(row.get("owners", [])) & blocked_modules
+        ]
+        session.report = report = collect_static(inventory, target)
+        report.update(
+            bootstrap=session.bootstrap,
+            intended_modules=sorted(candidate["intended_modules"]),
+            source_install_roots=artifact.get("odoo_install_modules"),
+            actual_installed_modules=sorted(target["modules"]),
+        )
         by_key = {(row["bucket"], row["key"]): row for row in report["components"]}
         for bucket, key in session.manual_blocked:
             by_key[bucket, key]["findings"].append(finding("manual-baseline-unavailable", state="dependency-blocked"))
         view_families, _cyclic = families(inventory["records"].get("views", []))
         for family in view_families:
             components = [by_key["views", row["key"]] for row in family]
-            languages = set().union(*(row.get("architectures", {}) for row in family))
-            if not languages or any(row.get("withheld") for row in family):
+            if any(row.get("withheld") or row.get("website_scope") for row in family) or any(
+                item["state"] == "dependency-blocked" for component in components for item in component["findings"]
+            ):
+                for component in components:
+                    component["findings"].append(finding("family-baseline-unavailable", state="dependency-blocked"))
+                session.checkpoint()
                 continue
+            replacements = {row["key"] for row in family if native_replacement(row, target, "ir.ui.view")}
+            for row in family:
+                if row["key"] in replacements:
+                    by_key["views", row["key"]]["findings"].append(finding("native20-stock-replacement", state="candidate-covered"))
+            languages = set().union(*(row.get("architectures", {}) for row in family))
             for language in sorted(languages):
-                run_probe(session, components, partial(load_view_family, rows=family, language=language), label=language)
+                run_probe(
+                    session,
+                    components,
+                    partial(load_view_family, rows=family, language=language, replacements=replacements),
+                    label=language,
+                )
+            for row in family:
+                if row.get("active") is False:
+                    by_key["views", row["key"]]["native"] = "unreached"
+                    for check in by_key["views", row["key"]].get("native_checks", []):
+                        if check["state"] == "checked":
+                            check["state"] = "inactive-unreached"
         for row in inventory["records"].get("actions", []):
             if row.get("type") not in {"ir.actions.act_window", "ir.actions.act_window_close"}:
                 continue
-            run_probe(session, [by_key["actions", row["key"]]], partial(load_action, row=row))
-        recount(report, inventory)
+            if any(item["state"] == "dependency-blocked" for item in by_key["actions", row["key"]]["findings"]):
+                continue
+            replace_native = native_replacement(row, target, row["type"])
+            run_probe(session, [by_key["actions", row["key"]]], partial(load_action, row=row, replace_native=replace_native))
         return report
     finally:
-        session.close()
+        try:
+            session.close()
+            session.report["cleanup"] = "complete"
+        except Exception:
+            session.report["cleanup"] = "incomplete"
+            _logger.exception("Native census cleanup failed; retained findings are checkpointed")
+            raise
+        finally:
+            recount(session.report, inventory)
+            session.checkpoint()

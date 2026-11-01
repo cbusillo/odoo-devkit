@@ -6,6 +6,7 @@ TABLES = {
     "ir_module_module": ("name", "state", "latest_version"),
     "ir_module_module_dependency": ("module_id", "name"),
     "ir_model": ("model", "state", "modules"),
+    "ir_model_inherit": ("model_id", "parent_id", "parent_field_id"),
     "ir_model_fields": (
         "model",
         "name",
@@ -18,6 +19,7 @@ TABLES = {
         "store",
         "required",
         "readonly",
+        "modules",
         "index",
     ),
     "ir_model_data": ("module", "name", "model", "res_id", "noupdate"),
@@ -34,6 +36,7 @@ TABLES = {
         "arch_fs",
         "arch_updated",
         "key",
+        "website_id",
     ),
     "ir_ui_view_custom": ("ref_id",),
     "ir_ui_view_group_rel": ("view_id", "group_id"),
@@ -57,7 +60,7 @@ def extract_private_technical(cursor: Any, binding: str) -> dict[str, Any]:
 
     if not binding:
         raise ValueError("Source binding is required before root extraction")
-    cursor.execute("SET TRANSACTION READ ONLY")
+    cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
     extracted: dict[str, Any] = {"binding": binding, "screened": False, "tables": {}}
     for table, allowlist in TABLES.items():
         cursor.execute(
@@ -69,13 +72,182 @@ def extract_private_technical(cursor: Any, binding: str) -> dict[str, Any]:
             extracted["tables"][table] = {"count": None, "gap": "table-unavailable"}
             continue
         selected = [column for column in ("id", *allowlist) if column in present]
-        columns = sql.SQL(", ").join(map(sql.Identifier, selected))
+        output_names = []
+        expressions = []
+        for column in selected:
+            alias = "history_present" if column == "arch_prev" else "url_present" if column == "url" else column
+            output_names.append(alias)
+            if column in {"arch_prev", "code", "compute", "url"}:
+                expressions.append(
+                    sql.SQL("({} IS NOT NULL AND {}::text NOT IN ('', '{{}}', 'false')) AS {}").format(
+                        sql.Identifier(column), sql.Identifier(column), sql.Identifier(alias)
+                    )
+                )
+            else:
+                expressions.append(sql.Identifier(column))
+        columns = sql.SQL(", ").join(expressions)
         if not selected:
             extracted["tables"][table] = {"count": None, "gap": "structural-columns-unavailable"}
             continue
         order = sql.Identifier("id" if "id" in present else selected[0])
         query = sql.SQL("SELECT {} FROM {} ORDER BY {}").format(columns, sql.Identifier(table), order)
         cursor.execute(query)
-        rows = [dict(zip(selected, row, strict=True)) for row in cursor.fetchall()]
+        rows = [dict(zip(output_names, row, strict=True)) for row in cursor.fetchall()]
         extracted["tables"][table] = {"count": len(rows), "rows": rows, "withheld_columns": sorted(set(allowlist) - present)}
     return extracted
+
+
+def project_private_inventory(extracted: dict[str, Any]) -> dict[str, Any]:
+    from odoo_structural_census import BUCKETS
+
+    tables = extracted["tables"]
+    records: dict[str, list[dict[str, Any]]] = {bucket: [] for bucket in BUCKETS}
+    totals: dict[str, int | None] = {}
+    aliases: dict[tuple[str, int], list[dict[str, Any]]] = {}
+    for row in tables.get("ir_model_data", {}).get("rows", []):
+        xmlid = row["module"] + "." + row["name"]
+        aliases.setdefault((row["model"], row["res_id"]), []).append({"xmlid": xmlid, "noupdate": row.get("noupdate")})
+        records["xmlids"].append({"key": xmlid, "record_model": row["model"], "owners": [row["module"]]})
+
+    def base(source_row: dict[str, Any], record_model: str, prefix: str) -> dict[str, Any]:
+        owned_bindings = aliases.get((record_model, source_row["id"]), [])
+        return {
+            "key": prefix + ":" + str(source_row["id"]),
+            "xmlids": [item["xmlid"] for item in owned_bindings],
+            "noupdate_by_xmlid": {item["xmlid"]: item["noupdate"] for item in owned_bindings},
+            "noupdate": all(item["noupdate"] for item in owned_bindings) if owned_bindings else None,
+            "owners": sorted(
+                {item["xmlid"].split(".")[0] for item in owned_bindings} | set((source_row.get("modules") or "").split(",")) - {""}
+            ),
+        }
+
+    model_names = {row["id"]: row["model"] for row in tables.get("ir_model", {}).get("rows", [])}
+    field_rows = {row["id"]: row for row in tables.get("ir_model_fields", {}).get("rows", [])}
+    selections: dict[int, list[list[str]]] = {}
+    for row in sorted(
+        tables.get("ir_model_fields_selection", {}).get("rows", []),
+        key=lambda item: (item["field_id"], item.get("sequence", 0), item["id"]),
+    ):
+        selections.setdefault(row["field_id"], []).append([row["value"], row["value"]])
+    inherited: dict[int, list[dict[str, Any]]] = {}
+    for row in tables.get("ir_model_inherit", {}).get("rows", []):
+        inherited.setdefault(row["model_id"], []).append({"kind": "model", "name": model_names.get(row["parent_id"], "")})
+    for row in tables.get("ir_module_module", {}).get("rows", []):
+        records["modules"].append({"key": row["name"], "state": row["state"], "installed_version": row.get("latest_version")})
+    for row in tables.get("ir_model", {}).get("rows", []):
+        model = {
+            **base(row, "ir.model", "model"),
+            "model": row["model"],
+            "state": row.get("state"),
+            "references": inherited.get(row["id"], []),
+        }
+        if model["references"] and model["state"] == "manual":
+            model["withheld"] = ["manual-inheritance-native-baseline"]
+        records["models"].append(model)
+    for row in field_rows.values():
+        values = {key: value for key, value in row.items() if key != "id"}
+        values["depends"] = [part.strip() for part in (row.get("depends") or "").split(",") if part.strip()]
+        if row["id"] in selections:
+            values["selection"] = selections[row["id"]]
+            values["minimized"] = ["selection-labels"]
+        records["fields"].append({**base(row, "ir.model.fields", "field"), **values})
+    custom = {row["ref_id"] for row in tables.get("ir_ui_view_custom", {}).get("rows", [])}
+    groups: dict[int, list[str]] = {}
+    unbound_groups: set[int] = set()
+    for row in tables.get("ir_ui_view_group_rel", {}).get("rows", []):
+        bindings = aliases.get(("res.groups", row["group_id"]), [])
+        if bindings:
+            groups.setdefault(row["view_id"], []).append(bindings[0]["xmlid"])
+        else:
+            unbound_groups.add(row["view_id"])
+    for row in tables.get("ir_ui_view", {}).get("rows", []):
+        values = {key: value for key, value in row.items() if key not in {"id", "inherit_id", "arch_db", "key", "website_id"}}
+        architecture = row.get("arch_db")
+        values["architectures"] = architecture if isinstance(architecture, dict) else {"en_US": architecture} if architecture else {}
+        values.update(source_order=row["id"], customization_present=row["id"] in custom, groups=groups.get(row["id"], []))
+        if row.get("inherit_id"):
+            values["parent"] = "view:" + str(row["inherit_id"])
+        if row.get("website_id"):
+            values["website_scope"] = "website:" + str(row["website_id"])
+        if row.get("key"):
+            values["view_key"] = row["key"]
+        if row["id"] in unbound_groups:
+            values["withheld"] = ["unbound-group-identity"]
+        projected = {**base(row, "ir.ui.view", "view"), **values}
+        records["views"].append(projected)
+        if row.get("type") == "qweb":
+            records["qweb"].append({"key": projected["key"], "source_view": projected["key"]})
+    action_tables = {
+        "ir.actions.act_window": "ir_act_window",
+        "ir.actions.server": "ir_act_server",
+        "ir.actions.report": "ir_act_report_xml",
+        "ir.actions.client": "ir_act_client",
+        "ir.actions.act_url": "ir_act_url",
+    }
+    details = {kind: {row["id"]: row for row in tables.get(table, {}).get("rows", [])} for kind, table in action_tables.items()}
+    action_views: dict[int, list[dict[str, Any]]] = {}
+    for row in tables.get("ir_act_window_view", {}).get("rows", []):
+        action_views.setdefault(row["act_window_id"], []).append(row)
+    for row in tables.get("ir_actions", {}).get("rows", []):
+        kind = row["type"]
+        values = {**row, **details.get(kind, {}).get(row["id"], {})}
+        if kind in details and row["id"] not in details[kind]:
+            values["withheld"] = ["action-class-structure-unavailable"]
+        values.pop("id", None)
+        values["model"] = values.pop("res_model", None) or values.get("model") or model_names.get(values.get("model_id"), "")
+        view_refs = [values.get("view_id"), values.get("search_view_id")]
+        view_refs += [item.get("view_id") for item in action_views.get(row["id"], [])]
+        values["view_references"] = ["view:" + str(value) for value in view_refs if value]
+        values["view_modes"] = [item.get("view_mode") for item in action_views.get(row["id"], [])]
+        records["actions"].append({**base(row, kind, "action"), **values})
+    auxiliary = {
+        "menus": "ir_ui_menu",
+        "filters": "ir_filters",
+        "defaults": "ir_default",
+        "automation": "base_automation",
+        "templates": "mail_template",
+    }
+    for bucket, table in auxiliary.items():
+        for row in tables.get(table, {}).get("rows", []):
+            values = {key: value for key, value in row.items() if key != "id"}
+            model = values.get("model_id")
+            values["model"] = model if isinstance(model, str) else model_names.get(model, "")
+            if bucket == "defaults" and row.get("field_id") in field_rows:
+                field = field_rows[row["field_id"]]
+                values["references"] = [{"kind": "field", "model": field["model"], "name": field["name"]}]
+            if bucket == "menus" and row.get("action"):
+                action_model, separator, action_id = row["action"].partition(",")
+                owned = aliases.get((action_model, int(action_id)), []) if separator and action_id.isdigit() else []
+                values["references"] = (
+                    [{"kind": "xmlid", "name": owned[0]["xmlid"]}] if owned else [{"kind": "unbound-action", "name": ""}]
+                )
+            if bucket == "templates" and values.get("lang"):
+                values["expression"] = values.pop("lang")
+            records[bucket].append({"key": bucket + ":" + str(row["id"]), **values})
+    sources = {
+        "modules": "ir_module_module",
+        "models": "ir_model",
+        "fields": "ir_model_fields",
+        "xmlids": "ir_model_data",
+        "views": "ir_ui_view",
+        "actions": "ir_actions",
+        **auxiliary,
+    }
+    for bucket, table in sources.items():
+        totals[bucket] = tables.get(table, {}).get("count")
+    totals["qweb"] = len(records["qweb"]) if totals.get("views") is not None else None
+    action_totals: dict[str, int] = {}
+    for row in records["actions"]:
+        action_totals[row["type"]] = action_totals.get(row["type"], 0) + 1
+    return {
+        "binding": extracted["binding"],
+        "screened": False,
+        "records": records,
+        "totals": totals,
+        "action_totals": action_totals,
+        "schema_gaps": {
+            table: {key: value for key, value in values.items() if key in {"gap", "withheld_columns"}}
+            for table, values in tables.items()
+            if values.get("gap") or values.get("withheld_columns")
+        },
+    }
