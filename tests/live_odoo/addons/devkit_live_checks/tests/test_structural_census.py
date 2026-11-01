@@ -21,7 +21,7 @@ import odoo_structural_extract as extract
 import odoo_structural_native as native
 from odoo import SUPERUSER_ID, api, release
 from odoo.tests import tagged
-from odoo.tests.common import TransactionCase
+from odoo.tests.case import TestCase
 from odoo.tools import config
 from odoo_release_inventory import build_inventory, classify_files, module_graph
 from psycopg2.errors import ReadOnlySqlTransaction
@@ -44,8 +44,12 @@ def view(key: str, architecture: str, **values: Any) -> dict[str, Any]:
     }
 
 
-@tagged("post_install", "-at_install")
-class TestStructuralCensus(TransactionCase):
+@tagged("standard", "post_install", "-at_install")
+class TestStructuralCensus(TestCase):
+    """The collector owns disposable registries, without an outer ORM transaction."""
+
+    test_module = __name__.split(".")[2]
+
     def setUp(self) -> None:
         super().setUp()
         if release.version_info[0] != 20:
