@@ -1855,9 +1855,6 @@ class OdooDataWorkflowRunner:
         owner = self._readonly_qa_object(raw_owner)
         if (
             user_id <= 2
-            or active is None
-            or share is None
-            or bool(share)
             or set(owner) != set(target_owner)
             or any(not isinstance(value, str) for value in owner.values())
             or any(
@@ -1865,8 +1862,11 @@ class OdooDataWorkflowRunner:
             )
             or owner["product"] != target_owner["product"]
             or owner["database_uuid"] != target_owner["database_uuid"]
-            or login != policy.product_login(owner["product"])
         ):
+            raise OdooDatabaseUpdateError("The copied read-only QA account is not source-owned.")
+        if owner == target_owner:
+            return owner
+        if active is None or share is None or bool(share) or login != policy.product_login(owner["product"]):
             raise OdooDatabaseUpdateError("The copied read-only QA account is not source-owned.")
         if raw_runtime is not None:
             runtime = self._readonly_qa_object(raw_runtime)
@@ -1976,6 +1976,8 @@ class OdooDataWorkflowRunner:
         if login:
             cursor.execute("SELECT " + fields + " FROM res_users WHERE login=%s", (login,))
             users.update((row[0], row) for row in cursor.fetchall())
+        if not users:
+            return None
         if len(users) != 1 or not login:
             raise OdooDatabaseUpdateError("The read-only QA account ownership is missing or ambiguous.")
         cursor.execute("SELECT key,value FROM ir_config_parameter WHERE key IN (%s,%s)", ("database.uuid", policy.COPY_PARAMETER))
@@ -1990,6 +1992,8 @@ class OdooDataWorkflowRunner:
         )
         user = next(iter(users.values()))
         owner = self._qualify_readonly_qa_owner(policy, user, target_owner)
+        if owner == target_owner:
+            return None
         self._qualify_readonly_qa_role(cursor, policy, user[0])
         cursor.execute("SELECT count(*) FROM res_users_apikeys WHERE user_id=%s", (user[0],))
         if cursor.fetchone()[0]:
@@ -2000,8 +2004,6 @@ class OdooDataWorkflowRunner:
                 if cursor.fetchone()[0]:
                     raise OdooDatabaseUpdateError("The read-only QA account has unexpected OAuth credentials.")
         self._qualify_readonly_qa_witnesses(policy, witnesses, user[0], bool(user[2]), owner)
-        if owner == target_owner:
-            return None
         if not witnesses:
             raise OdooDatabaseUpdateError("The copied read-only QA account has no source ownership witness.")
         if user[6] is None and policy.FIXTURE_JOURNAL_KEY not in witnesses:

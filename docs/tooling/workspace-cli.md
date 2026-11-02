@@ -509,9 +509,9 @@ Notes
   follow the existing sanitization and lane-secret rules below.
 - The same SQL boundary handles copied read-only QA identities using the
   image's registry-free `launchplane_readonly/policy.py`. It qualifies the
-  runtime/database owner, explicit and transitive roles, authentication state
-  and exact QA witnesses before credential clearing can obscure them. A
-  qualified account copied to another recipient is deactivated, stripped of
+  runtime/database owner, then checks a foreign account's explicit and transitive
+  roles, authentication state and exact QA witnesses before credential clearing
+  can obscure them. A qualified account copied to another recipient is deactivated, stripped of
   authentication and ownership bindings, and assigned a checked retired login
   so the recipient's fixture can create its own account. Its user ID and all
   references remain. Only the qualified QA fixture journal and product operative
@@ -520,10 +520,12 @@ Notes
   registry load. Staff collisions, unknown ownership/runtime/witnesses,
   conflicting roles or retired-login collisions refuse without partial changes.
   A same-recipient refresh preserves its account and witnesses, including across
-  preview generation changes. The copied flag alone never selects retirement.
+  preview generation changes. Its QA role, authentication or witness drift stays
+  with the native QA guards and does not block unrelated registry startup.
+  The copied flag alone never selects retirement.
   Missing optional QA schema and empty retained ownership columns do not make
-  older or unavailable optional policy a new startup prerequisite. Available
-  witness metadata still identifies orphan QA journals as a refusal. This does
+  older or unavailable optional policy a new startup prerequisite.
+  Orphan QA journals remain unchanged and never authorize a cleanup. This does
   not activate an account, clear a use hold or perform browser QA.
 - Devkit-managed startup Odoo launches and data workflow Odoo shell subprocesses prepend
   `/volumes/scripts` to `PYTHONPATH` so shipped runtime helpers remain

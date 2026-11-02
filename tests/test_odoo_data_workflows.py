@@ -2300,6 +2300,44 @@ class CredentialBoundaryTests(unittest.TestCase):
             for key in (self.qa_policy.FIXTURE_JOURNAL_KEY, self.qa_policy.operative_marker_key("tenant"), "fixture.samples"):
                 self.assertEqual(parameters[key], dict((row[0], row[1]) for row in before["ir_config_parameter"])[key])
 
+    def test_same_recipient_qa_drift_does_not_block_unrelated_registry_work(self) -> None:
+        self.seed_readonly_qa(same_recipient=True)
+        faults = [
+            ("UPDATE res_users SET active=false WHERE id=41", ()),
+            ("INSERT INTO res_groups_users_rel VALUES (41,30)", ()),
+            ("INSERT INTO res_groups_implied_rel VALUES (20,30)", ()),
+            ("INSERT INTO res_users_apikeys VALUES (991,41,'unexpected','key evidence')", ()),
+            ("UPDATE res_users SET oauth_provider_id=99 WHERE id=41", ()),
+            ("UPDATE res_users SET share=true WHERE id=41", ()),
+            ("UPDATE res_users SET launchplane_readonly_runtime=NULL WHERE id=41", ()),
+            ("UPDATE res_users SET login='renamed-qa' WHERE id=41", ()),
+            (
+                "UPDATE ir_config_parameter SET value=? WHERE key=?",
+                ("invalid-json", self.qa_policy.operative_marker_key("tenant")),
+            ),
+        ]
+        with closing(sqlite3.connect(":memory:")) as snapshot:
+            with closing(sqlite3.connect(self.path)) as source:
+                source.backup(snapshot)
+            for statement, parameters in faults:
+                with self.subTest(statement=statement):
+                    with closing(sqlite3.connect(self.path)) as writer, writer:
+                        snapshot.backup(writer)
+                        writer.execute(statement, parameters)
+                    before = self.qa_state()
+                    self.runner.prepare_credentials_before_registry()
+                    after = self.qa_state()
+                    for table in ("res_users", "res_users_apikeys", "qa_reference"):
+                        self.assertEqual(after[table], before[table])
+                    before_parameters = dict((row[0], row[1]) for row in before["ir_config_parameter"])
+                    after_parameters = dict((row[0], row[1]) for row in after["ir_config_parameter"])
+                    for key in (
+                        self.qa_policy.FIXTURE_JOURNAL_KEY,
+                        self.qa_policy.operative_marker_key("tenant"),
+                        "fixture.samples",
+                    ):
+                        self.assertEqual(after_parameters[key], before_parameters[key])
+
     def test_foreign_unactivated_fixture_shell_is_retired_without_an_activation_runtime(self) -> None:
         self.seed_readonly_qa(shell=True)
         self.runner.prepare_credentials_before_registry(restored_copy=True)
@@ -2384,7 +2422,7 @@ class CredentialBoundaryTests(unittest.TestCase):
                         self.runner.prepare_credentials_before_registry(restored_copy=True)
                     self.assertEqual(self.qa_state(), before)
 
-    def test_qa_orphan_witness_and_unwitnessed_shell_refuse_without_clearing_other_journals(self) -> None:
+    def test_unwitnessed_shell_refuses_without_clearing_other_journals(self) -> None:
         self.seed_readonly_qa(shell=True)
         with closing(sqlite3.connect(self.path)) as writer, writer:
             writer.execute("DELETE FROM ir_config_parameter WHERE key=?", (self.qa_policy.FIXTURE_JOURNAL_KEY,))
@@ -2392,16 +2430,20 @@ class CredentialBoundaryTests(unittest.TestCase):
         with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
             self.runner.prepare_credentials_before_registry(restored_copy=True)
         self.assertEqual(self.qa_state(), before)
+
+    def test_orphan_qa_metadata_does_not_block_registry_startup_or_authorize_witness_cleanup(self) -> None:
+        self.seed_readonly_qa(same_recipient=True)
         with closing(sqlite3.connect(self.path)) as writer, writer:
             writer.execute("DELETE FROM res_users WHERE id=41")
-            writer.execute(
-                "INSERT INTO ir_config_parameter (key,value,id) VALUES (?,?,91)",
-                (self.qa_policy.FIXTURE_JOURNAL_KEY, json.dumps(self.qa_fixture)),
-            )
         before = self.qa_state()
-        with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
-            self.runner.prepare_credentials_before_registry(restored_copy=True)
-        self.assertEqual(self.qa_state(), before)
+        self.runner.prepare_credentials_before_registry()
+        after = self.qa_state()
+        for table in ("res_users", "res_users_apikeys", "qa_reference"):
+            self.assertEqual(after[table], before[table])
+        before_parameters = dict((row[0], row[1]) for row in before["ir_config_parameter"])
+        after_parameters = dict((row[0], row[1]) for row in after["ir_config_parameter"])
+        for key in (self.qa_policy.FIXTURE_JOURNAL_KEY, self.qa_policy.operative_marker_key("tenant"), "fixture.samples"):
+            self.assertEqual(after_parameters[key], before_parameters[key])
 
     def test_foreign_qa_without_either_source_witness_is_not_retired(self) -> None:
         self.seed_readonly_qa()
