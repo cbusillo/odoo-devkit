@@ -1818,7 +1818,8 @@ class OdooDataWorkflowRunner:
             raise OdooDatabaseUpdateError("The read-only QA ownership evidence is malformed.")
         return parsed
 
-    def _qualify_readonly_qa_role(self, cursor: Any, policy: Any, user_id: int) -> None:
+    @staticmethod
+    def _qualify_readonly_qa_role(cursor: Any, policy: Any, user_id: int) -> None:
         groups = {}
         for xmlid in (policy.GROUP, policy.IMPLIED_GROUP, *policy.FORBIDDEN_IMPLIED_GROUPS):
             module, name = xmlid.split(".", 1)

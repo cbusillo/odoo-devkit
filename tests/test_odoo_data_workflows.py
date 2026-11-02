@@ -2145,7 +2145,7 @@ class CredentialBoundaryTests(unittest.TestCase):
             product_login=lambda product: "qa-" + product,
             operative_marker_key=lambda product: "operative." + product,
         )
-        self.qa_source_identity = {
+        self.qa_source_identity: dict[str, Any] = {
             "schema_version": 1,
             "product": "tenant",
             "context": "fixture",
@@ -2157,7 +2157,7 @@ class CredentialBoundaryTests(unittest.TestCase):
             "preview_id": "source-preview" if shell or same_recipient else "",
             "preview_generation_id": "source-generation" if shell or same_recipient else "",
         }
-        self.qa_target_identity = {
+        self.qa_target_identity: dict[str, Any] = {
             **self.qa_source_identity,
             "instance": "old-preview" if same_recipient else "new-preview" if target == "preview" else "testing",
             "environment_kind": "preview" if target == "preview" else "stable",
@@ -2166,18 +2166,18 @@ class CredentialBoundaryTests(unittest.TestCase):
             "preview_id": "source-preview" if same_recipient else "target-preview" if target == "preview" else "",
             "preview_generation_id": "target-generation" if target == "preview" else "",
         }
-        self.qa_source_owner = {
+        self.qa_source_owner: dict[str, str] = {
             key: self.qa_source_identity[key] for key in ("product", "context", "instance", "environment_kind", "preview_id")
         } | {
             "database": "fixture" if same_recipient else "source-db",
             "database_uuid": "fixture-uuid",
             "testing_copy": "" if shell or same_recipient else "a" * 64,
         }
-        self.qa_target_owner = {
+        self.qa_target_owner: dict[str, str] = {
             key: self.qa_target_identity[key] for key in ("product", "context", "instance", "environment_kind", "preview_id")
         } | {"database": "fixture", "database_uuid": "fixture-uuid", "testing_copy": "b" * 64 if target == "testing" else ""}
 
-        def qualify(identity: dict, runtime: str, platform: str, database: str, database_uuid: str, witness: str) -> dict:
+        def qualify(identity: dict, runtime: str, platform: str, database_name: str, database_uuid: str, witness: str) -> dict:
             self.assertEqual(json.loads(runtime), identity)
             if identity == self.qa_target_identity:
                 owner = self.qa_target_owner
@@ -2186,7 +2186,7 @@ class CredentialBoundaryTests(unittest.TestCase):
             else:
                 raise ValueError("unqualified fixture identity")
             self.assertEqual(platform, "preview" if owner["environment_kind"] == "preview" else "testing")
-            self.assertEqual((database, database_uuid), (owner["database"], owner["database_uuid"]))
+            self.assertEqual((database_name, database_uuid), (owner["database"], owner["database_uuid"]))
             if owner["environment_kind"] == "stable":
                 self.assertEqual(witness, owner["testing_copy"])
             return dict(owner)
@@ -2198,14 +2198,14 @@ class CredentialBoundaryTests(unittest.TestCase):
         self.runner.local.platform_instance = "preview" if target == "preview" else "testing"
         self.runner.os_env[self.qa_policy.RUNTIME_ENV] = json.dumps(self.qa_target_identity)
         login = self.qa_policy.product_login("tenant")
-        self.qa_fixture = {
+        self.qa_fixture: dict[str, Any] = {
             "fixture_sha256": "d" * 64,
             "records": [
                 {"model": "res.users", "id": 41, "disposition": "created"},
                 {"model": "ir.config_parameter", "id": 91, "disposition": "created"},
             ],
         }
-        self.qa_marker = {
+        self.qa_marker: dict[str, Any] = {
             "account_id": 41,
             "binding": "e" * 64,
             "copy_binding": self.qa_source_owner["testing_copy"] or "f" * 64,
@@ -2480,7 +2480,7 @@ class CredentialBoundaryTests(unittest.TestCase):
         conn = self.runner.connect_to_db()
         with conn.cursor() as cursor:
             retired = self.runner._sanitize_copied_readonly_qa(cursor)
-        self.assertIsNotNone(retired)
+        assert retired is not None
         conn.rollback()
         self.runner._reset_db_connection()
         with closing(sqlite3.connect(self.path)) as writer, writer:
@@ -2493,7 +2493,7 @@ class CredentialBoundaryTests(unittest.TestCase):
     def test_qa_account_and_witness_retirement_roll_back_together_before_commit(self) -> None:
         self.seed_readonly_qa()
         before = self.qa_state()
-        execute = _ParamstyleCursor.execute
+        execute: Callable[[_ParamstyleCursor, str, Sequence[object]], None] = _ParamstyleCursor.execute
 
         def fail_after_user_update(cursor: _ParamstyleCursor, query: str, parameters: Sequence[object] = ()) -> None:
             if str(query) == "DELETE FROM ir_config_parameter WHERE key IN (%s,%s)":
@@ -2600,7 +2600,9 @@ class CredentialBoundaryTests(unittest.TestCase):
         policy_file.write_text("def product_login(product: str) -> str:\n    return product\n")
         with patch.object(self.runner, "_resolve_addons_paths", return_value=[root]):
             policy = self.runner._readonly_qa_policy()
-        self.assertEqual(Path(policy.__file__), policy_file.resolve())
+        filename = policy.__file__
+        assert filename is not None
+        self.assertEqual(Path(filename), policy_file.resolve())
         self.assertEqual(policy.product_login("disconnected"), "disconnected")
 
     def connection(self, _name: str) -> _BoundaryConnection:
