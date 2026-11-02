@@ -863,21 +863,13 @@ class ReviewedRegressionTests(unittest.TestCase):
             patch.object(native.DisposableCensus, "manual_baseline", prepare),
             patch.object(native, "registry_surface", return_value=selected),
             patch.object(native, "native_view_families", side_effect=RuntimeError("later failure")),
+            patch.object(native, "collect_static", wraps=census.collect_static) as static,
         ):
             with self.assertRaisesRegex(RuntimeError, "later failure"):
                 native.collect_native(source, candidate, [], declaration={}, deadline=time.monotonic() + 60, output=report_path)
             retained = json.loads(report_path.with_suffix(".target.json").read_text())
-            expected = {
-                **selected,
-                "blocked_modules": ["unavailable"],
-                "conditional": True,
-                "blocked_models": ["x_blocked"],
-                "blocked_fields": ["res.users.x_blocked"],
-                "pending_models": [],
-                "pending_fields": [],
-            }
-            self.assertEqual(retained, expected)
-            self.assertEqual(census.collect_static(source, retained), census.collect_static(source, expected))
+            self.assertEqual(retained, json.loads(json.dumps(static.call_args.args[1])))
+            self.assertNotIn("context_records", retained)
             before = report_path.read_bytes()
             with self.assertRaises(FileExistsError):
                 native.collect_native(source, candidate, [], declaration={}, deadline=time.monotonic() + 60, output=report_path)

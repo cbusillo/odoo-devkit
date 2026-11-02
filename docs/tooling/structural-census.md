@@ -220,7 +220,7 @@ report = collect_native(
     [Path(root) for root in odoo.addons.__path__],
     declaration=declaration,
     deadline=time.monotonic() + remaining_queue_seconds,
-    output=Path("/private/census.json"),
+    output=Path(existing_episode_results) / "census.json",
 )
 ```
 
@@ -241,7 +241,8 @@ include every such proof path in `migration_sources`. No caller hash catalog is
 maintained. Binding failures are checkpointed before raising. Old19/18
 sources are static references only. Missing binding is not guessed.
 
-With a report output such as `/private/census.json`, the collector atomically
+Use a fresh report path inside each native episode’s results directory; never
+reuse an earlier episode’s report. With an output such as `/private/census.json`, the collector atomically
 retains `/private/census.target.json` at each successful static-analysis point.
 This is the actual baseline-enriched target passed to `collect_static`, including
 pending/blocked declarations, conditional state, native identities and view
