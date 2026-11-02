@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.6
+# syntax=docker/dockerfile:1.28
 ARG ARTIFACT_IMAGE
 
 FROM --platform=$TARGETPLATFORM ${ARTIFACT_IMAGE} AS artifact
