@@ -757,7 +757,13 @@ Notes
   The stock source is the exact official historical
   [19 file](https://github.com/odoo/odoo/blob/91a45b0685000b002fcb71600fdccfc5e31ef076/addons/hr_org_chart/views/hr_employee_public_views.xml)
   under `docker/scripts/legacy/hr_org_chart/`; attribute differences, including
-  image preview placement, remain significant. Both views must qualify before
+  image preview placement, remain significant. Its hierarchy may retain the
+  exact [stock18 architecture](https://github.com/odoo/odoo/blob/68d580d3d4703e7190055f7040682942d5f1a24f/addons/hr_org_chart/views/hr_employee_public_views.xml)
+  as previous history while the current architecture still matches stock19.
+  That18file has no public form extension. The HR and Calendar view plans also
+  preserve native Website's untracked, public creation defaults alongside
+  their qualified unset storage; tracking, restricted visibility and other
+  unqualified presentation state still refuse. Both views must qualify before
   any bridge effect. Extra owners, translations, custom current/previous
   architectures, populated custom fields, restrictions, children, dashboard
   customizations and competing primary hierarchies refuse. Native HR must still

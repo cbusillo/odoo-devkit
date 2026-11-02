@@ -18,6 +18,7 @@ TARGET_STATE = "state_in_od"
 STATE_DATA_FILE = Path("/odoo/odoo/addons/base/data/res.country.state.csv")
 STOCK_VALUATION_DATA_FILE = Path("/odoo/addons/account/report/account_stock_valuation_report.xml")
 HR_ORG_CHART_DATA_FILE = Path("/odoo/addons/hr/views/hr_employee_public_views.xml")
+UNTRACKED_PUBLIC_VIEW_DEFAULTS = {"track": (None, False), "visibility": (None, "")}
 _logger = logging.getLogger(__name__)
 
 
@@ -343,13 +344,18 @@ def _hr_org_chart_link_plan(cr: Any) -> Reference:
     return source
 
 
+def _hr_org_chart_stock_views(series: str) -> dict[str, dict[str, ElementTree.Element]]:
+    source = Path(__file__).with_name("legacy") / "hr_org_chart" / f"hr_employee_public_views_{series}.xml"
+    return {
+        record.attrib["id"]: {field.attrib["name"]: field for field in record.findall("field")}
+        for record in ElementTree.parse(source).findall("record[@model='ir.ui.view']")
+    }
+
+
 def _hr_org_chart_view_plan(cr: Any) -> tuple[Reference, int | None]:
     normalize = runpy.run_path(str(Path(__file__).with_name("mail_view_20.py")))["_normalized_architecture"]
-    source_file = Path(__file__).with_name("legacy") / "hr_org_chart" / "hr_employee_public_views_19.xml"
-    stock = {
-        record.attrib["id"]: {field.attrib["name"]: field for field in record.findall("field")}
-        for record in ElementTree.parse(source_file).findall("record[@model='ir.ui.view']")
-    }
+    stock = _hr_org_chart_stock_views("19")
+    previous = _hr_org_chart_stock_views("18")
     cr.execute("LOCK TABLE ir_ui_view, ir_ui_view_custom, ir_ui_view_group_rel, ir_model_data IN SHARE ROW EXCLUSIVE MODE")
     hierarchy_name = "hr_employee_public_hierarchy_view"
     hierarchy = _require_source(cr, "hr_org_chart", hierarchy_name, "ir.ui.view")
@@ -445,6 +451,7 @@ def _hr_org_chart_view_plan(cr: Any) -> tuple[Reference, int | None]:
                 "arch_fs": ("hr_org_chart/views/hr_employee_public_views.xml",),
                 "customize_show": (False,),
                 "is_seo_optimized": (False,),
+                **UNTRACKED_PUBLIC_VIEW_DEFAULTS,
             },
         )
         expected = ElementTree.tostring(fields["arch"][0], encoding="unicode").replace(
@@ -456,7 +463,10 @@ def _hr_org_chart_view_plan(cr: Any) -> tuple[Reference, int | None]:
         try:
             expected = normalize(expected)
             current = normalize(architectures["en_US"])
-            if view.get("arch_prev") and normalize(view["arch_prev"]) != expected:
+            admitted_history = {expected}
+            if name in previous:
+                admitted_history.add(normalize(ElementTree.tostring(previous[name]["arch"][0], encoding="unicode")))
+            if view.get("arch_prev") and normalize(view["arch_prev"]) not in admitted_history:
                 raise RuntimeError("Preserve customized Org Chart previous architecture")
         except (ElementTree.ParseError, TypeError, ValueError) as error:
             raise RuntimeError("Unsupported Org Chart architecture") from error
@@ -985,6 +995,7 @@ def _calendar_view_plan(cr: Any) -> list[int]:
                 "arch_updated": (False,),
                 "arch_fs": ("calendar/views/res_users_views.xml",),
                 "is_seo_optimized": (False,),
+                **UNTRACKED_PUBLIC_VIEW_DEFAULTS,
             },
         )
         expected = normalize(ElementTree.tostring(fields["arch"][0], encoding="unicode"))

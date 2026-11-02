@@ -124,6 +124,17 @@ class CalendarUsersTests(core.CoreReferenceFixture):
         self.connection.execute("DELETE FROM ir_config_parameter")
         self.apply()
 
+    def test_untracked_public_website_defaults_are_preserved_and_changed_values_refuse(self) -> None:
+        self.connection.executescript(
+            "ALTER TABLE ir_ui_view ADD COLUMN track BOOLEAN; ALTER TABLE ir_ui_view ADD COLUMN visibility TEXT;"
+        )
+        self.connection.execute("UPDATE ir_ui_view SET track=0,visibility='' WHERE id IN (?,?)", tuple(self.views))
+        before = self.connection.execute("SELECT id,track,visibility FROM ir_ui_view ORDER BY id").fetchall()
+        self.apply()
+        self.assertEqual(self.connection.execute("SELECT id,track,visibility FROM ir_ui_view ORDER BY id").fetchall(), before)
+        self.assert_refused("UPDATE ir_ui_view SET track=1 WHERE id=?", (self.views[0],))
+        self.assert_refused("UPDATE ir_ui_view SET visibility='connected' WHERE id=?", (self.views[0],))
+
     def test_divergence_ambiguous_preferences_and_unqualified_calendar_data_refuse_before_effects(self) -> None:
         for statement in (
             "UPDATE res_users_settings SET calendar_default_privacy='private' WHERE id=1",

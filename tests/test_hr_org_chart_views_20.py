@@ -22,7 +22,7 @@ class HrOrgChartViewFixture(HrOrgChartActionFixture):
         self.view_plan_patch.stop()
         self.cursor = ViewCursor(self.connection)
         source = Path(bridge.__file__).parent / "legacy/hr_org_chart/hr_employee_public_views_19.xml"
-        self.stock = {
+        self.stock: dict[str, dict[str, ElementTree.Element]] = {
             record.attrib["id"]: {field.attrib["name"]: field for field in record.findall("field")}
             for record in ElementTree.parse(source).findall("record[@model='ir.ui.view']")
         }
@@ -83,6 +83,50 @@ class HrOrgChartViewFixture(HrOrgChartActionFixture):
 
 
 class HrOrgChartViewTests(HrOrgChartViewFixture):
+    def test_untracked_public_website_defaults_are_preserved_and_changed_values_refuse(self) -> None:
+        self.connection.executescript(
+            "ALTER TABLE ir_ui_view ADD COLUMN track BOOLEAN; ALTER TABLE ir_ui_view ADD COLUMN visibility TEXT;"
+        )
+        self.connection.execute("UPDATE ir_ui_view SET track=0,visibility='' WHERE id IN (?,?)", tuple(self.views.values()))
+        before = self.connection.execute("SELECT id,track,visibility FROM ir_ui_view ORDER BY id").fetchall()
+        self.apply()
+        self.assertEqual(self.connection.execute("SELECT id,track,visibility FROM ir_ui_view ORDER BY id").fetchall(), before)
+        for statement, value in (
+            ("UPDATE ir_ui_view SET track=? WHERE id=?", True),
+            ("UPDATE ir_ui_view SET visibility=? WHERE id=?", "connected"),
+        ):
+            self.connection.execute("SAVEPOINT website_default")
+            try:
+                self.connection.execute(statement, (value, next(iter(self.views.values()))))
+                self.assert_refuses_without_effects()
+            finally:
+                self.connection.execute("ROLLBACK TO website_default")
+                self.connection.execute("RELEASE website_default")
+
+    def test_stock_previous_hierarchy_from_18_and_absent_extension_history_are_preserved(self) -> None:
+        source = Path(bridge.__file__).parent / "legacy/hr_org_chart/hr_employee_public_views_18.xml"
+        hierarchy = ElementTree.parse(source).find("record[@id='hr_employee_public_hierarchy_view']/field[@name='arch']")
+        assert hierarchy is not None
+        previous = ElementTree.tostring(hierarchy[0], encoding="unicode")
+        self.connection.execute(
+            "UPDATE ir_ui_view SET arch_prev=? WHERE id=?", (previous, self.views["hr_employee_public_hierarchy_view"])
+        )
+        extension = self.views["hr_employee_public_view_form_inherit_org_chart"]
+        self.connection.execute("UPDATE ir_ui_view SET arch_prev=NULL WHERE id=?", (extension,))
+        before = self.snapshot()
+        self.apply()
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT arch_prev FROM ir_ui_view WHERE id=?", (self.views["hr_employee_public_hierarchy_view"],)
+            ).fetchone(),
+            (previous,),
+        )
+        self.assertEqual(self.connection.execute("SELECT arch_prev FROM ir_ui_view WHERE id=?", (extension,)).fetchone(), (None,))
+        self.assertEqual(self.snapshot()["view_links"], before["view_links"])
+        after = self.snapshot()
+        self.apply()
+        self.assertEqual(self.snapshot(), after)
+
     def test_hierarchy_keeps_identity_and_extension_stops_duplicating_native_form_with_history_and_replay(self) -> None:
         before = self.snapshot()
         self.apply()
