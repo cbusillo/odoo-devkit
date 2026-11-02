@@ -975,7 +975,14 @@ class ReviewedRegressionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 native.declared_files(declaration, "linux/amd64", roots, evidence=root)
 
-    def test_extraction_counts_business_xmlids_without_reading_their_names(self) -> None:
+    def test_extraction_keeps_link_aliases_without_reading_business_xmlid_names(self) -> None:
+        xmlid_rows = [
+            ("fixture", "action", "custom.action", 5, False),
+            ("hr_org_chart", "source_link", "ir.actions.act_window.view", 5, True),
+            ("hr", "target_link", "ir.actions.act_window.view", 5, False),
+            ("__export__", "private_business_identifier", "res.partner", 5, False),
+        ]
+
         class SQLText:
             def __init__(self, value: str) -> None:
                 self.value = value
@@ -1002,14 +1009,17 @@ class ReviewedRegressionTests(unittest.TestCase):
                     columns = {
                         "ir_model_data": ["module", "name", "model", "res_id", "noupdate"],
                         "ir_actions": ["id", "type"],
+                        "ir_act_window_view": ["id", "act_window_id", "view_id", "view_mode", "sequence"],
                         "ir_model_fields": ["id", "model", "name", "state", "ttype", "relation", "domain", "on_delete", "size"],
                         "ir_cron": ["id", "ir_actions_server_id", "active", "priority", "cron_name", "user_id", "nextcall"],
                     }
                     self.rows = [(column,) for column in columns.get(table, [])]
                 elif "count(*)" in statement:
-                    self.rows = [(8,)]
+                    self.rows = [(sum(row[2] not in bindings[0] for row in xmlid_rows),)]
                 elif "FROM ir_actions" in statement:
                     self.rows = [(5, "custom.action")]
+                elif "FROM ir_act_window_view" in statement:
+                    self.rows = [(5, 5, 10, "form", 1)]
                 elif "FROM ir_model_fields" in statement:
                     self.rows = [
                         (
@@ -1033,7 +1043,7 @@ class ReviewedRegressionTests(unittest.TestCase):
                         raise AssertionError("Technical model scope is required")
                     if "custom.action" not in bindings[0] or "res.partner" in bindings[0]:
                         raise AssertionError("Business XMLID names must never be selected")
-                    self.rows = [("fixture", "action", "custom.action", 5, False)]
+                    self.rows = [row for row in xmlid_rows if row[2] in bindings[0]]
                 else:
                     self.rows = []
 
@@ -1047,9 +1057,17 @@ class ReviewedRegressionTests(unittest.TestCase):
         with patch.dict(sys.modules, {"psycopg2": SimpleNamespace(sql=sql)}):
             extracted = extract.extract_private_technical(Cursor(), "synthetic")
         projected = extract.project_private_inventory(extracted)
-        self.assertEqual(projected["out_of_scope"]["nontechnical_xmlids"], 8)
-        self.assertEqual([row["key"] for row in projected["records"]["xmlids"]], ["fixture.action"])
-        self.assertEqual(projected["totals"]["xmlids"], 1)
+        self.assertEqual([tuple(row.values()) for row in extracted["tables"]["ir_model_data"]["rows"]], xmlid_rows[:-1])
+        self.assertEqual(projected["out_of_scope"]["nontechnical_xmlids"], 1)
+        self.assertEqual(
+            projected["records"]["xmlids"],
+            [{"key": module + "." + name, "record_model": model, "owners": [module]} for module, name, model, *_ in xmlid_rows[:-1]],
+        )
+        self.assertNotIn("private_business_identifier", json.dumps(extracted))
+        self.assertNotIn("private_business_identifier", json.dumps(projected))
+        self.assertEqual(projected["totals"]["xmlids"], len(xmlid_rows) - 1)
+        self.assertEqual(projected["records"]["actions"][0]["view_references"], ["view:10"])
+        self.assertEqual(projected["records"]["actions"][0]["view_modes"], ["form"])
         field = projected["records"]["fields"][0]
         created: list[dict[str, Any]] = []
 
@@ -1134,9 +1152,11 @@ class ReviewedRegressionTests(unittest.TestCase):
             "out_of_scope": {"nontechnical_xmlids": 0},
             "tables": {
                 "ir_model_data": {
-                    "count": 2,
+                    "count": 4,
                     "rows": [
                         {"module": "base", "name": "action", "model": "ir.actions.act_window", "res_id": 1234},
+                        {"module": "hr_org_chart", "name": "source_link", "model": "ir.actions.act_window.view", "res_id": 1234},
+                        {"module": "hr", "name": "target_link", "model": "ir.actions.act_window.view", "res_id": 1234},
                         {"module": "__export__", "name": "private_business_identifier", "model": "res.partner", "res_id": 1234},
                     ],
                 },
@@ -1149,7 +1169,15 @@ class ReviewedRegressionTests(unittest.TestCase):
         self.assertEqual(row["action_bindings"], {"1234": ["base.action"]})
         self.assertNotIn("private_business_identifier", json.dumps(projected))
         self.assertEqual(projected["out_of_scope"]["nontechnical_xmlids"], 1)
-        self.assertEqual(projected["totals"]["xmlids"], 1)
+        self.assertEqual(projected["totals"]["xmlids"], 3)
+        self.assertEqual(
+            {item["key"]: item["record_model"] for item in projected["records"]["xmlids"]},
+            {
+                "base.action": "ir.actions.act_window",
+                "hr_org_chart.source_link": "ir.actions.act_window.view",
+                "hr.target_link": "ir.actions.act_window.view",
+            },
+        )
         action = SimpleNamespace(id=7, _name="ir.actions.act_window")
         env = ViewEnvironment({"base.action": action})
         bound_arch = native.bind_view_actions(env, row, arch)

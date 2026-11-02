@@ -22,8 +22,16 @@ templates and QWeb counts. Scheduled actions expose only technical ID, server-ac
 link, active flag and priority; no names, operators, schedules or code are selected.
 The inherited action table accounts for unknown action subclasses too. XMLID
 names are selected only for technical models, including the actual action
-subclasses. Other XMLID rows are counted without selecting their names or IDs.
+subclasses and `ir.actions.act_window.view` link identities. Link aliases remain
+in the technical XMLID bucket, separate from executable action/button bindings.
+Other XMLID rows are counted without selecting their names or IDs.
 Existing ACL ownership work is reused; this is not a rights-equivalence oracle.
+
+Earlier packets omitted action-view link XMLIDs even when their physical rows
+were captured. Their original scope and out-of-scope counts remain unchanged;
+reprojection cannot recover omitted identities. Link ownership from those packets
+is UNKNOWN, never absence, until the next already-needed qualified intake
+captures it.
 
 Use a dedicated new cursor, before any query, in root's existing extraction job:
 
