@@ -746,6 +746,32 @@ Notes
   their existing owners; this action handoff is not a whole-module merge or
   uninstall. Native cleanup keeps the protected old alias, while a later native
   uninstall of only the old module retains the action through its HR XMLID.
+  The exact historical stock19 public hierarchy also gains its native HR XMLID
+  on the retained row. Its old alias is protected, and native HR owns the new
+  architecture, avoiding selection of a second, older primary hierarchy.
+  Native20 already includes the Org Chart in its public employee form, so the
+  corresponding qualified stock19 form extension becomes an empty inheritance
+  spec on its existing row. This changes only its current architecture;
+  previous architecture, IDs, links, attribution and all other columns remain
+  unchanged. No view is deleted or deactivated and no module is uninstalled.
+  The stock source is the exact official historical
+  [19 file](https://github.com/odoo/odoo/blob/91a45b0685000b002fcb71600fdccfc5e31ef076/addons/hr_org_chart/views/hr_employee_public_views.xml)
+  under `docker/scripts/legacy/hr_org_chart/`; attribute differences, including
+  image preview placement, remain significant. Its hierarchy may retain the
+  exact [stock18 architecture](https://github.com/odoo/odoo/blob/68d580d3d4703e7190055f7040682942d5f1a24f/addons/hr_org_chart/views/hr_employee_public_views.xml)
+  as previous history while the current architecture still matches stock19.
+  That18file has no public form extension. The HR and Calendar view plans also
+  preserve native Website's untracked, public creation defaults alongside
+  their qualified unset storage; tracking, restricted visibility and other
+  unqualified presentation state still refuse. Both views must qualify before
+  any bridge effect. Extra owners, translations, custom current/previous
+  architectures, populated custom fields, restrictions, children, dashboard
+  customizations and competing primary hierarchies refuse. Native HR must still
+  define the same primary hierarchy and own its form's Org Chart. This is a
+  two-view crossing, not a general rule for retired modules: missing source
+  modules are skipped by the native graph, and end-of-load cleanup only visits
+  updated modules. Actual registry/UI qualification remains with the migration
+  owner in the existing affected-input native20 batch.
   Like the stock valuation handoff, preparation replays before native loading;
   completed major-20 crossings are left to native Odoo.
   The bridge resolves `base.state_in_or` from the source database and adds
