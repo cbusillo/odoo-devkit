@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.6
+# syntax=docker/dockerfile:1.28
 ARG ODOO_BASE_RUNTIME_IMAGE
 ARG ODOO_BASE_DEVTOOLS_IMAGE
 ARG ODOO_ADDON_REPOSITORIES
