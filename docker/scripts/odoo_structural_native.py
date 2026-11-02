@@ -293,6 +293,9 @@ class DisposableCensus:
     def __init__(self, deadline: float, *, output: Path | None = None) -> None:
         self.deadline = deadline
         self.output = output
+        self.target_output = output.with_suffix(".target.json") if output is not None else None
+        if self.target_output is not None and (self.target_output.exists() or self.target_output.is_symlink()):
+            raise FileExistsError("Census target output already exists; use a fresh report path")
         self.owned: set[str] = set()
         self.baseline = ""
         self.conditional = False
@@ -303,6 +306,14 @@ class DisposableCensus:
         self.last_checkpoint: float | None = None
         self.thread: Any = threading.current_thread()
         self.previous_dbname = getattr(self.thread, "dbname", None)
+
+    def retain_target(self, target: dict[str, Any]) -> None:
+        if self.target_output is None:
+            return
+        self.target_output.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.target_output.with_suffix(self.target_output.suffix + ".tmp")
+        temporary.write_text(json.dumps(target, indent=2) + "\n")
+        temporary.replace(self.target_output)
 
     def checkpoint(self, *, force: bool = False) -> None:
         if self.output is None:
@@ -841,7 +852,7 @@ def collect_native(
         ) -> dict[str, Any]:
             return {
                 **surface,
-                "blocked_modules": blocked_modules,
+                "blocked_modules": sorted(blocked_modules),
                 "conditional": session.conditional,
                 "blocked_models": [
                     row["model"]
@@ -870,7 +881,10 @@ def collect_native(
             if row.get("state") == "manual"
         }
         if pending:
-            session.report = collect_static(inventory, target_with_baseline(target, session.manual_blocked, pending))
+            pending_target = target_with_baseline(target, session.manual_blocked, pending)
+            pending_report = collect_static(inventory, pending_target)
+            session.retain_target(pending_target)
+            session.report = pending_report
             session.report.update(evidence)
             for component in session.report["components"]:
                 if (component["bucket"], component["key"]) in pending:
@@ -893,7 +907,9 @@ def collect_native(
                 target = registry_surface(api.Environment(cursor, SUPERUSER_ID, {}), candidate, graph, migration_sources)
             coverage_target = target
         target = target_with_baseline(target, session.manual_blocked, set())
-        session.report = report = collect_static(inventory, target)
+        report = collect_static(inventory, target)
+        session.retain_target(target)
+        session.report = report
         report.update(evidence)
         by_key = {(row["bucket"], row["key"]): row for row in report["components"]}
         for bucket, key in session.manual_blocked:

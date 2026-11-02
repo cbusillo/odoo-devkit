@@ -716,12 +716,16 @@ class ReviewedRegressionTests(unittest.TestCase):
         candidate = {"artifact": artifact, "platform": "linux/amd64", "intended_modules": ["base"], "migration_sources": []}
         registry = MagicMock()
         modules = {"odoo": SimpleNamespace(SUPERUSER_ID=1, api=SimpleNamespace(Environment=lambda *_args: object()))}
-        report_path = Path(self.enterContext(tempfile.TemporaryDirectory())) / "report.json"
-
         dependents = {"through.filter", "through.default", "through.auto", "through.menu", "pending.field"}
 
         def manual_failure(setup_error: Exception, _registry: Any, _source: Any) -> Any:
             saved = json.loads(report_path.read_text())
+            retained = json.loads(report_path.with_suffix(".target.json").read_text())
+            replay = census.collect_static(source, retained)
+            self.assertEqual(replay["candidate"], saved["candidate"])
+            self.assertEqual(set(retained["pending_models"]), {"x_pending"})
+            self.assertIn("res.partner.x_tier", retained["pending_fields"])
+            self.assertNotIn("context_records", retained)
             checkpoint_components = {row["key"]: row for row in saved["components"]}
             self.assertIn("missing-field", {item["code"] for item in checkpoint_components["bad"]["findings"]})
             self.assertIn("manual-baseline-pending", {item["code"] for item in checkpoint_components["manual"]["findings"]})
@@ -735,6 +739,7 @@ class ReviewedRegressionTests(unittest.TestCase):
             raise setup_error
 
         for failure in (TimeoutError("deadline"), RuntimeError("native registry unavailable")):
+            report_path = Path(self.enterContext(tempfile.TemporaryDirectory())) / "report.json"
             with (
                 patch.dict(sys.modules, modules),
                 patch.object(native, "verify_image_declaration"),
@@ -759,6 +764,123 @@ class ReviewedRegressionTests(unittest.TestCase):
                 self.assertIn(code, {item["code"] for item in components[key]["findings"]})
                 self.assertFalse(any(item["state"] == "dependency-blocked" for item in components[key]["findings"]))
             self.assertEqual(report["cleanup"], "complete")
+
+    def test_native_target_round_trip_survives_later_failure_and_refuses_stale_output(self) -> None:
+        source = inventory(
+            models=[{"key": "blocked.model", "model": "x_blocked", "owners": ["unavailable"]}],
+            fields=[{"key": "blocked.field", "model": "res.users", "name": "x_blocked", "state": "manual", "ttype": "char"}],
+            views=[view("child", "<data/>", parent="base.root", mode="extension")],
+        )
+        selected = target()
+        selected.update(
+            surface="native-empty20",
+            view_parents={"10": "", "20": "10"},
+            xmlids={"base.root": {"model": "ir.ui.view", "key": "10"}},
+            action_paths={"settings": ["base.settings"]},
+        )
+        artifact = {"release_compatibility": {"complete": True, "modules": [{"name": "base", "depends": []}]}}
+        selected["binding"] = census.digest(artifact)
+        candidate = {"artifact": artifact, "platform": "linux/amd64", "intended_modules": ["base"], "migration_sources": []}
+        report_path = Path(self.enterContext(tempfile.TemporaryDirectory())) / "census.json"
+        modules = {"odoo": SimpleNamespace(SUPERUSER_ID=1, api=SimpleNamespace(Environment=lambda *_args: object()))}
+
+        def build(session: native.DisposableCensus, _roots: Any, _graph: Any) -> Any:
+            session.bootstrap = [{"module": "unavailable", "state": "dependency-blocked"}]
+            session.conditional = True
+            return MagicMock()
+
+        def prepare(session: native.DisposableCensus, registry: Any, _inventory: Any) -> Any:
+            pre_manual_target = json.loads(report_path.with_suffix(".target.json").read_text())
+            self.assertEqual(pre_manual_target["pending_fields"], ["res.users.x_blocked"])
+            session.manual_blocked.add(("fields", "blocked.field"))
+            return registry
+
+        with (
+            patch.dict(sys.modules, modules),
+            patch.object(native, "verify_image_declaration"),
+            patch.object(native, "declared_files", return_value={}),
+            patch.object(native, "check_native_sources", return_value=selected["migration_sources"]),
+            patch.object(native, "module_graph", return_value={"base": set()}),
+            patch.object(native.DisposableCensus, "build", build),
+            patch.object(native.DisposableCensus, "manual_baseline", prepare),
+            patch.object(native, "registry_surface", return_value=selected),
+            patch.object(native, "native_view_families", side_effect=RuntimeError("later failure")),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "later failure"):
+                native.collect_native(source, candidate, [], declaration={}, deadline=time.monotonic() + 60, output=report_path)
+            retained = json.loads(report_path.with_suffix(".target.json").read_text())
+            expected = {
+                **selected,
+                "blocked_modules": ["unavailable"],
+                "conditional": True,
+                "blocked_models": ["x_blocked"],
+                "blocked_fields": ["res.users.x_blocked"],
+                "pending_models": [],
+                "pending_fields": [],
+            }
+            self.assertEqual(retained, expected)
+            self.assertEqual(census.collect_static(source, retained), census.collect_static(source, expected))
+            before = report_path.read_bytes()
+            with self.assertRaises(FileExistsError):
+                native.collect_native(source, candidate, [], declaration={}, deadline=time.monotonic() + 60, output=report_path)
+            self.assertEqual(report_path.read_bytes(), before)
+            self.assertEqual(json.loads(report_path.with_suffix(".target.json").read_text()), retained)
+            report_path = Path(self.enterContext(tempfile.TemporaryDirectory())) / "census.json"
+
+            def fail_final_publication(path: Path, destination: Path) -> Path:
+                if destination == report_path.with_suffix(".target.json") and destination.exists():
+                    raise OSError("interrupted publication")
+                return path.rename(destination)
+
+            with patch.object(Path, "replace", fail_final_publication), self.assertRaises(OSError):
+                native.collect_native(source, candidate, [], declaration={}, deadline=time.monotonic() + 60, output=report_path)
+            pending_target = json.loads(report_path.with_suffix(".target.json").read_text())
+            saved_report = json.loads(report_path.read_text())
+            replay = census.collect_static(source, pending_target)
+            saved = {row["key"]: row for row in saved_report["components"]}
+            self.assertEqual(pending_target["pending_fields"], ["res.users.x_blocked"])
+            self.assertEqual(saved_report["native_sources"], selected["migration_sources"])
+            self.assertEqual(saved_report["candidate"], replay["candidate"])
+            for row in replay["components"]:
+                self.assertTrue(all(item in saved[row["key"]]["findings"] for item in row["findings"]))
+
+    def test_no_target_is_published_before_static_qualification(self) -> None:
+        source = inventory()
+        artifact = {"release_compatibility": {"complete": True, "modules": [{"name": "base", "depends": []}]}}
+        candidate = {"artifact": artifact, "platform": "linux/amd64", "intended_modules": ["base"], "migration_sources": []}
+        modules = {"odoo": SimpleNamespace(SUPERUSER_ID=1, api=SimpleNamespace(Environment=lambda *_args: object()))}
+        for failed_step in ("build", "collect_static"):
+            report_path = Path(self.enterContext(tempfile.TemporaryDirectory())) / "census.json"
+            with (
+                patch.dict(sys.modules, modules),
+                patch.object(native, "verify_image_declaration"),
+                patch.object(native, "declared_files", return_value={}),
+                patch.object(native, "check_native_sources", return_value={}),
+                patch.object(native, "module_graph", return_value={"base": set()}),
+                patch.object(native.DisposableCensus, "build", return_value=MagicMock()) as build,
+                patch.object(native, "registry_surface", return_value=target()),
+                patch.object(native, "collect_static", wraps=census.collect_static) as static,
+            ):
+                if failed_step == "build":
+                    build.side_effect = ValueError("unhealthy registry")
+                    with self.assertLogs("odoo_structural_native", level="ERROR"):
+                        native.collect_native(
+                            source, candidate, [], declaration={}, deadline=time.monotonic() + 60, output=report_path
+                        )
+                else:
+                    static.side_effect = ValueError("unqualified target")
+                    with self.assertRaises(ValueError):
+                        native.collect_native(
+                            source, candidate, [], declaration={}, deadline=time.monotonic() + 60, output=report_path
+                        )
+                self.assertEqual(list(report_path.parent.iterdir()), [report_path])
+                with patch.object(Path, "write_text", side_effect=AssertionError("memory-only write")):
+                    if failed_step == "build":
+                        build.side_effect = None
+                        native.collect_native(source, candidate, [], declaration={}, deadline=time.monotonic() + 60)
+                    else:
+                        with self.assertRaises(ValueError):
+                            native.collect_native(source, candidate, [], declaration={}, deadline=time.monotonic() + 60)
 
     def test_dotted_field_paths_keep_later_pending_and_blocked_hops_distinct(self) -> None:
         selected = target()
