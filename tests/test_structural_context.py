@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 import copy
+import sys
 import unittest
+from pathlib import Path
 from typing import Any
 
-from test_structural_census import census, inventory, target, view
+from test_structural_census import inventory, target, view
+
+SCRIPTS = Path(__file__).resolve().parents[1] / "docker/scripts"
+sys.path.insert(0, str(SCRIPTS))
+try:
+    import odoo_structural_census as census
+finally:
+    sys.path.pop(0)
 
 
 def context_fixture() -> tuple[dict[str, Any], dict[str, Any]]:
@@ -21,6 +30,7 @@ def context_fixture() -> tuple[dict[str, Any], dict[str, Any]]:
         "xmlids": ["custom.open", "custom.alias"],
         "type": "ir.actions.act_window",
         "model": "res.partner",
+        "noupdate": True,
         "search_view_id": 29,
     }
     search = view("view:29", '<search><filter name="named_filter" domain="[]"/></search>', model="res.partner", type="search")
@@ -40,12 +50,12 @@ class ContextAttributionTests(unittest.TestCase):
         packet, selected = context_fixture()
         packet["records"]["fields"] = [{"key": "removed", "model": "res.users", "name": "removed", "ttype": "char"}]
         packet["totals"]["fields"] = 1
-        for name in ("%(custom.open)d", "custom.open", "17"):
-            with self.subTest(name=name):
+        for tag, name in (("button", "%(custom.open)d"), ("button", "custom.open"), ("button", "17"), ("a", "custom.open")):
+            with self.subTest(name=name, tag=tag):
                 results = findings(
                     packet,
                     selected,
-                    f'<form><button name="{name}" type="action" context="{{\'default_consumer_only\': producer_only, \'default_producer_only\': removed}}"/></form>',
+                    f'<form><{tag} name="{name}" type="action" context="{{\'default_consumer_only\': producer_only, \'default_producer_only\': removed}}"/></form>',
                     action_bindings={"17": ["custom.open", "custom.alias"]},
                 )
                 self.assertEqual(
@@ -59,6 +69,8 @@ class ContextAttributionTests(unittest.TestCase):
         packet, selected = context_fixture()
         for architecture in (
             '<form><button name="open_wizard" type="object" context="{\'default_consumer_only\': producer_only}"/></form>',
+            '<kanban><a name="open_wizard" type="object" context="{\'default_consumer_only\': producer_only}"/></kanban>',
+            '<kanban><a name="17" type="action" context="{\'default_consumer_only\': producer_only}"/></kanban>',
             '<xpath expr="//button" position="attributes"><attribute name="context">{\'default_consumer_only\': producer_only}</attribute></xpath>',
             '<button name="custom.open" type="action" position="attributes" context="{\'default_consumer_only\': producer_only}"/>',
         ):
@@ -82,6 +94,7 @@ class ContextAttributionTests(unittest.TestCase):
             "withheld",
             "minimized",
             "replacement",
+            "stock-disposition",
         ):
             with self.subTest(change=change):
                 source, destination = copy.deepcopy(packet), copy.deepcopy(selected)
@@ -107,6 +120,8 @@ class ContextAttributionTests(unittest.TestCase):
                     destination["xmlids"]["custom.alias"]["model"] = "ir.actions.server"
                 elif change in {"withheld", "minimized"}:
                     action[change] = ["model"]
+                elif change == "stock-disposition":
+                    action["noupdate"] = False
                 else:
                     action["candidate_coverage"] = [
                         {
@@ -137,13 +152,16 @@ class ContextAttributionTests(unittest.TestCase):
         )
         self.assertFalse(any(item["code"] in {"missing-field", "search-filter-unresolved"} for item in results))
         self.assertIn("context-consumer-uncertain", {item["code"] for item in results})
-        for change in ("changed_languages", "withheld", "minimized", "inheritance", "missing"):
+        for change in ("changed_languages", "withheld", "minimized", "inheritance", "missing", "stock-disposition"):
             with self.subTest(change=change):
                 source = copy.deepcopy(packet)
                 if change == "missing":
                     source["records"]["views"] = []
                 elif change == "inheritance":
                     source["records"]["views"].append(view("extension", "<data/>", parent="view:29"))
+                elif change == "stock-disposition":
+                    source["records"]["views"][0]["xmlids"] = ["custom.search"]
+                    selected["xmlids"]["custom.search"] = {"model": "ir.ui.view", "key": "999"}
                 else:
                     source["records"]["views"][0][change] = ["en_US"]
                 source["totals"]["views"] = len(source["records"]["views"])
@@ -180,6 +198,15 @@ class ContextAttributionTests(unittest.TestCase):
         self.assertFalse(
             any(item["code"] == "missing-field" for item in census.reference_findings(declared, selected, field_declaration=True))
         )
+        selected["source_fields"] = {"res.partner": ["active_id"]}
+        packet["records"]["fields"] = [{"key": "old.global", "model": "res.partner", "name": "active_id"}]
+        packet["totals"]["fields"] = 1
+        packet["records"]["actions"][0]["context"] = "{'default_consumer_only': active_id}"
+        packet["records"]["filters"][0]["context"] = "{'default_consumer_only': active_id}"
+        report = census.collect_static(packet, selected)
+        for component in report["components"]:
+            if component["bucket"] in {"actions", "filters"}:
+                self.assertFalse(any(item["code"] == "missing-field" for item in component["findings"]))
 
 
 if __name__ == "__main__":

@@ -141,6 +141,7 @@ def expression_findings(
     *,
     consumer_model: str | None = None,
     search_filters: set[str] | None = None,
+    producer_fields: bool = True,
 ) -> list[dict[str, str]]:
     try:
         tree = ast.parse(value, mode="eval")
@@ -173,9 +174,13 @@ def expression_findings(
                 else:
                     results.append(finding("expression-name-unresolved", state="data-dependent/unreached"))
         elif isinstance(node, ast.Name):
-            if kind == "context" and (
-                node.id in target.get("models", {}).get(model, {}).get("fields", {})
-                or node.id in target.get("source_fields", {}).get(model, [])
+            if (
+                kind == "context"
+                and producer_fields
+                and (
+                    node.id in target.get("models", {}).get(model, {}).get("fields", {})
+                    or node.id in target.get("source_fields", {}).get(model, [])
+                )
             ):
                 results += field_findings(target, model, node.id)
             results.append(finding("data-dependent-expression", kind, state="data-dependent/unreached"))
@@ -210,6 +215,7 @@ def button_context_action(
         or not action.get("model")
         or action.get("withheld")
         or action.get("minimized")
+        or not action.get("noupdate")
         or native_replacement(action, target, action["type"])
     ):
         return None
@@ -236,6 +242,10 @@ def action_search_filters(action: dict[str, Any], target: dict[str, Any]) -> set
         or row.get("changed_languages")
         or row.get("website_scope")
         or row.get("active") is False
+        or (
+            not row.get("noupdate")
+            and any(target.get("xmlids", {}).get(xmlid, {}).get("model") == "ir.ui.view" for xmlid in row.get("xmlids", []))
+        )
         or native_replacement(row, target, "ir.ui.view")
     ):
         return None
@@ -287,6 +297,7 @@ def walk_view(
 ) -> list[dict[str, str]]:
     results = []
     name = element.get("name", "")
+    button = element.tag in {"button", "a"} and element.get("type") in {"object", "action"}
     child_model = model
     fragment = bool(element.get("position")) or element.tag == "xpath"
     if fragment:
@@ -295,10 +306,10 @@ def walk_view(
     elif element.tag in {"field", "groupby"} and name:
         results += field_findings(target, model, name)
         child_model = target.get("models", {}).get(model, {}).get("fields", {}).get(name, {}).get("relation", "")
-    if element.tag == "button" and element.get("type") == "object":
+    if button and element.get("type") == "object":
         if name not in target.get("models", {}).get(model, {}).get("methods", []):
             results.append(finding("method-unresolved", model + "." + name, state="data-dependent/unreached"))
-    if element.tag == "button" and element.get("type") == "action" and name.isdigit():
+    if button and element.get("type") == "action" and name.isdigit():
         bindings = action_bindings.get(name, [])
         if not bindings:
             results.append(finding("numeric-action-binding-unavailable", name, state="data-dependent/unreached"))
@@ -306,14 +317,12 @@ def walk_view(
             results.append(finding("numeric-action-target-unavailable", name, state="data-dependent/unreached"))
     for attribute, value in element.attrib.items():
         for xmlid in REFERENCE.findall(value):
-            results += xmlid_findings(
-                target, xmlid, technical=element.tag == "button" and element.get("type") == "action" and attribute == "name"
-            )
+            results += xmlid_findings(target, xmlid, technical=button and element.get("type") == "action" and attribute == "name")
         if attribute in EXPRESSION_FIELDS:
             expression_model = child_model if element.tag in {"field", "groupby"} and attribute in {"domain", "context"} else model
             consumer_model = expression_model
             search_filters = None
-            if attribute == "context" and element.tag == "button":
+            if attribute == "context" and button:
                 action = button_context_action(element, target, action_bindings) if model and not fragment else None
                 consumer_model = action["model"] if action else ""
                 search_filters = action_search_filters(action, target) if action else None
@@ -373,6 +382,8 @@ def reference_findings(record: dict[str, Any], target: dict[str, Any], *, field_
                 model if attribute == "context" else expression_model,
                 target,
                 consumer_model=expression_model,
+                search_filters=action_search_filters(record, target) if record.get("type") == "ir.actions.act_window" else None,
+                producer_fields=field_declaration,
             )
     for attribute in CODE_FIELDS:
         if record.get(attribute):
