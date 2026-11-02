@@ -127,6 +127,50 @@ class HrOrgChartViewTests(HrOrgChartViewFixture):
         self.apply()
         self.assertEqual(self.snapshot(), after)
 
+    def test_stock_18_extension_history_preserves_rows_and_replays_with_stock_19_or_empty_current(self) -> None:
+        source = Path(bridge.__file__).parent / "legacy/hr_org_chart/hr_employee_public_form_18.xml"
+        extension = ElementTree.parse(source).find("record/field[@name='arch']")
+        assert extension is not None
+        previous = ElementTree.tostring(extension[0], encoding="unicode")
+        identity = self.views["hr_employee_public_view_form_inherit_org_chart"]
+        for empty_current in (False, True):
+            with self.subTest(empty_current=empty_current):
+                self.connection.execute("SAVEPOINT stock_history")
+                try:
+                    self.connection.execute("UPDATE ir_ui_view SET arch_prev=? WHERE id=?", (previous, identity))
+                    if empty_current:
+                        self.connection.execute(
+                            "UPDATE ir_ui_view SET arch_db=? WHERE id=?", (json.dumps({"en_US": "<data/>"}), identity)
+                        )
+                    before = self.connection.execute("SELECT * FROM ir_ui_view WHERE id=?", (identity,)).fetchone()
+                    links = self.snapshot()["view_links"]
+                    self.apply()
+                    after = self.connection.execute("SELECT * FROM ir_ui_view WHERE id=?", (identity,)).fetchone()
+                    self.assertEqual(before[:12] + before[13:], after[:12] + after[13:])
+                    self.assertFalse(list(ElementTree.fromstring(json.loads(after[12])["en_US"])))
+                    self.assertEqual(self.snapshot()["view_links"], links)
+                    migrated = self.snapshot()
+                    self.apply()
+                    self.assertEqual(self.snapshot(), migrated)
+                finally:
+                    self.connection.execute("ROLLBACK TO stock_history")
+                    self.connection.execute("RELEASE stock_history")
+        changed = ElementTree.fromstring(previous)
+        changed[0].set("class", changed[0].attrib["class"] + " custom")
+        for current, history in ((previous, previous), (None, ElementTree.tostring(changed, encoding="unicode"))):
+            with self.subTest(current=current, history=history):
+                self.connection.execute("SAVEPOINT unsupported_history")
+                try:
+                    self.connection.execute("UPDATE ir_ui_view SET arch_prev=? WHERE id=?", (history, identity))
+                    if current is not None:
+                        self.connection.execute(
+                            "UPDATE ir_ui_view SET arch_db=? WHERE id=?", (json.dumps({"en_US": current}), identity)
+                        )
+                    self.assert_refuses_without_effects()
+                finally:
+                    self.connection.execute("ROLLBACK TO unsupported_history")
+                    self.connection.execute("RELEASE unsupported_history")
+
     def test_hierarchy_keeps_identity_and_extension_stops_duplicating_native_form_with_history_and_replay(self) -> None:
         before = self.snapshot()
         self.apply()

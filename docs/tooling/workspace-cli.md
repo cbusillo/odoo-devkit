@@ -760,7 +760,11 @@ Notes
   image preview placement, remain significant. Its hierarchy may retain the
   exact [stock18 architecture](https://github.com/odoo/odoo/blob/68d580d3d4703e7190055f7040682942d5f1a24f/addons/hr_org_chart/views/hr_employee_public_views.xml)
   as previous history while the current architecture still matches stock19.
-  That18file has no public form extension. The HR and Calendar view plans also
+  The public form extension likewise accepts exact18 history from the public
+  record in the sibling [18 source](https://github.com/odoo/odoo/blob/68d580d3d4703e7190055f7040682942d5f1a24f/addons/hr_org_chart/views/hr_views.xml),
+  retained alone in `hr_employee_public_form_18.xml` in the same catalog.
+  Its current architecture must still be stock19 or the already-empty spec;
+  a current18 architecture remains unsupported. The HR and Calendar view plans also
   preserve native Website's untracked, public creation defaults alongside
   their qualified unset storage; tracking, restricted visibility and other
   unqualified presentation state still refuse. Both views must qualify before
