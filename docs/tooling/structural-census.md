@@ -142,24 +142,27 @@ Context expressions keep producer values separate from destination keys.
 Relational-field defaults use the comodel while their values use the surrounding
 model. Action buttons resolve symbolic names or the view's original numeric
 `action_bindings` through qualified target XMLID class/key facts to one action
-definition in the same source inventory. Its retained window-action model owns
+definition in the same source inventory. Its retained `noupdate` window-action model owns
 `default_*` and `group_by`; producer field expressions remain checked on the view
 model. Source and target numeric IDs are never compared. This checks the retained
 source definition, not a native action execution or a stock-disposition proof.
-Missing, conflicting, withheld, minimized or replaced action definitions leave
+Missing, conflicting, withheld, minimized, reloaded stock or replaced action definitions leave
 `context-consumer-uncertain` in `data-dependent/unreached`. Object-button return
 values and standalone inherited context attributes have the same uncertainty;
 the collector does not infer Python return values. Thus the phone blacklist and
 picking Operations object buttons no longer demand wizard/move defaults on their
 producer models, without claiming their destinations were tested.
+Typed action links use the same attribution. Numeric links without extracted
+bindings stay uncertain; this change does not expand native link rebinding.
 
 `search_default_*` may name a destination field or a named search filter.
 An explicitly linked same-inventory search architecture can establish filter
-names when it has no unresolved inheritance, changed/withheld/minimized text or
-replacement. Otherwise an absent field stays `search-filter-unresolved`.
+names when it has no unresolved inheritance, changed/withheld/minimized text,
+reloaded stock or replacement. Otherwise an absent field stays `search-filter-unresolved`.
 Nested payload dictionaries do not inherit the outer context's destination:
 they remain consumer-uncertain, including in record-level contexts. Their value
-expressions and the existing dynamic/native limits remain visible.
+expressions and the existing dynamic/native limits remain visible. Record-level
+action/filter context names are evaluation globals, not producer record fields.
 `checked` excludes records with untested/blocked
 material and is recalculated at each checkpoint. Missing technical XMLIDs on an
 empty target require an upgrade disposition; business XMLIDs are outside scope.
