@@ -220,7 +220,7 @@ report = collect_native(
     [Path(root) for root in odoo.addons.__path__],
     declaration=declaration,
     deadline=time.monotonic() + remaining_queue_seconds,
-    output=Path("/private/census.json"),
+    output=Path(existing_episode_results) / "census.json",
 )
 ```
 
@@ -240,6 +240,28 @@ A stock/migration attestation may use a verified source path from any namespace:
 include every such proof path in `migration_sources`. No caller hash catalog is
 maintained. Binding failures are checkpointed before raising. Old19/18
 sources are static references only. Missing binding is not guessed.
+
+Use a fresh report path inside each native episode’s results directory; never
+reuse an earlier episode’s report. With an output such as `/private/census.json`, the collector atomically
+retains `/private/census.target.json` at each successful static-analysis point.
+This is the actual baseline-enriched target passed to `collect_static`, including
+pending/blocked declarations, conditional state, native identities and view
+topology. It excludes the static collector's private working copy and source
+records. Use it unchanged as `--target /private/census.target.json` with the same
+retained inventory and a separate `--output /private/census.replay.json` for
+cheap static replay, preserving the native report. Keep both files private in
+the existing results artifact group with the invocation record, original
+artifact and bound source evidence.
+Replay is static analysis, not another native observation or product pass.
+
+The last qualified target survives later manual preparation, probe or cleanup
+failure. No target is published before a healthy registry and successful static
+analysis. A pre-existing target path, including a symlink, refuses the invocation
+before replacing its report; choose a fresh report path in the caller's existing
+results directory rather than reusing or deleting unknown evidence. `output=None`
+keeps collection in memory and writes neither file. Historical runs that discarded
+their target cannot be reconstructed from their census report; only the next
+already-required native episode can supply this artifact.
 
 Keep source `odoo_install_modules`, the full intended target roots, the actual
 installed set and diagnostic reductions distinct. Build's `complete=true` means

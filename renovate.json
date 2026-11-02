@@ -1,6 +1,18 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["github>cbusillo/odoo-devkit//renovate/default"],
+  "customManagers": [
+    {
+      "description": "Keep native CI fixtures on their exact devtools channel while updating immutable digests.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.github/workflows/devkit-live-checks\\.yml$/"],
+      "matchStrings": [
+        "image: (?<depName>ghcr\\.io/cbusillo/odoo-docker):(?<currentValue>\\d+\\.\\d+-devtools)@(?<currentDigest>sha256:[a-f0-9]{64})\\b"
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "exact"
+    }
+  ],
   "packageRules": [
     {
       "description": "Existing tenant database volumes use the legacy /var/lib/postgresql/data layout, so a Postgres major upgrade is explicit migration work.",
