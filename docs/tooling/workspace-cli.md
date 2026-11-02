@@ -751,18 +751,24 @@ Notes
   before any bridge effects. Preparation replays before native loading; the
   bridge leaves completed major-20 crossings untouched. The target's own XML
   supplies its name, tag and path.
-  The public Org Chart window action moves from `hr_org_chart` to `hr` by the
-  same named binding: the retained action ID, path, incoming references and old
+  The public and private Org Chart window actions move from `hr_org_chart` to `hr` by the
+  same named binding: each retained action ID, path, incoming references and old
   protected alias stay intact. Native HR loads its own action, including mobile
-  hierarchy mode. Preparation accepts only the source19 stock action with its
+  hierarchy mode. Preparation accepts only the source19 stock actions with their
   nonempty English HTML help matching the selected native20 definition. It
   refuses changed or translated names/help, context, domain, defaults, attached
   views, group restrictions, extra aliases and conflicting physical storage or
-  ownership before any bridge effect. The matching public employee hierarchy
-  action-view link also transfers its XMLID to HR on the retained row, avoiding
-  the native unique `(action, view mode)` collision. Its owner, action binding,
-  sequence, view reference, defaults and unique pair are qualified before any
-  effects. Other HR records and security stay with
+  ownership before any bridge effect. The private action preserves its existing
+  mobile hierarchy mode and its explicit `hr.view_employee_filter` search binding;
+  that XMLID must resolve to the retained `hr.employee` search view. The public
+  source action retains its distinct kanban mobile-mode admission and empty search
+  binding. The public and private employee hierarchy action-view links, and both
+  department hierarchy links, also transfer their XMLIDs to HR on their retained
+  rows, avoiding native unique `(action, view mode)` collisions. Each owner,
+  typed parent action, sequence, nullable view reference, defaults and aliases
+  must qualify before any bridge effect. Existing neighboring links and incoming
+  references remain unchanged; no view selection or action order is reconstructed.
+  All six moved action/link records qualify together. Other HR records and security stay with
   their existing owners; this action handoff is not a whole-module merge or
   uninstall. Native cleanup keeps the protected old alias, while a later native
   uninstall of only the old module retains the action through its HR XMLID.

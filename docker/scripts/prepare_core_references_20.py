@@ -18,6 +18,8 @@ TARGET_STATE = "state_in_od"
 STATE_DATA_FILE = Path("/odoo/odoo/addons/base/data/res.country.state.csv")
 STOCK_VALUATION_DATA_FILE = Path("/odoo/addons/account/report/account_stock_valuation_report.xml")
 HR_ORG_CHART_DATA_FILE = Path("/odoo/addons/hr/views/hr_employee_public_views.xml")
+HR_EMPLOYEE_DATA_FILE = Path("/odoo/addons/hr/views/hr_employee_views.xml")
+HR_DEPARTMENT_DATA_FILE = Path("/odoo/addons/hr/views/hr_department_views.xml")
 UNTRACKED_PUBLIC_VIEW_DEFAULTS = {"track": (None, False), "visibility": (None, "")}
 _logger = logging.getLogger(__name__)
 
@@ -198,7 +200,21 @@ def _bind_moved_action(cr: Any, source: Reference, name: str, source_module: str
     cr.execute("UPDATE ir_model_data SET noupdate = true WHERE module = %s AND name = %s", (source_module, name))
 
 
-def _hr_org_chart_action_plan(cr: Any) -> Reference | None:
+def _hr_org_chart_native_fields(path: Path, name: str, model: str) -> dict[str, ElementTree.Element]:
+    parser = ElementTree.XMLParser(target=ElementTree.TreeBuilder(insert_comments=True))
+    document = ElementTree.parse(path, parser=parser).getroot()
+    records = document.findall(f".//record[@id='{name}']")
+    if document.tag != "odoo" or len(records) != 1 or records[0].attrib != {"id": name, "model": model}:
+        raise RuntimeError("Unsupported native Org Chart definition")
+    if document.attrib or any(parent.attrib for parent in document.iter("data")):
+        raise RuntimeError("Protected native HR data")
+    fields = {field.attrib.get("name", ""): field for field in records[0]}
+    if len(fields) != len(records[0]):
+        raise RuntimeError("Duplicate native Org Chart fields")
+    return fields
+
+
+def _hr_org_chart_action_plan(cr: Any, *, private: bool = False) -> Reference | None:
     cr.execute("SELECT state FROM ir_module_module WHERE name = 'hr_org_chart'")
     installed = cr.fetchone()
     if installed is None or installed[0] not in {"installed", "to upgrade"}:
@@ -206,27 +222,23 @@ def _hr_org_chart_action_plan(cr: Any) -> Reference | None:
     cr.execute("SELECT state FROM ir_module_module WHERE name = 'hr'")
     if cr.fetchone() not in {("installed",), ("to upgrade",)}:
         raise RuntimeError("Missing native HR owner for Org Chart action")
-    name = "action_hr_employee_public_org_chart"
+    name = "action_hr_employee_org_chart" if private else "action_hr_employee_public_org_chart"
     source = _require_source(cr, "hr_org_chart", name, "ir.actions.act_window")
     target = _check_target(cr, name, source, module="hr")
     if (target is not None and target.noupdate) or (source.noupdate and target is None):
         raise RuntimeError("Protected Org Chart action ownership")
-    parser = ElementTree.XMLParser(target=ElementTree.TreeBuilder(insert_comments=True))
-    document = ElementTree.parse(HR_ORG_CHART_DATA_FILE, parser=parser).getroot()
-    records = document.findall(f".//record[@id='{name}']")
-    if document.tag != "odoo" or len(records) != 1 or records[0].attrib != {"id": name, "model": source.model}:
-        raise RuntimeError("Unsupported native Org Chart action definition")
-    if document.attrib or any(parent.attrib for parent in document.iter("data")):
-        raise RuntimeError("Protected native HR data")
-    fields = {field.attrib.get("name"): field for field in records[0]}
+    fields = _hr_org_chart_native_fields(HR_EMPLOYEE_DATA_FILE if private else HR_ORG_CHART_DATA_FILE, name, source.model)
     expected = {"name", "res_model", "path", "view_mode", "mobile_view_mode", "domain", "context", "view_id", "help"}
-    if set(fields) != expected or len(records[0]) != len(expected):
+    if private:
+        expected.add("search_view_id")
+    if set(fields) != expected:
         raise RuntimeError("Unsupported native Org Chart action fields")
     native = {key: field.text or "" for key, field in fields.items()}
     if (
-        native["res_model"] != "hr.employee.public"
-        or native["path"] != "org-chart-public"
-        or native["view_mode"] != "hierarchy,kanban,list,form,graph,pivot"
+        native["res_model"] != ("hr.employee" if private else "hr.employee.public")
+        or native["path"] != ("org-chart" if private else "org-chart-public")
+        or native["view_mode"]
+        != ("hierarchy,kanban,list,form,activity,graph,pivot" if private else "hierarchy,kanban,list,form,graph,pivot")
         or native["mobile_view_mode"] != "hierarchy"
         or not native["name"]
         or fields["view_id"].attrib != {"name": "view_id", "eval": "False"}
@@ -234,9 +246,27 @@ def _hr_org_chart_action_plan(cr: Any) -> Reference | None:
         or (fields["view_id"].text or "").strip()
         or fields["help"].attrib != {"name": "help", "type": "html"}
         or not len(fields["help"])
-        or any(field.attrib != {"name": key} or len(field) for key, field in fields.items() if key not in {"help", "view_id"})
+        or any(
+            field.attrib != {"name": key} or len(field)
+            for key, field in fields.items()
+            if key not in {"help", "view_id", "search_view_id"}
+        )
     ):
         raise RuntimeError("Changed native Org Chart action contract")
+    search_view_id = None
+    if private:
+        search_field = fields["search_view_id"]
+        if (
+            search_field.attrib != {"name": "search_view_id", "ref": "hr.view_employee_filter"}
+            or len(search_field)
+            or (search_field.text or "").strip()
+        ):
+            raise RuntimeError("Changed native private Org Chart search binding")
+        search = _require_source(cr, "hr", "view_employee_filter", "ir.ui.view")
+        cr.execute("SELECT model,type FROM ir_ui_view WHERE id = %s FOR UPDATE", (search.record_id,))
+        if cr.fetchall() != [(native["res_model"], "search")]:
+            raise RuntimeError("Missing or rebound private Org Chart search view")
+        search_view_id = search.record_id
     actions = _rows(cr, "SELECT * FROM ir_act_window WHERE id = %s FOR UPDATE", (source.record_id,))
     if len(actions) != 1:
         raise RuntimeError("Missing Org Chart action")
@@ -283,7 +313,8 @@ def _hr_org_chart_action_plan(cr: Any) -> Reference | None:
             "res_model": (native["res_model"],),
             "path": (native["path"],),
             "view_mode": (native["view_mode"],),
-            "mobile_view_mode": ("kanban",),
+            "mobile_view_mode": (native["mobile_view_mode"] if private else "kanban",),
+            "search_view_id": (search_view_id,),
             "target": ("current",),
             "binding_type": ("action",),
             "binding_view_types": ("list,form",),
@@ -302,29 +333,32 @@ def _action_help(value: str) -> str:
     return ElementTree.canonicalize(ElementTree.tostring(document, encoding="unicode"), strip_text=True, with_comments=True)
 
 
-def _hr_org_chart_link_plan(cr: Any) -> Reference:
-    name = "act_hr_employee_public_hierarchy_view"
+def _hr_org_chart_link_plan(
+    cr: Any,
+    name: str = "act_hr_employee_public_hierarchy_view",
+    *,
+    path: Path | None = None,
+    parent: str = "hr_employee_public_action",
+    model: str = "hr.employee.public",
+    sequence: int = 16,
+) -> Reference:
     source = _require_source(cr, "hr_org_chart", name, "ir.actions.act_window.view")
     target = _check_target(cr, name, source, module="hr")
     if (target is not None and target.noupdate) or (source.noupdate and target is None):
         raise RuntimeError("Protected Org Chart hierarchy link ownership")
-    employee_action = _require_source(cr, "hr", "hr_employee_public_action", "ir.actions.act_window")
-    cr.execute("SELECT id FROM ir_act_window WHERE id = %s FOR UPDATE", (employee_action.record_id,))
-    if cr.fetchall() != [(employee_action.record_id,)]:
-        raise RuntimeError("Missing public employee action")
-    document = ElementTree.parse(HR_ORG_CHART_DATA_FILE).getroot()
-    records = document.findall(f".//record[@id='{name}']")
-    if len(records) != 1 or records[0].attrib != {"id": name, "model": source.model}:
-        raise RuntimeError("Unsupported native Org Chart hierarchy link")
-    fields = {field.attrib.get("name"): field for field in records[0]}
+    parent_action = _require_source(cr, "hr", parent, "ir.actions.act_window")
+    cr.execute("SELECT id,res_model,type FROM ir_act_window WHERE id = %s FOR UPDATE", (parent_action.record_id,))
+    if cr.fetchall() != [(parent_action.record_id, model, parent_action.model)]:
+        raise RuntimeError("Missing or rebound Org Chart parent action")
+    fields = _hr_org_chart_native_fields(path if path is not None else HR_ORG_CHART_DATA_FILE, name, source.model)
     if (
         set(fields) != {"sequence", "view_mode", "act_window_id"}
-        or len(records[0]) != len(fields)
-        or fields["sequence"].attrib != {"name": "sequence", "eval": "16"}
+        or fields["sequence"].attrib != {"name": "sequence", "eval": str(sequence)}
         or fields["view_mode"].attrib != {"name": "view_mode"}
         or fields["view_mode"].text != "hierarchy"
-        or fields["act_window_id"].attrib != {"name": "act_window_id", "ref": "hr.hr_employee_public_action"}
+        or fields["act_window_id"].attrib != {"name": "act_window_id", "ref": f"hr.{parent}"}
         or any(len(field) for field in fields.values())
+        or any((fields[key].text or "").strip() for key in ("sequence", "act_window_id"))
     ):
         raise RuntimeError("Changed native Org Chart hierarchy link contract")
     links = _rows(cr, "SELECT * FROM ir_act_window_view WHERE id = %s FOR UPDATE", (source.record_id,))
@@ -333,7 +367,12 @@ def _hr_org_chart_link_plan(cr: Any) -> Reference:
     _require_empty(
         links[0],
         {"id", "create_uid", "write_uid", "create_date", "write_date"},
-        {"sequence": (16,), "view_mode": ("hierarchy",), "act_window_id": (employee_action.record_id,), "multi": (None, False)},
+        {
+            "sequence": (sequence,),
+            "view_mode": ("hierarchy",),
+            "act_window_id": (parent_action.record_id,),
+            "multi": (None, False),
+        },
     )
     cr.execute(
         "SELECT module,name,model FROM ir_model_data WHERE model = %s AND res_id = %s FOR UPDATE", (source.model, source.record_id)
@@ -1050,7 +1089,23 @@ def migrate(cr: Any, version: str | None) -> None:
     stock_valuation = _stock_valuation_action_plan(cr)
     calendar_views = _calendar_view_plan(cr)
     hr_org_chart = _hr_org_chart_action_plan(cr)
-    hr_org_chart_link = _hr_org_chart_link_plan(cr) if hr_org_chart is not None else None
+    hr_moved: dict[str, Reference] = {}
+    if hr_org_chart is not None:
+        hr_moved["action_hr_employee_public_org_chart"] = hr_org_chart
+        private = _hr_org_chart_action_plan(cr, private=True)
+        if private is None:
+            raise RuntimeError("Missing private Org Chart source owner")
+        hr_moved["action_hr_employee_org_chart"] = private
+        hr_moved["act_hr_employee_public_hierarchy_view"] = _hr_org_chart_link_plan(cr)
+        name = "act_open_view_employee_list_my_hierarchy_view"
+        hr_moved[name] = _hr_org_chart_link_plan(
+            cr, name, path=HR_EMPLOYEE_DATA_FILE, parent="open_view_employee_list_my", model="hr.employee"
+        )
+        for suffix, parent in (("kanban", "hr_department_kanban_action"), ("tree", "hr_department_tree_action")):
+            name = f"act_hr_department_hierarchy_view_{suffix}_action"
+            hr_moved[name] = _hr_org_chart_link_plan(
+                cr, name, path=HR_DEPARTMENT_DATA_FILE, parent=parent, model="hr.department", sequence=25
+            )
     hr_org_chart_views = _hr_org_chart_view_plan(cr) if hr_org_chart is not None else None
     _admit_mail(cr)
     if hr_org_chart_views is not None:
@@ -1079,7 +1134,5 @@ def migrate(cr: Any, version: str | None) -> None:
     _release_policy_xmlids(cr, policies)
     if stock_valuation is not None:
         _bind_moved_action(cr, stock_valuation, "action_report_stock_valuation", "stock_account", "account")
-    if hr_org_chart is not None:
-        _bind_moved_action(cr, hr_org_chart, "action_hr_employee_public_org_chart", "hr_org_chart", "hr")
-    if hr_org_chart_link is not None:
-        _bind_moved_action(cr, hr_org_chart_link, "act_hr_employee_public_hierarchy_view", "hr_org_chart", "hr")
+    for name, source in hr_moved.items():
+        _bind_moved_action(cr, source, name, "hr_org_chart", "hr")
