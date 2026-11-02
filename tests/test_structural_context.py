@@ -1,19 +1,13 @@
 from __future__ import annotations
 
 import copy
-import sys
+import importlib
 import unittest
-from pathlib import Path
 from typing import Any
 
 from test_structural_census import inventory, target, view
 
-SCRIPTS = Path(__file__).resolve().parents[1] / "docker/scripts"
-sys.path.insert(0, str(SCRIPTS))
-try:
-    import odoo_structural_census as census
-finally:
-    sys.path.pop(0)
+census = importlib.import_module("odoo_structural_census")
 
 
 def context_fixture() -> tuple[dict[str, Any], dict[str, Any]]:
@@ -198,7 +192,6 @@ class ContextAttributionTests(unittest.TestCase):
         self.assertFalse(
             any(item["code"] == "missing-field" for item in census.reference_findings(declared, selected, field_declaration=True))
         )
-        selected["source_fields"] = {"res.partner": ["active_id"]}
         packet["records"]["fields"] = [{"key": "old.global", "model": "res.partner", "name": "active_id"}]
         packet["totals"]["fields"] = 1
         packet["records"]["actions"][0]["context"] = "{'default_consumer_only': active_id}"
