@@ -60,6 +60,18 @@ the baseline binding remain readable, but cannot complete an opaque or
 non-module dependency transition. Missing or stale bindings refuse execution.
 This workflow needs no Launchplane connection, credentials or deployment.
 
+Tenant build workflows look up a prepared plan through their exact checked-out
+devkit pin with `PYTHONPATH=<devkit-checkout> python -m odoo_devkit.artifact_provenance`.
+The existing runner reads `GITHUB_REPOSITORY`, `SOURCE_COMMIT`, `DEFAULT_BRANCH`
+and `GITHUB_OUTPUT`, using `gh api` with the workflow's existing authentication.
+It selects the newest named artifact across all pages and requires a successful,
+completed default-branch dispatch of `.github/workflows/build.yml` from the same
+repository and exact commit. Expired artifacts, invalid provenance and API
+failures refuse the build without falling back to an older plan. A missing
+artifact writes no outputs, preserving ordinary no-plan builds. A match appends
+`artifact_id` and `run_id`; the workflow downloads that artifact and passes the
+external JSON through the existing `load_examined_input_plan` schema authority.
+
 The orchestrator sets `ODOO_RELEASE_MODULE_PLAN_FILE` and `ODOO_RELEASE_IMAGE`
 (the running candidate's exact `repository@sha256:digest`). The JSON file has
 three fields: `database`, `release` (the stored `ReleaseDatabaseCompatibility`

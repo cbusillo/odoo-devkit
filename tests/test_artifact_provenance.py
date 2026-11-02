@@ -4,13 +4,18 @@ import copy
 import hashlib
 import json
 import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
+from unittest.mock import Mock
 
 from odoo_devkit.artifact_provenance import (
+    BUILD_WORKFLOW,
     ArtifactProvenanceError,
     aggregate_dependency_evidence,
+    find_examined_plan,
     normalize_repository_identity,
 )
 
@@ -279,6 +284,92 @@ class ArtifactProvenanceTests(unittest.TestCase):
             + "\n",
             encoding="utf-8",
         )
+
+
+class ExaminedInputPlanTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.repository = "fixture/tenant"
+        self.commit = "a" * 40
+        self.default_branch = "main"
+        self.artifact: dict[str, Any] = {
+            "id": 11,
+            "name": f"examined-input-plan-{self.commit}",
+            "expired": False,
+            "workflow_run": {"id": 21},
+        }
+        self.preparation: dict[str, Any] = {
+            "id": self.artifact["workflow_run"]["id"],
+            "repository": {"full_name": self.repository},
+            "head_repository": {"full_name": self.repository},
+            "head_sha": self.commit,
+            "head_branch": self.default_branch,
+            "path": BUILD_WORKFLOW,
+            "event": "workflow_dispatch",
+            "status": "completed",
+            "conclusion": "success",
+        }
+        self.request = Mock(side_effect=[{"artifacts": [self.artifact]}, self.preparation])
+
+    def find(self) -> dict[str, int] | None:
+        return find_examined_plan(
+            request=self.request, repository=self.repository, commit=self.commit, default_branch=self.default_branch
+        )
+
+    def test_exact_preparation_preserves_artifact_and_producer_run(self) -> None:
+        self.assertEqual(self.find(), {"artifact_id": self.artifact["id"], "run_id": self.preparation["id"]})
+
+    def test_no_prepared_plan_skips_optional_download(self) -> None:
+        self.request.side_effect = [{"artifacts": []}]
+        self.assertIsNone(self.find())
+        self.assertEqual(self.request.call_count, 1)
+
+    def test_wrong_repository_commit_branch_or_producer_refuses(self) -> None:
+        for changed in (
+            {"repository": {"full_name": "other/tenant"}},
+            {"head_repository": {"full_name": "other/tenant"}},
+            {"head_sha": "b" * 40},
+            {"head_branch": "feature"},
+            {"path": ".github/workflows/other.yml"},
+            {"event": "pull_request"},
+            {"status": "in_progress"},
+            {"conclusion": "failure"},
+        ):
+            with self.subTest(changed=changed):
+                self.request.side_effect = [{"artifacts": [self.artifact]}, self.preparation | changed]
+                with self.assertRaises(ValueError):
+                    self.find()
+
+    def test_expired_or_unsuccessful_replacement_never_falls_back(self) -> None:
+        replacement = self.artifact | {"id": self.artifact["id"] + 1}
+        for artifact, run in (
+            (replacement | {"expired": True}, self.preparation),
+            (replacement, self.preparation | {"conclusion": "failure"}),
+        ):
+            with self.subTest(artifact=artifact, run=run):
+                self.request.side_effect = [{"artifacts": [artifact, self.artifact]}, run]
+                with self.assertRaises(ValueError):
+                    self.find()
+
+    def test_all_pages_participate_in_latest_commit_selection(self) -> None:
+        replacement = self.artifact | {"id": self.artifact["id"] + 1}
+        self.request.side_effect = [{"artifacts": [self.artifact] * 100}, {"artifacts": [replacement]}, self.preparation]
+        result = self.find()
+        assert result is not None
+        self.assertEqual(result["artifact_id"], replacement["id"])
+        self.assertTrue(self.request.call_args_list[1].args[0].endswith("&page=2"))
+
+    def test_lookup_failure_never_becomes_a_no_plan_build(self) -> None:
+        self.request.side_effect = subprocess.CalledProcessError(1, "gh")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.find()
+
+    def test_wrong_artifact_name_or_non_exact_commit_refuses(self) -> None:
+        self.request.side_effect = [{"artifacts": [self.artifact | {"name": "other-commit"}]}]
+        with self.assertRaises(ValueError):
+            self.find()
+        self.commit = "main"
+        with self.assertRaises(ValueError):
+            self.find()
 
 
 if __name__ == "__main__":
