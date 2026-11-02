@@ -78,6 +78,7 @@ TECHNICAL_XMLID_MODELS = {
     "mail.template",
     "ir.actions.actions",
     "ir.actions.act_window",
+    "ir.actions.act_window.view",
     "ir.actions.act_window_close",
     "ir.actions.server",
     "ir.actions.report",
@@ -138,7 +139,7 @@ def extract_private_technical(cursor: Any, binding: str) -> dict[str, Any]:
 
 
 def project_private_inventory(extracted: dict[str, Any]) -> dict[str, Any]:
-    from odoo_structural_census import BUCKETS
+    from odoo_structural_census import BUCKETS, is_executable_action_model
 
     tables = extracted["tables"]
     records: dict[str, list[dict[str, Any]]] = {bucket: [] for bucket in BUCKETS}
@@ -156,7 +157,7 @@ def project_private_inventory(extracted: dict[str, Any]) -> dict[str, Any]:
             {"key": xmlid, "record_model": row["model"], "owners": [] if row["module"].startswith("__") else [row["module"]]}
         )
     action_models = {row["type"] for row in tables.get("ir_actions", {}).get("rows", [])} | {
-        model for model in technical_models if model.startswith("ir.actions.")
+        model for model in technical_models if is_executable_action_model(model)
     }
     action_aliases: dict[str, set[str]] = {}
     for (model, record_id), bindings in aliases.items():

@@ -43,6 +43,10 @@ def finding(code: str, reference: str = "", *, state: str = "static-only") -> di
     return {"code": code, "reference": reference, "state": state}
 
 
+def is_executable_action_model(model: str) -> bool:
+    return model.startswith("ir.actions.") and model != "ir.actions.act_window.view"
+
+
 def resolve_field(target: dict[str, Any], model: str, path: str) -> bool:
     return bool(path) and not field_findings(target, model, path)
 
@@ -100,39 +104,67 @@ def domain_findings(node: ast.AST, model: str, target: dict[str, Any]) -> list[d
     return [result for child in node.elts for result in domain_findings(child, model, target)]
 
 
-def expression_findings(value: str, kind: str, model: str, target: dict[str, Any]) -> list[dict[str, str]]:
+def context_key_findings(
+    node: ast.Dict, model: str, target: dict[str, Any], search_filters: set[str] | None
+) -> list[dict[str, str]]:
+    results = []
+    for key, child in zip(node.keys, node.values, strict=True):
+        if not isinstance(key, ast.Constant) or not isinstance(key.value, str):
+            results.append(finding("dynamic-context-key", state="data-dependent/unreached"))
+            continue
+        if not model:
+            continue
+        if key.value.startswith("search_default_"):
+            name = key.value.removeprefix("search_default_")
+            if search_filters is not None and name in search_filters:
+                continue
+            references = field_findings(target, model, name)
+            if references and not any(
+                item["code"] in {"field-baseline-pending", "model-baseline-pending", "field-baseline-blocked"} for item in references
+            ):
+                results.append(finding("search-filter-unresolved", name, state="data-dependent/unreached"))
+            else:
+                results += references
+        elif key.value.startswith("default_"):
+            results += field_findings(target, model, key.value.removeprefix("default_"))
+        elif key.value == "group_by":
+            groups = child.elts if isinstance(child, (ast.List, ast.Tuple)) else [child]
+            for group in groups:
+                if isinstance(group, ast.Constant) and isinstance(group.value, str):
+                    results += field_findings(target, model, group.value.split(":")[0])
+                else:
+                    results.append(finding("expression-shape-unvalidated", "group_by", state="data-dependent/unreached"))
+    return results
+
+
+def expression_findings(
+    value: str,
+    kind: str,
+    model: str,
+    target: dict[str, Any],
+    *,
+    consumer_model: str | None = None,
+    search_filters: set[str] | None = None,
+    producer_fields: bool = True,
+) -> list[dict[str, str]]:
     try:
         tree = ast.parse(value, mode="eval")
     except (SyntaxError, ValueError, TypeError):
         return [finding("unsupported-expression", kind, state="data-dependent/unreached")]
     results = domain_findings(tree.body, model, target) if kind.endswith("domain") else []
+    if kind == "context":
+        consumer = model if consumer_model is None else consumer_model
+        if not consumer:
+            results.append(finding("context-consumer-uncertain", kind, state="data-dependent/unreached"))
+        if isinstance(tree.body, ast.Dict):
+            results += context_key_findings(tree.body, consumer, target, search_filters)
     if (kind.endswith("domain") and not isinstance(tree.body, (ast.List, ast.Tuple))) or (
         kind == "context" and not isinstance(tree.body, ast.Dict)
     ):
         results.append(finding("expression-shape-unvalidated", kind, state="data-dependent/unreached"))
     for node in ast.walk(tree):
-        if isinstance(node, ast.Dict) and kind == "context":
-            for key, child in zip(node.keys, node.values, strict=True):
-                if not isinstance(key, ast.Constant) or not isinstance(key.value, str):
-                    results.append(finding("dynamic-context-key", state="data-dependent/unreached"))
-                    continue
-                for prefix in ("default_", "search_default_"):
-                    if key.value.startswith(prefix):
-                        name = key.value.removeprefix(prefix)
-                        references = field_findings(target, model, name)
-                        if (
-                            prefix == "search_default_"
-                            and references
-                            and not any(
-                                item["code"] in {"field-baseline-pending", "model-baseline-pending", "field-baseline-blocked"}
-                                for item in references
-                            )
-                        ):
-                            results.append(finding("search-filter-unresolved", name, state="data-dependent/unreached"))
-                        else:
-                            results += references
-                if key.value == "group_by" and isinstance(child, ast.Constant) and isinstance(child.value, str):
-                    results += field_findings(target, model, child.value.split(":")[0])
+        if isinstance(node, ast.Dict) and kind == "context" and node is not tree.body:
+            results.append(finding("context-consumer-uncertain", "nested-context", state="data-dependent/unreached"))
         if isinstance(node, ast.Call):
             if isinstance(node.func, ast.Name) and node.func.id == "ref" and len(node.args) == 1:
                 argument = node.args[0]
@@ -146,10 +178,108 @@ def expression_findings(value: str, kind: str, model: str, target: dict[str, Any
                 else:
                     results.append(finding("expression-name-unresolved", state="data-dependent/unreached"))
         elif isinstance(node, ast.Name):
+            if (
+                kind == "context"
+                and producer_fields
+                and (
+                    node.id in target.get("models", {}).get(model, {}).get("fields", {})
+                    or node.id in target.get("source_fields", {}).get(model, [])
+                )
+            ):
+                results += field_findings(target, model, node.id)
             results.append(finding("data-dependent-expression", kind, state="data-dependent/unreached"))
         if isinstance(node, (ast.Attribute, ast.Subscript, ast.ListComp, ast.DictComp, ast.GeneratorExp, ast.Lambda)):
             results.append(finding("dynamic-expression", kind, state="data-dependent/unreached"))
     return results
+
+
+def button_context_action(
+    element: ElementTree.Element, target: dict[str, Any], action_bindings: dict[str, list[str]]
+) -> dict[str, Any] | None:
+    if element.get("type") != "action" or element.get("position"):
+        return None
+    name = element.get("name", "")
+    symbolic = REFERENCE.fullmatch(name)
+    references = action_bindings.get(name, []) if name.isdigit() else [symbolic[1] if symbolic else name]
+    bindings = [target.get("xmlids", {}).get(reference, {}) for reference in references]
+    if not bindings or any(binding.get("model") != "ir.actions.act_window" or not binding.get("key") for binding in bindings):
+        return None
+    if len({binding["key"] for binding in bindings}) != 1:
+        return None
+    matches = [
+        row
+        for row in target.get("context_records", {}).get("actions", [])
+        if any(target.get("xmlids", {}).get(reference) == bindings[0] for reference in row.get("xmlids", []))
+    ]
+    if len(matches) != 1:
+        return None
+    action = matches[0]
+    if (
+        action.get("type") != "ir.actions.act_window"
+        or not action.get("model")
+        or action.get("withheld")
+        or action.get("minimized")
+        or not action.get("noupdate")
+        or native_replacement(action, target, action["type"])
+    ):
+        return None
+    aliases = [target.get("xmlids", {}).get(reference, {}) for reference in action.get("xmlids", [])]
+    if any(binding != bindings[0] for binding in aliases):
+        return None
+    return action
+
+
+def action_search_filters(action: dict[str, Any], target: dict[str, Any]) -> set[str] | None:
+    key = "view:" + str(action.get("search_view_id", ""))
+    views = target.get("context_records", {}).get("views", [])
+    matches = [row for row in views if row["key"] == key]
+    if len(matches) != 1:
+        return None
+    row = matches[0]
+    if (
+        not target.get("technical_xmlids_complete")
+        or row.get("type") != "search"
+        or row.get("model") != action.get("model")
+        or row.get("parent")
+        or any(view.get("parent") == key for view in views)
+        or row.get("withheld")
+        or row.get("minimized")
+        or row.get("changed_languages")
+        or row.get("website_scope")
+        or row.get("active") is False
+        or native_replacement(row, target, "ir.ui.view")
+    ):
+        return None
+    xmlids = target.get("xmlids", {})
+    aliases = row.get("xmlids", [])
+    bindings = [xmlids.get(name, {}) for name in aliases]
+    requires_target_identity = any(bindings) or any(not name.startswith("__") for name in aliases)
+    if requires_target_identity:
+        identities = {record_identity(binding) for binding in bindings}
+        identity = next(iter(identities)) if len(identities) == 1 else None
+        if not row.get("noupdate") or identity is None or identity[0] != "ir.ui.view":
+            return None
+        source_claims = [
+            source for source in views if any(record_identity(xmlids.get(name, {})) == identity for name in source.get("xmlids", []))
+        ]
+        if len(source_claims) != 1:
+            return None
+        parents = target.get("view_parents", {})
+        if identity[1] not in parents or parents[identity[1]] or identity[1] in parents.values():
+            return None
+    architectures = row.get("architectures", {})
+    if not architectures or not all(architectures.values()):
+        return None
+    names = []
+    for architecture in architectures.values():
+        try:
+            root = ElementTree.fromstring(architecture)
+        except ElementTree.ParseError:
+            return None
+        if root.tag != "search" or any(element.get("position") for element in root.iter()):
+            return None
+        names.append({element.get("name", "") for element in root.iter("filter")})
+    return set.intersection(*names)
 
 
 def view_findings(record: dict[str, Any], target: dict[str, Any]) -> list[dict[str, str]]:
@@ -166,7 +296,9 @@ def view_findings(record: dict[str, Any], target: dict[str, Any]) -> list[dict[s
         except ElementTree.ParseError:
             results.append(finding("invalid-xml", language))
             continue
-        results += walk_view(root, record.get("model", ""), target, record.get("action_bindings", {}))
+        results += walk_view(
+            root, record.get("model", ""), target, record.get("action_bindings", {}), view_type=record.get("type", "")
+        )
         if record.get("type") == "qweb":
             results.append(finding("qweb-render-unexecuted", state="data-dependent/unreached"))
     if record.get("website_scope"):
@@ -181,10 +313,18 @@ def view_findings(record: dict[str, Any], target: dict[str, Any]) -> list[dict[s
 
 
 def walk_view(
-    element: ElementTree.Element, model: str, target: dict[str, Any], action_bindings: dict[str, list[str]]
+    element: ElementTree.Element,
+    model: str,
+    target: dict[str, Any],
+    action_bindings: dict[str, list[str]],
+    *,
+    view_type: str = "",
 ) -> list[dict[str, str]]:
     results = []
+    if element.tag in {"form", "list", "search"}:
+        view_type = element.tag
     name = element.get("name", "")
+    button = element.tag in {"button", "a"} and element.get("type") in {"object", "action"}
     child_model = model
     fragment = bool(element.get("position")) or element.tag == "xpath"
     if fragment:
@@ -193,23 +333,36 @@ def walk_view(
     elif element.tag in {"field", "groupby"} and name:
         results += field_findings(target, model, name)
         child_model = target.get("models", {}).get(model, {}).get("fields", {}).get(name, {}).get("relation", "")
-    if element.tag == "button" and element.get("type") == "object":
+    if button and element.get("type") == "object":
         if name not in target.get("models", {}).get(model, {}).get("methods", []):
             results.append(finding("method-unresolved", model + "." + name, state="data-dependent/unreached"))
-    if element.tag == "button" and element.get("type") == "action" and name.isdigit():
+    if button and element.get("type") == "action" and name.isdigit():
         bindings = action_bindings.get(name, [])
         if not bindings:
             results.append(finding("numeric-action-binding-unavailable", name, state="data-dependent/unreached"))
-        elif not any(target.get("xmlids", {}).get(xmlid, {}).get("model", "").startswith("ir.actions.") for xmlid in bindings):
+        elif not any(is_executable_action_model(target.get("xmlids", {}).get(xmlid, {}).get("model", "")) for xmlid in bindings):
             results.append(finding("numeric-action-target-unavailable", name, state="data-dependent/unreached"))
     for attribute, value in element.attrib.items():
         for xmlid in REFERENCE.findall(value):
-            results += xmlid_findings(
-                target, xmlid, technical=element.tag == "button" and element.get("type") == "action" and attribute == "name"
-            )
+            results += xmlid_findings(target, xmlid, technical=button and element.get("type") == "action" and attribute == "name")
         if attribute in EXPRESSION_FIELDS:
             expression_model = child_model if element.tag in {"field", "groupby"} and attribute in {"domain", "context"} else model
-            results += expression_findings(value, attribute, expression_model, target)
+            consumer_model = (
+                model if attribute == "context" and element.tag == "field" and view_type == "search" else expression_model
+            )
+            search_filters = None
+            if attribute == "context" and button:
+                action = button_context_action(element, target, action_bindings) if model and not fragment else None
+                consumer_model = action["model"] if action else ""
+                search_filters = action_search_filters(action, target) if action else None
+            results += expression_findings(
+                value,
+                attribute,
+                model if attribute == "context" else expression_model,
+                target,
+                consumer_model=consumer_model,
+                search_filters=search_filters,
+            )
         if attribute in {"attrs", "states"}:
             results.append(finding("obsolete-view-attribute", attribute))
         if attribute == "groups":
@@ -218,9 +371,9 @@ def walk_view(
         if attribute.startswith("t-"):
             results.append(finding("template-expression-unexecuted", attribute, state="data-dependent/unreached"))
     if element.tag == "attribute" and name in EXPRESSION_FIELDS:
-        results += expression_findings(element.text or "", name, model, target)
+        results += expression_findings(element.text or "", name, model, target, consumer_model="" if name == "context" else None)
     for child in element:
-        results += walk_view(child, child_model, target, action_bindings)
+        results += walk_view(child, child_model, target, action_bindings, view_type=view_type)
     return results
 
 
@@ -252,7 +405,15 @@ def reference_findings(record: dict[str, Any], target: dict[str, Any], *, field_
     for attribute in EXPRESSION_FIELDS:
         if record.get(attribute) and (attribute not in {"readonly", "required"} or isinstance(record[attribute], str)):
             expression_model = record.get("relation", "") if field_declaration and attribute in {"domain", "context"} else model
-            results += expression_findings(record[attribute], attribute, expression_model, target)
+            results += expression_findings(
+                record[attribute],
+                attribute,
+                model if attribute == "context" else expression_model,
+                target,
+                consumer_model=expression_model,
+                search_filters=action_search_filters(record, target) if record.get("type") == "ir.actions.act_window" else None,
+                producer_fields=field_declaration,
+            )
     for attribute in CODE_FIELDS:
         if record.get(attribute):
             results.append(finding("stored-code-unexecuted", attribute, state="data-dependent/unreached"))
@@ -280,6 +441,38 @@ def reference_findings(record: dict[str, Any], target: dict[str, Any], *, field_
     return results
 
 
+def record_identity(value: dict[str, Any]) -> tuple[str, str] | None:
+    model, key = value.get("model"), value.get("key")
+    return (model, key) if isinstance(model, str) and model and isinstance(key, str) and key else None
+
+
+def action_path_findings(record: dict[str, Any], target: dict[str, Any], paths: dict[str, list[str]]) -> list[dict[str, str]]:
+    path = record.get("path") or ""
+    if not path:
+        return []
+    conflict = len(paths.get(path, [])) > 1
+    unresolved = False
+    owners = target.get("action_paths", {}).get(path, [])
+    if owners:
+        xmlids = target.get("xmlids", {})
+        matches = [xmlids[name] for name in {record["key"], *record.get("xmlids", [])} if name in xmlids]
+        identities = {record_identity(value) for value in matches}
+        own = next(iter(identities)) if len(identities) == 1 else None
+        if own is None or own[0] != record.get("type"):
+            unresolved = True
+        else:
+            for owner in owners:
+                identity = record_identity(xmlids.get(owner, {}) if isinstance(owner, str) else owner)
+                if identity is None:
+                    unresolved = True
+                elif identity != own:
+                    conflict = True
+    results = [finding("action-path-conflict", path)] if conflict else []
+    if unresolved:
+        results.append(finding("action-path-identity-unresolved", path, state="data-dependent/unreached"))
+    return results
+
+
 def action_findings(record: dict[str, Any], target: dict[str, Any], paths: dict[str, list[str]]) -> list[dict[str, str]]:
     results = []
     for attribute in ("context", "domain"):
@@ -295,11 +488,7 @@ def action_findings(record: dict[str, Any], target: dict[str, Any], paths: dict[
             results.append(finding("unsupported-view-mode", mode))
     if len(set(modes)) != len(modes):
         results.append(finding("duplicate-view-mode"))
-    path: str = record.get("path") or ""
-    if path:
-        own = {record["key"], *record.get("xmlids", [])}
-        if len(paths.get(path, [])) > 1 or set(target.get("action_paths", {}).get(path, [])) - own:
-            results.append(finding("action-path-conflict", path))
+    results += action_path_findings(record, target, paths)
     if action_type not in {"ir.actions.act_window", "ir.actions.act_window_close"}:
         results.append(finding("action-behavior-unexecuted", action_type, state="data-dependent/unreached"))
     return results
@@ -422,6 +611,7 @@ def collect_static(inventory: dict[str, Any], target: dict[str, Any]) -> dict[st
         raise ValueError("An exact candidate binding is required")
     source_fields: dict[str, list[str]] = {}
     target = target.copy()
+    target["context_records"] = inventory["records"]
     target["retained_xmlids"] = {row["key"] for row in inventory["records"].get("xmlids", [])}
     target["technical_xmlids_complete"] = inventory["totals"].get("xmlids") == len(
         inventory["records"].get("xmlids", [])

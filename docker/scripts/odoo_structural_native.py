@@ -22,6 +22,7 @@ from odoo_structural_census import (
     covered_findings,
     families,
     finding,
+    is_executable_action_model,
     native_replacement,
     recount,
     validate_inventory,
@@ -149,9 +150,9 @@ def registry_surface(
         for name in env.registry.models
     }
     xmlids = {row.module + "." + row.name: {"model": row.model, "key": str(row.res_id)} for row in env["ir.model.data"].search([])}
-    paths: dict[str, list[str]] = {}
+    paths: dict[str, list[dict[str, str]]] = {}
     for action in env["ir.actions.actions"].search([("path", "!=", False)]):
-        paths.setdefault(action.path, []).append(action.get_external_id().get(action.id) or "native:" + str(action.id))
+        paths.setdefault(action.path, []).append({"model": action.type, "key": str(action.id)})
     installed = set(env["ir.module.module"].search([("state", "=", "installed")]).mapped("name"))
     return {
         "binding": digest(candidate["artifact"]),
@@ -510,7 +511,7 @@ def bind_view_actions(env: Any, row: dict[str, Any], architecture: str) -> str:
         if (
             not matches
             or len({(record._name, record.id) for record in matches}) != 1
-            or not matches[0]._name.startswith("ir.actions.")
+            or not is_executable_action_model(matches[0]._name)
         ):
             raise ProbeUnreached("Numeric action identity is unavailable", code="numeric-action-target-unavailable")
         button.set("name", str(matches[0].id))

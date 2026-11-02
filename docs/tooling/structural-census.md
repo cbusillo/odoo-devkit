@@ -22,8 +22,16 @@ templates and QWeb counts. Scheduled actions expose only technical ID, server-ac
 link, active flag and priority; no names, operators, schedules or code are selected.
 The inherited action table accounts for unknown action subclasses too. XMLID
 names are selected only for technical models, including the actual action
-subclasses. Other XMLID rows are counted without selecting their names or IDs.
+subclasses and `ir.actions.act_window.view` link identities. Link aliases remain
+in the technical XMLID bucket, separate from executable action/button bindings.
+Other XMLID rows are counted without selecting their names or IDs.
 Existing ACL ownership work is reused; this is not a rights-equivalence oracle.
+
+Earlier packets omitted action-view link XMLIDs even when their physical rows
+were captured. Their original scope and out-of-scope counts remain unchanged;
+reprojection cannot recover omitted identities. Link ownership from those packets
+is UNKNOWN, never absence, until the next already-needed qualified intake
+captures it.
 
 Use a dedicated new cursor, before any query, in root's existing extraction job:
 
@@ -114,6 +122,19 @@ For static checking, the target surface has an exact `binding`, `surface`,
 A static target remains static; `registry_surface` exports the native surface
 only after a healthy empty target has loaded.
 
+Native `action_paths` maps each path to concrete target identities using the
+same `{model, key}` shape as `xmlids`. Both registry exports, before and after
+manual baseline preparation, use the action's concrete `type` and target ID;
+base-class XMLID lookup and a chosen alias are unnecessary. Static targets may
+also name owners by XMLID. Source XMLIDs must resolve to one target of the
+source action's class before comparing owners. Aliases for that same target
+do not compete. Missing keys, ambiguous mappings, moved classes and legacy
+unqualified `native:<id>` owners remain `action-path-identity-unresolved`,
+not proven competitors. Source IDs never match target IDs by number.
+Independent source duplicates and distinct qualified target owners still
+produce `action-path-conflict`. This comparison does not replace native path
+syntax, reserved-name or uniqueness checks, or the stock-disposition guard.
+
 ```bash
 python /volumes/scripts/odoo_structural_census.py \
   --inventory /private/input.json --target /private/target.json \
@@ -122,8 +143,9 @@ python /volumes/scripts/odoo_structural_census.py \
 
 Every retained view is statically inventoried, including obsolete stock such as
 the Calendar regression. Inheritance fragments whose model cannot be inferred
-are marked native-required; relational field `domain`/`context` use the comodel,
-while search `filter_domain` uses the view model. Unsupported view types remain
+are marked native-required; relational field domains use the comodel. Form/list
+field contexts use the comodel, while search-field contexts and `filter_domain`
+use the view model. Unsupported view types remain
 structural findings, including retained hierarchy/form mismatches. Dynamic
 expressions/code, numeric action IDs without target binding, withheld text and
 auxiliary sources are visible gaps. Static blockers and native-unreached counts
@@ -137,6 +159,39 @@ Groups and action-button references have a known technical type, so an absent
 reference is a static blocker when the technical XMLID bucket is complete and
 unmodified. Incomplete/withheld technical inventories and untyped expression
 references retain scope uncertainty.
+
+Context expressions keep producer values separate from destination keys.
+Form/list relational-field defaults use the comodel while their values use the
+surrounding model; search-field defaults use the search view model. Concrete
+nested views keep their own view type and model, and inheritance fragments stay
+uncertain. Action buttons resolve symbolic names or the view's original numeric
+`action_bindings` through qualified target XMLID class/key facts to one action
+definition in the same source inventory. Its retained `noupdate` window-action model owns
+`default_*` and `group_by`; producer field expressions remain checked on the view
+model. Source and target numeric IDs are never compared. This checks the retained
+source definition, not a native action execution or a stock-disposition proof.
+Missing, conflicting, withheld, minimized, reloaded stock or replaced action definitions leave
+`context-consumer-uncertain` in `data-dependent/unreached`. Object-button return
+values and standalone inherited context attributes have the same uncertainty;
+the collector does not infer Python return values. Thus the phone blacklist and
+picking Operations object buttons no longer demand wizard/move defaults on their
+producer models, without claiming their destinations were tested.
+Typed action links use the same attribution. Numeric links without extracted
+bindings stay uncertain; this change does not expand native link rebinding.
+
+`search_default_*` may name a destination field or a named search filter.
+An explicitly linked same-inventory search architecture can establish filter
+names with complete technical XMLID scope and no unresolved inheritance, changed/withheld/minimized text,
+or replacement. An unbound source search must have no aliases or only private
+`__` aliases absent from the target. Otherwise every alias must resolve to one
+retained `noupdate` view identity, claimed by exactly one source view including
+withheld or inactive rows, with complete target parentage and no parent or child.
+Missing module aliases never establish custom origin or a surviving record.
+Otherwise an absent field stays `search-filter-unresolved`.
+Nested payload dictionaries do not inherit the outer context's destination:
+they remain consumer-uncertain, including in record-level contexts. Their value
+expressions and the existing dynamic/native limits remain visible. Record-level
+action/filter context names are evaluation globals, not producer record fields.
 `checked` excludes records with untested/blocked
 material and is recalculated at each checkpoint. Missing technical XMLIDs on an
 empty target require an upgrade disposition; business XMLIDs are outside scope.
@@ -291,7 +346,7 @@ product migration/permission/workflow or preservation pass.
 
 ## Source delivery checks
 
-Run `uv run python -m unittest discover -s tests -p test_structural_census.py` and
+Run `uv run python -m unittest discover -s tests -p 'test_structural*.py'` and
 full touched safety modules, declared lint/format, native IDE inspection and the
 weighed other-provider review. Real loader/stock-root/manual-field/cache/action
 regressions live in the existing `devkit_live_checks` disposable suite. Root owns
