@@ -27,9 +27,13 @@ class HrOrgChartViewFixture(HrOrgChartActionFixture):
             for record in ElementTree.parse(source).findall("record[@model='ir.ui.view']")
         }
         self.connection.executescript(
-            "CREATE TABLE ir_ui_view(id INTEGER PRIMARY KEY, inherit_id INTEGER, name TEXT, model TEXT, type TEXT, mode TEXT, "
-            "active BOOLEAN, priority INTEGER, arch_updated BOOLEAN, arch_fs TEXT, is_seo_optimized BOOLEAN, "
-            "customize_show BOOLEAN, arch_db JSON, arch_prev TEXT, write_uid INTEGER, custom_value TEXT);"
+            "ALTER TABLE ir_ui_view ADD COLUMN inherit_id INTEGER; ALTER TABLE ir_ui_view ADD COLUMN name TEXT;"
+            "ALTER TABLE ir_ui_view ADD COLUMN mode TEXT; ALTER TABLE ir_ui_view ADD COLUMN active BOOLEAN;"
+            "ALTER TABLE ir_ui_view ADD COLUMN priority INTEGER; ALTER TABLE ir_ui_view ADD COLUMN arch_updated BOOLEAN;"
+            "ALTER TABLE ir_ui_view ADD COLUMN arch_fs TEXT; ALTER TABLE ir_ui_view ADD COLUMN is_seo_optimized BOOLEAN;"
+            "ALTER TABLE ir_ui_view ADD COLUMN customize_show BOOLEAN; ALTER TABLE ir_ui_view ADD COLUMN arch_db JSON;"
+            "ALTER TABLE ir_ui_view ADD COLUMN arch_prev TEXT; ALTER TABLE ir_ui_view ADD COLUMN write_uid INTEGER;"
+            "ALTER TABLE ir_ui_view ADD COLUMN custom_value TEXT;"
             "CREATE TABLE ir_ui_view_custom(ref_id INTEGER);"
             "CREATE TABLE ir_ui_view_group_rel(view_id INTEGER, group_id INTEGER);"
             "CREATE TABLE view_links(view_id INTEGER REFERENCES ir_ui_view(id), value TEXT);"

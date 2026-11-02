@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -90,11 +91,112 @@ class HrOrgChartActionFixture(CoreReferenceFixture):
         self.connection.execute(
             "INSERT INTO action_links VALUES (?,?,?)", (self.action, f"hr_org_chart.{self.name}", "/odoo/" + self.native["path"])
         )
+        self.add_private_and_department()
+
+    def add_private_and_department(self) -> None:
+        self.private_name = "action_hr_employee_org_chart"
+        self.private_action = 201
+        self.search_view = 900
+        self.connection.execute("CREATE TABLE ir_ui_view(id INTEGER PRIMARY KEY, model TEXT, type TEXT)")
+        self.connection.execute("INSERT INTO ir_ui_view VALUES (?,'hr.employee','search')", (self.search_view,))
+        self.xmlid("hr", "view_employee_filter", "ir.ui.view", self.search_view, False)
+        self.connection.execute(
+            "UPDATE ir_act_window SET type='ir.actions.act_window',res_model=? WHERE id=200", (self.employee_model,)
+        )
+        document = ElementTree.parse(self.target)
+        public = document.find(".//record[@model='ir.actions.act_window']")
+        assert public is not None
+        private = copy.deepcopy(public)
+        private.set("id", self.private_name)
+        self.private_native = self.native | {
+            "res_model": "hr.employee",
+            "path": "org-chart",
+            "view_mode": "hierarchy,kanban,list,form,activity,graph,pivot",
+        }
+        for name, value in self.private_native.items():
+            field = private.find(f"field[@name='{name}']")
+            assert field is not None
+            field.text = value
+        ElementTree.SubElement(private, "field", name="search_view_id", ref="hr.view_employee_filter")
+        root = ElementTree.Element("odoo")
+        root.append(private)
+        self.private_target = Path(self.directory.name) / "hr_employee_views.xml"
+        self.department_target = Path(self.directory.name) / "hr_department_views.xml"
+        self.cohort_links = [
+            ("act_hr_employee_public_hierarchy_view", 300, 200, 16, self.target),
+            ("act_open_view_employee_list_my_hierarchy_view", 310, 210, 16, self.private_target),
+            ("act_hr_department_hierarchy_view_tree_action", 320, 220, 25, self.department_target),
+            ("act_hr_department_hierarchy_view_kanban_action", 330, 230, 25, self.department_target),
+        ]
+        parents = {
+            210: ("open_view_employee_list_my", "hr.employee"),
+            220: ("hr_department_tree_action", "hr.department"),
+            230: ("hr_department_kanban_action", "hr.department"),
+        }
+        department = ElementTree.Element("odoo")
+        for name, identity, parent, sequence, _path in self.cohort_links[1:]:
+            parent_name, model = parents[parent]
+            self.connection.execute(
+                "INSERT INTO ir_act_window(id,type,res_model) VALUES (?,'ir.actions.act_window',?)", (parent, model)
+            )
+            self.xmlid("hr", parent_name, "ir.actions.act_window", parent, False)
+            self.connection.execute(
+                "INSERT INTO ir_act_window_view VALUES (?,?,NULL,?,'hierarchy',NULL)", (identity, parent, sequence)
+            )
+            self.xmlid("hr_org_chart", name, "ir.actions.act_window.view", identity, False)
+            link = ElementTree.SubElement(
+                root if parent == 210 else department, "record", id=name, model="ir.actions.act_window.view"
+            )
+            ElementTree.SubElement(link, "field", name="sequence", eval=str(sequence))
+            ElementTree.SubElement(link, "field", name="view_mode").text = "hierarchy"
+            ElementTree.SubElement(link, "field", name="act_window_id", ref="hr." + parent_name)
+        ElementTree.ElementTree(root).write(self.private_target)
+        ElementTree.ElementTree(department).write(self.department_target)
+        patch_attr(bridge, "HR_EMPLOYEE_DATA_FILE", self.private_target).start()
+        patch_attr(bridge, "HR_DEPARTMENT_DATA_FILE", self.department_target).start()
+        columns = [column[1] for column in self.connection.execute("PRAGMA table_info(ir_act_window)")]
+        values = dict(
+            zip(columns, self.connection.execute("SELECT * FROM ir_act_window WHERE id=?", (self.action,)).fetchone(), strict=True)
+        )
+        values.update(
+            id=self.private_action,
+            res_model=self.private_native["res_model"],
+            path=self.private_native["path"],
+            view_mode=self.private_native["view_mode"],
+            mobile_view_mode=self.private_native["mobile_view_mode"],
+            search_view_id=self.search_view,
+        )
+        self.connection.execute(
+            "INSERT INTO ir_act_window ("
+            + ",".join('"' + column + '"' for column in columns)
+            + ") VALUES ("
+            + ",".join("?" for _ in columns)
+            + ")",
+            tuple(values[column] for column in columns),
+        )
+        self.xmlid("hr_org_chart", self.private_name, "ir.actions.act_window", self.private_action, False)
+        self.connection.execute(
+            "INSERT INTO action_links VALUES (?,?,?)", (self.private_action, "hr_org_chart." + self.private_name, "/odoo/org-chart")
+        )
+        for parent in parents:
+            modes = ("list", "form", "kanban", "activity", "graph", "pivot") if parent == 210 else ("list", "form", "kanban")
+            for index, mode in enumerate(modes):
+                self.connection.execute(
+                    "INSERT INTO ir_act_window_view(act_window_id,view_id,sequence,view_mode) VALUES (?,NULL,?,?)",
+                    (parent, 10 + index * 5, mode),
+                )
 
     def snapshot(self) -> dict[str, list[tuple]]:
         return super().snapshot() | {
             table: self.connection.execute("SELECT * FROM " + table + " ORDER BY rowid").fetchall()
-            for table in ("ir_act_window", "other_actions", "action_links", "ir_act_window_group_rel", "ir_act_window_view")
+            for table in (
+                "ir_act_window",
+                "other_actions",
+                "action_links",
+                "ir_act_window_group_rel",
+                "ir_act_window_view",
+                "ir_ui_view",
+            )
         }
 
     def native_load(self) -> None:
@@ -125,6 +227,116 @@ class HrOrgChartActionFixture(CoreReferenceFixture):
 
 
 class HrOrgChartActionTests(HrOrgChartActionFixture):
+    def test_all_moved_actions_and_links_reuse_preserved_rows_before_native_creation(self) -> None:
+        components = [
+            (self.private_name, self.private_action),
+            (self.name, self.action),
+        ]
+        before = self.snapshot()
+        self.apply()
+        prepared = self.snapshot()
+        self.assertEqual(
+            {key: value for key, value in prepared.items() if key != "ir_model_data"},
+            {key: value for key, value in before.items() if key != "ir_model_data"},
+        )
+        self.apply()
+        self.assertEqual(self.snapshot(), prepared)
+        for name, identity in components:
+            with self.subTest(prepared=name):
+                target = bridge._reference(self.cursor, "hr", name)
+                self.assertIsNotNone(target)
+                self.assertEqual(target.record_id, identity)
+                self.assertFalse(target.noupdate)
+        for name, identity, _parent, _sequence, _source in self.cohort_links:
+            with self.subTest(prepared=name):
+                target = bridge._reference(self.cursor, "hr", name)
+                self.assertIsNotNone(target)
+                self.assertEqual(target.record_id, identity)
+                self.assertFalse(target.noupdate)
+                self.assertTrue(bridge._reference(self.cursor, "hr_org_chart", name).noupdate)
+
+    def test_private_search_and_original_mobile_mode_require_exact_typed_bindings(self) -> None:
+        changes = (
+            ("UPDATE ir_act_window SET search_view_id=NULL WHERE id=?", (self.private_action,)),
+            ("UPDATE ir_act_window SET search_view_id=999 WHERE id=?", (self.private_action,)),
+            ("UPDATE ir_act_window SET mobile_view_mode='kanban' WHERE id=?", (self.private_action,)),
+            ("UPDATE ir_ui_view SET model='hr.employee.public' WHERE id=?", (self.search_view,)),
+            ("UPDATE ir_ui_view SET type='form' WHERE id=?", (self.search_view,)),
+            ("DELETE FROM ir_ui_view WHERE id=?", (self.search_view,)),
+            ("UPDATE ir_model_data SET model='ir.actions.act_window' WHERE name='view_employee_filter'", ()),
+            ("UPDATE ir_model_data SET res_id=999 WHERE name='view_employee_filter'", ()),
+            ("DELETE FROM ir_model_data WHERE name='view_employee_filter'", ()),
+            ("INSERT INTO ir_act_window_group_rel VALUES (?,7)", (self.private_action,)),
+            ("INSERT INTO ir_act_window_view(id,act_window_id,view_id) VALUES (999,?,900)", (self.private_action,)),
+            ("INSERT INTO other_actions VALUES ('ir_act_client',999,?)", (self.private_native["path"],)),
+            ("UPDATE ir_act_window SET help=? WHERE id=?", (json.dumps({"en_US": "<p>Edited</p>"}), self.private_action)),
+            ("UPDATE ir_model_data SET res_id=999 WHERE module='hr_org_chart' AND name=?", (self.private_name,)),
+            ("UPDATE ir_model_data SET noupdate=1 WHERE module='hr_org_chart' AND name=?", (self.private_name,)),
+            (
+                "INSERT INTO ir_model_data(module,name,model,res_id,noupdate) VALUES ('hr',?,'ir.actions.act_window',999,0)",
+                (self.private_name,),
+            ),
+        )
+        for query, parameters in changes:
+            with self.subTest(query=query):
+                self.connection.execute("SAVEPOINT private_action")
+                try:
+                    self.connection.execute(query, parameters)
+                    self.assert_refuses_without_effects()
+                finally:
+                    self.connection.execute("ROLLBACK TO private_action")
+                    self.connection.execute("RELEASE private_action")
+
+    def test_each_hierarchy_link_refuses_changed_owner_parent_order_or_selection_before_effects(self) -> None:
+        for name, identity, parent, _sequence, _source in self.cohort_links:
+            changes = (
+                ("UPDATE ir_act_window_view SET sequence=99 WHERE id=?", (identity,)),
+                ("UPDATE ir_act_window_view SET view_id=900 WHERE id=?", (identity,)),
+                ("UPDATE ir_act_window_view SET multi=1 WHERE id=?", (identity,)),
+                ("UPDATE ir_act_window_view SET act_window_id=999 WHERE id=?", (identity,)),
+                ("UPDATE ir_act_window_view SET view_mode='calendar' WHERE id=?", (identity,)),
+                ("DELETE FROM ir_act_window_view WHERE id=?", (identity,)),
+                ("UPDATE ir_act_window SET res_model='wrong' WHERE id=?", (parent,)),
+                ("UPDATE ir_act_window SET type='ir.actions.client' WHERE id=?", (parent,)),
+                ("DELETE FROM ir_act_window WHERE id=?", (parent,)),
+                ("DELETE FROM ir_model_data WHERE name=?", (name,)),
+                ("UPDATE ir_model_data SET noupdate=1 WHERE name=?", (name,)),
+                (
+                    "INSERT INTO ir_model_data(module,name,model,res_id,noupdate) VALUES ('custom','link','ir.actions.act_window.view',?,0)",
+                    (identity,),
+                ),
+                (
+                    "INSERT INTO ir_model_data(module,name,model,res_id,noupdate) VALUES ('hr',?,'ir.actions.act_window.view',999,0)",
+                    (name,),
+                ),
+            )
+            for query, parameters in changes:
+                with self.subTest(name=name, query=query):
+                    self.connection.execute("SAVEPOINT hierarchy_link")
+                    try:
+                        self.connection.execute(query, parameters)
+                        self.assert_refuses_without_effects()
+                    finally:
+                        self.connection.execute("ROLLBACK TO hierarchy_link")
+                        self.connection.execute("RELEASE hierarchy_link")
+
+    def test_native_private_search_or_hierarchy_definition_drift_refuses_without_effects(self) -> None:
+        for path, name, field_name, attribute, value in (
+            (self.private_target, self.private_name, "search_view_id", "ref", "hr.changed_filter"),
+            *((path, name, "sequence", "eval", "99") for name, _identity, _parent, _sequence, path in self.cohort_links),
+        ):
+            with self.subTest(name=name, field=field_name):
+                original = path.read_bytes()
+                document = ElementTree.fromstring(original)
+                field = document.find(f".//record[@id='{name}']/field[@name='{field_name}']")
+                assert field is not None
+                field.set(attribute, value)
+                ElementTree.ElementTree(document).write(path)
+                try:
+                    self.assert_refuses_without_effects()
+                finally:
+                    path.write_bytes(original)
+
     def test_prepare_preserves_row_links_and_replays_then_native_loads_mobile_hierarchy(self) -> None:
         for model in ("ir.actions.act_window.view", "ir.actions.todo"):
             self.xmlid("unrelated", model.replace(".", "_"), model, self.action, False)
