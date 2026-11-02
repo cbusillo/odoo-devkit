@@ -2134,6 +2134,433 @@ class CredentialBoundaryTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
+    def seed_readonly_qa(self, *, same_recipient: bool = False, shell: bool = False, target: str = "preview") -> None:
+        self.qa_policy = types.SimpleNamespace(
+            GROUP="qa.role",
+            IMPLIED_GROUP="qa.internal",
+            FORBIDDEN_IMPLIED_GROUPS=("qa.denied", "optional.missing"),
+            FIXTURE_JOURNAL_KEY="fixture.qa",
+            COPY_PARAMETER="copy.qa",
+            RUNTIME_ENV="FIXTURE_RUNTIME_JSON",
+            product_login=lambda product: "qa-" + product,
+            operative_marker_key=lambda product: "operative." + product,
+        )
+        self.qa_source_identity = {
+            "schema_version": 1,
+            "product": "tenant",
+            "context": "fixture",
+            "instance": "old-preview" if shell or same_recipient else "testing",
+            "environment_kind": "preview" if shell or same_recipient else "stable",
+            "deployment_record_id": "source-deployment",
+            "artifact_id": "source-artifact",
+            "source_git_ref": "source-revision",
+            "preview_id": "source-preview" if shell or same_recipient else "",
+            "preview_generation_id": "source-generation" if shell or same_recipient else "",
+        }
+        self.qa_target_identity = {
+            **self.qa_source_identity,
+            "instance": "old-preview" if same_recipient else "new-preview" if target == "preview" else "testing",
+            "environment_kind": "preview" if target == "preview" else "stable",
+            "deployment_record_id": "target-deployment",
+            "artifact_id": "target-artifact",
+            "preview_id": "source-preview" if same_recipient else "target-preview" if target == "preview" else "",
+            "preview_generation_id": "target-generation" if target == "preview" else "",
+        }
+        self.qa_source_owner = {
+            key: self.qa_source_identity[key] for key in ("product", "context", "instance", "environment_kind", "preview_id")
+        } | {
+            "database": "fixture" if same_recipient else "source-db",
+            "database_uuid": "fixture-uuid",
+            "testing_copy": "" if shell or same_recipient else "a" * 64,
+        }
+        self.qa_target_owner = {
+            key: self.qa_target_identity[key] for key in ("product", "context", "instance", "environment_kind", "preview_id")
+        } | {"database": "fixture", "database_uuid": "fixture-uuid", "testing_copy": "b" * 64 if target == "testing" else ""}
+
+        def qualify(identity: dict, runtime: str, platform: str, database: str, database_uuid: str, witness: str) -> dict:
+            self.assertEqual(json.loads(runtime), identity)
+            if identity == self.qa_target_identity:
+                owner = self.qa_target_owner
+            elif identity == self.qa_source_identity:
+                owner = self.qa_source_owner
+            else:
+                raise ValueError("unqualified fixture identity")
+            self.assertEqual(platform, "preview" if owner["environment_kind"] == "preview" else "testing")
+            self.assertEqual((database, database_uuid), (owner["database"], owner["database_uuid"]))
+            if owner["environment_kind"] == "stable":
+                self.assertEqual(witness, owner["testing_copy"])
+            return dict(owner)
+
+        self.qa_policy.qualify_runtime = qualify
+        patcher = patch.object(self.runner, "_readonly_qa_policy", return_value=self.qa_policy, create=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.runner.local.platform_instance = "preview" if target == "preview" else "testing"
+        self.runner.os_env[self.qa_policy.RUNTIME_ENV] = json.dumps(self.qa_target_identity)
+        login = self.qa_policy.product_login("tenant")
+        self.qa_fixture = {
+            "fixture_sha256": "d" * 64,
+            "records": [
+                {"model": "res.users", "id": 41, "disposition": "created"},
+                {"model": "ir.config_parameter", "id": 91, "disposition": "created"},
+            ],
+        }
+        self.qa_marker = {
+            "account_id": 41,
+            "binding": "e" * 64,
+            "copy_binding": self.qa_source_owner["testing_copy"] or "f" * 64,
+            "state": "active",
+            "groups": [self.qa_policy.GROUP],
+        }
+        with closing(sqlite3.connect(self.path)) as database, database:
+            database.executescript(
+                """
+                CREATE TABLE res_users (
+                    id INTEGER PRIMARY KEY, login TEXT UNIQUE, active BOOLEAN, password TEXT, share BOOLEAN,
+                    launchplane_readonly_owner TEXT, launchplane_readonly_runtime TEXT,
+                    oauth_provider_id INTEGER, oauth_uid TEXT, oauth_access_token TEXT
+                );
+                CREATE TABLE res_groups (id INTEGER PRIMARY KEY);
+                CREATE TABLE res_groups_users_rel (uid INTEGER, gid INTEGER);
+                CREATE TABLE res_groups_implied_rel (gid INTEGER, hid INTEGER);
+                CREATE TABLE qa_reference (user_id INTEGER REFERENCES res_users(id), sample TEXT);
+                ALTER TABLE ir_config_parameter ADD COLUMN id INTEGER;
+                INSERT INTO res_groups VALUES (10), (20), (30), (40);
+                INSERT INTO res_groups_users_rel VALUES (41, 10), (42, 20);
+                INSERT INTO res_groups_implied_rel VALUES (10, 20), (20, 40);
+                INSERT INTO qa_reference VALUES (41, 'SAMPLE unchanged');
+                """
+            )
+            database.executemany(
+                "INSERT INTO ir_model_data (module,name,model,res_id) VALUES (?,?,?,?)",
+                [("qa", name, "res.groups", group) for name, group in (("role", 10), ("internal", 20), ("denied", 30))],
+            )
+            database.execute(
+                "INSERT INTO res_users VALUES (41,?,?,?,?,?,?,NULL,NULL,NULL)",
+                (
+                    login,
+                    not shell,
+                    None if shell else "copied-qa-password",
+                    False,
+                    json.dumps(self.qa_source_owner),
+                    None if shell else json.dumps(self.qa_source_identity),
+                ),
+            )
+            database.execute("INSERT INTO res_users VALUES (42,'staff',true,'staff-password',false,NULL,NULL,NULL,NULL,NULL)")
+            database.executemany(
+                "INSERT INTO ir_config_parameter (key,value,id) VALUES (?,?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value,id=excluded.id",
+                [
+                    ("database.uuid", "fixture-uuid", 90),
+                    (self.qa_policy.COPY_PARAMETER, "b" * 64, 89),
+                    (self.qa_policy.FIXTURE_JOURNAL_KEY, json.dumps(self.qa_fixture), 91),
+                    ("fixture.samples", "retained SAMPLE receipt", 93),
+                ],
+            )
+            if not shell:
+                database.execute(
+                    "INSERT INTO ir_config_parameter (key,value,id) VALUES (?,?,92)",
+                    (self.qa_policy.operative_marker_key("tenant"), json.dumps(self.qa_marker)),
+                )
+            self.tables.update(row[0] for row in database.execute("SELECT name FROM sqlite_master WHERE type='table'"))
+
+    def qa_state(self) -> dict[str, list[tuple]]:
+        with closing(sqlite3.connect(self.path)) as reader:
+            return {
+                table: reader.execute("SELECT * FROM " + table + " ORDER BY 1").fetchall()
+                for table in ("res_users", "ir_config_parameter", "res_users_apikeys", "qa_reference")
+            }
+
+    def test_copied_qa_is_retired_before_registry_without_changing_references_or_other_accounts(self) -> None:
+        self.seed_readonly_qa()
+        before = self.qa_state()
+        self.runner.prepare_credentials_before_registry(restored_copy=True)
+        after = self.qa_state()
+        user, staff = after["res_users"]
+        self.assertEqual(user[0], 41)
+        self.assertNotEqual(user[1], self.qa_policy.product_login("tenant"))
+        self.assertEqual(user[2:7], (False, None, False, None, None))
+        self.assertEqual(staff, before["res_users"][1])
+        self.assertEqual(after["qa_reference"], before["qa_reference"])
+        parameters = {row[0]: row[1] for row in after["ir_config_parameter"]}
+        self.assertNotIn(self.qa_policy.FIXTURE_JOURNAL_KEY, parameters)
+        self.assertNotIn(self.qa_policy.operative_marker_key("tenant"), parameters)
+        self.assertEqual(parameters["fixture.samples"], "retained SAMPLE receipt")
+        self.runner.prepare_credentials_before_registry(restored_copy=True)
+        self.assertEqual(self.qa_state()["res_users"], after["res_users"])
+
+    def test_same_preview_refresh_preserves_the_account_and_witnesses(self) -> None:
+        self.seed_readonly_qa(same_recipient=True)
+        before = self.qa_state()
+        for restored_copy in (True, False, True):
+            self.runner.prepare_credentials_before_registry(restored_copy=restored_copy)
+            after = self.qa_state()
+            self.assertEqual(after["res_users"], before["res_users"])
+            parameters = {row[0]: row[1] for row in after["ir_config_parameter"]}
+            for key in (self.qa_policy.FIXTURE_JOURNAL_KEY, self.qa_policy.operative_marker_key("tenant"), "fixture.samples"):
+                self.assertEqual(parameters[key], dict((row[0], row[1]) for row in before["ir_config_parameter"])[key])
+
+    def test_foreign_unactivated_fixture_shell_is_retired_without_an_activation_runtime(self) -> None:
+        self.seed_readonly_qa(shell=True)
+        self.runner.prepare_credentials_before_registry(restored_copy=True)
+        user = self.qa_state()["res_users"][0]
+        self.assertNotEqual(user[1], self.qa_policy.product_login("tenant"))
+        self.assertEqual(user[2:7], (False, None, False, None, None))
+
+    def test_same_recipient_unactivated_fixture_shell_is_preserved(self) -> None:
+        self.seed_readonly_qa(shell=True, same_recipient=True)
+        before = self.qa_state()["res_users"]
+        self.runner.prepare_credentials_before_registry(restored_copy=True)
+        self.assertEqual(self.qa_state()["res_users"], before)
+
+    def test_qa_preflight_refuses_staff_ownership_role_authentication_and_witness_drift_before_effects(self) -> None:
+        self.seed_readonly_qa()
+        fixture_foreign = {**self.qa_fixture, "records": [{**row, "id": 42} for row in self.qa_fixture["records"]]}
+        faults = [
+            ("UPDATE res_users SET launchplane_readonly_owner=NULL,launchplane_readonly_runtime=NULL WHERE id=41", ()),
+            ("UPDATE res_users SET share=true WHERE id=41", ()),
+            ("UPDATE res_users SET share=NULL WHERE id=41", ()),
+            ("UPDATE res_users SET active=false WHERE id=41", ()),
+            ("UPDATE res_users SET id=1 WHERE id=41", ()),
+            ("UPDATE res_users SET launchplane_readonly_owner=? WHERE id=41", ("invalid-json",)),
+            (
+                "UPDATE res_users SET launchplane_readonly_owner=? WHERE id=41",
+                (json.dumps({**self.qa_source_owner, "product": "other"}),),
+            ),
+            (
+                "UPDATE res_users SET launchplane_readonly_owner=? WHERE id=41",
+                (json.dumps({**self.qa_source_owner, "database_uuid": "foreign"}),),
+            ),
+            (
+                "UPDATE res_users SET launchplane_readonly_owner=? WHERE id=41",
+                (json.dumps({**self.qa_source_owner, "extra": "unknown"}),),
+            ),
+            ("UPDATE res_users SET launchplane_readonly_runtime=NULL WHERE id=41", ()),
+            (
+                "UPDATE res_users SET launchplane_readonly_runtime=? WHERE id=41",
+                (json.dumps({**self.qa_source_identity, "artifact_id": "unwitnessed"}),),
+            ),
+            ("INSERT INTO res_groups_users_rel VALUES (41,30)", ()),
+            ("INSERT INTO res_groups_implied_rel VALUES (10,40)", ()),
+            ("INSERT INTO res_groups_implied_rel VALUES (20,30)", ()),
+            ("INSERT INTO ir_model_data (module,name,model,res_id) VALUES ('qa','role','res.groups',40)", ()),
+            ("DELETE FROM ir_model_data WHERE module='qa' AND name='role'", ()),
+            ("UPDATE ir_model_data SET model='res.partner' WHERE module='qa' AND name='role'", ()),
+            ("ALTER TABLE res_users DROP COLUMN launchplane_readonly_runtime", ()),
+            ("INSERT INTO res_users_apikeys VALUES (991,41,'unexpected','key evidence')", ()),
+            ("UPDATE res_users SET oauth_provider_id=99 WHERE id=41", ()),
+            (
+                "UPDATE ir_config_parameter SET value=? WHERE key=?",
+                (json.dumps(fixture_foreign), self.qa_policy.FIXTURE_JOURNAL_KEY),
+            ),
+            *[
+                (
+                    "UPDATE ir_config_parameter SET value=? WHERE key=?",
+                    (json.dumps({**self.qa_marker, **changed}), self.qa_policy.operative_marker_key("tenant")),
+                )
+                for changed in (
+                    {"account_id": 42},
+                    {"copy_binding": "c" * 64},
+                    {"state": "unknown"},
+                    {"state": "closed"},
+                    {"groups": [self.qa_policy.IMPLIED_GROUP]},
+                )
+            ],
+            (
+                "INSERT INTO res_users SELECT 43,'second-qa',active,password,share,launchplane_readonly_owner,launchplane_readonly_runtime,NULL,NULL,NULL FROM res_users WHERE id=41",
+                (),
+            ),
+        ]
+        with closing(sqlite3.connect(":memory:")) as snapshot:
+            with closing(sqlite3.connect(self.path)) as source:
+                source.backup(snapshot)
+            for statement, parameters in faults:
+                with self.subTest(statement=statement, parameters=parameters):
+                    with closing(sqlite3.connect(self.path)) as writer, writer:
+                        snapshot.backup(writer)
+                        writer.execute(statement, parameters)
+                    before = self.qa_state()
+                    with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
+                        self.runner.prepare_credentials_before_registry(restored_copy=True)
+                    self.assertEqual(self.qa_state(), before)
+
+    def test_qa_orphan_witness_and_unwitnessed_shell_refuse_without_clearing_other_journals(self) -> None:
+        self.seed_readonly_qa(shell=True)
+        with closing(sqlite3.connect(self.path)) as writer, writer:
+            writer.execute("DELETE FROM ir_config_parameter WHERE key=?", (self.qa_policy.FIXTURE_JOURNAL_KEY,))
+        before = self.qa_state()
+        with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
+            self.runner.prepare_credentials_before_registry(restored_copy=True)
+        self.assertEqual(self.qa_state(), before)
+        with closing(sqlite3.connect(self.path)) as writer, writer:
+            writer.execute("DELETE FROM res_users WHERE id=41")
+            writer.execute(
+                "INSERT INTO ir_config_parameter (key,value,id) VALUES (?,?,91)",
+                (self.qa_policy.FIXTURE_JOURNAL_KEY, json.dumps(self.qa_fixture)),
+            )
+        before = self.qa_state()
+        with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
+            self.runner.prepare_credentials_before_registry(restored_copy=True)
+        self.assertEqual(self.qa_state(), before)
+
+    def test_foreign_qa_without_either_source_witness_is_not_retired(self) -> None:
+        self.seed_readonly_qa()
+        with closing(sqlite3.connect(self.path)) as writer, writer:
+            writer.execute(
+                "DELETE FROM ir_config_parameter WHERE key IN (?,?)",
+                (self.qa_policy.FIXTURE_JOURNAL_KEY, self.qa_policy.operative_marker_key("tenant")),
+            )
+        before = self.qa_state()
+        with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
+            self.runner.prepare_credentials_before_registry(restored_copy=True)
+        self.assertEqual(self.qa_state(), before)
+
+    def test_copied_testing_account_can_be_retired_without_a_preview_fixture_journal(self) -> None:
+        self.seed_readonly_qa()
+        with closing(sqlite3.connect(self.path)) as writer, writer:
+            writer.execute("DELETE FROM ir_config_parameter WHERE key=?", (self.qa_policy.FIXTURE_JOURNAL_KEY,))
+        self.runner.prepare_credentials_before_registry(restored_copy=True)
+        self.assertNotEqual(self.qa_state()["res_users"][0][1], self.qa_policy.product_login("tenant"))
+
+    def test_coherent_closed_qa_account_is_retired(self) -> None:
+        self.seed_readonly_qa()
+        with closing(sqlite3.connect(self.path)) as writer, writer:
+            writer.execute("UPDATE res_users SET active=false WHERE id=41")
+            writer.execute(
+                "UPDATE ir_config_parameter SET value=? WHERE key=?",
+                (json.dumps({**self.qa_marker, "state": "closed"}), self.qa_policy.operative_marker_key("tenant")),
+            )
+        self.runner.prepare_credentials_before_registry(restored_copy=True)
+        self.assertNotEqual(self.qa_state()["res_users"][0][1], self.qa_policy.product_login("tenant"))
+
+    def test_retired_qa_login_collision_preserves_both_accounts_and_all_witnesses(self) -> None:
+        self.seed_readonly_qa()
+        conn = self.runner.connect_to_db()
+        with conn.cursor() as cursor:
+            retired = self.runner._sanitize_copied_readonly_qa(cursor)
+        self.assertIsNotNone(retired)
+        conn.rollback()
+        self.runner._reset_db_connection()
+        with closing(sqlite3.connect(self.path)) as writer, writer:
+            writer.execute("UPDATE res_users SET login=? WHERE id=42", (retired.retired_login,))
+        before = self.qa_state()
+        with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
+            self.runner.prepare_credentials_before_registry(restored_copy=True)
+        self.assertEqual(self.qa_state(), before)
+
+    def test_qa_account_and_witness_retirement_roll_back_together_before_commit(self) -> None:
+        self.seed_readonly_qa()
+        before = self.qa_state()
+        execute = _ParamstyleCursor.execute
+
+        def fail_after_user_update(cursor: _ParamstyleCursor, query: str, parameters: Sequence[object] = ()) -> None:
+            if str(query) == "DELETE FROM ir_config_parameter WHERE key IN (%s,%s)":
+                raise odoo_data_workflows.OdooDatabaseUpdateError("planted witness deletion failure")
+            execute(cursor, query, parameters)
+
+        with patch.object(_ParamstyleCursor, "execute", fail_after_user_update):
+            with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
+                self.runner.prepare_credentials_before_registry(restored_copy=True)
+        self.assertEqual(self.qa_state(), before)
+        self.assertEqual(self.events, [])
+
+    def test_qa_retirement_rollback_is_detected_by_an_independent_reader(self) -> None:
+        self.seed_readonly_qa()
+        before = self.qa_state()
+        conn = self.runner.connect_to_db()
+        conn.commit = MagicMock(side_effect=conn.rollback)
+        with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
+            self.runner.prepare_credentials_before_registry(restored_copy=True)
+        conn.commit.assert_called_once()
+        self.assertEqual(self.qa_state(), before)
+
+    def assert_qa_witness_readback(self, *, isolated: bool) -> None:
+        self.seed_readonly_qa(target="testing")
+        if isolated:
+            self.runner.local.copy_purpose = "migration"
+            self.runner.os_env.pop("ODOO_INSTANCE_OVERRIDES_PAYLOAD_B64")
+        conn = self.runner.connect_to_db()
+        commit = conn.commit
+
+        def keep_witness() -> None:
+            conn.database.execute(
+                "INSERT INTO ir_config_parameter (key,value,id) VALUES (?,?,91)",
+                (self.qa_policy.FIXTURE_JOURNAL_KEY, json.dumps(self.qa_fixture)),
+            )
+            commit()
+
+        conn.commit = keep_witness
+        with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
+            self.runner.prepare_credentials_before_registry(restored_copy=True)
+        self.assertIn("commit", self.events)
+        self.assertIsNone(self.qa_state()["res_users"][0][5])
+        self.assertIsNone(self.runner.local.db_conn)
+
+    def test_qa_witness_readback_precedes_ordinary_registry_work(self) -> None:
+        self.assert_qa_witness_readback(isolated=False)
+
+    def test_qa_witness_readback_precedes_isolated_registry_work(self) -> None:
+        self.assert_qa_witness_readback(isolated=True)
+
+    def test_missing_optional_qa_addon_never_loads_a_policy_or_changes_login_workflows(self) -> None:
+        with patch.object(self.runner, "_readonly_qa_policy", side_effect=AssertionError("optional policy was loaded"), create=True):
+            self.runner.prepare_credentials_before_registry(restored_copy=True)
+
+    def test_empty_retained_qa_columns_do_not_require_new_or_available_optional_policy(self) -> None:
+        self.seed_readonly_qa()
+        old_policy = types.SimpleNamespace(
+            **{
+                name: getattr(self.qa_policy, name)
+                for name in ("GROUP", "COPY_PARAMETER", "RUNTIME_ENV", "product_login", "qualify_runtime")
+            }
+        )
+        before = self.qa_state()
+        for unavailable in (False, True):
+            with (
+                self.subTest(owned=True, unavailable=unavailable),
+                patch.object(
+                    self.runner,
+                    "_readonly_qa_policy",
+                    return_value=old_policy,
+                    side_effect=odoo_data_workflows.OdooDatabaseUpdateError("optional policy unavailable") if unavailable else None,
+                ),
+            ):
+                with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
+                    self.runner.prepare_credentials_before_registry(restored_copy=True)
+                self.assertEqual(self.qa_state(), before)
+        with closing(sqlite3.connect(self.path)) as writer, writer:
+            writer.execute("DELETE FROM res_users WHERE id=41")
+            writer.execute("UPDATE res_users SET login=? WHERE id=42", (self.qa_policy.product_login("tenant"),))
+            writer.execute(
+                "DELETE FROM ir_config_parameter WHERE key IN (?,?)",
+                (self.qa_policy.FIXTURE_JOURNAL_KEY, self.qa_policy.operative_marker_key("tenant")),
+            )
+        before_users = self.qa_state()["res_users"]
+        for unavailable in (False, True):
+            with (
+                self.subTest(owned=False, unavailable=unavailable),
+                patch.object(
+                    self.runner,
+                    "_readonly_qa_policy",
+                    return_value=old_policy,
+                    side_effect=odoo_data_workflows.OdooDatabaseUpdateError("optional policy unavailable") if unavailable else None,
+                ),
+            ):
+                self.runner.prepare_credentials_before_registry(restored_copy=True)
+                self.assertEqual(self.qa_state()["res_users"], before_users)
+
+    def test_qa_policy_file_load_does_not_import_the_odoo_addon_package(self) -> None:
+        root = Path(self.scratch.name) / "addons"
+        package = root / "launchplane_readonly"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("raise AssertionError('addon initialization is forbidden')\n")
+        policy_file = package / "policy.py"
+        policy_file.write_text("def product_login(product: str) -> str:\n    return product\n")
+        with patch.object(self.runner, "_resolve_addons_paths", return_value=[root]):
+            policy = self.runner._readonly_qa_policy()
+        self.assertEqual(Path(policy.__file__), policy_file.resolve())
+        self.assertEqual(policy.product_login("disconnected"), "disconnected")
+
     def connection(self, _name: str) -> _BoundaryConnection:
         database = sqlite3.connect(self.path)
         database.create_function("to_regclass", 1, lambda name: name if name in self.tables else None)
