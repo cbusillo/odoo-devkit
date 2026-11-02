@@ -246,18 +246,22 @@ def action_search_filters(action: dict[str, Any], target: dict[str, Any]) -> set
         or row.get("changed_languages")
         or row.get("website_scope")
         or row.get("active") is False
-        or (
-            not row.get("noupdate")
-            and any(target.get("xmlids", {}).get(xmlid, {}).get("model") == "ir.ui.view" for xmlid in row.get("xmlids", []))
-        )
         or native_replacement(row, target, "ir.ui.view")
     ):
         return None
-    bindings = [target.get("xmlids", {}).get(name, {}) for name in row.get("xmlids", [])]
-    if any(bindings):
+    xmlids = target.get("xmlids", {})
+    aliases = row.get("xmlids", [])
+    bindings = [xmlids.get(name, {}) for name in aliases]
+    requires_target_identity = any(bindings) or any(not name.startswith("__") for name in aliases)
+    if requires_target_identity:
         identities = {record_identity(binding) for binding in bindings}
         identity = next(iter(identities)) if len(identities) == 1 else None
-        if identity is None or identity[0] != "ir.ui.view":
+        if not row.get("noupdate") or identity is None or identity[0] != "ir.ui.view":
+            return None
+        source_claims = [
+            source for source in views if any(record_identity(xmlids.get(name, {})) == identity for name in source.get("xmlids", []))
+        ]
+        if len(source_claims) != 1:
             return None
         parents = target.get("view_parents", {})
         if identity[1] not in parents or parents[identity[1]] or identity[1] in parents.values():

@@ -182,8 +182,11 @@ bindings stay uncertain; this change does not expand native link rebinding.
 `search_default_*` may name a destination field or a named search filter.
 An explicitly linked same-inventory search architecture can establish filter
 names when it has no unresolved inheritance, changed/withheld/minimized text,
-reloaded stock or replacement. A target-bound search must have one qualified
-view identity and complete target parentage, with no parent or target-only child.
+or replacement. An unbound source search must have no aliases or only private
+`__` aliases absent from the target. Otherwise every alias must resolve to one
+retained `noupdate` view identity, claimed by exactly one source view including
+withheld or inactive rows, with complete target parentage and no parent or child.
+Missing module aliases never establish custom origin or a surviving record.
 Otherwise an absent field stays `search-filter-unresolved`.
 Nested payload dictionaries do not inherit the outer context's destination:
 they remain consumer-uncertain, including in record-level contexts. Their value

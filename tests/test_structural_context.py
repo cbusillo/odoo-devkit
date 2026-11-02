@@ -201,15 +201,50 @@ class ContextAttributionTests(unittest.TestCase):
             if component["bucket"] in {"actions", "filters"}:
                 self.assertFalse(any(item["code"] == "missing-field" for item in component["findings"]))
 
-    def test_target_search_inheritance_and_missing_topology_keep_filter_names_uncertain(self) -> None:
-        for change in ("none", "target-child", "target-parent", "missing-topology", "conflicting-alias", "wrong-class"):
+    def test_search_filter_names_need_source_only_or_one_retained_isolated_target_owner_for_both_callers(self) -> None:
+        cases = (
+            ("isolated-target", True),
+            ("no-alias", True),
+            ("private-absent", True),
+            ("private-target", True),
+            ("mixed-target", True),
+            ("module-absent", False),
+            ("reloaded-module-absent", False),
+            ("partial-alias", False),
+            ("target-child", False),
+            ("target-parent", False),
+            ("missing-topology", False),
+            ("conflicting-alias", False),
+            ("wrong-class", False),
+            ("missing-key", False),
+            ("reloaded-target", False),
+            ("second-source", False),
+            ("withheld-second-source", False),
+            ("nonsearch-second-source", False),
+            ("partial-second-source", False),
+        )
+        for change, admitted in cases:
             with self.subTest(change=change):
                 packet, selected = context_fixture()
                 search = packet["records"]["views"][0]
                 search.update(xmlids=["custom.search", "custom.search_alias"], noupdate=True)
+                if change.startswith("private-"):
+                    search["xmlids"] = ["__export__.search", "__export__.alias"]
+                elif change == "mixed-target":
+                    search["xmlids"][1] = "__export__.alias"
+                elif change == "no-alias":
+                    search["xmlids"] = []
                 selected["xmlids"].update({name: {"model": "ir.ui.view", "key": "999"} for name in search["xmlids"]})
                 selected["view_parents"] = {"999": ""}
-                if change == "target-child":
+                if change.endswith("-absent"):
+                    for name in search["xmlids"]:
+                        selected["xmlids"].pop(name)
+                    selected["modules"]["custom"] = []
+                if change in {"reloaded-module-absent", "reloaded-target"}:
+                    search["noupdate"] = False
+                if change == "partial-alias":
+                    selected["xmlids"].pop(search["xmlids"][1])
+                elif change == "target-child":
                     selected["view_parents"]["1001"] = "999"
                 elif change == "target-parent":
                     selected["view_parents"]["999"] = "1001"
@@ -220,12 +255,28 @@ class ContextAttributionTests(unittest.TestCase):
                     selected["xmlids"]["custom.search_alias"]["key"] = "1001"
                 elif change == "wrong-class":
                     selected["xmlids"]["custom.search_alias"]["model"] = "ir.actions.act_window"
-                results = findings(
-                    packet,
-                    selected,
-                    '<form><button name="custom.open" type="action" context="{\'search_default_named_filter\': 1}"/></form>',
-                )
-                self.assertEqual("search-filter-unresolved" in {item["code"] for item in results}, change != "none")
+                elif change == "missing-key":
+                    selected["xmlids"]["custom.search_alias"].pop("key")
+                elif change.endswith("second-source"):
+                    other = copy.deepcopy(search)
+                    other.update(key="view:30", xmlids=["custom.other"])
+                    selected["xmlids"]["custom.other"] = {"model": "ir.ui.view", "key": "999"}
+                    if change == "withheld-second-source":
+                        other["withheld"] = ["architectures"]
+                    elif change == "nonsearch-second-source":
+                        other["type"] = "form"
+                    elif change == "partial-second-source":
+                        other["xmlids"].append("custom.missing")
+                    packet["records"]["views"].append(other)
+                    packet["totals"]["views"] += 1
+                context = "{'search_default_named_filter': 1}"
+                packet["records"]["actions"][0]["context"] = context
+                results = findings(packet, selected, f'<form><button name="custom.open" type="action" context="{context}"/></form>')
+                report = census.collect_static(packet, selected)
+                action = next(row for row in report["components"] if row["key"] == "action:17")
+                for caller, values in (("button", results), ("record", action["findings"])):
+                    with self.subTest(caller=caller):
+                        self.assertEqual("search-filter-unresolved" in {item["code"] for item in values}, not admitted)
 
     def test_search_field_context_uses_view_model_while_relational_domains_and_subviews_keep_the_comodel(self) -> None:
         packet, selected = context_fixture()
