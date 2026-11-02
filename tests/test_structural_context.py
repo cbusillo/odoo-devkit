@@ -201,6 +201,64 @@ class ContextAttributionTests(unittest.TestCase):
             if component["bucket"] in {"actions", "filters"}:
                 self.assertFalse(any(item["code"] == "missing-field" for item in component["findings"]))
 
+    def test_target_search_inheritance_and_missing_topology_keep_filter_names_uncertain(self) -> None:
+        for change in ("none", "target-child", "target-parent", "missing-topology", "conflicting-alias", "wrong-class"):
+            with self.subTest(change=change):
+                packet, selected = context_fixture()
+                search = packet["records"]["views"][0]
+                search.update(xmlids=["custom.search", "custom.search_alias"], noupdate=True)
+                selected["xmlids"].update({name: {"model": "ir.ui.view", "key": "999"} for name in search["xmlids"]})
+                selected["view_parents"] = {"999": ""}
+                if change == "target-child":
+                    selected["view_parents"]["1001"] = "999"
+                elif change == "target-parent":
+                    selected["view_parents"]["999"] = "1001"
+                    selected["view_parents"]["1001"] = ""
+                elif change == "missing-topology":
+                    selected["view_parents"] = {}
+                elif change == "conflicting-alias":
+                    selected["xmlids"]["custom.search_alias"]["key"] = "1001"
+                elif change == "wrong-class":
+                    selected["xmlids"]["custom.search_alias"]["model"] = "ir.actions.act_window"
+                results = findings(
+                    packet,
+                    selected,
+                    '<form><button name="custom.open" type="action" context="{\'search_default_named_filter\': 1}"/></form>',
+                )
+                self.assertEqual("search-filter-unresolved" in {item["code"] for item in results}, change != "none")
+
+    def test_search_field_context_uses_view_model_while_relational_domains_and_subviews_keep_the_comodel(self) -> None:
+        packet, selected = context_fixture()
+        context = "{'default_producer_only': False, 'default_consumer_only': False}"
+        for kind in ("form", "list", "search"):
+            for name in ("partner_id", "producer_only") if kind == "search" else ("partner_id",):
+                with self.subTest(kind=kind, name=name):
+                    domain = " domain=\"[('consumer_only', '=', False)]\"" if name == "partner_id" else ""
+                    results = findings(packet, selected, f'<{kind}><field name="{name}" context="{context}"{domain}/></{kind}>')
+                    self.assertEqual(
+                        {item["reference"] for item in results if item["code"] == "missing-field"},
+                        {"res.users.consumer_only" if kind == "search" else "res.partner.producer_only"},
+                    )
+                    self.assertNotIn("context-consumer-uncertain", {item["code"] for item in results})
+        selected["models"]["res.partner"]["fields"]["user_id"] = {"relation": "res.users"}
+        for kind in ("form", "list"):
+            with self.subTest(nested=kind):
+                results = findings(
+                    packet,
+                    selected,
+                    f'<form><field name="partner_id"><{kind}><field name="user_id" context="{context}"/></{kind}></field></form>',
+                )
+                self.assertEqual(
+                    {item["reference"] for item in results if item["code"] == "missing-field"}, {"res.users.consumer_only"}
+                )
+        results = findings(
+            packet,
+            selected,
+            f'<xpath expr="//field" position="inside"><field name="partner_id" context="{context}"/></xpath>',
+            type="search",
+        )
+        self.assertIn("context-consumer-uncertain", {item["code"] for item in results})
+
 
 if __name__ == "__main__":
     unittest.main()

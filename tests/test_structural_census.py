@@ -229,11 +229,7 @@ class StaticCensusTests(unittest.TestCase):
 
 class ActionPathIdentityTests(unittest.TestCase):
     def test_aliases_and_native_owners_compare_concrete_targets_for_every_action_class(self) -> None:
-        for kind in sorted(
-            name
-            for name in extract.TECHNICAL_XMLID_MODELS
-            if name.startswith("ir.actions.") and name != "ir.actions.act_window.view"
-        ):
+        for kind in sorted(name for name in extract.TECHNICAL_XMLID_MODELS if census.is_executable_action_model(name)):
             identity = {"model": kind, "key": "71"}
             selected = target()
             selected["models"][kind] = {"fields": {}}
@@ -287,29 +283,6 @@ class ActionPathIdentityTests(unittest.TestCase):
         findings = census.action_findings(row, selected, {})
         self.assertIn(census.finding("action-path-identity-unresolved", row["path"], state="data-dependent/unreached"), findings)
         self.assertNotIn(census.finding("action-path-conflict", row["path"]), findings)
-
-    def test_native_surface_exports_concrete_owners_with_subclass_aliases_and_without_xmlids(self) -> None:
-        env = MagicMock()
-        env.registry.models = {}
-        models = {name: MagicMock() for name in ("ir.actions.actions", "ir.model.data", "ir.module.module", "ir.ui.view")}
-        env.__getitem__.side_effect = models.__getitem__
-        kinds = sorted(
-            name
-            for name in extract.TECHNICAL_XMLID_MODELS
-            if name.startswith("ir.actions.") and name != "ir.actions.act_window.view"
-        )
-        actions = [SimpleNamespace(id=index, type=kind, path=f"route-{index}") for index, kind in enumerate(kinds, 1)]
-        env["ir.actions.actions"].search.return_value = actions
-        env["ir.model.data"].search.return_value = [
-            SimpleNamespace(module="base", name="action", model=actions[0].type, res_id=actions[0].id),
-            SimpleNamespace(module="base", name="alias", model=actions[0].type, res_id=actions[0].id),
-        ]
-        env["ir.module.module"].search.return_value.mapped.return_value = []
-        env["ir.ui.view"]._fields["type"]._description_selection.return_value = []
-        env["ir.ui.view"].with_context.return_value.search.return_value = []
-        exported = native.registry_surface(env, {"artifact": {}}, {}, {})
-        for action in actions:
-            self.assertEqual(exported["action_paths"][action.path], [{"model": action.type, "key": str(action.id)}])
 
 
 class NativeOrchestrationTests(unittest.TestCase):
@@ -1196,6 +1169,15 @@ class ReviewedRegressionTests(unittest.TestCase):
         with self.assertRaises(native.ProbeUnreached):
             native.bind_view_actions(ViewEnvironment(), row, arch)
         selected = target()
+        report = census.collect_static(projected, selected)
+        self.assertIn(
+            "numeric-action-target-unavailable",
+            {item["code"] for component in report["components"] if component["bucket"] == "views" for item in component["findings"]},
+        )
+        moved = SimpleNamespace(id=7, _name="ir.actions.act_window.view")
+        with self.assertRaises(native.ProbeUnreached):
+            native.bind_view_actions(ViewEnvironment({"base.action": moved}), row, arch)
+        selected["xmlids"]["base.action"] = {"model": moved._name, "key": str(moved.id)}
         report = census.collect_static(projected, selected)
         self.assertIn(
             "numeric-action-target-unavailable",

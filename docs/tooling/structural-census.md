@@ -143,8 +143,9 @@ python /volumes/scripts/odoo_structural_census.py \
 
 Every retained view is statically inventoried, including obsolete stock such as
 the Calendar regression. Inheritance fragments whose model cannot be inferred
-are marked native-required; relational field `domain`/`context` use the comodel,
-while search `filter_domain` uses the view model. Unsupported view types remain
+are marked native-required; relational field domains use the comodel. Form/list
+field contexts use the comodel, while search-field contexts and `filter_domain`
+use the view model. Unsupported view types remain
 structural findings, including retained hierarchy/form mismatches. Dynamic
 expressions/code, numeric action IDs without target binding, withheld text and
 auxiliary sources are visible gaps. Static blockers and native-unreached counts
@@ -160,8 +161,10 @@ unmodified. Incomplete/withheld technical inventories and untyped expression
 references retain scope uncertainty.
 
 Context expressions keep producer values separate from destination keys.
-Relational-field defaults use the comodel while their values use the surrounding
-model. Action buttons resolve symbolic names or the view's original numeric
+Form/list relational-field defaults use the comodel while their values use the
+surrounding model; search-field defaults use the search view model. Concrete
+nested views keep their own view type and model, and inheritance fragments stay
+uncertain. Action buttons resolve symbolic names or the view's original numeric
 `action_bindings` through qualified target XMLID class/key facts to one action
 definition in the same source inventory. Its retained `noupdate` window-action model owns
 `default_*` and `group_by`; producer field expressions remain checked on the view
@@ -179,7 +182,9 @@ bindings stay uncertain; this change does not expand native link rebinding.
 `search_default_*` may name a destination field or a named search filter.
 An explicitly linked same-inventory search architecture can establish filter
 names when it has no unresolved inheritance, changed/withheld/minimized text,
-reloaded stock or replacement. Otherwise an absent field stays `search-filter-unresolved`.
+reloaded stock or replacement. A target-bound search must have one qualified
+view identity and complete target parentage, with no parent or target-only child.
+Otherwise an absent field stays `search-filter-unresolved`.
 Nested payload dictionaries do not inherit the outer context's destination:
 they remain consumer-uncertain, including in record-level contexts. Their value
 expressions and the existing dynamic/native limits remain visible. Record-level

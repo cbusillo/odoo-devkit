@@ -22,6 +22,7 @@ from odoo_structural_census import (
     covered_findings,
     families,
     finding,
+    is_executable_action_model,
     native_replacement,
     recount,
     validate_inventory,
@@ -510,7 +511,7 @@ def bind_view_actions(env: Any, row: dict[str, Any], architecture: str) -> str:
         if (
             not matches
             or len({(record._name, record.id) for record in matches}) != 1
-            or not matches[0]._name.startswith("ir.actions.")
+            or not is_executable_action_model(matches[0]._name)
         ):
             raise ProbeUnreached("Numeric action identity is unavailable", code="numeric-action-target-unavailable")
         button.set("name", str(matches[0].id))

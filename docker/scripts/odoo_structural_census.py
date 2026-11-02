@@ -43,6 +43,10 @@ def finding(code: str, reference: str = "", *, state: str = "static-only") -> di
     return {"code": code, "reference": reference, "state": state}
 
 
+def is_executable_action_model(model: str) -> bool:
+    return model.startswith("ir.actions.") and model != "ir.actions.act_window.view"
+
+
 def resolve_field(target: dict[str, Any], model: str, path: str) -> bool:
     return bool(path) and not field_findings(target, model, path)
 
@@ -249,6 +253,15 @@ def action_search_filters(action: dict[str, Any], target: dict[str, Any]) -> set
         or native_replacement(row, target, "ir.ui.view")
     ):
         return None
+    bindings = [target.get("xmlids", {}).get(name, {}) for name in row.get("xmlids", [])]
+    if any(bindings):
+        identities = {record_identity(binding) for binding in bindings}
+        identity = next(iter(identities)) if len(identities) == 1 else None
+        if identity is None or identity[0] != "ir.ui.view":
+            return None
+        parents = target.get("view_parents", {})
+        if identity[1] not in parents or parents[identity[1]] or identity[1] in parents.values():
+            return None
     architectures = row.get("architectures", {})
     if not architectures or not all(architectures.values()):
         return None
@@ -278,7 +291,9 @@ def view_findings(record: dict[str, Any], target: dict[str, Any]) -> list[dict[s
         except ElementTree.ParseError:
             results.append(finding("invalid-xml", language))
             continue
-        results += walk_view(root, record.get("model", ""), target, record.get("action_bindings", {}))
+        results += walk_view(
+            root, record.get("model", ""), target, record.get("action_bindings", {}), view_type=record.get("type", "")
+        )
         if record.get("type") == "qweb":
             results.append(finding("qweb-render-unexecuted", state="data-dependent/unreached"))
     if record.get("website_scope"):
@@ -293,9 +308,16 @@ def view_findings(record: dict[str, Any], target: dict[str, Any]) -> list[dict[s
 
 
 def walk_view(
-    element: ElementTree.Element, model: str, target: dict[str, Any], action_bindings: dict[str, list[str]]
+    element: ElementTree.Element,
+    model: str,
+    target: dict[str, Any],
+    action_bindings: dict[str, list[str]],
+    *,
+    view_type: str = "",
 ) -> list[dict[str, str]]:
     results = []
+    if element.tag in {"form", "list", "search"}:
+        view_type = element.tag
     name = element.get("name", "")
     button = element.tag in {"button", "a"} and element.get("type") in {"object", "action"}
     child_model = model
@@ -313,14 +335,16 @@ def walk_view(
         bindings = action_bindings.get(name, [])
         if not bindings:
             results.append(finding("numeric-action-binding-unavailable", name, state="data-dependent/unreached"))
-        elif not any(target.get("xmlids", {}).get(xmlid, {}).get("model", "").startswith("ir.actions.") for xmlid in bindings):
+        elif not any(is_executable_action_model(target.get("xmlids", {}).get(xmlid, {}).get("model", "")) for xmlid in bindings):
             results.append(finding("numeric-action-target-unavailable", name, state="data-dependent/unreached"))
     for attribute, value in element.attrib.items():
         for xmlid in REFERENCE.findall(value):
             results += xmlid_findings(target, xmlid, technical=button and element.get("type") == "action" and attribute == "name")
         if attribute in EXPRESSION_FIELDS:
             expression_model = child_model if element.tag in {"field", "groupby"} and attribute in {"domain", "context"} else model
-            consumer_model = expression_model
+            consumer_model = (
+                model if attribute == "context" and element.tag == "field" and view_type == "search" else expression_model
+            )
             search_filters = None
             if attribute == "context" and button:
                 action = button_context_action(element, target, action_bindings) if model and not fragment else None
@@ -344,7 +368,7 @@ def walk_view(
     if element.tag == "attribute" and name in EXPRESSION_FIELDS:
         results += expression_findings(element.text or "", name, model, target, consumer_model="" if name == "context" else None)
     for child in element:
-        results += walk_view(child, child_model, target, action_bindings)
+        results += walk_view(child, child_model, target, action_bindings, view_type=view_type)
     return results
 
 
@@ -412,7 +436,7 @@ def reference_findings(record: dict[str, Any], target: dict[str, Any], *, field_
     return results
 
 
-def action_identity(value: dict[str, Any]) -> tuple[str, str] | None:
+def record_identity(value: dict[str, Any]) -> tuple[str, str] | None:
     model, key = value.get("model"), value.get("key")
     return (model, key) if isinstance(model, str) and model and isinstance(key, str) and key else None
 
@@ -427,13 +451,13 @@ def action_path_findings(record: dict[str, Any], target: dict[str, Any], paths: 
     if owners:
         xmlids = target.get("xmlids", {})
         matches = [xmlids[name] for name in {record["key"], *record.get("xmlids", [])} if name in xmlids]
-        identities = {action_identity(value) for value in matches}
+        identities = {record_identity(value) for value in matches}
         own = next(iter(identities)) if len(identities) == 1 else None
         if own is None or own[0] != record.get("type"):
             unresolved = True
         else:
             for owner in owners:
-                identity = action_identity(xmlids.get(owner, {}) if isinstance(owner, str) else owner)
+                identity = record_identity(xmlids.get(owner, {}) if isinstance(owner, str) else owner)
                 if identity is None:
                     unresolved = True
                 elif identity != own:
