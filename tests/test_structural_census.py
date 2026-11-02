@@ -227,6 +227,78 @@ class StaticCensusTests(unittest.TestCase):
             census.collect_static(packet, target())
 
 
+class ActionPathIdentityTests(unittest.TestCase):
+    def test_aliases_and_native_owners_compare_concrete_targets_for_every_action_class(self) -> None:
+        for kind in sorted(name for name in extract.TECHNICAL_XMLID_MODELS if name.startswith("ir.actions.")):
+            identity = {"model": kind, "key": "71"}
+            selected = target()
+            selected["models"][kind] = {"fields": {}}
+            selected["xmlids"] = {"base.action": identity, "base.alias": identity}
+            row: dict[str, Any] = {"key": "action:900", "xmlids": ["base.action"], "type": kind, "path": "route"}
+            for owners in ([identity], ["base.alias"], ["base.action", "base.alias"], [identity, "base.alias"]):
+                with self.subTest(kind=kind, owners=owners):
+                    selected["action_paths"] = {row["path"]: owners}
+                    findings = census.action_findings(row, selected, {row["path"]: [row["key"]]})
+                    self.assertFalse(any(item["code"].startswith("action-path-") for item in findings))
+
+    def test_distinct_targets_and_source_duplicates_remain_conflicts(self) -> None:
+        kind = "ir.actions.act_window"
+        selected = target()
+        identity = {"model": kind, "key": "71"}
+        selected["xmlids"] = {"base.action": identity}
+        row: dict[str, Any] = {"key": "action:900", "xmlids": ["base.action"], "type": kind, "path": "route"}
+        for owner in ({"model": kind, "key": "72"}, {"model": "ir.actions.server", "key": "71"}):
+            with self.subTest(owner=owner):
+                selected["action_paths"] = {row["path"]: [owner]}
+                self.assertIn("action-path-conflict", {item["code"] for item in census.action_findings(row, selected, {})})
+        selected["action_paths"] = {row["path"]: [identity]}
+        duplicate = {**row, "key": "action:901"}
+        report = census.collect_static(inventory(actions=[row, duplicate]), selected)
+        self.assertTrue(all(any(item["code"] == "action-path-conflict" for item in row["findings"]) for row in report["components"]))
+
+    def test_missing_ambiguous_and_moved_identities_remain_unresolved(self) -> None:
+        kind = "ir.actions.act_window"
+        identity = {"model": kind, "key": "71"}
+        row: dict[str, Any] = {"key": "action:71", "xmlids": ["base.action", "base.alias"], "type": kind, "path": "route"}
+        cases = [
+            ({}, identity),
+            ({"base.action": {"model": kind}}, identity),
+            ({"base.action": {"model": "ir.actions.server", "key": "71"}}, identity),
+            ({"base.action": identity, "base.alias": {"model": kind, "key": "72"}}, identity),
+            ({"base.action": identity}, "native:71"),
+            ({"base.action": identity}, "base.unknown"),
+            ({"base.action": identity}, {"model": kind}),
+        ]
+        for xmlids, owner in cases:
+            with self.subTest(xmlids=xmlids, owner=owner):
+                selected = target()
+                selected.update(xmlids=xmlids, action_paths={row["path"]: [owner]})
+                findings = census.action_findings(row, selected, {})
+                paths = [item for item in findings if item["code"].startswith("action-path-")]
+                self.assertTrue(paths)
+                self.assertTrue(all(item["state"] == "data-dependent/unreached" for item in paths))
+
+    def test_native_surface_exports_concrete_owners_with_subclass_aliases_and_without_xmlids(self) -> None:
+        env = MagicMock()
+        env.registry.models = {}
+        models = {name: MagicMock() for name in ("ir.actions.actions", "ir.model.data", "ir.module.module", "ir.ui.view")}
+        env.__getitem__.side_effect = models.__getitem__
+        kinds = sorted(name for name in extract.TECHNICAL_XMLID_MODELS if name.startswith("ir.actions."))
+        actions = [SimpleNamespace(id=index, type=kind, path=f"route-{index}") for index, kind in enumerate(kinds, 1)]
+        env["ir.actions.actions"].search.return_value = actions
+        env["ir.model.data"].search.return_value = [
+            SimpleNamespace(module="base", name="action", model=actions[0].type, res_id=actions[0].id),
+            SimpleNamespace(module="base", name="alias", model=actions[0].type, res_id=actions[0].id),
+        ]
+        env["ir.module.module"].search.return_value.mapped.return_value = []
+        env["ir.ui.view"]._fields["type"]._description_selection.return_value = []
+        env["ir.ui.view"].with_context.return_value.search.return_value = []
+        exported = native.registry_surface(env, {"artifact": {}}, {}, {})
+        for action in actions:
+            self.assertEqual(exported["action_paths"][action.path], [{"model": action.type, "key": str(action.id)}])
+        self.assertEqual(exported["xmlids"]["base.action"], exported["xmlids"]["base.alias"])
+
+
 class NativeOrchestrationTests(unittest.TestCase):
     def test_missing_module_blocks_reverse_dependencies_without_losing_independent_closure(self) -> None:
         graph = {"base": set(), "good": {"base"}, "bad": {"missing_enterprise"}, "dependent": {"bad"}}
@@ -1141,7 +1213,7 @@ class ReviewedRegressionTests(unittest.TestCase):
                 "reference": "base.action",
             }
         ]
-        custom = {"key": "custom.action", "type": "ir.actions.act_window", "model": "res.users", "path": row["path"]}
+        custom: dict[str, Any] = {"key": "custom.action", "type": "ir.actions.act_window", "model": "res.users", "path": row["path"]}
         report = census.collect_static(inventory(actions=[row, custom]), selected)
         self.assertEqual({item["code"] for item in report["components"][0]["findings"]}, {"native20-stock-replacement"})
         self.assertNotIn("action-path-conflict", {item["code"] for item in report["components"][1]["findings"]})
@@ -1150,6 +1222,11 @@ class ReviewedRegressionTests(unittest.TestCase):
         env = ViewEnvironment({"base.action": SimpleNamespace(_name="ir.actions.act_window", id=5)})
         native.load_action(env, row, replace_native=True)
         self.assertFalse(env.created)
+        selected["xmlids"][custom["key"]] = {"model": custom["type"], "key": "different-target"}
+        selected["xmlids"]["base.action"]["key"] = "stock-target"
+        custom["path"] = "new-stock"
+        report = census.collect_static(inventory(actions=[row, custom]), selected)
+        self.assertIn("action-path-conflict", {item["code"] for item in report["components"][1]["findings"]})
 
     def test_native_reparenting_combines_original_roots_without_rewriting_source_rows(self) -> None:
         selected = target()

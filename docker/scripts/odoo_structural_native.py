@@ -149,9 +149,9 @@ def registry_surface(
         for name in env.registry.models
     }
     xmlids = {row.module + "." + row.name: {"model": row.model, "key": str(row.res_id)} for row in env["ir.model.data"].search([])}
-    paths: dict[str, list[str]] = {}
+    paths: dict[str, list[dict[str, str]]] = {}
     for action in env["ir.actions.actions"].search([("path", "!=", False)]):
-        paths.setdefault(action.path, []).append(action.get_external_id().get(action.id) or "native:" + str(action.id))
+        paths.setdefault(action.path, []).append({"model": action.type, "key": str(action.id)})
     installed = set(env["ir.module.module"].search([("state", "=", "installed")]).mapped("name"))
     return {
         "binding": digest(candidate["artifact"]),

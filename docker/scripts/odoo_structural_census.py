@@ -280,6 +280,38 @@ def reference_findings(record: dict[str, Any], target: dict[str, Any], *, field_
     return results
 
 
+def action_identity(value: dict[str, Any]) -> tuple[str, str] | None:
+    model, key = value.get("model"), value.get("key")
+    return (model, key) if isinstance(model, str) and model and isinstance(key, str) and key else None
+
+
+def action_path_findings(record: dict[str, Any], target: dict[str, Any], paths: dict[str, list[str]]) -> list[dict[str, str]]:
+    path = record.get("path") or ""
+    if not path:
+        return []
+    conflict = len(paths.get(path, [])) > 1
+    unresolved = False
+    owners = target.get("action_paths", {}).get(path, [])
+    if owners:
+        xmlids = target.get("xmlids", {})
+        matches = [xmlids[name] for name in {record["key"], *record.get("xmlids", [])} if name in xmlids]
+        identities = {action_identity(value) for value in matches}
+        own = next(iter(identities)) if len(identities) == 1 else None
+        if own is None or own[0] != record.get("type"):
+            unresolved = True
+        else:
+            for owner in owners:
+                identity = action_identity(xmlids.get(owner, {}) if isinstance(owner, str) else owner)
+                if identity is None:
+                    unresolved = True
+                elif identity != own:
+                    conflict = True
+    results = [finding("action-path-conflict", path)] if conflict else []
+    if unresolved:
+        results.append(finding("action-path-identity-unresolved", path, state="data-dependent/unreached"))
+    return results
+
+
 def action_findings(record: dict[str, Any], target: dict[str, Any], paths: dict[str, list[str]]) -> list[dict[str, str]]:
     results = []
     for attribute in ("context", "domain"):
@@ -295,11 +327,7 @@ def action_findings(record: dict[str, Any], target: dict[str, Any], paths: dict[
             results.append(finding("unsupported-view-mode", mode))
     if len(set(modes)) != len(modes):
         results.append(finding("duplicate-view-mode"))
-    path: str = record.get("path") or ""
-    if path:
-        own = {record["key"], *record.get("xmlids", [])}
-        if len(paths.get(path, [])) > 1 or set(target.get("action_paths", {}).get(path, [])) - own:
-            results.append(finding("action-path-conflict", path))
+    results += action_path_findings(record, target, paths)
     if action_type not in {"ir.actions.act_window", "ir.actions.act_window_close"}:
         results.append(finding("action-behavior-unexecuted", action_type, state="data-dependent/unreached"))
     return results

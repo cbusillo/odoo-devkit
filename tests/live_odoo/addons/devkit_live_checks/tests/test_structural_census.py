@@ -168,10 +168,32 @@ class TestStructuralCensusOwnedRegistries(TestCase):
                 },
             ],
         )
-        with patch.dict(config.options, {"test_enable": False}):
+        surfaces: list[dict[str, Any]] = []
+        export_surface = native.registry_surface
+
+        def observe_surface(*args: Any) -> dict[str, Any]:
+            surface = export_surface(*args)
+            surfaces.append(surface)
+            return surface
+
+        with (
+            patch.dict(config.options, {"test_enable": False}),
+            patch.object(native, "registry_surface", side_effect=observe_surface),
+        ):
             report = native.collect_native(
                 source, self.candidate, self.roots, declaration=self.declaration, deadline=time.monotonic() + 300
             )
+        self.assertEqual(len(surfaces), 2)
+        for selected in surfaces:
+            identity = selected["xmlids"]["ci_census_good.moved_action"]
+            self.assertEqual(selected["action_paths"]["census-canonical"], [identity])
+            row = {
+                "key": "action:900",
+                "xmlids": ["ci_census_good.moved_action"],
+                "type": identity["model"],
+                "path": "census-canonical",
+            }
+            self.assertFalse(any(item["code"].startswith("action-path-") for item in census.action_findings(row, selected, {})))
         self.assertTrue(
             any(row.get("module") == "ci_census_bad" and row["state"] == "native-reproduced" for row in report["bootstrap"])
         )

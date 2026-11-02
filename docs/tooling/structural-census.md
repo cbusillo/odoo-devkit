@@ -114,6 +114,19 @@ For static checking, the target surface has an exact `binding`, `surface`,
 A static target remains static; `registry_surface` exports the native surface
 only after a healthy empty target has loaded.
 
+Native `action_paths` maps each path to concrete target identities using the
+same `{model, key}` shape as `xmlids`. Both registry exports, before and after
+manual baseline preparation, use the action's concrete `type` and target ID;
+base-class XMLID lookup and a chosen alias are unnecessary. Static targets may
+also name owners by XMLID. Source XMLIDs must resolve to one target of the
+source action's class before comparing owners. Aliases for that same target
+do not compete. Missing keys, ambiguous mappings, moved classes and legacy
+unqualified `native:<id>` owners remain `action-path-identity-unresolved`,
+not proven competitors. Source IDs never match target IDs by number.
+Independent source duplicates and distinct qualified target owners still
+produce `action-path-conflict`. This comparison does not replace native path
+syntax, reserved-name or uniqueness checks, or the stock-disposition guard.
+
 ```bash
 python /volumes/scripts/odoo_structural_census.py \
   --inventory /private/input.json --target /private/target.json \
