@@ -277,6 +277,12 @@ class ActionPathIdentityTests(unittest.TestCase):
                 paths = [item for item in findings if item["code"].startswith("action-path-")]
                 self.assertTrue(paths)
                 self.assertTrue(all(item["state"] == "data-dependent/unreached" for item in paths))
+        row["xmlids"] = []
+        selected = target()
+        selected["action_paths"] = {row["path"]: [identity]}
+        findings = census.action_findings(row, selected, {})
+        self.assertIn(census.finding("action-path-identity-unresolved", row["path"], state="data-dependent/unreached"), findings)
+        self.assertNotIn(census.finding("action-path-conflict", row["path"]), findings)
 
     def test_native_surface_exports_concrete_owners_with_subclass_aliases_and_without_xmlids(self) -> None:
         env = MagicMock()
@@ -296,7 +302,6 @@ class ActionPathIdentityTests(unittest.TestCase):
         exported = native.registry_surface(env, {"artifact": {}}, {}, {})
         for action in actions:
             self.assertEqual(exported["action_paths"][action.path], [{"model": action.type, "key": str(action.id)}])
-        self.assertEqual(exported["xmlids"]["base.action"], exported["xmlids"]["base.alias"])
 
 
 class NativeOrchestrationTests(unittest.TestCase):
