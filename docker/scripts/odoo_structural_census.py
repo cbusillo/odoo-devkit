@@ -237,7 +237,8 @@ def action_search_filters(action: dict[str, Any], target: dict[str, Any]) -> set
         return None
     row = matches[0]
     if (
-        row.get("type") != "search"
+        not target.get("technical_xmlids_complete")
+        or row.get("type") != "search"
         or row.get("model") != action.get("model")
         or row.get("parent")
         or any(view.get("parent") == key for view in views)

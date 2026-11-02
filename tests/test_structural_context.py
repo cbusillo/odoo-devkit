@@ -218,6 +218,8 @@ class ContextAttributionTests(unittest.TestCase):
             ("wrong-class", False),
             ("missing-key", False),
             ("reloaded-target", False),
+            ("source-incomplete-alias-scope", False),
+            ("target-incomplete-alias-scope", False),
             ("second-source", False),
             ("withheld-second-source", False),
             ("nonsearch-second-source", False),
@@ -232,7 +234,7 @@ class ContextAttributionTests(unittest.TestCase):
                     search["xmlids"] = ["__export__.search", "__export__.alias"]
                 elif change == "mixed-target":
                     search["xmlids"][1] = "__export__.alias"
-                elif change == "no-alias":
+                elif change in {"no-alias", "source-incomplete-alias-scope"}:
                     search["xmlids"] = []
                 selected["xmlids"].update({name: {"model": "ir.ui.view", "key": "999"} for name in search["xmlids"]})
                 selected["view_parents"] = {"999": ""}
@@ -242,6 +244,8 @@ class ContextAttributionTests(unittest.TestCase):
                     selected["modules"]["custom"] = []
                 if change in {"reloaded-module-absent", "reloaded-target"}:
                     search["noupdate"] = False
+                if change.endswith("incomplete-alias-scope"):
+                    packet["totals"]["xmlids"] = None
                 if change == "partial-alias":
                     selected["xmlids"].pop(search["xmlids"][1])
                 elif change == "target-child":

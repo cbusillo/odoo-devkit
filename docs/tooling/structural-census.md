@@ -181,7 +181,7 @@ bindings stay uncertain; this change does not expand native link rebinding.
 
 `search_default_*` may name a destination field or a named search filter.
 An explicitly linked same-inventory search architecture can establish filter
-names when it has no unresolved inheritance, changed/withheld/minimized text,
+names with complete technical XMLID scope and no unresolved inheritance, changed/withheld/minimized text,
 or replacement. An unbound source search must have no aliases or only private
 `__` aliases absent from the target. Otherwise every alias must resolve to one
 retained `noupdate` view identity, claimed by exactly one source view including
