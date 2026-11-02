@@ -2,6 +2,7 @@
 import argparse
 import ast
 import hashlib
+import importlib.util
 import json
 import logging
 import os
@@ -19,6 +20,7 @@ from contextlib import closing, suppress
 from dataclasses import dataclass
 from enum import Enum, IntEnum
 from pathlib import Path
+from types import ModuleType
 from typing import Any, Literal
 from unittest.mock import patch
 
@@ -62,6 +64,15 @@ class ExitCode(IntEnum):
 
 RUNTIME_SCRIPTS_PATH = "/volumes/scripts"
 BOUNDARY_COMMIT_PARAMETER = "odoo_devkit.credential_boundary_commit"
+
+
+@dataclass(frozen=True)
+class ReadonlyQARetirement:
+    user_id: int
+    previous_login: str
+    retired_login: str
+    witness_keys: tuple[str, str]
+
 
 # Production credentials a restored copy must not keep on a non-production instance.
 # This mapping is the single list for every tenant; extend it here, not per tenant.
@@ -1785,6 +1796,250 @@ class OdooDataWorkflowRunner:
             if cursor.fetchone()[0]:
                 raise OdooDatabaseUpdateError("Development-store export-state reset commit readback failed.")
 
+    def _readonly_qa_policy(self) -> ModuleType:
+        paths = {
+            path.resolve()
+            for root in self._resolve_addons_paths()
+            if (path := root / "launchplane_readonly" / "policy.py").is_file()
+        }
+        if len(paths) != 1:
+            raise OdooDatabaseUpdateError("The read-only QA policy is missing or ambiguous.")
+        spec = importlib.util.spec_from_file_location("copied_readonly_qa_policy", paths.pop())
+        if spec is None or spec.loader is None:
+            raise OdooDatabaseUpdateError("The read-only QA policy cannot be loaded.")
+        policy = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(policy)
+        return policy
+
+    @staticmethod
+    def _readonly_qa_object(value: object) -> dict[str, Any]:
+        parsed = json.loads(value) if isinstance(value, str) else value
+        if not isinstance(parsed, dict):
+            raise OdooDatabaseUpdateError("The read-only QA ownership evidence is malformed.")
+        return parsed
+
+    @staticmethod
+    def _qualify_readonly_qa_role(cursor: Any, policy: Any, user_id: int) -> None:
+        groups = {}
+        for xmlid in (policy.GROUP, policy.IMPLIED_GROUP, *policy.FORBIDDEN_IMPLIED_GROUPS):
+            module, name = xmlid.split(".", 1)
+            cursor.execute("SELECT model,res_id FROM ir_model_data WHERE module=%s AND name=%s", (module, name))
+            rows = cursor.fetchall()
+            if not rows and xmlid in policy.FORBIDDEN_IMPLIED_GROUPS:
+                continue
+            if len(rows) != 1 or rows[0][0] != "res.groups":
+                raise OdooDatabaseUpdateError("The read-only QA role identity is unavailable.")
+            group_id = rows[0][1]
+            cursor.execute("SELECT id FROM res_groups WHERE id=%s", (group_id,))
+            if cursor.fetchone() is None:
+                raise OdooDatabaseUpdateError("The read-only QA role record is unavailable.")
+            groups[xmlid] = group_id
+        group_id = groups[policy.GROUP]
+        internal_id = groups[policy.IMPLIED_GROUP]
+        cursor.execute("SELECT gid FROM res_groups_users_rel WHERE uid=%s", (user_id,))
+        if cursor.fetchall() != [(group_id,)]:
+            raise OdooDatabaseUpdateError("The read-only QA account has unexpected direct roles.")
+        cursor.execute("SELECT hid FROM res_groups_implied_rel WHERE gid=%s", (group_id,))
+        if group_id == internal_id or cursor.fetchall() != [(internal_id,)]:
+            raise OdooDatabaseUpdateError("The read-only QA role has unexpected implications.")
+        cursor.execute(
+            "WITH RECURSIVE reachable(id) AS (SELECT %s UNION "
+            "SELECT r.hid FROM res_groups_implied_rel r JOIN reachable p ON r.gid=p.id) SELECT id FROM reachable",
+            (group_id,),
+        )
+        effective = {row[0] for row in cursor.fetchall()}
+        if any(groups.get(xmlid) in effective for xmlid in policy.FORBIDDEN_IMPLIED_GROUPS):
+            raise OdooDatabaseUpdateError("The read-only QA role has forbidden effective privileges.")
+
+    def _qualify_readonly_qa_owner(self, policy: Any, user: tuple, target_owner: dict[str, str]) -> dict[str, str]:
+        user_id, login, active, password, share, raw_owner, raw_runtime = user
+        owner = self._readonly_qa_object(raw_owner)
+        if (
+            user_id <= 2
+            or set(owner) != set(target_owner)
+            or any(not isinstance(value, str) for value in owner.values())
+            or any(
+                not owner[key].strip() for key in ("product", "context", "instance", "environment_kind", "database", "database_uuid")
+            )
+            or owner["product"] != target_owner["product"]
+            or owner["database_uuid"] != target_owner["database_uuid"]
+        ):
+            raise OdooDatabaseUpdateError("The copied read-only QA account is not source-owned.")
+        if owner == target_owner:
+            return owner
+        if active is None or share is None or bool(share) or login != policy.product_login(owner["product"]):
+            raise OdooDatabaseUpdateError("The copied read-only QA account is not source-owned.")
+        if raw_runtime is not None:
+            runtime = self._readonly_qa_object(raw_runtime)
+            qualified = policy.qualify_runtime(
+                runtime,
+                json.dumps(runtime),
+                "preview" if owner["environment_kind"] == "preview" else "testing",
+                owner["database"],
+                owner["database_uuid"],
+                owner["testing_copy"],
+            )
+            if qualified != owner:
+                raise OdooDatabaseUpdateError("The copied read-only QA runtime and owner disagree.")
+        elif (
+            active
+            or password
+            or owner["environment_kind"] != "preview"
+            or owner["instance"].lower() in {"prod", "production", "testing"}
+            or not owner["preview_id"].strip()
+            or owner["testing_copy"]
+        ):
+            raise OdooDatabaseUpdateError("The copied read-only QA account lacks its activation witness.")
+        return owner
+
+    def _qualify_readonly_qa_witnesses(
+        self, policy: Any, witnesses: dict[str, tuple], user_id: int, active: bool, owner: dict[str, str]
+    ) -> None:
+        fixture = witnesses.get(policy.FIXTURE_JOURNAL_KEY)
+        if fixture is not None:
+            journal_id, raw = fixture
+            saved = self._readonly_qa_object(raw)
+            records = saved.get("records")
+            if (
+                set(saved) != {"fixture_sha256", "records"}
+                or not isinstance(saved["fixture_sha256"], str)
+                or not re.fullmatch(r"[a-f0-9]{64}", saved["fixture_sha256"])
+                or not isinstance(records, list)
+                or len(records) != 2
+                or any(
+                    not isinstance(record, dict)
+                    or set(record) != {"model", "id", "disposition"}
+                    or not isinstance(record["model"], str)
+                    or type(record["id"]) is not int
+                    or not isinstance(record["disposition"], str)
+                    or record["disposition"] not in {"created", "reused"}
+                    for record in records
+                )
+                or {(record["model"], record["id"]) for record in records}
+                != {("res.users", user_id), ("ir.config_parameter", journal_id)}
+            ):
+                raise OdooDatabaseUpdateError("The copied read-only QA fixture witness is foreign or malformed.")
+        operative = witnesses.get(policy.operative_marker_key(owner["product"]))
+        if operative is not None:
+            marker = self._readonly_qa_object(operative[1])
+            if (
+                set(marker) != {"account_id", "binding", "copy_binding", "state", "groups"}
+                or type(marker["account_id"]) is not int
+                or marker["account_id"] != user_id
+                or marker["groups"] != [policy.GROUP]
+                or not isinstance(marker["state"], str)
+                or marker["state"] != ("active" if active else "closed")
+                or any(
+                    not isinstance(marker[key], str) or not re.fullmatch(r"[a-f0-9]{64}", marker[key])
+                    for key in ("binding", "copy_binding")
+                )
+                or (owner["environment_kind"] == "stable" and marker["copy_binding"] != owner["testing_copy"])
+            ):
+                raise OdooDatabaseUpdateError("The copied read-only QA operative witness is foreign or malformed.")
+
+    def _sanitize_copied_readonly_qa(self, cursor: Any) -> ReadonlyQARetirement | None:
+        if self._is_production_instance():
+            return None
+        columns = self._table_columns(cursor, "res_users")
+        ownership_columns = {"launchplane_readonly_owner", "launchplane_readonly_runtime"}
+        if not columns & ownership_columns:
+            return None
+        if not ownership_columns | {"id", "login", "active", "password", "share"} <= columns:
+            raise OdooDatabaseUpdateError("The read-only QA account schema is incomplete.")
+        fields = "id,login,active,password,share,launchplane_readonly_owner,launchplane_readonly_runtime"
+        cursor.execute(
+            "SELECT " + fields + " FROM res_users WHERE launchplane_readonly_owner IS NOT NULL "
+            "OR launchplane_readonly_runtime IS NOT NULL"
+        )
+        users = {row[0]: row for row in cursor.fetchall()}
+        try:
+            policy = self._readonly_qa_policy()
+        except (OdooDatabaseUpdateError, ImportError, OSError, SyntaxError):
+            if users:
+                raise
+            return None
+        if not hasattr(policy, "FIXTURE_JOURNAL_KEY") or not callable(getattr(policy, "operative_marker_key", None)):
+            if users:
+                raise OdooDatabaseUpdateError("The copied read-only QA account requires its image-owned witness policy.")
+            return None
+        runtime_text = self.os_env.get(policy.RUNTIME_ENV, "")
+        identity = self._readonly_qa_object(runtime_text) if runtime_text else {}
+        product = identity.get("product")
+        login = policy.product_login(product) if isinstance(product, str) and product else ""
+        keys = (policy.FIXTURE_JOURNAL_KEY, policy.operative_marker_key(product)) if login else (policy.FIXTURE_JOURNAL_KEY, "")
+        cursor.execute("SELECT id,key,value FROM ir_config_parameter WHERE key IN (%s,%s)", keys)
+        witness_rows = cursor.fetchall()
+        witnesses = {key: (record_id, value) for record_id, key, value in witness_rows}
+        if len(witnesses) != len(witness_rows):
+            raise OdooDatabaseUpdateError("The read-only QA witnesses are ambiguous.")
+        if not users and not witnesses:
+            return None
+        if login:
+            cursor.execute("SELECT " + fields + " FROM res_users WHERE login=%s", (login,))
+            users.update((row[0], row) for row in cursor.fetchall())
+        if not users:
+            return None
+        if len(users) != 1 or not login:
+            raise OdooDatabaseUpdateError("The read-only QA account ownership is missing or ambiguous.")
+        cursor.execute("SELECT key,value FROM ir_config_parameter WHERE key IN (%s,%s)", ("database.uuid", policy.COPY_PARAMETER))
+        parameters = dict(cursor.fetchall())
+        target_owner = policy.qualify_runtime(
+            identity,
+            runtime_text,
+            self.local.platform_instance,
+            self.local.db_name,
+            parameters.get("database.uuid", ""),
+            parameters.get(policy.COPY_PARAMETER, ""),
+        )
+        user = next(iter(users.values()))
+        owner = self._qualify_readonly_qa_owner(policy, user, target_owner)
+        if owner == target_owner:
+            return None
+        self._qualify_readonly_qa_role(cursor, policy, user[0])
+        cursor.execute("SELECT count(*) FROM res_users_apikeys WHERE user_id=%s", (user[0],))
+        if cursor.fetchone()[0]:
+            raise OdooDatabaseUpdateError("The read-only QA account has unexpected API keys.")
+        for field in ("oauth_provider_id", "oauth_uid", "oauth_access_token"):
+            if field in columns:
+                cursor.execute(sql.SQL("SELECT {} FROM res_users WHERE id=%s").format(sql.Identifier(field)), (user[0],))
+                if cursor.fetchone()[0]:
+                    raise OdooDatabaseUpdateError("The read-only QA account has unexpected OAuth credentials.")
+        self._qualify_readonly_qa_witnesses(policy, witnesses, user[0], bool(user[2]), owner)
+        if not witnesses:
+            raise OdooDatabaseUpdateError("The copied read-only QA account has no source ownership witness.")
+        if user[6] is None and policy.FIXTURE_JOURNAL_KEY not in witnesses:
+            raise OdooDatabaseUpdateError("The copied inactive QA shell has no fixture ownership witness.")
+        retired_login = f"{login}.retired.{user[0]}"
+        cursor.execute("SELECT id FROM res_users WHERE login=%s", (retired_login,))
+        if cursor.fetchone() is not None:
+            raise OdooDatabaseUpdateError("The retired read-only QA login collides with another identity.")
+        cursor.execute(
+            "UPDATE res_users SET active=FALSE,password=NULL,login=%s,"
+            "launchplane_readonly_owner=NULL,launchplane_readonly_runtime=NULL WHERE id=%s",
+            (retired_login, user[0]),
+        )
+        if cursor.rowcount != 1:
+            raise OdooDatabaseUpdateError("The copied read-only QA identity changed during retirement.")
+        cursor.execute("DELETE FROM ir_config_parameter WHERE key IN (%s,%s)", keys)
+        return ReadonlyQARetirement(user[0], login, retired_login, keys)
+
+    @staticmethod
+    def _verify_copied_readonly_qa(cursor: Any, retired: ReadonlyQARetirement | None) -> None:
+        if retired is None:
+            return
+        cursor.execute(
+            "SELECT login,active,password,launchplane_readonly_owner,launchplane_readonly_runtime FROM res_users WHERE id=%s",
+            (retired.user_id,),
+        )
+        if cursor.fetchone() != (retired.retired_login, False, None, None, None):
+            raise OdooDatabaseUpdateError("The copied read-only QA retirement did not commit.")
+        cursor.execute("SELECT count(*) FROM res_users WHERE login=%s", (retired.previous_login,))
+        if cursor.fetchone()[0]:
+            raise OdooDatabaseUpdateError("The copied read-only QA login was not released.")
+        cursor.execute("SELECT count(*) FROM ir_config_parameter WHERE key IN (%s,%s)", retired.witness_keys)
+        if cursor.fetchone()[0]:
+            raise OdooDatabaseUpdateError("The copied read-only QA witnesses survived retirement.")
+
     def prepare_credentials_before_registry(self, *, restored_copy: bool = False, do_sanitize: bool = False) -> None:
         """Commit the SQL-only credential boundary before starting any Odoo process.
 
@@ -1797,6 +2052,11 @@ class OdooDataWorkflowRunner:
         try:
             parameters = self._pre_registry_parameter_overrides()
             self._validate_isolated_copy_settings(parameters)
+            try:
+                with conn.cursor() as cursor:
+                    retired_qa = self._sanitize_copied_readonly_qa(cursor)
+            except (ValueError, TypeError, KeyError, AttributeError, ImportError, OSError) as error:
+                raise OdooDatabaseUpdateError("The copied read-only QA policy or ownership evidence is unavailable.") from error
             restored_copy = restored_copy or self.local.copy_purpose is not None
             if restored_copy:
                 self.fingerprint_restored_credentials()
@@ -1830,6 +2090,8 @@ class OdooDataWorkflowRunner:
             # commit must not allow the first hook to start with the old credentials.
             observer = self._connect_with_retry(self.local.db_name)
             with closing(observer):
+                with observer.cursor() as cursor:
+                    self._verify_copied_readonly_qa(cursor, retired_qa)
                 if self.local.copy_purpose:
                     self._isolated_copy_parameters = dict(parameters)
                     self.verify_isolated_copy_before_registry(database_connection=observer)
