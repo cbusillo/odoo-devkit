@@ -346,8 +346,10 @@ def _hr_org_chart_link_plan(cr: Any) -> Reference:
 
 def _hr_org_chart_stock_views(series: str) -> dict[str, dict[str, ElementTree.Element]]:
     source = Path(__file__).with_name("legacy") / "hr_org_chart" / f"hr_employee_public_views_{series}.xml"
+    sources = [source, source.with_name("hr_employee_public_form_18.xml")] if series == "18" else [source]
     return {
         record.attrib["id"]: {field.attrib["name"]: field for field in record.findall("field")}
+        for source in sources
         for record in ElementTree.parse(source).findall("record[@model='ir.ui.view']")
     }
 
