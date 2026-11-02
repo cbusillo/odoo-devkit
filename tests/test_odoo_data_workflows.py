@@ -2493,16 +2493,14 @@ class CredentialBoundaryTests(unittest.TestCase):
     def test_qa_account_and_witness_retirement_roll_back_together_before_commit(self) -> None:
         self.seed_readonly_qa()
         before = self.qa_state()
-        execute: Callable[[_ParamstyleCursor, str, Sequence[object]], None] = _ParamstyleCursor.execute
-
-        def fail_after_user_update(cursor: _ParamstyleCursor, query: str, parameters: Sequence[object] = ()) -> None:
-            if str(query) == "DELETE FROM ir_config_parameter WHERE key IN (%s,%s)":
-                raise odoo_data_workflows.OdooDatabaseUpdateError("planted witness deletion failure")
-            execute(cursor, query, parameters)
-
-        with patch.object(_ParamstyleCursor, "execute", fail_after_user_update):
-            with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
-                self.runner.prepare_credentials_before_registry(restored_copy=True)
+        with closing(sqlite3.connect(self.path)) as writer, writer:
+            writer.executescript(
+                "CREATE TRIGGER refuse_retired_qa_witness_delete BEFORE DELETE ON ir_config_parameter "
+                "WHEN EXISTS (SELECT 1 FROM res_users WHERE id=41 AND NOT active AND launchplane_readonly_owner IS NULL) "
+                "BEGIN SELECT RAISE(ABORT,'planted witness deletion failure'); END;"
+            )
+        with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
+            self.runner.prepare_credentials_before_registry(restored_copy=True)
         self.assertEqual(self.qa_state(), before)
         self.assertEqual(self.events, [])
 
