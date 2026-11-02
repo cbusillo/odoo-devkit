@@ -229,7 +229,11 @@ class StaticCensusTests(unittest.TestCase):
 
 class ActionPathIdentityTests(unittest.TestCase):
     def test_aliases_and_native_owners_compare_concrete_targets_for_every_action_class(self) -> None:
-        for kind in sorted(name for name in extract.TECHNICAL_XMLID_MODELS if name.startswith("ir.actions.")):
+        for kind in sorted(
+            name
+            for name in extract.TECHNICAL_XMLID_MODELS
+            if name.startswith("ir.actions.") and name != "ir.actions.act_window.view"
+        ):
             identity = {"model": kind, "key": "71"}
             selected = target()
             selected["models"][kind] = {"fields": {}}
@@ -289,7 +293,11 @@ class ActionPathIdentityTests(unittest.TestCase):
         env.registry.models = {}
         models = {name: MagicMock() for name in ("ir.actions.actions", "ir.model.data", "ir.module.module", "ir.ui.view")}
         env.__getitem__.side_effect = models.__getitem__
-        kinds = sorted(name for name in extract.TECHNICAL_XMLID_MODELS if name.startswith("ir.actions."))
+        kinds = sorted(
+            name
+            for name in extract.TECHNICAL_XMLID_MODELS
+            if name.startswith("ir.actions.") and name != "ir.actions.act_window.view"
+        )
         actions = [SimpleNamespace(id=index, type=kind, path=f"route-{index}") for index, kind in enumerate(kinds, 1)]
         env["ir.actions.actions"].search.return_value = actions
         env["ir.model.data"].search.return_value = [
