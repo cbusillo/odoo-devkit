@@ -47,7 +47,7 @@ jobs:
           sparse-checkout: |
             launchplane_settings
             test_support
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@v10.2.0
       - name: Record settings source
         run: |
           mkdir -p ci-evidence
