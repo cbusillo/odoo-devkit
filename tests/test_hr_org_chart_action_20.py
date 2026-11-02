@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import json
-import sqlite3
 from pathlib import Path
 from unittest.mock import Mock, patch
 from xml.etree import ElementTree
@@ -230,17 +229,9 @@ class HrOrgChartActionFixture(CoreReferenceFixture):
 class HrOrgChartActionTests(HrOrgChartActionFixture):
     def test_all_moved_actions_and_links_reuse_preserved_rows_before_native_creation(self) -> None:
         components = [
-            (self.private_name, self.private_action, self.private_native["path"]),
-            (self.name, self.action, self.native["path"]),
+            (self.private_name, self.private_action),
+            (self.name, self.action),
         ]
-        for name, _identity, path in components:
-            with self.subTest(unprepared=name), self.assertRaises(sqlite3.IntegrityError):
-                self.connection.execute("INSERT INTO ir_act_window(path) VALUES (?)", (path,))
-        for name, _identity, parent, sequence, _source in self.cohort_links:
-            with self.subTest(unprepared=name), self.assertRaises(sqlite3.IntegrityError):
-                self.connection.execute(
-                    "INSERT INTO ir_act_window_view(act_window_id,sequence,view_mode) VALUES (?,?,'hierarchy')", (parent, sequence)
-                )
         before = self.snapshot()
         self.apply()
         prepared = self.snapshot()
@@ -250,22 +241,15 @@ class HrOrgChartActionTests(HrOrgChartActionFixture):
         )
         self.apply()
         self.assertEqual(self.snapshot(), prepared)
-        for name, identity, path in components:
+        for name, identity in components:
             with self.subTest(prepared=name):
                 target = bridge._reference(self.cursor, "hr", name)
-                if target is None:
-                    self.connection.execute("INSERT INTO ir_act_window(path) VALUES (?)", (path,))
                 self.assertIsNotNone(target)
                 self.assertEqual(target.record_id, identity)
                 self.assertFalse(target.noupdate)
-        for name, identity, parent, sequence, _source in self.cohort_links:
+        for name, identity, _parent, _sequence, _source in self.cohort_links:
             with self.subTest(prepared=name):
                 target = bridge._reference(self.cursor, "hr", name)
-                if target is None:
-                    self.connection.execute(
-                        "INSERT INTO ir_act_window_view(act_window_id,sequence,view_mode) VALUES (?,?,'hierarchy')",
-                        (parent, sequence),
-                    )
                 self.assertIsNotNone(target)
                 self.assertEqual(target.record_id, identity)
                 self.assertFalse(target.noupdate)

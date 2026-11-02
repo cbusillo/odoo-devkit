@@ -751,8 +751,8 @@ Notes
   before any bridge effects. Preparation replays before native loading; the
   bridge leaves completed major-20 crossings untouched. The target's own XML
   supplies its name, tag and path.
-  The public and private Org Chart window actions move from `hr_org_chart` to `hr` by the
-  same named binding: each retained action ID, path, incoming references and old
+  The public and private Org Chart window actions move from `hr_org_chart` to
+  `hr` by the same named binding: each retained action ID, path, incoming references and old
   protected alias stay intact. Native HR loads its own action, including mobile
   hierarchy mode. Preparation accepts only the source19 stock actions with their
   nonempty English HTML help matching the selected native20 definition. It
@@ -765,11 +765,11 @@ Notes
   binding. The public and private employee hierarchy action-view links, and both
   department hierarchy links, also transfer their XMLIDs to HR on their retained
   rows, avoiding native unique `(action, view mode)` collisions. Each owner,
-  typed parent action, sequence, nullable view reference, defaults and aliases
+  typed parent action, sequence, unset view reference, defaults and aliases
   must qualify before any bridge effect. Existing neighboring links and incoming
   references remain unchanged; no view selection or action order is reconstructed.
-  All six moved action/link records qualify together. Other HR records and security stay with
-  their existing owners; this action handoff is not a whole-module merge or
+  All six moved action/link records qualify together. Other HR records and
+  security stay with their existing owners; this action handoff is not a whole-module merge or
   uninstall. Native cleanup keeps the protected old alias, while a later native
   uninstall of only the old module retains the action through its HR XMLID.
   The exact historical stock19 public hierarchy also gains its native HR XMLID
