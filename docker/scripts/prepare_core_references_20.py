@@ -343,6 +343,131 @@ def _hr_org_chart_link_plan(cr: Any) -> Reference:
     return source
 
 
+def _hr_org_chart_view_plan(cr: Any) -> tuple[Reference, int | None]:
+    normalize = runpy.run_path(str(Path(__file__).with_name("mail_view_20.py")))["_normalized_architecture"]
+    source_file = Path(__file__).with_name("legacy") / "hr_org_chart" / "hr_employee_public_views_19.xml"
+    stock = {
+        record.attrib["id"]: {field.attrib["name"]: field for field in record.findall("field")}
+        for record in ElementTree.parse(source_file).findall("record[@model='ir.ui.view']")
+    }
+    cr.execute("LOCK TABLE ir_ui_view, ir_ui_view_custom, ir_ui_view_group_rel, ir_model_data IN SHARE ROW EXCLUSIVE MODE")
+    hierarchy_name = "hr_employee_public_hierarchy_view"
+    hierarchy = _require_source(cr, "hr_org_chart", hierarchy_name, "ir.ui.view")
+    target = _check_target(cr, hierarchy_name, hierarchy, module="hr")
+    if (target is not None and target.noupdate) or (hierarchy.noupdate and target is None):
+        raise RuntimeError("Protected Org Chart hierarchy ownership")
+    native = ElementTree.parse(HR_ORG_CHART_DATA_FILE)
+    records = native.findall(f".//record[@id='{hierarchy_name}']")
+    if len(records) != 1 or records[0].attrib != {"id": hierarchy_name, "model": "ir.ui.view"}:
+        raise RuntimeError("Unsupported native Org Chart hierarchy definition")
+    fields = {field.attrib.get("name"): field for field in records[0]}
+    if (
+        set(fields) != {"name", "model", "arch"}
+        or len(records[0]) != len(fields)
+        or fields["name"].text != stock[hierarchy_name]["name"].text
+        or fields["model"].text != stock[hierarchy_name]["model"].text
+        or fields["name"].attrib != {"name": "name"}
+        or fields["model"].attrib != {"name": "model"}
+        or fields["arch"].attrib != {"name": "arch", "type": "xml"}
+        or len(fields["arch"]) != 1
+        or fields["arch"][0].tag != "hierarchy"
+    ):
+        raise RuntimeError("Changed native Org Chart hierarchy contract")
+    forms = native.findall(".//record[@id='hr_employee_public_view_form']")
+    if len(forms) != 1 or forms[0].attrib != {"id": "hr_employee_public_view_form", "model": "ir.ui.view"}:
+        raise RuntimeError("Unsupported native public employee form")
+    form_fields = {field.attrib.get("name"): field for field in forms[0]}
+    if (
+        set(form_fields) != {"name", "model", "arch"}
+        or len(forms[0]) != len(form_fields)
+        or not form_fields["name"].text
+        or form_fields["model"].text != stock[hierarchy_name]["model"].text
+        or form_fields["model"].attrib != {"name": "model"}
+        or form_fields["arch"].attrib != {"name": "arch", "type": "xml"}
+        or len(form_fields["arch"]) != 1
+        or form_fields["arch"][0].tag != "form"
+        or any(native.findall(f".//record[@id='{name}']") for name in stock if name != hierarchy_name)
+    ):
+        raise RuntimeError("Changed native public employee form contract")
+    containers = form_fields["arch"].findall(".//div[@id='o_employee_org_chart']")
+    if len(containers) != 1 or len(containers[0].findall(".//field[@name='child_ids'][@widget='hr_org_chart']")) != 1:
+        raise RuntimeError("Native public employee form must own its Org Chart")
+    cr.execute(
+        "SELECT id FROM ir_ui_view WHERE model = %s AND type = 'hierarchy' AND mode = 'primary' AND id != %s",
+        (stock[hierarchy_name]["model"].text, hierarchy.record_id),
+    )
+    if cr.fetchone():
+        raise RuntimeError("Preserve competing public employee hierarchy views")
+    action = _require_source(cr, "hr_org_chart", "action_hr_employee_public_org_chart", "ir.actions.act_window")
+    extension_change = None
+    for name, fields in stock.items():
+        source = _require_source(cr, "hr_org_chart", name, "ir.ui.view")
+        inherited = "inherit_id" in fields
+        parent = (
+            _require_source(cr, "hr", fields["inherit_id"].attrib["ref"].removeprefix("hr."), "ir.ui.view") if inherited else None
+        )
+        rows = _rows(cr, "SELECT * FROM ir_ui_view WHERE id = %s FOR UPDATE", (source.record_id,))
+        if len(rows) != 1 or (parent is not None and (source.noupdate or parent.noupdate)):
+            raise RuntimeError("Unsupported retained Org Chart view ownership")
+        if parent is not None:
+            cr.execute("SELECT id FROM ir_ui_view WHERE id = %s AND model = %s", (parent.record_id, fields["model"].text))
+            if cr.fetchone() is None:
+                raise RuntimeError("Missing public employee form parent")
+        cr.execute(
+            "SELECT module, name, noupdate FROM ir_model_data WHERE model = 'ir.ui.view' AND res_id = %s", (source.record_id,)
+        )
+        aliases = {("hr_org_chart", name, source.noupdate)}
+        if not inherited and target is not None:
+            aliases.add(("hr", name, False))
+        if set(cr.fetchall()) != aliases:
+            raise RuntimeError("Customized retained Org Chart view aliases")
+        for query in (
+            "SELECT 1 FROM ir_ui_view WHERE inherit_id = %s LIMIT 1",
+            "SELECT 1 FROM ir_ui_view_custom WHERE ref_id = %s LIMIT 1",
+            "SELECT 1 FROM ir_ui_view_group_rel WHERE view_id = %s LIMIT 1",
+        ):
+            cr.execute(query, (source.record_id,))
+            if cr.fetchone():
+                raise RuntimeError("Preserve dependent, customized or restricted Org Chart view")
+        view = rows[0]
+        _require_empty(
+            view,
+            {"id", "arch_db", "arch_prev", "create_uid", "write_uid", "create_date", "write_date"},
+            {
+                "name": (fields["name"].text,),
+                "model": (fields["model"].text,),
+                "inherit_id": (parent.record_id if parent else None,),
+                "type": ("form" if inherited else "hierarchy",),
+                "mode": ("extension" if inherited else "primary",),
+                "active": (True,),
+                "priority": (16,),
+                "arch_updated": (False,),
+                "arch_fs": ("hr_org_chart/views/hr_employee_public_views.xml",),
+                "customize_show": (False,),
+                "is_seo_optimized": (False,),
+            },
+        )
+        expected = ElementTree.tostring(fields["arch"][0], encoding="unicode").replace(
+            "%(hr_org_chart.action_hr_employee_public_org_chart)d", str(action.record_id)
+        )
+        architectures = view["arch_db"]
+        if not isinstance(architectures, dict) or set(architectures) != {"en_US"}:
+            raise RuntimeError("Preserve translated Org Chart architecture")
+        try:
+            expected = normalize(expected)
+            current = normalize(architectures["en_US"])
+            if view.get("arch_prev") and normalize(view["arch_prev"]) != expected:
+                raise RuntimeError("Preserve customized Org Chart previous architecture")
+        except (ElementTree.ParseError, TypeError, ValueError) as error:
+            raise RuntimeError("Unsupported Org Chart architecture") from error
+        if current == expected:
+            if inherited:
+                extension_change = source.record_id
+        elif not inherited or current != normalize("<data/>"):
+            raise RuntimeError("Preserve customized Org Chart architecture")
+    return hierarchy, extension_change
+
+
 def _inherited_view_source(cr: Any, view: InheritedView) -> tuple[int, dict[str, str]] | None:
     cr.execute("SELECT state FROM ir_module_module WHERE name = %s", (view.module,))
     installed = cr.fetchone()
@@ -913,7 +1038,15 @@ def migrate(cr: Any, version: str | None) -> None:
     calendar_views = _calendar_view_plan(cr)
     hr_org_chart = _hr_org_chart_action_plan(cr)
     hr_org_chart_link = _hr_org_chart_link_plan(cr) if hr_org_chart is not None else None
+    hr_org_chart_views = _hr_org_chart_view_plan(cr) if hr_org_chart is not None else None
     _admit_mail(cr)
+    if hr_org_chart_views is not None:
+        hierarchy, extension_change = hr_org_chart_views
+        _bind_moved_action(cr, hierarchy, "hr_employee_public_hierarchy_view", "hr_org_chart", "hr")
+        if extension_change is not None:
+            cr.execute(
+                "UPDATE ir_ui_view SET arch_db = %s::jsonb WHERE id = %s", (json.dumps({"en_US": "<data/>"}), extension_change)
+            )
     for record_id in calendar_views:
         cr.execute("UPDATE ir_ui_view SET arch_db = %s::jsonb WHERE id = %s", (json.dumps({"en_US": "<data/>"}), record_id))
     if state_target is None:

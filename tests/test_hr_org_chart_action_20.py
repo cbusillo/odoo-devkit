@@ -20,10 +20,12 @@ class WindowActionCursor(ActionCursor):
         ]
 
 
-class HrOrgChartActionTests(CoreReferenceFixture):
+class HrOrgChartActionFixture(CoreReferenceFixture):
     def setUp(self) -> None:
         super().setUp()
         self.cursor = WindowActionCursor(self.connection)
+        self.view_plan_patch = patch_attr(bridge, "_hr_org_chart_view_plan", Mock(return_value=None))
+        self.view_plan_patch.start()
         self.name = "action_hr_employee_public_org_chart"
         self.employee_model = "hr.employee.public"
         self.native = {
@@ -50,7 +52,7 @@ class HrOrgChartActionTests(CoreReferenceFixture):
         ElementTree.SubElement(link, "field", name="act_window_id", ref="hr.hr_employee_public_action")
         self.target = Path(self.directory.name) / "hr.xml"
         ElementTree.ElementTree(root).write(self.target)
-        patch.dict(vars(bridge), {"HR_ORG_CHART_DATA_FILE": self.target}).start()
+        patch_attr(bridge, "HR_ORG_CHART_DATA_FILE", self.target).start()
         self.connection.executescript(
             "INSERT INTO ir_module_module VALUES ('hr_org_chart','installed','19.0.1.0');"
             "INSERT INTO ir_module_module VALUES ('hr','installed','19.0.1.0');"
@@ -121,6 +123,8 @@ class HrOrgChartActionTests(CoreReferenceFixture):
             self.apply()
         self.assertEqual(self.snapshot(), before)
 
+
+class HrOrgChartActionTests(HrOrgChartActionFixture):
     def test_prepare_preserves_row_links_and_replays_then_native_loads_mobile_hierarchy(self) -> None:
         for model in ("ir.actions.act_window.view", "ir.actions.todo"):
             self.xmlid("unrelated", model.replace(".", "_"), model, self.action, False)
