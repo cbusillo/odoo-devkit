@@ -2,9 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import subprocess
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
+from typing import Any, cast
 from urllib.parse import urlsplit, urlunsplit
+
+BUILD_WORKFLOW = ".github/workflows/build.yml"
 
 _GIT_COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
@@ -420,3 +426,59 @@ def _required_string(source: dict[str, object] | dict[str, str], key: str) -> st
     if not isinstance(value, str) or not value.strip():
         raise ArtifactProvenanceError(f"Dependency evidence {key} must be a non-empty string")
     return value.strip()
+
+
+def find_examined_plan(
+    *, request: Callable[[str], dict[str, Any]], repository: str, commit: str, default_branch: str
+) -> dict[str, int] | None:
+    if re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+        raise ValueError("Examined plan requires an exact source commit")
+    name = f"examined-input-plan-{commit}"
+    latest: dict[str, Any] | None = None
+    page = 1
+    while True:
+        artifacts = request(f"repos/{repository}/actions/artifacts?name={name}&per_page=100&page={page}")["artifacts"]
+        for artifact in artifacts:
+            if artifact["name"] != name:
+                raise ValueError("Artifact lookup returned a different source commit")
+            if latest is None or artifact["id"] > latest["id"]:
+                latest = artifact
+        if len(artifacts) < 100:
+            break
+        page += 1
+    if latest is None:
+        return None
+    run = request(f"repos/{repository}/actions/runs/{latest['workflow_run']['id']}")
+    if (
+        latest["expired"]
+        or run["repository"]["full_name"] != repository
+        or run["head_repository"]["full_name"] != repository
+        or run["head_sha"] != commit
+        or run["head_branch"] != default_branch
+        or run["path"] != BUILD_WORKFLOW
+        or run["event"] != "workflow_dispatch"
+        or run["status"] != "completed"
+        or run["conclusion"] != "success"
+    ):
+        raise ValueError("Latest examined plan is expired or lacks successful exact-commit preparation")
+    return {"artifact_id": latest["id"], "run_id": run["id"]}
+
+
+def github_request(endpoint: str) -> dict[str, Any]:
+    return cast(dict[str, Any], json.loads(subprocess.check_output(["gh", "api", "--method", "GET", endpoint], text=True)))
+
+
+def main() -> None:
+    plan = find_examined_plan(
+        request=github_request,
+        repository=os.environ["GITHUB_REPOSITORY"],
+        commit=os.environ["SOURCE_COMMIT"],
+        default_branch=os.environ["DEFAULT_BRANCH"],
+    )
+    with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
+        for key, value in (plan or {}).items():
+            output.write(f"{key}={value}\n")
+
+
+if __name__ == "__main__":
+    main()
