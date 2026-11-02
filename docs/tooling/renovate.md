@@ -36,3 +36,16 @@ that extends the shared preset and adds only its own rules, each with a
 
 A repository with nothing to manage sets `"enabled": false` instead, so the
 Renovate App opens no onboarding pull request there. Forks are skipped.
+
+## Native CI Images
+
+Devkit's live-check matrix keeps each image pinned as `series-devtools@sha256:…`.
+The repository's regex manager extracts these matrix inputs, which the built-in
+GitHub Actions manager does not track. Renovate's `exact` versioning keeps each
+tag unchanged and proposes digest updates from its existing stable devtools
+channel. CI still uses the pinned digest and runs both series' full suites and
+planted faults before the update can land.
+
+The shared weekly schedule and review process still apply. This reduces manual
+repinning; it does not guarantee that a pin survives the producer's rolling
+retention across many publications or a delayed review.
