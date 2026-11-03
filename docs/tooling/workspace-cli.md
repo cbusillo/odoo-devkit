@@ -882,7 +882,7 @@ Notes
   no additional architecture rewrite beyond the upstream reference/domain
   adapters, and native validation remains authoritative.
   The old `hr.version.employee_type` selection is a separate concept, not a
-  field rename or a name-based mapping to the new relation. The recorded
+  field rename or a label-based mapping to the new relation. The recorded
   [Employee decision](https://github.com/cbusillo/odoo-devkit/issues/369#issuecomment-6604407393)
   fills only empty version links whose old classification is `employee`,
   using the existing `hr.contract_type_employee` identity. Existing nonempty
