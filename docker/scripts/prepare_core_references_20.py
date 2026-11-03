@@ -20,6 +20,7 @@ STOCK_VALUATION_DATA_FILE = Path("/odoo/addons/account/report/account_stock_valu
 HR_ORG_CHART_DATA_FILE = Path("/odoo/addons/hr/views/hr_employee_public_views.xml")
 HR_EMPLOYEE_DATA_FILE = Path("/odoo/addons/hr/views/hr_employee_views.xml")
 HR_DEPARTMENT_DATA_FILE = Path("/odoo/addons/hr/views/hr_department_views.xml")
+HR_USERS_DATA_FILE = Path("/odoo/addons/hr/views/res_users.xml")
 UNTRACKED_PUBLIC_VIEW_DEFAULTS = {"track": (None, False), "visibility": (None, "")}
 _logger = logging.getLogger(__name__)
 
@@ -200,17 +201,17 @@ def _bind_moved_action(cr: Any, source: Reference, name: str, source_module: str
     cr.execute("UPDATE ir_model_data SET noupdate = true WHERE module = %s AND name = %s", (source_module, name))
 
 
-def _hr_org_chart_native_fields(path: Path, name: str, model: str) -> dict[str, ElementTree.Element]:
+def _hr_native_fields(path: Path, name: str, model: str) -> dict[str, ElementTree.Element]:
     parser = ElementTree.XMLParser(target=ElementTree.TreeBuilder(insert_comments=True))
     document = ElementTree.parse(path, parser=parser).getroot()
     records = document.findall(f".//record[@id='{name}']")
     if document.tag != "odoo" or len(records) != 1 or records[0].attrib != {"id": name, "model": model}:
-        raise RuntimeError("Unsupported native Org Chart definition")
+        raise RuntimeError("Unsupported native HR definition")
     if document.attrib or any(parent.attrib for parent in document.iter("data")):
         raise RuntimeError("Protected native HR data")
     fields = {field.attrib.get("name", ""): field for field in records[0]}
     if len(fields) != len(records[0]):
-        raise RuntimeError("Duplicate native Org Chart fields")
+        raise RuntimeError("Duplicate native HR fields")
     return fields
 
 
@@ -227,7 +228,7 @@ def _hr_org_chart_action_plan(cr: Any, *, private: bool = False) -> Reference | 
     target = _check_target(cr, name, source, module="hr")
     if (target is not None and target.noupdate) or (source.noupdate and target is None):
         raise RuntimeError("Protected Org Chart action ownership")
-    fields = _hr_org_chart_native_fields(HR_EMPLOYEE_DATA_FILE if private else HR_ORG_CHART_DATA_FILE, name, source.model)
+    fields = _hr_native_fields(HR_EMPLOYEE_DATA_FILE if private else HR_ORG_CHART_DATA_FILE, name, source.model)
     expected = {"name", "res_model", "path", "view_mode", "mobile_view_mode", "domain", "context", "view_id", "help"}
     if private:
         expected.add("search_view_id")
@@ -350,7 +351,7 @@ def _hr_org_chart_link_plan(
     cr.execute("SELECT id,res_model,type FROM ir_act_window WHERE id = %s FOR UPDATE", (parent_action.record_id,))
     if cr.fetchall() != [(parent_action.record_id, model, parent_action.model)]:
         raise RuntimeError("Missing or rebound Org Chart parent action")
-    fields = _hr_org_chart_native_fields(path if path is not None else HR_ORG_CHART_DATA_FILE, name, source.model)
+    fields = _hr_native_fields(path if path is not None else HR_ORG_CHART_DATA_FILE, name, source.model)
     if (
         set(fields) != {"sequence", "view_mode", "act_window_id"}
         or fields["sequence"].attrib != {"name": "sequence", "eval": str(sequence)}
@@ -1072,6 +1073,130 @@ def _calendar_view_plan(cr: Any) -> list[int]:
     return changes
 
 
+def _hr_preferences_view_plan(cr: Any) -> tuple[int, str] | None:
+    cr.execute("SELECT state FROM ir_module_module WHERE name = 'hr'")
+    if cr.fetchone() not in {("installed",), ("to upgrade",)}:
+        return None
+    primary_name = "res_users_view_form_simple_modif"
+    child_name = "res_users_view_form_preferences"
+    if _reference(cr, "hr", child_name) is None:
+        return None
+    helpers = runpy.run_path(str(Path(__file__).with_name("mail_view_20.py")))
+    normalize = helpers["_normalized_architecture"]
+    render = helpers["_render_architecture"]
+    modules = {"hr": (primary_name, child_name)}
+    cr.execute("SELECT state FROM ir_module_module WHERE name = 'mail_bot_hr'")
+    if cr.fetchone() in {("installed",), ("to upgrade",)}:
+        modules["mail_bot_hr"] = (primary_name, child_name)
+    references = {"base.view_users_form_simple_modif": _require_source(cr, "base", "view_users_form_simple_modif", "ir.ui.view")}
+    stock: dict[str, dict[str, ElementTree.Element]] = {}
+    for module, names in modules.items():
+        path = Path(__file__).with_name("legacy") / module / ("res_users_19.xml" if module == "hr" else "res_users_views_19.xml")
+        for name in names:
+            key = f"{module}.{name}"
+            references[key] = _require_source(cr, module, name, "ir.ui.view")
+            stock[key] = _hr_native_fields(path, name, "ir.ui.view")
+    cr.execute("LOCK TABLE ir_ui_view, ir_ui_view_custom, ir_ui_view_group_rel, ir_model_data IN SHARE ROW EXCLUSIVE MODE")
+    if any(ref.noupdate for ref in references.values()) or len({ref.record_id for ref in references.values()}) != len(references):
+        raise RuntimeError("Protected or overlapping HR preference ownership")
+    base = references["base.view_users_form_simple_modif"]
+    cr.execute("SELECT model, type, mode, active FROM ir_ui_view WHERE id = %s FOR UPDATE", (base.record_id,))
+    if cr.fetchall() != [("res.users", "form", "primary", True)]:
+        raise RuntimeError("Missing or unsupported HR preferences ancestor")
+    native = {name: _hr_native_fields(HR_USERS_DATA_FILE, name, "ir.ui.view") for name in modules["hr"]}
+    for name, fields in native.items():
+        expected = stock[f"hr.{name}"]
+        if (
+            set(fields) != set(expected)
+            or fields["arch"].attrib != expected["arch"].attrib
+            or any(
+                normalize(ElementTree.tostring(fields[key], encoding="unicode"))
+                != normalize(ElementTree.tostring(expected[key], encoding="unicode"))
+                for key in expected.keys() - {"arch"}
+            )
+        ):
+            raise RuntimeError("Changed native HR preferences ownership or fields")
+    if normalize(render(native[primary_name]["arch"])) != normalize(render(stock[f"hr.{primary_name}"]["arch"])):
+        raise RuntimeError("Changed native HR preferences primary architecture")
+    target = render(native[child_name]["arch"])
+    retired = _reference(cr, "hr_homeworking", "res_useurs_view_form_profile")
+    if retired is not None:
+        child = references[f"hr.{child_name}"]
+        cr.execute("SELECT model, inherit_id FROM ir_ui_view WHERE id = %s FOR UPDATE", (retired.record_id,))
+        if retired.model != "ir.ui.view" or retired.noupdate or cr.fetchall() != [("res.users", child.record_id)]:
+            raise RuntimeError("Unsupported retained HR Homeworking preference binding")
+        cr.execute(
+            "SELECT module, name, noupdate FROM ir_model_data WHERE model = 'ir.ui.view' AND res_id = %s", (retired.record_id,)
+        )
+        if cr.fetchall() != [("hr_homeworking", "res_useurs_view_form_profile", False)]:
+            raise RuntimeError("Customized retained HR Homeworking preference aliases")
+    parents = {
+        key: fields["inherit_id"].attrib["ref"]
+        if "." in fields["inherit_id"].attrib["ref"]
+        else f"{key.split('.')[0]}.{fields['inherit_id'].attrib['ref']}"
+        for key, fields in stock.items()
+    }
+    plan = None
+    for key, fields in stock.items():
+        module, name = key.split(".")
+        source = references[key]
+        rows = _rows(cr, "SELECT * FROM ir_ui_view WHERE id = %s FOR UPDATE", (source.record_id,))
+        if len(rows) != 1:
+            raise RuntimeError("Missing HR preferences view")
+        view = rows[0]
+        cr.execute(
+            "SELECT module, name, noupdate FROM ir_model_data WHERE model = 'ir.ui.view' AND res_id = %s", (source.record_id,)
+        )
+        if cr.fetchall() != [(module, name, False)]:
+            raise RuntimeError("Customized HR preferences aliases")
+        children = {references[child_key].record_id for child_key, parent in parents.items() if parent == key}
+        if key == f"hr.{child_name}" and retired is not None:
+            children.add(retired.record_id)
+        cr.execute("SELECT id FROM ir_ui_view WHERE inherit_id = %s", (source.record_id,))
+        if {row[0] for row in cr.fetchall()} != children:
+            raise RuntimeError("Unqualified HR preferences descendants")
+        for query in (
+            "SELECT 1 FROM ir_ui_view_custom WHERE ref_id = %s LIMIT 1",
+            "SELECT 1 FROM ir_ui_view_group_rel WHERE view_id = %s LIMIT 1",
+        ):
+            cr.execute(query, (source.record_id,))
+            if cr.fetchone():
+                raise RuntimeError("Customized or restricted HR preferences")
+        _require_empty(
+            view,
+            {"id", "arch_db", "arch_prev", "create_uid", "write_uid", "create_date", "write_date"},
+            {
+                "name": (fields["name"].text,),
+                "model": (fields["model"].text,),
+                "inherit_id": (references[parents[key]].record_id,),
+                "type": ("form",),
+                "mode": (fields["mode"].text if "mode" in fields else "extension",),
+                "active": (True,),
+                "priority": (int(fields["priority"].text or "") if "priority" in fields else 16,),
+                "arch_updated": (False,),
+                "arch_fs": (f"{module}/views/res_users.xml" if module == "hr" else f"{module}/views/res_users_views.xml",),
+                "customize_show": (False,),
+                "is_seo_optimized": (False,),
+                **UNTRACKED_PUBLIC_VIEW_DEFAULTS,
+            },
+        )
+        architectures = view["arch_db"]
+        if not isinstance(architectures, dict) or set(architectures) != {"en_US"}:
+            raise RuntimeError("Preserve translated HR preferences")
+        try:
+            expected = normalize(render(fields["arch"]))
+            current = normalize(architectures["en_US"])
+            if view.get("arch_prev") and normalize(view["arch_prev"]) != expected:
+                raise RuntimeError("Preserve customized HR preferences history")
+            if key == f"hr.{child_name}" and current == expected:
+                plan = source.record_id, target
+            elif current != expected and (key != f"hr.{child_name}" or current != normalize(target)):
+                raise RuntimeError("Preserve customized HR preferences architecture")
+        except (ElementTree.ParseError, TypeError, ValueError) as error:
+            raise RuntimeError("Unsupported HR preferences architecture") from error
+    return plan
+
+
 def migrate(cr: Any, version: str | None) -> None:
     major = (version or "").split(".", 1)[0]
     if major == "20":
@@ -1088,6 +1213,7 @@ def migrate(cr: Any, version: str | None) -> None:
     policies = _policy_xmlid_plan(cr)
     stock_valuation = _stock_valuation_action_plan(cr)
     calendar_views = _calendar_view_plan(cr)
+    hr_preferences = _hr_preferences_view_plan(cr)
     hr_org_chart = _hr_org_chart_action_plan(cr)
     hr_moved: dict[str, Reference] = {}
     if hr_org_chart is not None:
@@ -1108,6 +1234,9 @@ def migrate(cr: Any, version: str | None) -> None:
             )
     hr_org_chart_views = _hr_org_chart_view_plan(cr) if hr_org_chart is not None else None
     _admit_mail(cr)
+    if hr_preferences is not None:
+        record_id, architecture = hr_preferences
+        cr.execute("UPDATE ir_ui_view SET arch_db = %s::jsonb WHERE id = %s", (json.dumps({"en_US": architecture}), record_id))
     if hr_org_chart_views is not None:
         hierarchy, extension_change = hr_org_chart_views
         _bind_moved_action(cr, hierarchy, "hr_employee_public_hierarchy_view", "hr_org_chart", "hr")

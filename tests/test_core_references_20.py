@@ -152,6 +152,14 @@ class CoreReferenceFixture(unittest.TestCase):
 
 
 class CoreReferenceTests(CoreReferenceFixture):
+    def test_hr_preferences_require_qualification_before_every_bridge_effect(self) -> None:
+        self.connection.execute("INSERT INTO ir_module_module VALUES ('hr','installed','19.0.1.0')")
+        self.xmlid("hr", "res_users_view_form_preferences", "ir.ui.view", 100, False)
+        before = self.snapshot()
+        with self.assertRaises(RuntimeError):
+            self.apply()
+        self.assertEqual(self.snapshot(), before)
+
     def test_calendar_preferences_require_qualification_before_every_bridge_effect(self) -> None:
         self.connection.execute("INSERT INTO ir_module_module VALUES ('calendar','installed','19.0.1.0')")
         before = self.snapshot()
