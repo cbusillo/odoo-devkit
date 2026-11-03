@@ -63,12 +63,20 @@ class StockView(NamedTuple):
     module: str
     source: str
     target: str
+    source_file: str
 
 
 STOCK_VIEWS = (
-    StockView("stock", "view_template_property_form", "product_template_form_view_stock"),
-    StockView("stock_account", "view_template_property_form_stock_account", "product_template_form_view_stock_account"),
-    StockView("stock_delivery", "product_template_hs_code", "product_template_hs_code"),
+    StockView("stock", "view_template_property_form", "product_template_form_view_stock", "stock/views/product_views.xml"),
+    StockView(
+        "stock_account",
+        "view_template_property_form_stock_account",
+        "product_template_form_view_stock_account",
+        "stock_account/views/product_views.xml",
+    ),
+    StockView(
+        "stock_delivery", "product_template_hs_code", "product_template_hs_code", "stock_delivery/views/product_template_view.xml"
+    ),
 )
 
 
@@ -233,12 +241,12 @@ def _hr_native_fields(path: Path, name: str, model: str) -> dict[str, ElementTre
     document = ElementTree.parse(path, parser=parser).getroot()
     records = document.findall(f".//record[@id='{name}']")
     if document.tag != "odoo" or len(records) != 1 or records[0].attrib != {"id": name, "model": model}:
-        raise RuntimeError("Unsupported native HR definition")
+        raise RuntimeError("Unsupported native record definition")
     if document.attrib or any(parent.attrib for parent in document.iter("data")):
-        raise RuntimeError("Protected native HR data")
+        raise RuntimeError("Protected native record data")
     fields = {field.attrib.get("name", ""): field for field in records[0]}
     if len(fields) != len(records[0]):
-        raise RuntimeError("Duplicate native HR fields")
+        raise RuntimeError("Duplicate native record fields")
     return fields
 
 
@@ -280,6 +288,11 @@ def _stock_product_view_plan(cr: Any) -> dict[tuple[str, str], Reference]:
             else []
         )
         fields = current[0]
+        if (
+            view.source != view.target
+            and ElementTree.parse(STOCK_PRODUCT_DATA_FILES[view.module]).find(f".//record[@id='{view.source}']") is not None
+        ):
+            raise RuntimeError("Native Stock data still declares a retired view identity")
         native = _hr_native_fields(STOCK_PRODUCT_DATA_FILES[view.module], view.target, "ir.ui.view")
         parent_name = "product.product_template_form_view" if view.module == "stock" else "stock.product_template_form_view_stock"
         if (
@@ -330,7 +343,7 @@ def _stock_product_view_plan(cr: Any) -> dict[tuple[str, str], Reference]:
                 "active": (True,),
                 "priority": (16,),
                 "arch_updated": (False,),
-                "arch_fs": (f"{view.module}/views/{STOCK_PRODUCT_DATA_FILES[view.module].name}",),
+                "arch_fs": (view.source_file,),
                 "customize_show": (False,),
                 "is_seo_optimized": (False,),
                 **UNTRACKED_PUBLIC_VIEW_DEFAULTS,

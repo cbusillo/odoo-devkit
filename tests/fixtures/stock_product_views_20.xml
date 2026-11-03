@@ -7,68 +7,6 @@
             <xpath expr="//label[@for='is_storable']" position="attributes">
                 <attribute name="invisible">1</attribute>
             </xpath>
-            <xpath expr="//div[@name='tracking_and_qty_no_stock']" position="replace">
-                <!-- Replace the single line tacking + qty without stock with 2 individual lines with stock (tracking + tracking method // qty) -->
-                <field name="store_by" invisible="type != 'consu'" groups="stock.group_production_lot" />
-                <!-- Qty line if storable -->
-                <label for="qty_available" class="oe_inline" invisible="not is_storable or not product_variant_id" groups="stock.group_stock_user" />
-                <div name="qty_available_with_stock" class="o_row" invisible="not is_storable or not product_variant_id" groups="stock.group_stock_user">
-                    <a type="object" name="action_open_quants" invisible="not show_qty_update_button" groups="stock.group_stock_manager">
-                        <field name="qty_available" readonly="True" />
-                    </a>
-                    <field name="qty_available" invisible="show_qty_update_button" groups="stock.group_stock_manager" style="max-width: fit-content;" />
-                    <field name="qty_available" readonly="True" groups="!stock.group_stock_manager" style="max-width: fit-content;" />
-                    <span name="uom_span" groups="uom.group_uom">
-                        <field name="uom_name" class="oe_inline" />
-                    </span>
-                </div>
-            </xpath>
-            <xpath expr="//field[@name='is_storable']" position="attributes">
-                <attribute name="groups">!stock.group_production_lot</attribute>
-                <attribute name="widget">boolean_toggle</attribute>
-                <attribute name="options">{'autosave': False}</attribute>
-                <attribute name="invisible">type != 'consu'</attribute>
-            </xpath>
-            <xpath expr="//group[@name='group_lots_and_weight']" position="before">
-                <field name="has_available_route_ids" invisible="1" />
-                <group string="Operations" name="operations" invisible="not (has_available_route_ids or route_from_categ_ids)">
-                    <label for="route_ids" invisible="not has_available_route_ids" />
-                    <div invisible="not has_available_route_ids">
-                        <field name="route_ids" class="mb-0" widget="many2many_checkboxes" />
-                        <button id="stock.view_diagram_button" string="View Diagram" type="action" name="%(action_open_routes)d" icon="east" class="btn btn-link pt-0" context="{'default_product_tmpl_id': id}" />
-                    </div>
-                    <field name="route_from_categ_ids" widget="many2many_tags" invisible="not route_from_categ_ids" />
-                </group>
-            </xpath>
-            <xpath expr="//group[@name='group_lots_and_weight']" position="after">
-                <group string="Traceability" name="traceability" groups="stock.group_production_lot" invisible="store_by not in ['lot', 'serial']">
-                    <label for="serial_prefix_format" string="Custom Lot/Serial" groups="stock.group_production_lot" invisible="store_by not in ['lot', 'serial']" />
-                    <div class="d-flex" groups="stock.group_production_lot" invisible="store_by not in ['lot', 'serial']">
-                        <field name="serial_prefix_format" style="max-width: 150px;" />
-                        <field name="next_serial" style="max-width: 150px;" />
-                    </div>
-                </group>
-                <group string="Counterpart Locations" name="stock_property" groups="base.group_no_one">
-                    <field name="property_stock_production" />
-                    <field name="property_stock_inventory" />
-                </group>
-            </xpath>
-            <page name="inventory" position="inside">
-                <group>
-                    <group string="Description for Receipts">
-                        <field name="description_pickingin" nolabel="1" colspan="2" placeholder="This note is added to receipt orders (e.g. where to store the product in the warehouse)." />
-                    </group>
-                    <group string="Description for Delivery Orders">
-                        <field name="description_pickingout" nolabel="1" colspan="2" placeholder="This note is added to delivery orders." />
-                    </group>
-                    <group string="Description for Internal Transfers" groups="stock.group_stock_multi_locations">
-                        <field name="description_picking" nolabel="1" colspan="2" placeholder="This note is added to internal transfer orders (e.g. where to pick the product in the warehouse)." />
-                    </group>
-                </group>
-            </page>
-            <xpath expr="//page[@name='inventory']" position="attributes">
-                <attribute name="groups" add="stock.group_stock_user" separator="," />
-            </xpath>
         </field>
     </record>
     <record model="ir.ui.view" id="product_template_form_view_stock_account">

@@ -50,7 +50,7 @@ class StockProductViewTests(CoreReferenceFixture):
                 (
                     fields["name"].text,
                     self.ancestor if view.module == "stock" else self.views["stock"],
-                    f"{view.module}/views/{bridge.STOCK_PRODUCT_DATA_FILES[view.module].name}",
+                    view.source_file,
                     json.dumps({"en_US": architecture}),
                     architecture,
                     67,
@@ -62,7 +62,13 @@ class StockProductViewTests(CoreReferenceFixture):
             self.connection.execute("INSERT INTO retained_view_links VALUES (?, 'preserved')", (identity,))
             target = Path(self.directory.name) / view.module / bridge.STOCK_PRODUCT_DATA_FILES[view.module].name
             target.parent.mkdir()
-            target.write_bytes((Path(__file__).parent / "fixtures/stock_product_views_20.xml").read_bytes())
+            declaration = ElementTree.parse(Path(__file__).parent / "fixtures/stock_product_views_20.xml").find(
+                f".//record[@id='{view.target}']"
+            )
+            assert declaration is not None
+            document = ElementTree.Element("odoo")
+            document.append(declaration)
+            ElementTree.ElementTree(document).write(target)
             self.native_files[view.module] = target
         patch_attr(bridge, "STOCK_PRODUCT_DATA_FILES", self.native_files).start()
 
@@ -200,6 +206,8 @@ class StockProductViewTests(CoreReferenceFixture):
                     self.connection.execute("RELEASE outside")
 
     def test_native_definition_parent_change_and_missing_routes_action_refuse(self) -> None:
+        with patch_attr(bridge, "STOCK_PRODUCT_DATA_FILES", self.native_files | {"stock_account": self.native_files["stock"]}):
+            self.assert_refuses_without_effects()
         target = self.native_files["stock_account"]
         original = target.read_bytes()
         document = ElementTree.parse(target)
@@ -218,3 +226,26 @@ class StockProductViewTests(CoreReferenceFixture):
             with self.assertRaises(RuntimeError):
                 self.apply()
         self.assertEqual(self.snapshot(), before)
+
+    def test_native_compatibility_record_under_either_retired_identity_refuses(self) -> None:
+        for view in bridge.STOCK_VIEWS[:2]:
+            with self.subTest(module=view.module):
+                target = self.native_files[view.module]
+                original = target.read_bytes()
+                document = ElementTree.parse(target)
+                compatibility = ElementTree.SubElement(document.getroot(), "record", {"id": view.source, "model": "ir.ui.view"})
+                architecture = ElementTree.SubElement(compatibility, "field", {"name": "arch", "type": "xml"})
+                ElementTree.SubElement(architecture, "data")
+                document.write(target)
+                try:
+                    self.assert_refuses_without_effects()
+                finally:
+                    target.write_bytes(original)
+
+    def test_native_file_move_keeps_the_original_source_file_identity(self) -> None:
+        moved = self.native_files["stock"].with_name("moved_product_views.xml")
+        self.native_files["stock"].rename(moved)
+        self.native_files["stock"] = moved
+        before = self.snapshot()["ir_ui_view"]
+        self.apply()
+        self.assertEqual(self.snapshot()["ir_ui_view"], before)
