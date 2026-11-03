@@ -843,13 +843,16 @@ Notes
   [stock history source](https://github.com/odoo/odoo/blob/68d580d3d4703e7190055f7040682942d5f1a24f/addons/calendar/views/res_users_views.xml).
   These are admission inputs, never target UI templates. Qualification and
   source bindings are recorded on [Calendar transition #332](https://github.com/cbusillo/odoo-devkit/issues/332).
-  Odoo20 builds retain an exact, unmodified official `odoo/upgrade-util`
-  checkout through the existing external-source fetch and release inventory.
+  Odoo20 builds retain their selected runtime's exact, unmodified official
+  `odoo/upgrade-util` checkout through the existing external-source fetch and
+  release inventory.
   The checkout stays outside Python's upgrade namespace during ordinary
   startup, maintenance and Odoo19 upgrades. Only the existing native20
   upgrade command prepends its `src` to the upgrade paths. Missing, ambiguous
   or differently pinned sources refuse before starting that command. The
-  runtime support catalog supplies Markdown; the Odoo base supplies Docutils.
+  runtime support catalog supplies Markdown for both 19 and 20; the Odoo base
+  supplies Docutils. Older runtimes without this source helper keep their
+  existing external-source selection.
   This follows the upstream [recommended source installation](https://github.com/odoo/upgrade-util#recommended),
   rather than installing an ambient upgrade package. All upstream common
   scripts remain present and run in that explicit native20 upgrade: they can
@@ -864,14 +867,17 @@ Notes
   retaining business rows, IDs, translations, audit, incoming links and
   history. Table renaming explicitly retains custom constraints. Existing
   type values need not be stock or unused, and protected old-only type aliases
-  survive native data cleanup. Conflicting targets, mixed state, rebound
-  ownership, unsupported join semantics and functional field aliases that
-  upstream would replace refuse before effects. Export aliases retain their
+  survive native data cleanup. Unprotected non-export type aliases must be
+  owned by HR and still declared in the selected target data. Conflicting
+  targets, mixed state, rebound ownership, additional relation fields,
+  many-to-many storage and functional field aliases that upstream would
+  replace refuse before effects. Export aliases retain their
   supported native semantics; generated conventional aliases follow native
   bookkeeping. Preparation can replay its complete handoff. Native primary
   HR views keep their historical architecture until their own XML reload;
   that writes the target architecture before validation. The bridge performs
-  no generic custom-view rewrite, and native validation remains authoritative.
+  no additional architecture rewrite beyond the upstream reference/domain
+  adapters, and native validation remains authoritative.
   The old `hr.version.employee_type` selection is a separate concept, not a
   field rename or a name-based mapping to the new relation. Populated legacy
   categories refuse before effects pending the semantic disposition on

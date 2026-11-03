@@ -54,7 +54,6 @@ _addon_path_script = Path(__file__).resolve().parents[1] / "docker/scripts/odoo_
 if not _addon_path_script.is_file():
     _addon_path_script = Path(__file__).with_name("addon_paths.py")
 expand_addon_paths = cast(_ExpandAddonPaths, runpy.run_path(str(_addon_path_script))["expand_addon_paths"])
-UPGRADE_UTIL_SOURCE = str(runpy.run_path(str(_addon_path_script.with_name("odoo_upgrade_paths.py")))["UPGRADE_UTIL_SOURCE"])
 
 ScalarValue = str | int | float | bool
 ScalarMap = dict[str, ScalarValue]
@@ -2293,15 +2292,19 @@ def build_runtime_env_values(
         odoo_overrides=runtime_selection.effective_odoo_overrides,
         website_bootstrap=runtime_selection.website_bootstrap,
     )
-    if runtime_values.get("ODOO_VERSION", "").split(".", 1)[0] == "20":
+    upgrade_source_script = runtime_context.repo_root / "docker/scripts/odoo_upgrade_paths.py"
+    if runtime_values.get("ODOO_VERSION", "").split(".", 1)[0] == "20" and upgrade_source_script.exists():
+        upgrade_source = runpy.run_path(str(upgrade_source_script))["UPGRADE_UTIL_SOURCE"]
+        if not isinstance(upgrade_source, str) or not upgrade_source:
+            raise RuntimeCommandError("The selected runtime has an invalid official Odoo upgrade source")
         repositories = list(parse_csv_values(runtime_values.get("ODOO_ADDON_REPOSITORIES", "")))
         configured = next(
             (repository for repository in repositories if repository_spec_identity(repository) == "odoo/upgrade-util"), None
         )
-        if configured is not None and configured != UPGRADE_UTIL_SOURCE:
+        if configured is not None and configured != upgrade_source:
             raise RuntimeCommandError("Odoo 20 requires the shared exact official Odoo upgrade source")
         if configured is None:
-            repositories.append(UPGRADE_UTIL_SOURCE)
+            repositories.append(upgrade_source)
         runtime_values["ODOO_ADDON_REPOSITORIES"] = ",".join(repositories)
     ensure_required_environment_mapping(
         required_keys=stack_definition.required_env_keys if required_environment_keys is None else required_environment_keys,

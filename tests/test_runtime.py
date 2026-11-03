@@ -20,6 +20,8 @@ from functools import partial
 from pathlib import Path
 from unittest import mock
 
+from test_upgrade_paths import HELPERS
+
 from odoo_devkit import artifact_inputs, local_runtime
 from odoo_devkit.base_python import BasePythonCatalog
 from odoo_devkit.cli import (
@@ -2801,6 +2803,11 @@ base_devtools_image = "ghcr.io/example/manifest:19.0-devtools"
             runtime = root / "runtime"
             tenant.mkdir()
             self._write_runtime_repo(runtime)
+            repository, installed_ref = HELPERS["UPGRADE_UTIL_SOURCE"].split("@")
+            runtime_ref = hashlib.sha256(b"different qualified runtime source").hexdigest()[: len(installed_ref)]
+            runtime_source = repository + "@" + runtime_ref
+            runtime_helper = runtime / "docker/scripts/odoo_upgrade_paths.py"
+            runtime_helper.write_text("UPGRADE_UTIL_SOURCE = " + repr(runtime_source))
             manifest = load_workspace_manifest(
                 self._write_manifest(tenant_repo_path=tenant, runtime_repo_path=runtime, instance_name="testing", build_inputs=True)
             )
@@ -2818,8 +2825,7 @@ base_devtools_image = "ghcr.io/example/manifest:19.0-devtools"
                         runtime_context=context, include_selection_sources=False, required_environment_keys=()
                     )
                     entries = local_runtime.collect_artifact_source_entries(runtime_values=values, shared_addons_source=None)
-                    repository, ref = local_runtime.UPGRADE_UTIL_SOURCE.split("@")
-                    self.assertEqual({"repository": repository, "ref": ref} in entries, included)
+                    self.assertEqual({"repository": repository, "ref": runtime_ref} in entries, included)
                     if included:
                         conflicting = replace(
                             context,
@@ -2827,13 +2833,26 @@ base_devtools_image = "ghcr.io/example/manifest:19.0-devtools"
                                 context.environment,
                                 merged_values={
                                     **context.environment.merged_values,
-                                    "ODOO_ADDON_REPOSITORIES": repository + "@" + "0" * 40,
+                                    "ODOO_ADDON_REPOSITORIES": HELPERS["UPGRADE_UTIL_SOURCE"],
                                 },
                             ),
                         )
                         with self.assertRaises(local_runtime.RuntimeCommandError):
                             local_runtime.build_runtime_env_values(
                                 runtime_context=conflicting, include_selection_sources=False, required_environment_keys=()
+                            )
+                        runtime_helper.unlink()
+                        legacy_values = local_runtime.build_runtime_env_values(
+                            runtime_context=context, include_selection_sources=False, required_environment_keys=()
+                        )
+                        legacy_entries = local_runtime.collect_artifact_source_entries(
+                            runtime_values=legacy_values, shared_addons_source=None
+                        )
+                        self.assertFalse(any(entry["repository"] == repository for entry in legacy_entries))
+                        runtime_helper.write_text("UPGRADE_UTIL_SOURCE = None")
+                        with self.assertRaises(local_runtime.RuntimeCommandError):
+                            local_runtime.build_runtime_env_values(
+                                runtime_context=context, include_selection_sources=False, required_environment_keys=()
                             )
 
     def test_manifest_repository_must_be_an_owner_name_slug(self) -> None:

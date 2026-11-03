@@ -1236,6 +1236,15 @@ def _hr_type_plan(cr: Any) -> ModuleType | None:
         "OR (model IN ('hr.job','hr.version','hr.employee') AND name IN ('contract_type_id','employee_type_id')) FOR UPDATE",
     )
     relation_fields = [field for field in fields if field["model"] in HR_TYPE_FIELD_OWNERS]
+    cr.execute(
+        "SELECT id FROM ir_model_fields WHERE ttype='many2many' "
+        "AND (model IN ('hr.contract.type','hr.employee.type') OR relation IN ('hr.contract.type','hr.employee.type')) LIMIT 1"
+    )
+    if cr.fetchone() is not None or utility.get_m2m_on(cr, source_table):
+        raise RuntimeError("Unsupported HR type many-to-many storage")
+    cr.execute("SELECT id FROM ir_model_fields WHERE relation=%s", (source_model,))
+    if {row[0] for row in cr.fetchall()} != {field["id"] for field in relation_fields}:
+        raise RuntimeError("Unsupported additional HR type relation fields")
     if len({(field["model"], field["name"]) for field in fields}) != len(fields):
         raise RuntimeError("Ambiguous HR type field metadata")
     if any(field["model"] not in {*HR_TYPE_FIELD_OWNERS, source_model} for field in fields):
@@ -1326,17 +1335,6 @@ def _hr_type_plan(cr: Any) -> ModuleType | None:
                 raise RuntimeError("Preserve functional custom HR type metadata aliases")
             if _reference(cr, alias["module"], destination) is not None:
                 raise RuntimeError("Colliding HR type metadata alias")
-    for table, _column, _other_column, other_table in utility.get_m2m_on(cr, source_table):
-        if other_table == source_table:
-            raise RuntimeError("Unsupported self-referencing HR type join")
-        cr.execute(
-            "SELECT confdeltype,confupdtype,condeferrable,condeferred,convalidated FROM pg_constraint "
-            "WHERE conrelid=to_regclass(%s) AND confrelid=to_regclass(%s) AND contype='f'",
-            (table, source_table),
-        )
-        joins = cr.fetchall()
-        if not joins or any(row[0] not in {"r", "c"} or row[1:] != ("a", False, False, True) for row in joins):
-            raise RuntimeError("Unsupported HR type join constraint semantics")
     document = ElementTree.parse(HR_TYPE_DATA_FILE).getroot()
     records = document.findall("./data/record")
     if (
@@ -1358,7 +1356,11 @@ def _hr_type_plan(cr: Any) -> ModuleType | None:
     for alias in data_aliases:
         if alias["model"] != source_model:
             raise RuntimeError("Rebound or mixed HR type data aliases")
-        if alias["module"] == "hr" and alias["name"] not in native_names and not alias["noupdate"]:
+        if (
+            not alias["noupdate"]
+            and alias["module"] != "__export__"
+            and (alias["module"] != "hr" or alias["name"] not in native_names)
+        ):
             raise RuntimeError("Preserve HR type data omitted by native20")
     cr.execute(
         utility.format_query(
@@ -1379,7 +1381,6 @@ def _hr_type_plan(cr: Any) -> ModuleType | None:
 
 def _migrate_hr_types(cr: Any, utility: ModuleType) -> None:
     utility.rename_table(cr, "hr_contract_type", "hr_employee_type", remove_constraints=False)
-    utility.update_m2m_tables(cr, "hr_contract_type", "hr_employee_type")
     utility.rename_model(cr, "hr.contract.type", "hr.employee.type", rename_table=False)
     for model in HR_TYPE_FIELD_OWNERS:
         utility.rename_field(cr, model, "contract_type_id", "employee_type_id", skip_inherit="*")

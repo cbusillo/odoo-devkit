@@ -48,9 +48,6 @@ class NativeUtility(ModuleType):
             raise RuntimeError("Native default would remove custom constraints")
         self.connection.execute('ALTER TABLE "' + old + '" RENAME TO "' + new + '"')
 
-    def update_m2m_tables(self, _cr: Any, _old: str, _new: str) -> None:
-        return None
-
     def rename_model(self, _cr: Any, old: str, new: str, *, rename_table: bool = True) -> None:
         if rename_table:
             raise RuntimeError("Native default would remove custom constraints")
@@ -120,6 +117,7 @@ class HrTypeTests(CoreReferenceFixture):
             "INSERT INTO mail_message VALUES (25,'hr.contract.type',32,'retained history');"
         )
         self.xmlid("__export__", "custom_type", "hr.contract.type", 32, True)
+        self.xmlid("custom_mod", "protected_type", "hr.contract.type", 32, True)
         self.xmlid("hr", "model_hr_contract_type", "ir.model", 10, False)
         for identity, name, kind, relation in (
             (50, "id", "integer", None),
@@ -180,6 +178,12 @@ class HrTypeTests(CoreReferenceFixture):
         self.assertEqual(after["hr_employee_type"], original["hr_contract_type"])
         self.assertEqual(self.load_native_type_alias("contract_type_employee"), original["hr_contract_type"][0])
         self.assertEqual(self.load_native_type_alias("contract_type_old_only"), original["hr_contract_type"][1])
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT model,res_id,noupdate FROM ir_model_data WHERE module='custom_mod' AND name='protected_type'"
+            ).fetchone(),
+            ("hr.employee.type", 32, True),
+        )
         for table in ("hr_job", "hr_version", "hr_employee", "business_links"):
             self.assertEqual(after[table], original[table])
         self.assertEqual(
@@ -216,6 +220,10 @@ class HrTypeTests(CoreReferenceFixture):
             "VALUES ('custom_mod','field_hr_contract_type__name','ir.model.fields',51,0)",
             "INSERT INTO ir_model_data(module,name,model,res_id,noupdate) "
             "VALUES ('custom_mod','field_hr_job__contract_type_id','ir.model.fields',41,0)",
+            "INSERT INTO ir_model_data(module,name,model,res_id,noupdate) "
+            "VALUES ('custom_mod','retained_type','hr.contract.type',32,0)",
+            "INSERT INTO ir_model_fields VALUES (70,'custom.owner',90,'contract_type_id',"
+            "'many2one','hr.contract.type','base',1,NULL)",
         )
         for mutation in mutations:
             with self.subTest(mutation=mutation):
@@ -239,20 +247,23 @@ class HrTypeTests(CoreReferenceFixture):
             self.apply()
         self.assertEqual(self.snapshot(), before)
 
-    def test_join_constraint_semantics_refuse_lossy_native_default_before_effects(self) -> None:
+    def test_unqualified_metadata_and_physical_joins_refuse_before_effects(self) -> None:
+        self.connection.execute(
+            "INSERT INTO ir_model_fields VALUES (70,'hr.contract.type',10,'x_groups','many2many','res.groups','manual',0,NULL)"
+        )
+        before = self.snapshot()
+        with self.assertRaises(RuntimeError):
+            self.apply()
+        self.assertEqual(self.snapshot(), before)
+        self.connection.execute("DELETE FROM ir_model_fields WHERE id=70")
         self.connection.executescript(
             "CREATE TABLE res_groups(id INTEGER PRIMARY KEY);INSERT INTO res_groups VALUES (1);"
             "CREATE TABLE custom_type_group_rel(type_id INTEGER REFERENCES hr_contract_type(id) ON DELETE CASCADE,"
             "group_id INTEGER REFERENCES res_groups(id));INSERT INTO custom_type_group_rel VALUES (32,1);"
-            "CREATE TABLE pg_constraint(conrelid TEXT,confrelid TEXT,contype TEXT,confdeltype TEXT,confupdtype TEXT,"
-            "condeferrable BOOLEAN,condeferred BOOLEAN,convalidated BOOLEAN);"
-            "INSERT INTO pg_constraint VALUES ('custom_type_group_rel','hr_contract_type','f','n','a',0,0,1);"
         )
         with patch.object(self.utility, "get_m2m_on", return_value=[("custom_type_group_rel", "type_id", "group_id", "res_groups")]):
             before = self.snapshot()
             with self.assertRaises(RuntimeError):
                 self.apply()
             self.assertEqual(self.snapshot(), before)
-            self.connection.execute("UPDATE pg_constraint SET confdeltype='c'")
-            self.apply()
         self.assertEqual(self.connection.execute("SELECT * FROM custom_type_group_rel").fetchall(), [(32, 1)])
