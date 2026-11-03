@@ -59,7 +59,7 @@ class HrPreferencesTests(CoreReferenceFixture):
                     100 if parent.startswith("base.") else self.identities[parent],
                     fields["name"].text,
                     fields["mode"].text if "mode" in fields else "extension",
-                    int(fields["priority"].text) if "priority" in fields else 16,
+                    int(fields["priority"].text or "") if "priority" in fields else 16,
                     f"{module}/views/" + ("res_users.xml" if module == "hr" else "res_users_views.xml"),
                     json.dumps({"en_US": architecture}),
                     architecture,

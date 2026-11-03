@@ -1172,7 +1172,7 @@ def _hr_preferences_view_plan(cr: Any) -> tuple[int, str] | None:
                 "type": ("form",),
                 "mode": (fields["mode"].text if "mode" in fields else "extension",),
                 "active": (True,),
-                "priority": (int(fields["priority"].text) if "priority" in fields else 16,),
+                "priority": (int(fields["priority"].text or "") if "priority" in fields else 16,),
                 "arch_updated": (False,),
                 "arch_fs": (f"{module}/views/res_users.xml" if module == "hr" else f"{module}/views/res_users_views.xml",),
                 "customize_show": (False,),
