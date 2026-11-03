@@ -2,6 +2,8 @@
 
 `quality/ruff.toml` implements the default selection in the
 [Python and Odoo style guide](https://github.com/cbusillo/codex-skills/blob/HEAD/skills/references/python-odoo-style.md#tooling).
+It also selects Ruff's return and simplification families for the guide's shape
+rules, following the recorded adoption decision on the owning issue.
 It is an explicit, opt-in configuration. Devkit's existing `pyproject.toml`
 configuration still governs its default commands. Adoption and baseline triage
 are tracked in [odoo-devkit#302](https://github.com/cbusillo/odoo-devkit/issues/302).
@@ -29,7 +31,8 @@ see [Python inspection](python-inspection.md).
 
 A nonzero baseline is work to triage before making these commands required.
 Do not hide it with a blanket suppression, an ignored directory, or a
-success exit. Manifest dictionaries are consumed by Odoo and currently trigger
-Ruff's `B018`; the proposed manifest-only exception needs the Director's
-answer on the owning issue before adoption. Other rule changes use the same
-question path. The shared files do not add a CI job or alter required checks.
+success exit. Odoo consumes manifest dictionary expressions, so the shared
+configuration ignores `B018` only in files named `__manifest__.py`. Every other
+selected rule still applies there; `B018` remains enabled in other files.
+Other rule changes go through the owning issue's Director question path.
+The shared files do not add a CI job or alter required checks.

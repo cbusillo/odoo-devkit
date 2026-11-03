@@ -2,5 +2,8 @@ line-length = 133
 target-version = "py313"
 
 [lint]
-select = ["ANN", "UP", "B", "I", "G", "BLE", "S608"]
+select = ["ANN", "UP", "B", "I", "G", "BLE", "S608", "RET", "SIM"]
 ignore = ["D", "UP037", "ANN401"]
+
+[lint.per-file-ignores]
+"__manifest__.py" = ["B018"]
