@@ -30,19 +30,23 @@ runs:
       if: ${{ inputs.command-metadata != '' }}
       shell: bash
       env:
-        STYLE_CHECK_ROOT: ${{ inputs.addons-root }}
         STYLE_CHECK_METADATA: ${{ inputs.command-metadata }}
         ODOO_DEVKIT_REPO: ${{ github.action_path }}/../../..
       run: |
         set -euo pipefail
         metadata="$GITHUB_WORKSPACE/$STYLE_CHECK_METADATA"
-        lint_command=$(jq -r '.qualityGate.lint.ruff // empty' "$metadata")
+        lint_command=$(jq -er '
+          .qualityGate.lint.ruff |
+          if . == null then "" elif type == "string" and test("\\S") then .
+          else error("qualityGate.lint.ruff must be a nonempty string") end
+        ' "$metadata")
         if [ -n "$lint_command" ]; then
-          format_command=$(jq -er '.qualityGate.format.default | strings | select(length > 0)' "$metadata") || {
+          format_command=$(jq -er '.qualityGate.format.default | strings | select(test("\\S"))' "$metadata") || {
             echo '::error::qualityGate.format.default must accompany qualityGate.lint.ruff'
             exit 1
           }
-          cd "$(git -C "$GITHUB_WORKSPACE/$STYLE_CHECK_ROOT" rev-parse --show-toplevel)"
+          source_root=$(git -C "$(dirname "$metadata")" rev-parse --show-toplevel)
+          cd "$source_root"
           quality_exit=0
           bash -euo pipefail -c "$lint_command" || quality_exit=$?
           bash -euo pipefail -c "$format_command" || quality_exit=$?
