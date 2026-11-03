@@ -23,10 +23,11 @@ pinned devkit checkout owns both its version and the shared configuration.
 [`.idea/inspectionProfiles/Project_Default.xml`](../../.idea/inspectionProfiles/Project_Default.xml)
 is the shared inspection asset. Keep it at that path as a regular
 tracked file: the native inspection helper does not accept tracked symlinks.
-The profile keeps the enabled OPW/CM checks and their options, plus devkit's
-unused-CSS check and its existing named Odoo SCSS entry. That entry has no shared
-scope definition in the tracked projects; its file boundary and adoption await
-[the scope decision](https://github.com/cbusillo/odoo-devkit/issues/302#issuecomment-6607810456).
+The profile keeps the enabled OPW/CM checks and their options. The unused-CSS
+inspection remains disabled, as in both tenant profiles, following the amended
+[Director decision](https://github.com/cbusillo/odoo-devkit/issues/302#issuecomment-6609065384).
+There is no Odoo SCSS scope: Odoo bundles assets across addons and uses QWeb
+selectors the IDE does not index reliably.
 Its Python compatibility
 inspection checks 3.13 and 3.14, following the
 [Director decision](https://github.com/cbusillo/odoo-devkit/issues/302#issuecomment-6607466966).
