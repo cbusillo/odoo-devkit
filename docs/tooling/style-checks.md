@@ -21,13 +21,23 @@ Ruff is supplied by devkit's locked development dependencies. The consumer's
 pinned devkit checkout owns both its version and the shared configuration.
 
 [`.idea/inspectionProfiles/Project_Default.xml`](../../.idea/inspectionProfiles/Project_Default.xml)
-is the existing shared inspection asset. Keep it at that path as a regular
+is the shared inspection asset. Keep it at that path as a regular
 tracked file: the native inspection helper does not accept tracked symlinks.
-This preparation changes no inspection settings. It does not select the profile
-for tenants or reconcile their existing settings. Tenant adoption must preserve
-or explicitly resolve those differences first.
+The profile keeps the enabled OPW/CM checks and their options, plus devkit's
+unused-CSS check with its existing Odoo SCSS exception. Its Python compatibility
+inspection checks 3.13 and 3.14, following the
+[Director decision](https://github.com/cbusillo/odoo-devkit/issues/302#issuecomment-6607466966).
+Ruff continues to target the current 3.13 runtime. The
+[image upgrade](https://github.com/cbusillo/odoo-devkit/issues/373) owns raising that
+target after the images move. Tenant selection and pointer adoption remain on
+the owning issue.
 Native inspection continues through the catalog's `jetbrains-inspection` skill;
-see [Python inspection](python-inspection.md).
+see [Python inspection](python-inspection.md). Resolving quoted Odoo model/value
+types also requires the Odoo IDE plugin, the matching Odoo source roots and the
+correct interpreter. The
+[worker setup report](https://github.com/cbusillo/codex-skills/issues/3363)
+covers SDK/plugin setup and measured checker limits; its Pydantic/Click sample
+does not itself prove Odoo model resolution.
 
 A nonzero baseline is work to triage before making these commands required.
 Do not hide it with a blanket suppression, an ignored directory, or a
