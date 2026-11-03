@@ -26,6 +26,29 @@ runs:
   using: composite
   steps:
     - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+    - name: Check shared Python style
+      if: ${{ inputs.command-metadata != '' }}
+      shell: bash
+      env:
+        STYLE_CHECK_ROOT: ${{ inputs.addons-root }}
+        STYLE_CHECK_METADATA: ${{ inputs.command-metadata }}
+        ODOO_DEVKIT_REPO: ${{ github.action_path }}/../../..
+      run: |
+        set -euo pipefail
+        metadata="$GITHUB_WORKSPACE/$STYLE_CHECK_METADATA"
+        lint_command=$(jq -r '.qualityGate.lint.ruff // empty' "$metadata")
+        if [ -n "$lint_command" ]; then
+          format_command=$(jq -er '.qualityGate.format.default | strings | select(length > 0)' "$metadata") || {
+            echo '::error::qualityGate.format.default must accompany qualityGate.lint.ruff'
+            exit 1
+          }
+          cd "$(git -C "$GITHUB_WORKSPACE/$STYLE_CHECK_ROOT" rev-parse --show-toplevel)"
+          quality_exit=0
+          bash -euo pipefail -c "$lint_command" || quality_exit=$?
+          bash -euo pipefail -c "$format_command" || quality_exit=$?
+          git diff --exit-code HEAD || quality_exit=$?
+          exit "$quality_exit"
+        fi
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       with:
         repository: cbusillo/codex-skills
@@ -47,25 +70,6 @@ runs:
         fi
         uv run --no-project --no-config "$GITHUB_WORKSPACE/.style-check-catalog/scripts/check_new_comments.py" \
           --repo "$source_root" --base 'HEAD^1' --format github
-    - name: Check shared Python style
-      if: ${{ inputs.command-metadata != '' }}
-      shell: bash
-      env:
-        STYLE_CHECK_ROOT: ${{ inputs.addons-root }}
-        STYLE_CHECK_METADATA: ${{ inputs.command-metadata }}
-        ODOO_DEVKIT_REPO: ${{ github.action_path }}/../../..
-      run: |
-        set -euo pipefail
-        metadata="$GITHUB_WORKSPACE/$STYLE_CHECK_METADATA"
-        lint_command=$(jq -r '.qualityGate.lint.ruff // empty' "$metadata")
-        if [ -n "$lint_command" ]; then
-          format_command=$(jq -er '.qualityGate.format.default | strings | select(length > 0)' "$metadata")
-          cd "$(git -C "$GITHUB_WORKSPACE/$STYLE_CHECK_ROOT" rev-parse --show-toplevel)"
-          quality_exit=0
-          bash -euo pipefail -c "$lint_command" || quality_exit=$?
-          bash -euo pipefail -c "$format_command" || quality_exit=$?
-          exit "$quality_exit"
-        fi
     - name: Run addon tests
       shell: bash
       env:

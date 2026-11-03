@@ -24,7 +24,8 @@ Run it locally with
 
 When `command-metadata` declares `qualityGate.lint.ruff`, the action runs that
 command and `qualityGate.format.default` from the consumer root before Odoo.
-Both run and either failure fails the job. The action supplies its own checkout
+These commands run on the runner host with the job's environment. Both run;
+either failure or a tracked source edit fails the job. The action supplies its own checkout
 as `ODOO_DEVKIT_REPO`, so the consumer's Ruff pointer, locked tool and addon
 runner use one source pin. Repositories adopt these fields after clearing their
 baseline; callers without the Ruff declaration keep their existing checks.
