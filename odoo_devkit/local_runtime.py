@@ -689,10 +689,6 @@ def publish_runtime_artifact(
     )
     # Publishing has no Launchplane/stack fallback for tenant-owned build inputs.
     runtime_values.update(manifest_build_values(manifest, required=True))
-    runtime_values = apply_publish_artifact_input_manifest(
-        runtime_context=runtime_context,
-        runtime_values=runtime_values,
-    )
     validate_artifact_publish_runtime_values(runtime_values)
     runtime_values, artifact_source_selectors = resolve_artifact_runtime_source_repository_refs(
         runtime_values=runtime_values,
@@ -2292,20 +2288,45 @@ def build_runtime_env_values(
         odoo_overrides=runtime_selection.effective_odoo_overrides,
         website_bootstrap=runtime_selection.website_bootstrap,
     )
+    if not include_selection_sources and runtime_context.artifact_inputs_definition is not None:
+        runtime_values["ODOO_ADDON_REPOSITORIES"] = ",".join(runtime_selection.effective_source_repositories)
     upgrade_source_script = runtime_context.repo_root / "docker/scripts/odoo_upgrade_paths.py"
     if runtime_values.get("ODOO_VERSION", "").split(".", 1)[0] == "20" and upgrade_source_script.exists():
-        upgrade_source = runpy.run_path(str(upgrade_source_script))["UPGRADE_UTIL_SOURCE"]
-        if not isinstance(upgrade_source, str) or not upgrade_source:
-            raise RuntimeCommandError("The selected runtime has an invalid official Odoo upgrade source")
-        repositories = list(parse_csv_values(runtime_values.get("ODOO_ADDON_REPOSITORIES", "")))
-        configured = next(
-            (repository for repository in repositories if repository_spec_identity(repository) == "odoo/upgrade-util"), None
+        try:
+            upgrade_source = runpy.run_path(str(upgrade_source_script)).get("UPGRADE_UTIL_SOURCE")
+            if not isinstance(upgrade_source, str):
+                raise ValueError("Missing source declaration")
+            ((upgrade_repository, upgrade_ref),) = parse_artifact_source_repository_entries(upgrade_source)
+            if (
+                upgrade_repository != "odoo/upgrade-util"
+                or upgrade_source != f"{upgrade_repository}@{normalize_git_commit(upgrade_ref)}"
+            ):
+                raise ValueError("Expected exact official source")
+        except (OSError, SyntaxError, ValueError) as error:
+            raise RuntimeCommandError("The selected runtime has an invalid official Odoo upgrade source") from error
+        for source_values in (
+            source_environment,
+            runtime_selection.effective_runtime_env,
+            {"ODOO_ADDON_REPOSITORIES": ",".join(runtime_selection.effective_source_repositories)},
+            runtime_values,
+        ):
+            for source_key in ARTIFACT_SOURCE_ENV_KEYS:
+                for source in parse_csv_values(source_values.get(source_key, "").replace("\n", ",")):
+                    try:
+                        repository_identity = normalize_repository_identity(repository_spec_identity(source).lower())
+                    except ArtifactProvenanceError:
+                        continue
+                    if repository_identity == upgrade_repository and source != upgrade_source:
+                        raise RuntimeCommandError("Odoo 20 requires the shared exact official Odoo upgrade source")
+        for source_key in ARTIFACT_SOURCE_ENV_KEYS:
+            runtime_values[source_key] = ",".join(
+                f"{repository}@{ref}"
+                for repository, ref in parse_artifact_source_repository_entries(runtime_values.get(source_key, ""))
+                if repository != upgrade_repository
+            )
+        runtime_values["ODOO_ADDON_REPOSITORIES"] = ",".join(
+            filter(None, (runtime_values["ODOO_ADDON_REPOSITORIES"], upgrade_source))
         )
-        if configured is not None and configured != upgrade_source:
-            raise RuntimeCommandError("Odoo 20 requires the shared exact official Odoo upgrade source")
-        if configured is None:
-            repositories.append(upgrade_source)
-        runtime_values["ODOO_ADDON_REPOSITORIES"] = ",".join(repositories)
     ensure_required_environment_mapping(
         required_keys=stack_definition.required_env_keys if required_environment_keys is None else required_environment_keys,
         environment_values=runtime_values,
@@ -2483,26 +2504,6 @@ def render_website_bootstrap_payload(
         "routes": routes,
     }
     return payload
-
-
-def apply_publish_artifact_input_manifest(
-    *,
-    runtime_context: RuntimeContext,
-    runtime_values: dict[str, str],
-) -> dict[str, str]:
-    artifact_inputs_definition = runtime_context.artifact_inputs_definition
-    if artifact_inputs_definition is None:
-        return runtime_values
-    effective_sources = effective_artifact_input_sources(
-        artifact_inputs_definition=artifact_inputs_definition,
-        context_name=runtime_context.selection.context_name,
-        instance_name=runtime_context.selection.instance_name,
-    )
-    updated_values = dict(runtime_values)
-    updated_values["ODOO_ADDON_REPOSITORIES"] = ",".join(
-        source_definition.repository_spec() for source_definition in effective_sources
-    )
-    return updated_values
 
 
 @dataclass(frozen=True)

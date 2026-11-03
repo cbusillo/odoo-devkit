@@ -2796,64 +2796,267 @@ base_devtools_image = "ghcr.io/example/manifest:19.0-devtools"
             ),
         )
 
-    def test_native_upgrade_source_follows_resolved_build_series_and_artifact_provenance(self) -> None:
+    def _prepare_upgrade_source_artifact(self, root: Path) -> tuple[WorkspaceManifest, str]:
+        manifest, _ = self._prepare_artifact_check(root)
+        runtime = root / "runtime-repo"
+        repository, installed_ref = HELPERS["UPGRADE_UTIL_SOURCE"].split("@")
+        runtime_ref = hashlib.sha256(b"different qualified runtime source").hexdigest()[: len(installed_ref)]
+        runtime_source = repository + "@" + runtime_ref
+        (runtime / "docker/scripts/odoo_upgrade_paths.py").write_text("UPGRADE_UTIL_SOURCE = " + repr(runtime_source))
+        manifest.manifest_path.write_text(
+            manifest.manifest_path.read_text().replace('odoo_version = "19.0"', 'odoo_version = "20.0"')
+        )
+        (root / "tenant-repo/artifact-inputs.toml").write_text(
+            'schema_version = 1\nsources = [{ repository = "example/addon", selector = "main" }]\n'
+        )
+        self._configure_publish_runtime_payload(
+            instance="local", environment={"ODOO_ADDON_REPOSITORIES": "example/stale-addon@" + "5" * 40}
+        )
+        return load_workspace_manifest(manifest.manifest_path), runtime_source
+
+    def test_native_upgrade_source_survives_final_publish_and_check_inputs(self) -> None:
+        for mode, series, has_helper in (
+            ("publish", "20.0", True),
+            ("check", "20.0", True),
+            ("publish-empty", "20.0", True),
+            ("publish-restated", "20.0", True),
+            ("publish-ignored", "20.0", True),
+            ("publish", "19.0", True),
+            ("publish", "20.0", False),
+        ):
+            with self.subTest(mode=mode, series=series, has_helper=has_helper), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                manifest, runtime_source = self._prepare_upgrade_source_artifact(root)
+                runtime = root / "runtime-repo"
+                tenant = root / "tenant-repo"
+                source_repository, runtime_ref = runtime_source.split("@")
+                expected_sources = {("example/addon", "6" * 40)}
+                if mode == "publish-empty":
+                    (tenant / "artifact-inputs.toml").write_text("schema_version = 1\nsources = []\n")
+                    stack_path = runtime / "platform/stack.toml"
+                    stack_path.write_text(
+                        stack_path.read_text().replace("required_env_keys = [", 'required_env_keys = ["ODOO_ADDON_REPOSITORIES", ')
+                    )
+                    expected_sources.clear()
+                elif mode == "publish-restated":
+                    (tenant / "artifact-inputs.toml").write_text(
+                        'schema_version = 1\nsources = [{ repository = "example/addon", selector = "main" },'
+                        f'{{ repository = "{source_repository}", exact_ref = "{runtime_ref}" }}]\n'
+                    )
+                    self._configure_publish_runtime_payload(
+                        instance="local", environment={"OPENUPGRADE_ADDON_REPOSITORY": runtime_source}
+                    )
+                if mode != "publish-restated":
+                    self._configure_publish_runtime_payload(
+                        instance="local",
+                        odoo_version="20.0" if series == "19.0" else "19.0",
+                        environment={
+                            "ODOO_ADDON_REPOSITORIES": "ignored-legacy-source"
+                            if mode == "publish-ignored"
+                            else "example/stale-addon@" + "5" * 40
+                        },
+                    )
+                manifest.manifest_path.write_text(
+                    manifest.manifest_path.read_text().replace('odoo_version = "20.0"', f'odoo_version = "{series}"')
+                )
+                manifest = load_workspace_manifest(manifest.manifest_path)
+                if not has_helper:
+                    (runtime / "docker/scripts/odoo_upgrade_paths.py").unlink()
+                for repository in (runtime, tenant):
+                    subprocess.run(["git", "add", "."], cwd=repository, check=True, capture_output=True)
+                    subprocess.run(["git", "commit", "--allow-empty", "-qm", "selected inputs"], cwd=repository, check=True)
+                runtime_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=runtime, text=True).strip()
+                if series == "20.0" and has_helper:
+                    expected_sources.add((source_repository, runtime_ref))
+                planned_sources: list[tuple[str, str]] = []
+
+                def execute(
+                    *,
+                    command: list[str],
+                    sources: list[tuple[str, str]],
+                    expected: set[tuple[str, str]],
+                    **_kwargs: object,
+                ) -> None:
+                    if command[:3] == ["docker", "buildx", "bake"]:
+                        bake_file = Path(command[command.index("--file") + 1])
+                        bake = json.loads(bake_file.read_text())["target"]
+                        context = bake_file.parent
+                        arguments = bake["production"]["args"]
+                        self._write_dependency_evidence_for_command(
+                            ["--output", bake["evidence"]["output"][0], "--platform", "linux/amd64", str(context)]
+                        )
+                    elif command[:3] == ["docker", "buildx", "build"] and "--metadata-file" in command:
+                        context = Path(command[-1])
+                        arguments = dict(
+                            command[index + 1].split("=", 1) for index, value in enumerate(command) if value == "--build-arg"
+                        )
+                        self._write_artifact_build_outputs_for_command(command)
+                    else:
+                        self._write_artifact_build_outputs_for_command(command)
+                        return
+                    for source_key in local_runtime.ARTIFACT_SOURCE_ENV_KEYS:
+                        sources.extend(local_runtime.parse_artifact_source_repository_entries(arguments.get(source_key, "")))
+                    inventory = json.loads((context / "release-inventory-inputs.json").read_text())
+                    self.assertEqual(
+                        {
+                            (source["repository"], source["commit"])
+                            for source in inventory["sources"]
+                            if source["input_name"].startswith("addon:")
+                        },
+                        expected,
+                    )
+
+                with (
+                    mock.patch("odoo_devkit.runtime.__file__", str(runtime / "odoo_devkit/runtime.py")),
+                    mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_base_images"),
+                    mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_image_push"),
+                    mock.patch(
+                        "odoo_devkit.local_runtime.resolve_base_image_provenance",
+                        side_effect=self._resolve_base_image_provenance_fixture,
+                    ),
+                    mock.patch("odoo_devkit.local_runtime.resolve_source_repository_ref_to_git_sha", return_value="6" * 40),
+                    mock.patch(
+                        "odoo_devkit.local_runtime.run_command",
+                        side_effect=partial(execute, sources=planned_sources, expected=expected_sources),
+                    ),
+                ):
+                    if mode == "check":
+                        payload = run_native_runtime_check_artifact(
+                            manifest=replace(manifest, devkit_repo=manifest.runtime_repo),
+                            devkit_commit=runtime_commit,
+                            output_file=None,
+                            no_cache=False,
+                            platforms=("linux/amd64",),
+                        )
+                    else:
+                        payload = run_native_runtime_publish(
+                            manifest=manifest,
+                            image_repository="ghcr.io/example/artifact",
+                            image_tag="candidate",
+                            output_file=None,
+                            no_cache=False,
+                            platforms=("linux/amd64",),
+                        )
+                self.assertCountEqual(planned_sources, expected_sources)
+                addon_sources = payload["addon_sources"]
+                assert isinstance(addon_sources, list)
+                self.assertEqual({(source["repository"], source["ref"]) for source in addon_sources}, expected_sources)
+
+    def test_native_upgrade_source_conflicts_refuse_before_publish_effects(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            tenant = root / "tenant"
-            runtime = root / "runtime"
-            tenant.mkdir()
-            self._write_runtime_repo(runtime)
-            repository, installed_ref = HELPERS["UPGRADE_UTIL_SOURCE"].split("@")
-            runtime_ref = hashlib.sha256(b"different qualified runtime source").hexdigest()[: len(installed_ref)]
-            runtime_source = repository + "@" + runtime_ref
-            runtime_helper = runtime / "docker/scripts/odoo_upgrade_paths.py"
-            runtime_helper.write_text("UPGRADE_UTIL_SOURCE = " + repr(runtime_source))
-            manifest = load_workspace_manifest(
-                self._write_manifest(tenant_repo_path=tenant, runtime_repo_path=runtime, instance_name="testing", build_inputs=True)
+            manifest, runtime_source = self._prepare_upgrade_source_artifact(root)
+            source_repository, _ = runtime_source.split("@")
+            wrong_source = source_repository + "@" + "7" * 40
+            inputs_path = root / "tenant-repo/artifact-inputs.toml"
+            stack_path = root / "runtime-repo/platform/stack.toml"
+            stack_source = stack_path.read_text()
+            for environment, sources, stack_sources in (
+                ({}, [wrong_source], ""),
+                ({"ODOO_ADDON_REPOSITORIES": wrong_source}, [], ""),
+                ({"ODOO_ADDON_REPOSITORIES": runtime_source + "," + wrong_source}, None, ""),
+                ({}, None, runtime_source + "\n" + wrong_source),
+                ({"OPENUPGRADE_ADDON_REPOSITORY": wrong_source}, [], ""),
+                ({}, [source_repository.upper() + ".git@" + "7" * 40], ""),
+                ({"ODOO_ADDON_REPOSITORIES": source_repository + "@master"}, [], ""),
+                ({"ODOO_ADDON_REPOSITORIES": "ignored-legacy-source," + wrong_source}, [], ""),
+                ({"ODOO_ADDON_REPOSITORIES": source_repository}, [], ""),
+                ({}, ["https://github.com/" + source_repository.upper() + ".GIT@" + "7" * 40], ""),
+                ({"ODOO_ADDON_REPOSITORIES": runtime_source}, [], wrong_source),
+            ):
+                with self.subTest(environment=environment, sources=sources, stack_sources=stack_sources):
+                    stack_path.write_text(stack_source + "\n[runtime_env]\nODOO_ADDON_REPOSITORIES = " + json.dumps(stack_sources))
+                    if sources is None:
+                        inputs_path.unlink(missing_ok=True)
+                    else:
+                        inputs_path.write_text(
+                            "schema_version = 1\nsources = ["
+                            + ",".join(
+                                f'{{ repository = "{repository}", exact_ref = "{ref}" }}'
+                                for repository, ref in (source.split("@") for source in sources)
+                            )
+                            + "]\n"
+                        )
+                    self._configure_publish_runtime_payload(instance="local", environment=environment)
+                    with (
+                        mock.patch(
+                            "odoo_devkit.local_runtime.resolve_artifact_runtime_source_repository_refs",
+                            side_effect=AssertionError("source resolution reached"),
+                        ) as resolve_refs,
+                        mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_base_images") as registry,
+                        mock.patch("odoo_devkit.local_runtime.stage_artifact_build_context") as stage,
+                        mock.patch("odoo_devkit.local_runtime.run_command") as command,
+                    ):
+                        with self.assertRaisesRegex(ValueError, "exact official Odoo upgrade source"):
+                            run_native_runtime_publish(
+                                manifest=manifest,
+                                image_repository="ghcr.io/example/artifact",
+                                image_tag="candidate",
+                                output_file=None,
+                                no_cache=False,
+                            )
+                    for effect in (resolve_refs, registry, stage, command):
+                        effect.assert_not_called()
+
+    def test_native_upgrade_source_local_build_preserves_source_precedence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest, runtime_source = self._prepare_upgrade_source_artifact(root)
+            runtime = root / "runtime-repo"
+            tenant_source = "example/addon@" + "8" * 40
+            self._configure_publish_runtime_payload(
+                instance="local",
+                environment={
+                    "ODOO_ADDON_REPOSITORIES": tenant_source,
+                    "OPENUPGRADE_ADDON_REPOSITORY": runtime_source,
+                },
             )
-            self._configure_publish_runtime_payload(odoo_version="19.0")
-            for series, included in (("19.0", False), ("20.0", True)):
-                with self.subTest(series=series):
-                    selected = replace(manifest, build=replace(manifest.build, odoo_version=series))
-                    context = local_runtime.load_runtime_context(
-                        manifest=selected,
-                        runtime_repo_path=runtime,
-                        require_local_instance=False,
-                        enforce_required_environment=False,
-                    )
-                    values = local_runtime.build_runtime_env_values(
-                        runtime_context=context, include_selection_sources=False, required_environment_keys=()
-                    )
-                    entries = local_runtime.collect_artifact_source_entries(runtime_values=values, shared_addons_source=None)
-                    self.assertEqual({"repository": repository, "ref": runtime_ref} in entries, included)
-                    if included:
-                        conflicting = replace(
-                            context,
-                            environment=replace(
-                                context.environment,
-                                merged_values={
-                                    **context.environment.merged_values,
-                                    "ODOO_ADDON_REPOSITORIES": HELPERS["UPGRADE_UTIL_SOURCE"],
-                                },
-                            ),
-                        )
-                        with self.assertRaises(local_runtime.RuntimeCommandError):
-                            local_runtime.build_runtime_env_values(
-                                runtime_context=conflicting, include_selection_sources=False, required_environment_keys=()
+            planned_sources: list[tuple[str, str]] = []
+
+            def execute(*, command: list[str], **_kwargs: object) -> None:
+                context = Path(command[-2]).parent
+                arguments = json.loads((context / "compose.json").read_text())["services"]["web"]["build"]["args"]
+                planned_sources.extend(local_runtime.parse_artifact_source_repository_entries(arguments["ODOO_ADDON_REPOSITORIES"]))
+
+            with (
+                mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_base_images"),
+                mock.patch("odoo_devkit.local_runtime.resolve_image_digest", return_value="sha256:" + "2" * 64),
+                mock.patch("odoo_devkit.local_runtime.resolve_gh_auth_token", return_value=None),
+                mock.patch("odoo_devkit.local_runtime.resolve_source_repository_ref_to_git_sha", return_value="6" * 40),
+                mock.patch("odoo_devkit.local_runtime.run_command", side_effect=execute),
+            ):
+                run_native_runtime_build(manifest=manifest, no_cache=False)
+            expected_sources = [tuple(source.split("@")) for source in (tenant_source, runtime_source)]
+            self.assertCountEqual(planned_sources, expected_sources)
+            environment = local_runtime.parse_env_file(runtime / ".platform/env/opw.local.env")
+            self.assertCountEqual(
+                local_runtime.parse_artifact_source_repository_entries(environment["ODOO_ADDON_REPOSITORIES"]), expected_sources
+            )
+
+    def test_native_upgrade_source_malformed_runtime_helper_refuses_before_resolution(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest, runtime_source = self._prepare_upgrade_source_artifact(root)
+            helper = root / "runtime-repo/docker/scripts/odoo_upgrade_paths.py"
+            for declaration in (
+                "UPGRADE_UTIL_SOURCE = None",
+                "UPGRADE_UTIL_SOURCE = ''",
+                "OTHER_SOURCE = " + repr(runtime_source),
+                "UPGRADE_UTIL_SOURCE = 'odoo/upgrade-util@master'",
+                "UPGRADE_UTIL_SOURCE = 'example/other@" + "9" * 40 + "'",
+            ):
+                with self.subTest(declaration=declaration):
+                    helper.write_text(declaration)
+                    with mock.patch("odoo_devkit.local_runtime.resolve_artifact_runtime_source_repository_refs") as resolve_refs:
+                        with self.assertRaisesRegex(ValueError, "invalid official Odoo upgrade source"):
+                            run_native_runtime_publish(
+                                manifest=manifest,
+                                image_repository="ghcr.io/example/artifact",
+                                image_tag="candidate",
+                                output_file=None,
+                                no_cache=False,
                             )
-                        runtime_helper.unlink()
-                        legacy_values = local_runtime.build_runtime_env_values(
-                            runtime_context=context, include_selection_sources=False, required_environment_keys=()
-                        )
-                        legacy_entries = local_runtime.collect_artifact_source_entries(
-                            runtime_values=legacy_values, shared_addons_source=None
-                        )
-                        self.assertFalse(any(entry["repository"] == repository for entry in legacy_entries))
-                        runtime_helper.write_text("UPGRADE_UTIL_SOURCE = None")
-                        with self.assertRaises(local_runtime.RuntimeCommandError):
-                            local_runtime.build_runtime_env_values(
-                                runtime_context=context, include_selection_sources=False, required_environment_keys=()
-                            )
+                    resolve_refs.assert_not_called()
 
     def test_manifest_repository_must_be_an_owner_name_slug(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

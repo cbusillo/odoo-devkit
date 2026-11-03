@@ -845,7 +845,10 @@ Notes
   source bindings are recorded on [Calendar transition #332](https://github.com/cbusillo/odoo-devkit/issues/332).
   Odoo20 builds retain their selected runtime's exact, unmodified official
   `odoo/upgrade-util` checkout through the existing external-source fetch and
-  release inventory.
+  release inventory. Final selection adds that runtime-owned source after
+  tenant artifact inputs, and keeps it in the main source list for local builds.
+  Conflicting environment or artifact declarations refuse before source
+  resolution; exact restatements produce one utility checkout.
   The checkout stays outside Python's upgrade namespace during ordinary
   startup, maintenance and Odoo19 upgrades. Only the existing native20
   upgrade command prepends its `src` to the upgrade paths. Missing, ambiguous

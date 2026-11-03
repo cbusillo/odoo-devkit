@@ -27,6 +27,11 @@ When
   repo needs a different layout.
 - `platform runtime` reads this file for source repository selection used by
   local runtime and publish flows.
+- Odoo 20 final source selection adds the selected runtime's official upgrade
+  utility pin after tenant input selection. Exact restatements share that one
+  checkout; conflicting environment or artifact declarations refuse before
+  source resolution or build. Older runtimes without the source helper retain
+  their existing selection.
 
 ## Build inputs in `workspace.toml`
 

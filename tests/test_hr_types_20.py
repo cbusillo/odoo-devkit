@@ -37,10 +37,12 @@ class NativeUtility(ModuleType):
     def column_exists(self, cr: Any, table: str, column: str) -> bool:
         return self.column_type(cr, table, column) is not None
 
-    def format_query(self, _cr: Any, query: str, table: str) -> str:
+    @staticmethod
+    def format_query(_cr: Any, query: str, table: str) -> str:
         return query.replace("{}", '"' + table + '"')
 
-    def get_m2m_on(self, _cr: Any, _table: str) -> list[tuple]:
+    @staticmethod
+    def get_m2m_on(_cr: Any, _table: str) -> list[tuple]:
         return []
 
     def rename_table(self, _cr: Any, old: str, new: str, *, remove_constraints: bool = True) -> None:
@@ -87,7 +89,11 @@ class HrTypeTests(CoreReferenceFixture):
         self.connection.create_function(
             "to_regclass",
             1,
-            lambda name: name if self.connection.execute("SELECT 1 FROM sqlite_master WHERE name=?", (name,)).fetchone() else None,
+            lambda relation_name: (
+                relation_name
+                if self.connection.execute("SELECT 1 FROM sqlite_master WHERE name=?", (relation_name,)).fetchone()
+                else None
+            ),
         )
         self.connection.executescript(
             "CREATE TABLE ir_model(id INTEGER PRIMARY KEY,model TEXT,state TEXT);"
