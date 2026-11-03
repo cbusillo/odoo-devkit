@@ -56,7 +56,7 @@ runs:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       with:
         repository: cbusillo/codex-skills
-        ref: 07399a67a1e5b7e330bcc6445e516b94630bdbf3
+        ref: 051172a630559d37ecd5165b435b930a1bfdb328
         path: .style-check-catalog
         persist-credentials: false
     - name: Check new comments
