@@ -843,6 +843,29 @@ Notes
   [stock history source](https://github.com/odoo/odoo/blob/68d580d3d4703e7190055f7040682942d5f1a24f/addons/calendar/views/res_users_views.xml).
   These are admission inputs, never target UI templates. Qualification and
   source bindings are recorded on [Calendar transition #332](https://github.com/cbusillo/odoo-devkit/issues/332).
+  An installed HR with its stock19 `hr.res_users_view_form_preferences` stages
+  only that child's architecture from the selected native20 HR XML before any
+  native parent-view write. Native combination validates same-module descendants
+  when their parent reloads; leaving the old email, phone and title selectors in
+  place would fail before the child's own XML record reloads. The qualified HR
+  primary architecture is identical in19and20 and stays unchanged. Stock current
+  and previous architectures retain comments, attributes and nonblank text in
+  the shared comparison. IDs, aliases, incoming references, users/preferences,
+  roles, attribution and every other column remain unchanged during preparation.
+  The two surviving stock MailBot descendants are checked against their own19
+  source and stay untouched; the known old Homeworking descendant also stays
+  untouched, with its separate module disposition left to the migration owner.
+  Unknown descendants, custom/translated/restricted/protected/rebound state,
+  changed native ownership or primary architecture refuse before any bridge
+  effect. A source without this HR preferences XMLID is outside this transition;
+  the ordinary HR users form is not rewritten. Replay recognizes the staged
+  target architecture. Later native XML loading owns its UI and normal history
+  writes: native `ir.ui.view.write` saves the staged current architecture into
+  `arch_prev`, so preparation's preservation is not an end-to-end promise that
+  obsolete stock19 `arch_prev` stays in that column. Original source and backup
+  custody remain separate. The exact public admission inputs under
+  `docker/scripts/legacy/hr/` and `legacy/mail_bot_hr/` come from
+  [official19](https://github.com/odoo/odoo/tree/a789a218fff7aeb5ce97be2b170333a026804f63/addons).
   Every effective saved user privacy must equal the global native fallback
   (`public` when the parameter is absent); divergent preferences or ambiguous
   settings owners refuse before effects. User settings remain unchanged. This
