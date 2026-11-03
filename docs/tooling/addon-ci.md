@@ -22,6 +22,13 @@ docstring is rendered by a tool stays a review rule in
 Run it locally with
 `uv run --no-project <codex-skills>/scripts/check_new_comments.py --repo . --base "$(git merge-base origin/main HEAD)"`.
 
+When `command-metadata` declares `qualityGate.lint.ruff`, the action runs that
+command and `qualityGate.format.default` from the consumer root before Odoo.
+Both run and either failure fails the job. The action supplies its own checkout
+as `ODOO_DEVKIT_REPO`, so the consumer's Ruff pointer, locked tool and addon
+runner use one source pin. Repositories adopt these fields after clearing their
+baseline; callers without the Ruff declaration keep their existing checks.
+
 The runner installs all installable owned addons, including ones without tests,
 and selects tests by the owned module names. Shared addons are installed as
 tenant dependencies without selecting their tests again. Test discovery remains

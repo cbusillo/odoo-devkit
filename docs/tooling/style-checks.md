@@ -9,12 +9,15 @@ configuration still governs its default commands. Adoption and baseline triage
 are tracked in [odoo-devkit#302](https://github.com/cbusillo/odoo-devkit/issues/302).
 
 Use the file from the consumer's exact pinned devkit checkout, without copying
-its rule selection into another configuration. From a tenant checkout with its
-manifest-declared devkit checkout at `../odoo-devkit`:
+its rule selection into another configuration. An adopted consumer's root
+`ruff.toml` extends it through the existing `ODOO_DEVKIT_REPO` override, with the
+normal sibling checkout as its default. Keep existing generated-source scopes
+in the owning nested configuration; normal Ruff discovery preserves them.
+From the consumer checkout:
 
 ```bash
-uv run --project ../odoo-devkit --locked ruff check --config ../odoo-devkit/quality/ruff.toml .
-uv run --project ../odoo-devkit --locked ruff format --check --config ../odoo-devkit/quality/ruff.toml .
+uv run --project "${ODOO_DEVKIT_REPO:-../odoo-devkit}" --locked ruff check .
+uv run --project "${ODOO_DEVKIT_REPO:-../odoo-devkit}" --locked ruff format --check .
 ```
 
 Ruff is supplied by devkit's locked development dependencies. The consumer's
@@ -34,7 +37,10 @@ inspection checks 3.13 and 3.14, following the
 Ruff continues to target the current 3.13 runtime. The
 [image upgrade](https://github.com/cbusillo/odoo-devkit/issues/373) owns raising that
 target after the images move. Tenant selection and pointer adoption remain on
-the owning issue.
+the owning issue. Consumers declare the external profile path in
+`qualityGate.inspection.profile`; task worktrees use the inspection helper's
+`--profile` option when their devkit is outside the sibling layout. The
+canonical file remains in devkit rather than in each consumer.
 Native inspection continues through the catalog's `jetbrains-inspection` skill;
 see [Python inspection](python-inspection.md). Resolving quoted Odoo model/value
 types also requires the Odoo IDE plugin, the matching Odoo source roots and the
@@ -49,4 +55,7 @@ success exit. Odoo consumes manifest dictionary expressions, so the shared
 configuration ignores `B018` only in files named `__manifest__.py`. Every other
 selected rule still applies there; `B018` remains enabled in other files.
 Other rule changes go through the owning issue's Director question path.
-The shared files do not add a CI job or alter required checks.
+The addon-test action runs declared Ruff lint and format commands before Odoo
+tests, as described in [addon CI](addon-ci.md). Both must pass for that CI job
+to pass. PyCharm remains the local pre-push gate; weekly project-wide inspection
+is separate from this adoption.
