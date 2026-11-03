@@ -11,15 +11,19 @@ its rule selection into another configuration. From a tenant checkout with its
 manifest-declared devkit checkout at `../odoo-devkit`:
 
 ```bash
-uv tool run --from ruff==0.17.2 ruff check --config ../odoo-devkit/quality/ruff.toml .
-uv tool run --from ruff==0.17.2 ruff format --check --config ../odoo-devkit/quality/ruff.toml .
+uv run --project ../odoo-devkit --locked ruff check --config ../odoo-devkit/quality/ruff.toml .
+uv run --project ../odoo-devkit --locked ruff format --check --config ../odoo-devkit/quality/ruff.toml .
 ```
 
-`quality/Project_Default.xml` is devkit's existing inspection profile. Its
-`.idea/inspectionProfiles/Project_Default.xml` points to that same file. The
-move changes no inspections, severity, scope, or compatibility targets. It does
-not select this profile for tenants or reconcile their existing settings.
-Tenant adoption must preserve or explicitly resolve those differences first.
+Ruff is supplied by devkit's locked development dependencies. The consumer's
+pinned devkit checkout owns both its version and the shared configuration.
+
+[`.idea/inspectionProfiles/Project_Default.xml`](../../.idea/inspectionProfiles/Project_Default.xml)
+is the existing shared inspection asset. Keep it at that path as a regular
+tracked file: the native inspection helper does not accept tracked symlinks.
+This preparation changes no inspection settings. It does not select the profile
+for tenants or reconcile their existing settings. Tenant adoption must preserve
+or explicitly resolve those differences first.
 Native inspection continues through the catalog's `jetbrains-inspection` skill;
 see [Python inspection](python-inspection.md).
 
