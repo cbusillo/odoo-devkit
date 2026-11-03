@@ -22,6 +22,14 @@ docstring is rendered by a tool stays a review rule in
 Run it locally with
 `uv run --no-project <codex-skills>/scripts/check_new_comments.py --repo . --base "$(git merge-base origin/main HEAD)"`.
 
+When `command-metadata` declares `qualityGate.lint.ruff`, the action runs that
+command and `qualityGate.format.default` from the declaring repository root before Odoo.
+These commands run on the runner host with the job's environment. Both run;
+either failure or a tracked source edit fails the job. The action supplies its own checkout
+as `ODOO_DEVKIT_REPO`, so the consumer's Ruff pointer, locked tool and addon
+runner use one source pin. Repositories adopt these fields after clearing their
+baseline; callers without the Ruff declaration keep their existing checks.
+
 The runner installs all installable owned addons, including ones without tests,
 and selects tests by the owned module names. Shared addons are installed as
 tenant dependencies without selecting their tests again. Test discovery remains
@@ -102,7 +110,8 @@ as a restricted single-line command, and rejects runtime updates, help-only
 invocations, shell operators, redirection and command substitution. Only the
 shown uv prefix is supported; addon arguments use the runner's own parser.
 The runner then requires a successful nonempty Odoo test summary. The linter
-does not execute shell text or assert workflow wording.
+does not execute shell text or assert workflow wording. The separate Ruff step
+executes its declared lint and format commands as described above.
 
 ## Devkit live checks
 
