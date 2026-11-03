@@ -882,9 +882,15 @@ Notes
   no additional architecture rewrite beyond the upstream reference/domain
   adapters, and native validation remains authoritative.
   The old `hr.version.employee_type` selection is a separate concept, not a
-  field rename or a name-based mapping to the new relation. Populated legacy
-  categories refuse before effects pending the semantic disposition on
-  [HR transition #369](https://github.com/cbusillo/odoo-devkit/issues/369).
+  field rename or a name-based mapping to the new relation. The recorded
+  [Employee decision](https://github.com/cbusillo/odoo-devkit/issues/369#issuecomment-6604407393)
+  fills only empty version links whose old classification is `employee`,
+  using the existing `hr.contract_type_employee` identity. Existing nonempty
+  links and their audit/history remain unchanged. Missing or null old
+  classifications get no backfill; other populated categories refuse before
+  any shared effect. Backfill requires supported selection storage and an
+  existing Employee XMLID/record declared by the selected target data, and
+  preparation can replay without replacing a filled link.
   An installed HR with its stock19 `hr.res_users_view_form_preferences` stages
   only that child's architecture from the selected native20 HR XML before any
   native parent-view write. Native combination validates same-module descendants

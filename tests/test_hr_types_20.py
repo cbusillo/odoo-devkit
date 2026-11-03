@@ -103,7 +103,8 @@ class HrTypeTests(CoreReferenceFixture):
             "CREATE TABLE hr_contract_type(id INTEGER PRIMARY KEY,name JSON,code TEXT,sequence INTEGER CHECK(sequence>=0),"
             "country_id INTEGER,write_uid INTEGER,x_notes TEXT);"
             "CREATE TABLE hr_job(id INTEGER PRIMARY KEY,contract_type_id INTEGER REFERENCES hr_contract_type(id));"
-            "CREATE TABLE hr_version(id INTEGER PRIMARY KEY,contract_type_id INTEGER REFERENCES hr_contract_type(id));"
+            "CREATE TABLE hr_version(id INTEGER PRIMARY KEY,contract_type_id INTEGER REFERENCES hr_contract_type(id),"
+            "employee_type TEXT DEFAULT 'employee',write_uid INTEGER,x_notes TEXT);"
             "CREATE TABLE hr_employee(id INTEGER PRIMARY KEY,version_id INTEGER REFERENCES hr_version(id));"
             "CREATE TABLE business_links(id INTEGER PRIMARY KEY,type_id INTEGER REFERENCES hr_contract_type(id),value TEXT);"
             "CREATE TABLE mail_message(id INTEGER PRIMARY KEY,model TEXT,res_id INTEGER,body TEXT);"
@@ -118,7 +119,8 @@ class HrTypeTests(CoreReferenceFixture):
             )
             self.xmlid("hr", "contract_type_" + code, "hr.contract.type", identity, True)
         self.connection.executescript(
-            "INSERT INTO hr_job VALUES (21,31);INSERT INTO hr_version VALUES (22,32);INSERT INTO hr_employee VALUES (23,22);"
+            "INSERT INTO hr_job VALUES (21,31);"
+            "INSERT INTO hr_version VALUES (22,32,'employee',79,'retained contract');INSERT INTO hr_employee VALUES (23,22);"
             "INSERT INTO business_links VALUES (24,32,'retained configuration');"
             "INSERT INTO mail_message VALUES (25,'hr.contract.type',32,'retained history');"
         )
@@ -149,6 +151,10 @@ class HrTypeTests(CoreReferenceFixture):
             )
             self.xmlid("hr", "field_" + model.replace(".", "_") + "__contract_type_id", "ir.model.fields", identity, False)
         self.xmlid("__export__", "retained_field", "ir.model.fields", 42, True)
+        self.connection.execute(
+            "INSERT INTO ir_model_fields VALUES (44,'hr.version',12,'employee_type','selection',NULL,'base',1,NULL)"
+        )
+        self.xmlid("hr", "field_hr_version__employee_type", "ir.model.fields", 44, False)
         source = Path(self.directory.name) / "addons/_checkouts/official/src"
         (source / "util").mkdir(parents=True)
         (source / "util/__init__.py").write_text("")
@@ -198,7 +204,7 @@ class HrTypeTests(CoreReferenceFixture):
         )
         self.assertEqual([row[0] for row in after["ir_model_fields"]], [row[0] for row in original["ir_model_fields"]])
         self.assertEqual(
-            self.connection.execute("SELECT name FROM ir_model_fields WHERE model!='hr.employee.type' ORDER BY id").fetchall(),
+            self.connection.execute("SELECT name FROM ir_model_fields WHERE id IN (41,42,43) ORDER BY id").fetchall(),
             [("employee_type_id",)] * 3,
         )
         with self.assertRaises(sqlite3.IntegrityError):
@@ -219,7 +225,7 @@ class HrTypeTests(CoreReferenceFixture):
             "INSERT INTO ir_model_data(module,name,model,res_id,noupdate) VALUES ('hr','model_hr_employee_type','ir.model',10,0)",
             "INSERT INTO pg_class VALUES ('custom_hr_employee_type_index')",
             "ALTER TABLE hr_version ADD COLUMN employee_type_id INTEGER",
-            "ALTER TABLE hr_version ADD COLUMN employee_type TEXT DEFAULT 'employee'",
+            "UPDATE hr_version SET employee_type='contractor'",
             "INSERT INTO ir_model_data(module,name,model,res_id,noupdate) "
             "VALUES ('custom_mod','model_hr_contract_type','ir.model',10,0)",
             "INSERT INTO ir_model_data(module,name,model,res_id,noupdate) "
@@ -245,11 +251,97 @@ class HrTypeTests(CoreReferenceFixture):
                     self.connection.execute("RELEASE unsupported")
 
     def test_later_shared_admission_failure_prevents_native_hr_effects(self) -> None:
+        self.connection.execute("INSERT INTO hr_version VALUES (61,NULL,'employee',83,'retained missing type')")
         before = self.snapshot()
         with (
-            patch_attr(bridge, "_admit_mail", Mock(side_effect=RuntimeError("unsupported Mail"))),
+            patch_attr(bridge, "_admit_mail", Mock(side_effect=RuntimeError("unsupported Mail"))) as admission,
             self.assertRaises(RuntimeError),
         ):
+            self.apply()
+        admission.assert_called_once_with(self.cursor)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_employee_classification_fills_only_empty_version_links_without_label_matching_and_replays(self) -> None:
+        employee_type = self.connection.execute(
+            "SELECT res_id FROM ir_model_data WHERE module='hr' AND name='contract_type_employee'"
+        ).fetchone()[0]
+        self.connection.executescript(
+            "INSERT INTO hr_version VALUES (61,NULL,'employee',81,'saved contract');"
+            "INSERT INTO hr_version VALUES (62,32,'employee',82,'custom linked type');"
+            "INSERT INTO hr_version VALUES (63,NULL,NULL,83,'unclassified');"
+            "INSERT INTO hr_job VALUES (64,NULL);INSERT INTO hr_employee VALUES (65,61);"
+            "INSERT INTO hr_contract_type VALUES (66,'{\"en_US\":\"Employee\"}','label-only',9,NULL,84,'not the XMLID');"
+        )
+        before = self.snapshot()
+        self.apply()
+        after = self.snapshot()
+        self.assertEqual(after["hr_employee_type"], before["hr_contract_type"])
+        self.assertEqual(
+            after["hr_version"],
+            [(row[0], employee_type if row[0] == 61 else row[1], *row[2:]) for row in before["hr_version"]],
+        )
+        for table in ("hr_job", "hr_employee", "business_links"):
+            self.assertEqual(after[table], before[table])
+        self.apply()
+        self.assertEqual(self.snapshot(), after)
+        self.connection.execute("INSERT INTO hr_version VALUES (67,NULL,'employee',85,'replayed handoff')")
+        self.apply()
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT employee_type_id,employee_type,write_uid,x_notes FROM hr_version WHERE id=67"
+            ).fetchone(),
+            (employee_type, "employee", 85, "replayed handoff"),
+        )
+
+    def test_unsupported_categories_and_missing_mapping_identity_refuse_before_effects(self) -> None:
+        for statements in (
+            ("UPDATE hr_version SET employee_type='worker'",),
+            ("UPDATE hr_version SET contract_type_id=NULL,employee_type='student'",),
+            ("UPDATE hr_version SET employee_type=''",),
+            (
+                "UPDATE hr_version SET contract_type_id=NULL",
+                "DELETE FROM ir_model_data WHERE module='hr' AND name='contract_type_employee'",
+            ),
+            ("UPDATE hr_version SET contract_type_id=NULL", "UPDATE ir_model_fields SET ttype='char' WHERE id=44"),
+            ("UPDATE hr_version SET contract_type_id=NULL", "UPDATE ir_model_fields SET model_id=13 WHERE id=44"),
+            (
+                "UPDATE hr_version SET contract_type_id=NULL",
+                "ALTER TABLE hr_version RENAME COLUMN employee_type TO retained_category",
+                "ALTER TABLE hr_version ADD COLUMN employee_type INTEGER DEFAULT 'employee'",
+            ),
+        ):
+            with self.subTest(statements=statements):
+                self.connection.execute("SAVEPOINT unsupported_mapping")
+                try:
+                    for statement in statements:
+                        self.connection.execute(statement)
+                    before = self.snapshot()
+                    with self.assertRaises(RuntimeError):
+                        self.apply()
+                    self.assertEqual(self.snapshot(), before)
+                finally:
+                    self.connection.execute("ROLLBACK TO unsupported_mapping")
+                    self.connection.execute("RELEASE unsupported_mapping")
+
+    def test_existing_links_do_not_require_employee_mapping_identity(self) -> None:
+        self.connection.execute("DELETE FROM ir_model_data WHERE module='hr' AND name='contract_type_employee'")
+        before = self.snapshot()
+        self.apply()
+        self.assertEqual(self.snapshot()["hr_version"], before["hr_version"])
+
+    def test_absent_legacy_category_keeps_the_existing_rename_without_backfill(self) -> None:
+        self.connection.execute("ALTER TABLE hr_version DROP COLUMN employee_type")
+        before = self.snapshot()
+        self.apply()
+        self.assertEqual(self.snapshot()["hr_version"], before["hr_version"])
+
+    def test_missing_target_employee_declaration_refuses_mapping_before_effects(self) -> None:
+        self.connection.execute("UPDATE hr_version SET contract_type_id=NULL")
+        Path(bridge.HR_TYPE_DATA_FILE).write_text(
+            '<odoo><data noupdate="1"><record id="different_type" model="hr.employee.type"/></data></odoo>'
+        )
+        before = self.snapshot()
+        with self.assertRaises(RuntimeError):
             self.apply()
         self.assertEqual(self.snapshot(), before)
 

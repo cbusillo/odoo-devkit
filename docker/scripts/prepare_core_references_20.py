@@ -39,6 +39,12 @@ class DirectChat(NamedTuple):
     members: list[dict[str, Any]]
 
 
+class HrTypePlan(NamedTuple):
+    utility: ModuleType | None
+    employee_type_id: int | None
+    version_ids: list[int]
+
+
 class InheritedView(NamedTuple):
     module: str
     name: str
@@ -1200,7 +1206,7 @@ def _hr_preferences_view_plan(cr: Any) -> tuple[int, str] | None:
     return plan
 
 
-def _hr_type_plan(cr: Any) -> ModuleType | None:
+def _hr_type_plan(cr: Any) -> HrTypePlan | None:
     cr.execute("SELECT state FROM ir_module_module WHERE name = 'hr'")
     if cr.fetchone() not in {("installed",), ("to upgrade",)}:
         return None
@@ -1372,18 +1378,51 @@ def _hr_type_plan(cr: Any) -> ModuleType | None:
     )
     if cr.fetchall():
         raise RuntimeError("Dangling HR type data aliases")
+    employee_type_id = None
+    version_ids = []
     if utility.column_exists(cr, "hr_version", "employee_type"):
-        cr.execute("SELECT 1 FROM hr_version WHERE employee_type IS NOT NULL LIMIT 1")
-        if cr.fetchone() is not None:
+        cr.execute(
+            utility.format_query(
+                cr, "SELECT id,employee_type,{} FROM hr_version WHERE employee_type IS NOT NULL FOR UPDATE", source_field
+            )
+        )
+        versions = cr.fetchall()
+        if any(category != "employee" for _, category, _ in versions):
             raise RuntimeError("Preserve legacy HR employment categories before native field removal")
-    return None if completed else utility
+        version_ids = [identity for identity, _, existing_type in versions if existing_type is None]
+        if version_ids:
+            legacy_fields = _rows(cr, "SELECT * FROM ir_model_fields WHERE model='hr.version' AND name='employee_type' FOR UPDATE")
+            if (
+                utility.column_type(cr, "hr_version", "employee_type") != "varchar"
+                or len(legacy_fields) != 1
+                or legacy_fields[0]["model_id"] != owner_ids["hr.version"]
+                or legacy_fields[0]["ttype"] != "selection"
+                or legacy_fields[0]["state"] != "base"
+                or not legacy_fields[0].get("store")
+                or legacy_fields[0].get("related")
+                or legacy_fields[0].get("relation")
+            ):
+                raise RuntimeError("Unsupported legacy HR Employee classification storage")
+            if sum(record.get("id") == "contract_type_employee" for record in records) != 1:
+                raise RuntimeError("Native HR data does not identify one Employee type")
+            employee_type_id = _require_source(cr, "hr", "contract_type_employee", source_model).record_id
+            cr.execute(utility.format_query(cr, "SELECT id FROM {} WHERE id=%s FOR UPDATE", source_table), (employee_type_id,))
+            if cr.fetchall() != [(employee_type_id,)]:
+                raise RuntimeError("Missing existing HR Employee type")
+    return None if completed and not version_ids else HrTypePlan(None if completed else utility, employee_type_id, version_ids)
 
 
-def _migrate_hr_types(cr: Any, utility: ModuleType) -> None:
-    utility.rename_table(cr, "hr_contract_type", "hr_employee_type", remove_constraints=False)
-    utility.rename_model(cr, "hr.contract.type", "hr.employee.type", rename_table=False)
-    for model in HR_TYPE_FIELD_OWNERS:
-        utility.rename_field(cr, model, "contract_type_id", "employee_type_id", skip_inherit="*")
+def _migrate_hr_types(cr: Any, plan: HrTypePlan) -> None:
+    if plan.utility is not None:
+        plan.utility.rename_table(cr, "hr_contract_type", "hr_employee_type", remove_constraints=False)
+        plan.utility.rename_model(cr, "hr.contract.type", "hr.employee.type", rename_table=False)
+        for model in HR_TYPE_FIELD_OWNERS:
+            plan.utility.rename_field(cr, model, "contract_type_id", "employee_type_id", skip_inherit="*")
+    if plan.version_ids:
+        cr.execute(
+            "UPDATE hr_version SET employee_type_id=%s WHERE id=ANY(%s) AND employee_type_id IS NULL",
+            (plan.employee_type_id, plan.version_ids),
+        )
 
 
 def migrate(cr: Any, version: str | None) -> None:
