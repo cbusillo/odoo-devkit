@@ -18,6 +18,11 @@ SOURCE_STATE = "state_in_or"
 TARGET_STATE = "state_in_od"
 STATE_DATA_FILE = Path("/odoo/odoo/addons/base/data/res.country.state.csv")
 STOCK_VALUATION_DATA_FILE = Path("/odoo/addons/account/report/account_stock_valuation_report.xml")
+STOCK_PRODUCT_DATA_FILES = {
+    "stock": Path("/odoo/addons/stock/views/product_views.xml"),
+    "stock_account": Path("/odoo/addons/stock_account/views/product_views.xml"),
+    "stock_delivery": Path("/odoo/addons/stock_delivery/views/product_template_view.xml"),
+}
 HR_ORG_CHART_DATA_FILE = Path("/odoo/addons/hr/views/hr_employee_public_views.xml")
 HR_EMPLOYEE_DATA_FILE = Path("/odoo/addons/hr/views/hr_employee_views.xml")
 HR_DEPARTMENT_DATA_FILE = Path("/odoo/addons/hr/views/hr_department_views.xml")
@@ -52,6 +57,19 @@ class InheritedView(NamedTuple):
     parent: str
     source_selector: str
     target_selector: str
+
+
+class StockView(NamedTuple):
+    module: str
+    source: str
+    target: str
+
+
+STOCK_VIEWS = (
+    StockView("stock", "view_template_property_form", "product_template_form_view_stock"),
+    StockView("stock_account", "view_template_property_form_stock_account", "product_template_form_view_stock_account"),
+    StockView("stock_delivery", "product_template_hs_code", "product_template_hs_code"),
+)
 
 
 INHERITED_VIEWS = (
@@ -222,6 +240,122 @@ def _hr_native_fields(path: Path, name: str, model: str) -> dict[str, ElementTre
     if len(fields) != len(records[0]):
         raise RuntimeError("Duplicate native HR fields")
     return fields
+
+
+def _stock_product_view_plan(cr: Any) -> dict[tuple[str, str], Reference]:
+    cr.execute("SELECT name, state FROM ir_module_module WHERE name IN (%s, %s, %s)", tuple(view.module for view in STOCK_VIEWS))
+    states = dict(cr.fetchall())
+    if states.get("stock") not in {"installed", "to upgrade"}:
+        return {}
+    selected = [view for view in STOCK_VIEWS if states.get(view.module) in {"installed", "to upgrade"}]
+    cr.execute("LOCK TABLE ir_ui_view, ir_ui_view_custom, ir_ui_view_group_rel, ir_model_data IN SHARE ROW EXCLUSIVE MODE")
+    sources = {view.module: _require_source(cr, view.module, view.source, "ir.ui.view") for view in selected}
+    ancestor = _require_source(cr, "product", "product_template_form_view", "ir.ui.view")
+    if any(source.noupdate for source in [ancestor, *sources.values()]):
+        raise RuntimeError("Protected Stock product view ownership")
+    if len({source.record_id for source in [ancestor, *sources.values()]}) != len(sources) + 1:
+        raise RuntimeError("Overlapping Stock product view identities")
+    cr.execute("SELECT model, type, active FROM ir_ui_view WHERE id = %s FOR UPDATE", (ancestor.record_id,))
+    if cr.fetchall() != [("product.template", "form", True)]:
+        raise RuntimeError("Unsupported Stock product view ancestor")
+    action = _require_source(cr, "stock", "action_open_routes", "ir.actions.server")
+    cr.execute("SELECT id FROM ir_act_server WHERE id = %s", (action.record_id,))
+    if cr.fetchone() is None:
+        raise RuntimeError("Missing Stock routes action")
+    helpers = runpy.run_path(str(Path(__file__).with_name("mail_view_20.py")))
+    normalize = helpers["_normalized_architecture"]
+    render = helpers["_render_architecture"]
+    plan = {}
+    for view in selected:
+        source = sources[view.module]
+        target = _check_target(cr, view.target, source, module=view.module)
+        if target is not None and target.noupdate:
+            raise RuntimeError("Protected native Stock product view target")
+        legacy = Path(__file__).with_name("legacy") / view.module
+        current_series = ("19", "19_early") if view.module == "stock" else ("19",)
+        current = [_hr_native_fields(legacy / f"product_views_{series}.xml", view.source, "ir.ui.view") for series in current_series]
+        previous = current + (
+            [_hr_native_fields(legacy / "product_views_18.xml", view.source, "ir.ui.view")]
+            if view.module != "stock_delivery"
+            else []
+        )
+        fields = current[0]
+        native = _hr_native_fields(STOCK_PRODUCT_DATA_FILES[view.module], view.target, "ir.ui.view")
+        parent_name = "product.product_template_form_view" if view.module == "stock" else "stock.product_template_form_view_stock"
+        if (
+            set(native) != {"name", "model", "inherit_id", "arch"}
+            or native["name"].attrib != {"name": "name"}
+            or native["name"].text != fields["name"].text
+            or native["model"].attrib != {"name": "model"}
+            or native["model"].text != fields["model"].text
+            or native["inherit_id"].attrib != {"name": "inherit_id", "ref": parent_name}
+            or native["arch"].attrib != {"name": "arch", "type": "xml"}
+            or not len(native["arch"])
+        ):
+            raise RuntimeError("Changed native Stock product view definition")
+        cr.execute(
+            "SELECT module, name, noupdate FROM ir_model_data WHERE model = 'ir.ui.view' AND res_id = %s", (source.record_id,)
+        )
+        aliases = {(view.module, view.source, False)}
+        if target is not None:
+            aliases.add((view.module, view.target, False))
+        if set(cr.fetchall()) != aliases:
+            raise RuntimeError("Customized Stock product view aliases")
+        expected_children = (
+            {value.record_id for module, value in sources.items() if module != "stock"} if view.module == "stock" else set()
+        )
+        cr.execute("SELECT id FROM ir_ui_view WHERE inherit_id = %s", (source.record_id,))
+        if {row[0] for row in cr.fetchall()} != expected_children:
+            raise RuntimeError("Preserve outside Stock product view descendants")
+        for query in (
+            "SELECT 1 FROM ir_ui_view_custom WHERE ref_id = %s LIMIT 1",
+            "SELECT 1 FROM ir_ui_view_group_rel WHERE view_id = %s LIMIT 1",
+        ):
+            cr.execute(query, (source.record_id,))
+            if cr.fetchone():
+                raise RuntimeError("Customized or restricted Stock product view")
+        rows = _rows(cr, "SELECT * FROM ir_ui_view WHERE id = %s FOR UPDATE", (source.record_id,))
+        if len(rows) != 1:
+            raise RuntimeError("Missing Stock product view")
+        row = rows[0]
+        _require_empty(
+            row,
+            {"id", "arch_db", "arch_prev", "create_uid", "write_uid", "create_date", "write_date"},
+            {
+                "name": (fields["name"].text,),
+                "model": ("product.template",),
+                "inherit_id": (ancestor.record_id if view.module == "stock" else sources["stock"].record_id,),
+                "type": ("form",),
+                "mode": ("extension",),
+                "active": (True,),
+                "priority": (16,),
+                "arch_updated": (False,),
+                "arch_fs": (f"{view.module}/views/{STOCK_PRODUCT_DATA_FILES[view.module].name}",),
+                "customize_show": (False,),
+                "is_seo_optimized": (False,),
+                **UNTRACKED_PUBLIC_VIEW_DEFAULTS,
+            },
+        )
+        architectures = row["arch_db"]
+        if not isinstance(architectures, dict) or set(architectures) != {"en_US"}:
+            raise RuntimeError("Preserve translated Stock product view")
+        try:
+            admitted = []
+            for candidate in previous:
+                architecture = ElementTree.tostring(candidate["arch"], encoding="unicode").replace(
+                    "%(action_open_routes)d", str(action.record_id)
+                )
+                parser = ElementTree.XMLParser(target=ElementTree.TreeBuilder(insert_comments=True))
+                admitted.append(normalize(render(ElementTree.fromstring(architecture, parser=parser))))
+            if normalize(architectures["en_US"]) not in admitted[: len(current)]:
+                raise RuntimeError("Preserve customized Stock product view architecture")
+            if row.get("arch_prev") and normalize(row["arch_prev"]) not in admitted:
+                raise RuntimeError("Preserve customized Stock product view history")
+        except (ElementTree.ParseError, TypeError, ValueError) as error:
+            raise RuntimeError("Unsupported Stock product view architecture") from error
+        if target is None:
+            plan[view.module, view.target] = source
+    return plan
 
 
 def _hr_org_chart_action_plan(cr: Any, *, private: bool = False) -> Reference | None:
@@ -1441,6 +1575,7 @@ def migrate(cr: Any, version: str | None) -> None:
     lunches = _lunch_plan(cr)
     policies = _policy_xmlid_plan(cr)
     stock_valuation = _stock_valuation_action_plan(cr)
+    stock_views = _stock_product_view_plan(cr)
     calendar_views = _calendar_view_plan(cr)
     hr_preferences = _hr_preferences_view_plan(cr)
     hr_types = _hr_type_plan(cr)
@@ -1464,6 +1599,8 @@ def migrate(cr: Any, version: str | None) -> None:
             )
     hr_org_chart_views = _hr_org_chart_view_plan(cr) if hr_org_chart is not None else None
     _admit_mail(cr)
+    for (module, name), source in stock_views.items():
+        _bind_target(cr, name, source, module=module)
     if hr_types is not None:
         _migrate_hr_types(cr, hr_types)
     if hr_preferences is not None:
