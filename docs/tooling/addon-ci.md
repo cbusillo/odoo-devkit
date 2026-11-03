@@ -16,8 +16,8 @@ manifest.
 Before the tests, the action runs the shared
 [comment check](https://github.com/cbusillo/codex-skills/blob/main/scripts/check_new_comments.py)
 on the caller's last commit, fetching its parent when the checkout is shallow.
-It fails on comments and docstrings the commit adds to Python files outside the
-exceptions in
+It fails on new Python comments outside the allowed exceptions; whether a
+docstring is rendered by a tool stays a review rule in
 [Names Instead Of Comments](https://github.com/cbusillo/codex-skills/blob/main/skills/references/python-odoo-style.md#names-instead-of-comments).
 Run it locally with
 `uv run --no-project <codex-skills>/scripts/check_new_comments.py --repo . --base "$(git merge-base origin/main HEAD)"`.
