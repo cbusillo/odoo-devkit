@@ -29,6 +29,8 @@ Odoo's responsibility. Browser suites use the image's Chromium plus the locked
 CI-only `websocket-client` dependency catalog in `docker/addon-tests`.
 Its Python range covers the 3.13 and 3.14 image families; the base image
 supplies the interpreter that executes Odoo and its addon tests.
+Tenant dependency preparation uses the workspace's declared Python version,
+so widening the shared CI range preserves preparation for older tenants.
 
 Runtime-support, CI-only and tenant metadata are staged from their source locks,
 constrained by the exact published base's baked Python catalog, and relocked

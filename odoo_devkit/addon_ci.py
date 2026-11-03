@@ -148,10 +148,14 @@ def build_test_image(image: str, tenant: Path | None, context: Path, tag: str, *
         for filename in ("pyproject.toml", "uv.lock"):
             shutil.copy2(ROOT / "docker" / name / filename, staged / filename)
         catalogs.append(staged)
-    python_requirement = tomllib.loads((catalogs[1] / "pyproject.toml").read_text())["project"]["requires-python"]
+    manifest = load_workspace_manifest(tenant / "workspace.toml") if tenant is not None else None
+    python_requirement = (
+        manifest.workspace.python_version
+        if manifest is not None
+        else tomllib.loads((catalogs[1] / "pyproject.toml").read_text())["project"]["requires-python"]
+    )
     command(["uv", "python", "install", python_requirement])
-    if tenant is not None:
-        manifest = load_workspace_manifest(tenant / "workspace.toml")
+    if manifest is not None:
         # Actions checkouts need not use the developer's sibling directory names.
         manifest = replace(
             manifest,
@@ -168,7 +172,7 @@ def build_test_image(image: str, tenant: Path | None, context: Path, tag: str, *
     requirements = []
     for catalog in catalogs:
         derive_base_python_lock(staged_root=catalog, catalogs=base_catalogs, python_version=python_requirement)
-        command(["uv", "lock", "--project", str(catalog), "--check", "--offline", "--no-config"])
+        command(["uv", "lock", "--project", str(catalog), "--python", python_requirement, "--check", "--offline", "--no-config"])
         requirements.append(
             command(
                 [
