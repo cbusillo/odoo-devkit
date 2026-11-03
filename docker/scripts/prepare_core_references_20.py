@@ -1413,11 +1413,12 @@ def _hr_type_plan(cr: Any) -> HrTypePlan | None:
 
 
 def _migrate_hr_types(cr: Any, plan: HrTypePlan) -> None:
-    if plan.utility is not None:
-        plan.utility.rename_table(cr, "hr_contract_type", "hr_employee_type", remove_constraints=False)
-        plan.utility.rename_model(cr, "hr.contract.type", "hr.employee.type", rename_table=False)
+    utility = plan.utility
+    if utility is not None:
+        utility.rename_table(cr, "hr_contract_type", "hr_employee_type", remove_constraints=False)
+        utility.rename_model(cr, "hr.contract.type", "hr.employee.type", rename_table=False)
         for model in HR_TYPE_FIELD_OWNERS:
-            plan.utility.rename_field(cr, model, "contract_type_id", "employee_type_id", skip_inherit="*")
+            utility.rename_field(cr, model, "contract_type_id", "employee_type_id", skip_inherit="*")
     if plan.version_ids:
         cr.execute(
             "UPDATE hr_version SET employee_type_id=%s WHERE id=ANY(%s) AND employee_type_id IS NULL",
