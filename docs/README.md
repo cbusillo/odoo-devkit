@@ -34,6 +34,8 @@ lanes live in `launchplane`.
   repo shape used by the current workspace model.
 - [tooling/python-inspection.md](tooling/python-inspection.md) for reproducible
   linked-worktree Python inspection preparation.
+- [tooling/style-checks.md](tooling/style-checks.md) for shared Ruff and inspection
+  assets and their adoption boundary.
 - [tooling/addon-ci.md](tooling/addon-ci.md) for disposable addon suites and
   live devkit startup/restore checks with planted-fault proof.
 - [tooling/structural-census.md](tooling/structural-census.md) for root-screened

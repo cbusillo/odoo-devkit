@@ -14,6 +14,9 @@ dependencies = [
     "requests>=2.34.2",
 ]
 
+[dependency-groups]
+dev = ["ruff==0.17.2"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["odoo_devkit"]
 

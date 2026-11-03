@@ -12,6 +12,7 @@
     "commandPatterns": "docs/tooling/command-patterns.md",
     "tenantOverlay": "docs/tooling/tenant-overlay.md",
     "pythonInspection": "docs/tooling/python-inspection.md",
+    "styleChecks": "docs/tooling/style-checks.md",
     "addonCi": "docs/tooling/addon-ci.md",
     "consumerBuildChecks": "docs/tooling/consumer-build-checks.md"
   },
