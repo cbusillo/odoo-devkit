@@ -288,9 +288,9 @@ def _stock_product_view_plan(cr: Any) -> dict[tuple[str, str], Reference]:
             else []
         )
         fields = current[0]
-        if (
-            view.source != view.target
-            and ElementTree.parse(STOCK_PRODUCT_DATA_FILES[view.module]).find(f".//record[@id='{view.source}']") is not None
+        if view.source != view.target and any(
+            record.get("id") in {view.source, f"{view.module}.{view.source}"}
+            for record in ElementTree.parse(STOCK_PRODUCT_DATA_FILES[view.module]).iter("record")
         ):
             raise RuntimeError("Native Stock data still declares a retired view identity")
         native = _hr_native_fields(STOCK_PRODUCT_DATA_FILES[view.module], view.target, "ir.ui.view")

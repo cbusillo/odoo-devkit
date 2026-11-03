@@ -229,18 +229,22 @@ class StockProductViewTests(CoreReferenceFixture):
 
     def test_native_compatibility_record_under_either_retired_identity_refuses(self) -> None:
         for view in bridge.STOCK_VIEWS[:2]:
-            with self.subTest(module=view.module):
-                target = self.native_files[view.module]
-                original = target.read_bytes()
-                document = ElementTree.parse(target)
-                compatibility = ElementTree.SubElement(document.getroot(), "record", {"id": view.source, "model": "ir.ui.view"})
-                architecture = ElementTree.SubElement(compatibility, "field", {"name": "arch", "type": "xml"})
-                ElementTree.SubElement(architecture, "data")
-                document.write(target)
-                try:
-                    self.assert_refuses_without_effects()
-                finally:
-                    target.write_bytes(original)
+            for name in (view.source, f"{view.module}.{view.source}"):
+                with self.subTest(module=view.module, name=name):
+                    self.connection.execute("SAVEPOINT compatibility")
+                    target = self.native_files[view.module]
+                    original = target.read_bytes()
+                    document = ElementTree.parse(target)
+                    compatibility = ElementTree.SubElement(document.getroot(), "record", {"id": name, "model": "ir.ui.view"})
+                    architecture = ElementTree.SubElement(compatibility, "field", {"name": "arch", "type": "xml"})
+                    ElementTree.SubElement(architecture, "data")
+                    document.write(target)
+                    try:
+                        self.assert_refuses_without_effects()
+                    finally:
+                        target.write_bytes(original)
+                        self.connection.execute("ROLLBACK TO compatibility")
+                        self.connection.execute("RELEASE compatibility")
 
     def test_native_file_move_keeps_the_original_source_file_identity(self) -> None:
         moved = self.native_files["stock"].with_name("moved_product_views.xml")
