@@ -27,6 +27,8 @@ and selects tests by the owned module names. Shared addons are installed as
 tenant dependencies without selecting their tests again. Test discovery remains
 Odoo's responsibility. Browser suites use the image's Chromium plus the locked
 CI-only `websocket-client` dependency catalog in `docker/addon-tests`.
+Its Python range covers the 3.13 and 3.14 image families; the base image
+supplies the interpreter that executes Odoo and its addon tests.
 
 Runtime-support, CI-only and tenant metadata are staged from their source locks,
 constrained by the exact published base's baked Python catalog, and relocked
