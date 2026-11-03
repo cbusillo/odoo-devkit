@@ -10,6 +10,7 @@ from datetime import datetime
 from importlib import import_module
 from math import isfinite
 from pathlib import Path
+from types import ModuleType
 from typing import Any, NamedTuple
 from xml.etree import ElementTree
 
@@ -21,6 +22,8 @@ HR_ORG_CHART_DATA_FILE = Path("/odoo/addons/hr/views/hr_employee_public_views.xm
 HR_EMPLOYEE_DATA_FILE = Path("/odoo/addons/hr/views/hr_employee_views.xml")
 HR_DEPARTMENT_DATA_FILE = Path("/odoo/addons/hr/views/hr_department_views.xml")
 HR_USERS_DATA_FILE = Path("/odoo/addons/hr/views/res_users.xml")
+HR_TYPE_DATA_FILE = Path("/odoo/addons/hr/data/hr_employee_type_data.xml")
+HR_TYPE_FIELD_OWNERS = ("hr.job", "hr.version", "hr.employee")
 UNTRACKED_PUBLIC_VIEW_DEFAULTS = {"track": (None, False), "visibility": (None, "")}
 _logger = logging.getLogger(__name__)
 
@@ -34,6 +37,12 @@ class Reference(NamedTuple):
 class DirectChat(NamedTuple):
     values: dict[str, Any]
     members: list[dict[str, Any]]
+
+
+class HrTypePlan(NamedTuple):
+    utility: ModuleType | None
+    employee_type_id: int | None
+    version_ids: list[int]
 
 
 class InheritedView(NamedTuple):
@@ -1197,6 +1206,226 @@ def _hr_preferences_view_plan(cr: Any) -> tuple[int, str] | None:
     return plan
 
 
+def _hr_type_plan(cr: Any) -> HrTypePlan | None:
+    cr.execute("SELECT state FROM ir_module_module WHERE name = 'hr'")
+    if cr.fetchone() not in {("installed",), ("to upgrade",)}:
+        return None
+    models = _rows(cr, "SELECT id, model, state FROM ir_model WHERE model IN ('hr.contract.type','hr.employee.type') FOR UPDATE")
+    cr.execute("SELECT to_regclass('hr_contract_type'), to_regclass('hr_employee_type')")
+    tables = cr.fetchone()
+    if not models and tables == (None, None):
+        return None
+    if len(models) != 1 or models[0]["state"] != "base":
+        raise RuntimeError("Ambiguous HR type model transition")
+    source_model = models[0]["model"]
+    completed = source_model == "hr.employee.type"
+    if tables != ((None, "hr_employee_type") if completed else ("hr_contract_type", None)):
+        raise RuntimeError("Mixed HR type model storage")
+    utility = import_module("odoo.upgrade.util")
+    paths = runpy.run_path(str(Path(__file__).with_name("odoo_upgrade_paths.py")))
+    checkout = Path(utility.__file__ or "").resolve().parents[2]
+    if paths["resolve_upgrade_util"]([checkout.parent.parent]) != checkout / "src":
+        raise RuntimeError("Unsupported native HR migration utility")
+    source_table = "hr_employee_type" if completed else "hr_contract_type"
+    source_field = "employee_type_id" if completed else "contract_type_id"
+    other_field = "contract_type_id" if completed else "employee_type_id"
+    unavailable_model = "hr.contract.type" if completed else "hr.employee.type"
+    cr.execute("SELECT id FROM ir_model_fields WHERE relation=%s LIMIT 1", (unavailable_model,))
+    if cr.fetchone() is not None:
+        raise RuntimeError("Mixed HR type relational references")
+    for column, expected in (("id", "int4"), ("name", "jsonb"), ("code", "varchar"), ("sequence", "int4"), ("country_id", "int4")):
+        if utility.column_type(cr, source_table, column) != expected:
+            raise RuntimeError("Unsupported HR type data storage")
+    fields = _rows(
+        cr,
+        "SELECT * FROM ir_model_fields WHERE model IN ('hr.contract.type','hr.employee.type') "
+        "OR (model IN ('hr.job','hr.version','hr.employee') AND name IN ('contract_type_id','employee_type_id')) FOR UPDATE",
+    )
+    relation_fields = [field for field in fields if field["model"] in HR_TYPE_FIELD_OWNERS]
+    cr.execute(
+        "SELECT id FROM ir_model_fields WHERE ttype='many2many' "
+        "AND (model IN ('hr.contract.type','hr.employee.type') OR relation IN ('hr.contract.type','hr.employee.type')) LIMIT 1"
+    )
+    if cr.fetchone() is not None or utility.get_m2m_on(cr, source_table):
+        raise RuntimeError("Unsupported HR type many-to-many storage")
+    cr.execute("SELECT id FROM ir_model_fields WHERE relation=%s", (source_model,))
+    if {row[0] for row in cr.fetchall()} != {field["id"] for field in relation_fields}:
+        raise RuntimeError("Unsupported additional HR type relation fields")
+    if len({(field["model"], field["name"]) for field in fields}) != len(fields):
+        raise RuntimeError("Ambiguous HR type field metadata")
+    if any(field["model"] not in {*HR_TYPE_FIELD_OWNERS, source_model} for field in fields):
+        raise RuntimeError("Mixed HR type field owners")
+    type_fields = {field["name"]: field for field in fields if field["model"] == source_model}
+    for name, kind, relation in (
+        ("id", "integer", None),
+        ("name", "char", None),
+        ("code", "char", None),
+        ("sequence", "integer", None),
+        ("country_id", "many2one", "res.country"),
+    ):
+        field = type_fields.get(name)
+        if field is None or field["ttype"] != kind or field["relation"] != relation or not field.get("store"):
+            raise RuntimeError("Unsupported HR type field identity")
+    if not completed and {"company_id", "country_code", "employees_count", "employee_ids"} & type_fields.keys():
+        raise RuntimeError("Colliding new native HR type fields")
+    owners = _rows(cr, "SELECT id,model FROM ir_model WHERE model IN ('hr.job','hr.version','hr.employee') FOR UPDATE")
+    owner_ids = {owner["model"]: owner["id"] for owner in owners}
+    owner_ids[source_model] = models[0]["id"]
+    if set(owner_ids) != {*HR_TYPE_FIELD_OWNERS, source_model} or any(
+        field["model_id"] != owner_ids[field["model"]] for field in fields
+    ):
+        raise RuntimeError("Rebound HR type field ownership")
+    if {field["model"] for field in relation_fields} != set(HR_TYPE_FIELD_OWNERS) or len(relation_fields) != len(
+        HR_TYPE_FIELD_OWNERS
+    ):
+        raise RuntimeError("Incomplete or colliding HR type field cohort")
+    for field in relation_fields:
+        if field["name"] != source_field or field["ttype"] != "many2one" or field["relation"] != source_model:
+            raise RuntimeError("Mixed HR type field metadata")
+        table = field["model"].replace(".", "_")
+        if not utility.table_exists(cr, table) or utility.column_exists(cr, table, other_field):
+            raise RuntimeError("Colliding HR type field storage")
+        if field["model"] == "hr.employee":
+            if field.get("related") != f"version_id.{source_field}" or field.get("store"):
+                raise RuntimeError("Unsupported delegated HR type field")
+        elif not field.get("store") or field.get("related"):
+            raise RuntimeError("Unsupported stored HR type field")
+        column_type = utility.column_type(cr, table, source_field)
+        if (field.get("store") and column_type is None) or column_type not in {None, "int4"}:
+            raise RuntimeError("Unsupported HR type relation column")
+        if not completed:
+            index_name = import_module("odoo.tools.sql").make_index_name(table, other_field)
+            cr.execute("SELECT to_regclass(%s)", (index_name,))
+            if cr.fetchone()[0] is not None:
+                raise RuntimeError("Colliding HR type field index")
+        alias = _require_source(cr, "hr", f"field_{table}__{source_field}", "ir.model.fields")
+        if alias.record_id != field["id"]:
+            raise RuntimeError("Rebound HR type field alias")
+    model_name = "model_hr_employee_type" if completed else "model_hr_contract_type"
+    if _require_source(cr, "hr", model_name, "ir.model").record_id != models[0]["id"]:
+        raise RuntimeError("Rebound HR type model alias")
+    if not completed:
+        cr.execute("SELECT relname FROM pg_class WHERE relname LIKE %s ESCAPE '\\'", ("%hr\\_employee\\_type%",))
+        if cr.fetchall():
+            raise RuntimeError("Colliding HR type table, sequence or index")
+    fields_by_id = {field["id"]: field for field in fields}
+    aliases = _rows(
+        cr,
+        "SELECT module,name,model,res_id,noupdate FROM ir_model_data "
+        "WHERE (model='ir.model' AND (res_id=%s OR name='model_hr_contract_type')) "
+        "OR (model='ir.model.fields' AND (res_id=ANY(%s) OR name LIKE %s ESCAPE '\\' OR name LIKE %s ESCAPE '\\')) FOR UPDATE",
+        (models[0]["id"], list(fields_by_id), "field\\_hr\\_contract\\_type\\_\\_%", "field\\_hr\\_employee\\_type\\_\\_%"),
+    )
+    for alias in aliases:
+        destination = alias["name"]
+        if alias["model"] == "ir.model" and destination == "model_hr_contract_type":
+            if alias["res_id"] != models[0]["id"]:
+                raise RuntimeError("Rebound HR type model aliases")
+            destination = "model_hr_employee_type"
+        elif alias["model"] == "ir.model.fields":
+            field = fields_by_id.get(alias["res_id"])
+            if field is None or (not completed and destination.startswith("field_hr_employee_type__")):
+                raise RuntimeError("Rebound or mixed HR type field aliases")
+            if field["model"] in HR_TYPE_FIELD_OWNERS:
+                conventional = f"field_{field['model'].replace('.', '_')}__{source_field}"
+                if alias["module"] != "__export__" and (alias["name"] != conventional or alias["noupdate"]):
+                    raise RuntimeError("Preserve functional custom HR type field aliases")
+                if not completed and alias["module"] != "__export__":
+                    destination = conventional.removesuffix(source_field) + other_field
+            elif destination.startswith("field_hr_contract_type__"):
+                destination = destination.replace("field_hr_contract_type__", "field_hr_employee_type__", 1)
+        if completed and destination != alias["name"]:
+            raise RuntimeError("Mixed HR type metadata aliases")
+        if not completed and destination != alias["name"]:
+            if alias["module"] != "hr":
+                raise RuntimeError("Preserve functional custom HR type metadata aliases")
+            if _reference(cr, alias["module"], destination) is not None:
+                raise RuntimeError("Colliding HR type metadata alias")
+    document = ElementTree.parse(HR_TYPE_DATA_FILE).getroot()
+    records = document.findall("./data/record")
+    if (
+        document.tag != "odoo"
+        or document.attrib
+        or not records
+        or any(data.attrib != {"noupdate": "1"} for data in document.findall("data"))
+        or any(record.get("model") != "hr.employee.type" or not record.get("id") for record in records)
+    ):
+        raise RuntimeError("Unsupported native HR type data ownership")
+    native_names = {record.attrib["id"] for record in records}
+    data_aliases = _rows(
+        cr,
+        "SELECT module,name,model,res_id,noupdate FROM ir_model_data "
+        "WHERE model IN ('hr.contract.type','hr.employee.type') "
+        "OR (module='hr' AND name LIKE %s ESCAPE '\\') FOR UPDATE",
+        ("contract\\_type\\_%",),
+    )
+    for alias in data_aliases:
+        if alias["model"] != source_model:
+            raise RuntimeError("Rebound or mixed HR type data aliases")
+        if (
+            not alias["noupdate"]
+            and alias["module"] != "__export__"
+            and (alias["module"] != "hr" or alias["name"] not in native_names)
+        ):
+            raise RuntimeError("Preserve HR type data omitted by native20")
+    cr.execute(
+        utility.format_query(
+            cr,
+            "SELECT d.id FROM ir_model_data d LEFT JOIN {} t ON t.id=d.res_id WHERE d.model=%s AND t.id IS NULL",
+            source_table,
+        ),
+        (source_model,),
+    )
+    if cr.fetchall():
+        raise RuntimeError("Dangling HR type data aliases")
+    employee_type_id = None
+    version_ids = []
+    if utility.column_exists(cr, "hr_version", "employee_type"):
+        cr.execute(
+            utility.format_query(
+                cr, "SELECT id,employee_type,{} FROM hr_version WHERE employee_type IS NOT NULL FOR UPDATE", source_field
+            )
+        )
+        versions = cr.fetchall()
+        if any(category != "employee" for _, category, _ in versions):
+            raise RuntimeError("Preserve legacy HR employment categories before native field removal")
+        version_ids = [identity for identity, _, existing_type in versions if existing_type is None]
+        if version_ids:
+            legacy_fields = _rows(cr, "SELECT * FROM ir_model_fields WHERE model='hr.version' AND name='employee_type' FOR UPDATE")
+            if (
+                utility.column_type(cr, "hr_version", "employee_type") != "varchar"
+                or len(legacy_fields) != 1
+                or legacy_fields[0]["model_id"] != owner_ids["hr.version"]
+                or legacy_fields[0]["ttype"] != "selection"
+                or legacy_fields[0]["state"] != "base"
+                or not legacy_fields[0].get("store")
+                or legacy_fields[0].get("related")
+                or legacy_fields[0].get("relation")
+            ):
+                raise RuntimeError("Unsupported legacy HR Employee classification storage")
+            if sum(record.get("id") == "contract_type_employee" for record in records) != 1:
+                raise RuntimeError("Native HR data does not identify one Employee type")
+            employee_type_id = _require_source(cr, "hr", "contract_type_employee", source_model).record_id
+            cr.execute(utility.format_query(cr, "SELECT id FROM {} WHERE id=%s FOR UPDATE", source_table), (employee_type_id,))
+            if cr.fetchall() != [(employee_type_id,)]:
+                raise RuntimeError("Missing existing HR Employee type")
+    return None if completed and not version_ids else HrTypePlan(None if completed else utility, employee_type_id, version_ids)
+
+
+def _migrate_hr_types(cr: Any, plan: HrTypePlan) -> None:
+    utility = plan.utility
+    if utility is not None:
+        utility.rename_table(cr, "hr_contract_type", "hr_employee_type", remove_constraints=False)
+        utility.rename_model(cr, "hr.contract.type", "hr.employee.type", rename_table=False)
+        for model in HR_TYPE_FIELD_OWNERS:
+            utility.rename_field(cr, model, "contract_type_id", "employee_type_id", skip_inherit="*")
+    if plan.version_ids:
+        cr.execute(
+            "UPDATE hr_version SET employee_type_id=%s WHERE id=ANY(%s) AND employee_type_id IS NULL",
+            (plan.employee_type_id, plan.version_ids),
+        )
+
+
 def migrate(cr: Any, version: str | None) -> None:
     major = (version or "").split(".", 1)[0]
     if major == "20":
@@ -1214,6 +1443,7 @@ def migrate(cr: Any, version: str | None) -> None:
     stock_valuation = _stock_valuation_action_plan(cr)
     calendar_views = _calendar_view_plan(cr)
     hr_preferences = _hr_preferences_view_plan(cr)
+    hr_types = _hr_type_plan(cr)
     hr_org_chart = _hr_org_chart_action_plan(cr)
     hr_moved: dict[str, Reference] = {}
     if hr_org_chart is not None:
@@ -1234,6 +1464,8 @@ def migrate(cr: Any, version: str | None) -> None:
             )
     hr_org_chart_views = _hr_org_chart_view_plan(cr) if hr_org_chart is not None else None
     _admit_mail(cr)
+    if hr_types is not None:
+        _migrate_hr_types(cr, hr_types)
     if hr_preferences is not None:
         record_id, architecture = hr_preferences
         cr.execute("UPDATE ir_ui_view SET arch_db = %s::jsonb WHERE id = %s", (json.dumps({"en_US": architecture}), record_id))

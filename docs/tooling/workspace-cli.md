@@ -843,6 +843,54 @@ Notes
   [stock history source](https://github.com/odoo/odoo/blob/68d580d3d4703e7190055f7040682942d5f1a24f/addons/calendar/views/res_users_views.xml).
   These are admission inputs, never target UI templates. Qualification and
   source bindings are recorded on [Calendar transition #332](https://github.com/cbusillo/odoo-devkit/issues/332).
+  Odoo20 builds retain their selected runtime's exact, unmodified official
+  `odoo/upgrade-util` checkout through the existing external-source fetch and
+  release inventory. Final selection adds that runtime-owned source after
+  tenant artifact inputs, and keeps it in the main source list for local builds.
+  Conflicting environment or artifact declarations refuse before source
+  resolution; exact restatements produce one utility checkout.
+  The checkout stays outside Python's upgrade namespace during ordinary
+  startup, maintenance and Odoo19 upgrades. Only the existing native20
+  upgrade command prepends its `src` to the upgrade paths. Missing, ambiguous
+  or differently pinned sources refuse before starting that command. The
+  runtime support catalog supplies Markdown for both 19 and 20; the Odoo base
+  supplies Docutils. Older runtimes without this source helper keep their
+  existing external-source selection.
+  This follows the upstream [recommended source installation](https://github.com/odoo/upgrade-util#recommended),
+  rather than installing an ambient upgrade package. All upstream common
+  scripts remain present and run in that explicit native20 upgrade: they can
+  discover/enroll modules, clean relation metadata, recompute missing partner
+  values with commits and post migration announcements on the isolated copy.
+  Existing credential, outbound-mail, native registry and preservation
+  barriers still apply; the source checkout is not a migration pass.
+  The same global preparation admits the HR type model, fields, storage,
+  aliases and prospective target names before any shared effect. Official
+  helpers rename `hr.contract.type` to `hr.employee.type` and the three HR
+  job/version/employee `contract_type_id` fields to `employee_type_id` while
+  retaining business rows, IDs, translations, audit, incoming links and
+  history. Table renaming explicitly retains custom constraints. Existing
+  type values need not be stock or unused, and protected old-only type aliases
+  survive native data cleanup. Unprotected non-export type aliases must be
+  owned by HR and still declared in the selected target data. Conflicting
+  targets, mixed state, rebound ownership, additional relation fields,
+  many-to-many storage and functional field aliases that upstream would
+  replace refuse before effects. Export aliases retain their
+  supported native semantics; generated conventional aliases follow native
+  bookkeeping. Preparation can replay its complete handoff. Native primary
+  HR views keep their historical architecture until their own XML reload;
+  that writes the target architecture before validation. The bridge performs
+  no additional architecture rewrite beyond the upstream reference/domain
+  adapters, and native validation remains authoritative.
+  The old `hr.version.employee_type` selection is a separate concept, not a
+  field rename or a label-based mapping to the new relation. The recorded
+  [Employee decision](https://github.com/cbusillo/odoo-devkit/issues/369#issuecomment-6604407393)
+  fills only empty version links whose old classification is `employee`,
+  using the existing `hr.contract_type_employee` identity. Existing nonempty
+  links and their audit/history remain unchanged. Missing or null old
+  classifications get no backfill; other populated categories refuse before
+  any shared effect. Backfill requires supported selection storage and an
+  existing Employee XMLID/record declared by the selected target data, and
+  preparation can replay without replacing a filled link.
   An installed HR with its stock19 `hr.res_users_view_form_preferences` stages
   only that child's architecture from the selected native20 HR XML before any
   native parent-view write. Native combination validates same-module descendants

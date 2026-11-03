@@ -128,6 +128,7 @@ class CoreReferenceFixture(unittest.TestCase):
         self.addCleanup(patch.stopall)
         patch_attr(bridge, "STATE_DATA_FILE", target).start()
         patch_attr(bridge, "_admit_mail", lambda _cr: None).start()
+        patch_attr(bridge, "_hr_type_plan", lambda _cr: None).start()
 
     def xmlid(self, module: str, name: str, model: str, record: int, noupdate: bool) -> None:
         self.connection.execute(
@@ -152,6 +153,15 @@ class CoreReferenceFixture(unittest.TestCase):
 
 
 class CoreReferenceTests(CoreReferenceFixture):
+    def test_hr_type_refusal_precedes_every_bridge_effect(self) -> None:
+        before = self.snapshot()
+        with (
+            patch_attr(bridge, "_hr_type_plan", Mock(side_effect=RuntimeError("unsupported HR type cohort"))),
+            self.assertRaises(RuntimeError),
+        ):
+            self.apply()
+        self.assertEqual(self.snapshot(), before)
+
     def test_hr_preferences_require_qualification_before_every_bridge_effect(self) -> None:
         self.connection.execute("INSERT INTO ir_module_module VALUES ('hr','installed','19.0.1.0')")
         self.xmlid("hr", "res_users_view_form_preferences", "ir.ui.view", 100, False)

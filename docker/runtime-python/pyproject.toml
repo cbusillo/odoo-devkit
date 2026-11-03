@@ -4,6 +4,7 @@ version = "0.0.0"
 requires-python = ">=3.13"
 dependencies = [
     "hatchling==1.32.4",
+    "markdown",
     "passlib>=1.7.4",
     "pydantic>=2.14.1",
     "pydantic-settings>=2.16.0",
