@@ -28,6 +28,7 @@ import psycopg2
 from odoo_addon_paths import expand_addon_paths
 from odoo_admin_password import RESTORED_LOGINS_PARAMETER, restored_logins_preserved, validate_admin_password
 from odoo_release_plan import load_plan, resolve_plan, verify_image_declaration
+from odoo_upgrade_paths import resolve_upgrade_util
 from odoo_website_bootstrap import load_instance_override_payload, require_launchplane_payloads_if_configured
 from odoo_website_settings import PRODUCTION_INSTANCE_NAMES
 from passlib.context import CryptContext
@@ -3052,6 +3053,13 @@ with registry.cursor() as cr:
                 continue
             scripts_paths.append(candidate)
 
+        if self._is_native_20_upgrade():
+            try:
+                upgrade_util = resolve_upgrade_util(addons_paths)
+            except ValueError as error:
+                raise OdooRestorerError(str(error)) from error
+            scripts_paths = [upgrade_util, Path(__file__).with_name("nativeupgrade"), *scripts_paths]
+
         if not scripts_paths:
             raise OdooRestorerError(
                 "OpenUpgrade scripts not found. Ensure openupgrade_scripts is in the addons path "
@@ -3117,8 +3125,6 @@ with registry.cursor() as cr:
         target_version = self._openupgrade_target_version()
         native_20 = self._is_native_20_upgrade()
         scripts_paths, _ = self._resolve_openupgrade_assets(require_framework=not native_20)
-        if native_20:
-            scripts_paths = [Path(__file__).with_name("nativeupgrade"), *scripts_paths]
         if target_version:
             self.os_env["OPENUPGRADE_TARGET_VERSION"] = target_version
 

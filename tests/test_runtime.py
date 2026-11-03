@@ -2794,6 +2794,48 @@ base_devtools_image = "ghcr.io/example/manifest:19.0-devtools"
             ),
         )
 
+    def test_native_upgrade_source_follows_resolved_build_series_and_artifact_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tenant = root / "tenant"
+            runtime = root / "runtime"
+            tenant.mkdir()
+            self._write_runtime_repo(runtime)
+            manifest = load_workspace_manifest(
+                self._write_manifest(tenant_repo_path=tenant, runtime_repo_path=runtime, instance_name="testing", build_inputs=True)
+            )
+            self._configure_publish_runtime_payload(odoo_version="19.0")
+            for series, included in (("19.0", False), ("20.0", True)):
+                with self.subTest(series=series):
+                    selected = replace(manifest, build=replace(manifest.build, odoo_version=series))
+                    context = local_runtime.load_runtime_context(
+                        manifest=selected,
+                        runtime_repo_path=runtime,
+                        require_local_instance=False,
+                        enforce_required_environment=False,
+                    )
+                    values = local_runtime.build_runtime_env_values(
+                        runtime_context=context, include_selection_sources=False, required_environment_keys=()
+                    )
+                    entries = local_runtime.collect_artifact_source_entries(runtime_values=values, shared_addons_source=None)
+                    repository, ref = local_runtime.UPGRADE_UTIL_SOURCE.split("@")
+                    self.assertEqual({"repository": repository, "ref": ref} in entries, included)
+                    if included:
+                        conflicting = replace(
+                            context,
+                            environment=replace(
+                                context.environment,
+                                merged_values={
+                                    **context.environment.merged_values,
+                                    "ODOO_ADDON_REPOSITORIES": repository + "@" + "0" * 40,
+                                },
+                            ),
+                        )
+                        with self.assertRaises(local_runtime.RuntimeCommandError):
+                            local_runtime.build_runtime_env_values(
+                                runtime_context=conflicting, include_selection_sources=False, required_environment_keys=()
+                            )
+
     def test_manifest_repository_must_be_an_owner_name_slug(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temp_root = Path(temporary_directory)

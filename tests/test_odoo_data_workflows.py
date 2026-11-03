@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from pydantic import SecretStr, ValidationError
 
-from odoo_devkit.local_runtime import load_environment_from_explicit_payload
+from odoo_devkit.local_runtime import UPGRADE_UTIL_SOURCE, load_environment_from_explicit_payload
 
 
 def _load_data_workflows_module() -> types.ModuleType:
@@ -836,6 +836,12 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "openupgrade_scripts_custom" / "scripts").mkdir(parents=True)
+            checkout = root / "_checkouts" / "official-upgrade"
+            (checkout / "src/util").mkdir(parents=True)
+            (checkout / "src/util/__init__.py").write_text("")
+            (checkout / "src/base/0.0.0").mkdir(parents=True)
+            (checkout / "src/base/0.0.0/pre-common.py").write_text("")
+            checkout.with_suffix(".odoo-source").write_text(UPGRADE_UTIL_SOURCE)
             with (
                 patch.object(runner, "_resolve_addons_paths", return_value=(root,)),
                 patch.object(runner, "run_command") as run_command,
@@ -844,8 +850,10 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
                 run_command.assert_called_once()
                 command = shlex.split(run_command.call_args.args[0])
                 selected_roots = command[command.index("--upgrade-path") + 1].split(",")
+                self.assertEqual(Path(selected_roots[0]), (checkout / "src").resolve())
                 selected_modules = {module for path in selected_roots for module in runner._collect_openupgrade_modules(Path(path))}
                 self.assertIn("mail", selected_modules)
+                self.assertIn("base", selected_modules)
                 settings.openupgrade_target_version = "19.0"
                 with self.assertRaises(odoo_data_workflows.OdooRestorerError):
                     runner.run_openupgrade()

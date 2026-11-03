@@ -19,6 +19,7 @@ packages = ["odoo_devkit"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "docker/scripts/odoo_addon_paths.py" = "odoo_devkit/addon_paths.py"
+"docker/scripts/odoo_upgrade_paths.py" = "odoo_devkit/odoo_upgrade_paths.py"
 
 [project.scripts]
 platform = "odoo_devkit.cli:main"

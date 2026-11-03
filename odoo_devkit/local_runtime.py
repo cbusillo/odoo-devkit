@@ -54,6 +54,7 @@ _addon_path_script = Path(__file__).resolve().parents[1] / "docker/scripts/odoo_
 if not _addon_path_script.is_file():
     _addon_path_script = Path(__file__).with_name("addon_paths.py")
 expand_addon_paths = cast(_ExpandAddonPaths, runpy.run_path(str(_addon_path_script))["expand_addon_paths"])
+UPGRADE_UTIL_SOURCE = str(runpy.run_path(str(_addon_path_script.with_name("odoo_upgrade_paths.py")))["UPGRADE_UTIL_SOURCE"])
 
 ScalarValue = str | int | float | bool
 ScalarMap = dict[str, ScalarValue]
@@ -2292,6 +2293,16 @@ def build_runtime_env_values(
         odoo_overrides=runtime_selection.effective_odoo_overrides,
         website_bootstrap=runtime_selection.website_bootstrap,
     )
+    if runtime_values.get("ODOO_VERSION", "").split(".", 1)[0] == "20":
+        repositories = list(parse_csv_values(runtime_values.get("ODOO_ADDON_REPOSITORIES", "")))
+        configured = next(
+            (repository for repository in repositories if repository_spec_identity(repository) == "odoo/upgrade-util"), None
+        )
+        if configured is not None and configured != UPGRADE_UTIL_SOURCE:
+            raise RuntimeCommandError("Odoo 20 requires the shared exact official Odoo upgrade source")
+        if configured is None:
+            repositories.append(UPGRADE_UTIL_SOURCE)
+        runtime_values["ODOO_ADDON_REPOSITORIES"] = ",".join(repositories)
     ensure_required_environment_mapping(
         required_keys=stack_definition.required_env_keys if required_environment_keys is None else required_environment_keys,
         environment_values=runtime_values,
