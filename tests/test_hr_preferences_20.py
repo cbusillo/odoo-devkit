@@ -176,8 +176,15 @@ class HrPreferencesTests(CoreReferenceFixture):
     def test_comment_and_attribute_changes_are_not_normalized_into_stock(self) -> None:
         identity = self.identities[f"hr.{self.child}"]
         arch = self.helpers["_render_architecture"](self.stock[f"hr.{self.child}"]["arch"])
-        for changed in (arch.replace("Must be replaced", "Custom note"), arch.replace('position="attributes"', 'position="after"')):
-            self.assertNotEqual(changed, arch)
+        for attribute in (False, True):
+            document = ElementTree.fromstring(
+                arch, parser=ElementTree.XMLParser(target=ElementTree.TreeBuilder(insert_comments=True))
+            )
+            if attribute:
+                document.set("custom_attribute", "preserve")
+            else:
+                document.append(ElementTree.Comment("customized"))
+            changed = ElementTree.tostring(document, encoding="unicode")
             self.assert_refused("UPDATE ir_ui_view SET arch_db=? WHERE id=?", (json.dumps({"en_US": changed}), identity))
 
     def test_changed_native_binding_or_primary_refuses_and_late_mail_failure_keeps_all_rows(self) -> None:

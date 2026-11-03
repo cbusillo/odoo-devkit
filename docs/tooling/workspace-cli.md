@@ -848,11 +848,11 @@ Notes
   native parent-view write. Native combination validates same-module descendants
   when their parent reloads; leaving the old email, phone and title selectors in
   place would fail before the child's own XML record reloads. The qualified HR
-  primary architecture is identical in19and20 and stays unchanged. Stock current
+  primary architecture is identical in 19 and 20 and stays unchanged. Stock current
   and previous architectures retain comments, attributes and nonblank text in
   the shared comparison. IDs, aliases, incoming references, users/preferences,
   roles, attribution and every other column remain unchanged during preparation.
-  The two surviving stock MailBot descendants are checked against their own19
+  The two surviving stock MailBot descendants are checked against their own 19
   source and stay untouched; the known old Homeworking descendant also stays
   untouched, with its separate module disposition left to the migration owner.
   Unknown descendants, custom/translated/restricted/protected/rebound state,
@@ -865,7 +865,7 @@ Notes
   obsolete stock19 `arch_prev` stays in that column. Original source and backup
   custody remain separate. The exact public admission inputs under
   `docker/scripts/legacy/hr/` and `legacy/mail_bot_hr/` come from
-  [official19](https://github.com/odoo/odoo/tree/a789a218fff7aeb5ce97be2b170333a026804f63/addons).
+  [official 19](https://github.com/odoo/odoo/tree/a789a218fff7aeb5ce97be2b170333a026804f63/addons).
   Every effective saved user privacy must equal the global native fallback
   (`public` when the parameter is absent); divergent preferences or ambiguous
   settings owners refuse before effects. User settings remain unchanged. This
