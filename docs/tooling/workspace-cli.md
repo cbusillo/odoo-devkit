@@ -661,7 +661,15 @@ Notes
   component; it requires no fresh database capture. Source and receipt metadata
   remain audit evidence, not extra runtime authentication by hash shape.
   This is source and original-artifact evidence, not an invented independent
-  database reference. Unknown fields, translations, owners, configured providers,
+  database reference. Read-only before observers use `payment_20.observe(cursor)`
+  to collect the same snapshot using only SELECT statements, without an Odoo
+  import or a table lock. For a consistent snapshot across those queries, the
+  caller supplies a `REPEATABLE READ, READ ONLY` transaction. Reuse
+  `source_witness` and `admit` to qualify it;
+  observation alone grants no retirement authority. Native `capture` takes its
+  table lock before calling that same collector, and `retire` still uses capture
+  and the incoming-reference checks before effects.
+  Unknown fields, translations, owners, configured providers,
   payment history, images or outside references refuse before deletion.
   Admission checks the whole method, alias and field-attachment cohorts,
   including incoming links to the retiring aliases and attachments. Only exact

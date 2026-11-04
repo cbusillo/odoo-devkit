@@ -198,17 +198,14 @@ def _rows(cr: Any, query: str, parameters: tuple = ()) -> list[Any]:
     return cr.fetchall()
 
 
-def _logical_links(cr: Any, table: str, column: str, model: str, methods: list[int]) -> dict[int, list[str]]:
-    sql = import_module("odoo.tools").SQL
-
-    cr.execute(
-        sql(
-            "SELECT payment_method_id, %s FROM %s ORDER BY payment_method_id, %s",
-            sql.identifier(column),
-            sql.identifier(table),
-            sql.identifier(column),
-        )
-    )
+def _logical_links(cr: Any, table: str, model: str, methods: list[int]) -> dict[int, list[str]]:
+    queries = {
+        "payment_method_res_country_rel": "SELECT payment_method_id,res_country_id FROM payment_method_res_country_rel "
+        "ORDER BY payment_method_id,res_country_id",
+        "payment_method_res_currency_rel": "SELECT payment_method_id,res_currency_id FROM payment_method_res_currency_rel "
+        "ORDER BY payment_method_id,res_currency_id",
+    }
+    cr.execute(queries[table])
     pairs = cr.fetchall()
     aliases = _rows(
         cr,
@@ -234,6 +231,10 @@ def capture(cr: Any) -> dict[str, Any]:
         "payment_method_payment_provider_rel,payment_method_res_country_rel,payment_method_res_currency_rel "
         "IN SHARE ROW EXCLUSIVE MODE"
     )
+    return observe(cr)
+
+
+def observe(cr: Any) -> dict[str, Any]:
     if _rows(
         cr,
         "SELECT 1 FROM pg_trigger WHERE tgrelid=ANY(%s::regclass[]) AND NOT tgisinternal LIMIT 1",
@@ -295,8 +296,8 @@ def capture(cr: Any) -> dict[str, Any]:
             cr, "SELECT payment_provider_id,payment_method_id FROM payment_method_payment_provider_rel ORDER BY 1,2"
         ),
         **{
-            key: _logical_links(cr, table, column, model, [row["id"] for row in methods])
-            for key, (table, column, model) in RELATIONS.items()
+            key: _logical_links(cr, table, model, [row["id"] for row in methods])
+            for key, (table, _column, model) in RELATIONS.items()
             if key != "providers"
         },
     }
