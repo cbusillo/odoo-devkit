@@ -839,7 +839,18 @@ def _check_encoded_relations(cr: Any, table: str, column: str, targets: dict[str
             raise RuntimeError(f"Referenced core transition row: {table}.{column}")
 
 
-def _check_references(cr: Any, ids: dict[str, list[int]], internal_relations: set[tuple[str, str, str]]) -> None:
+def _check_references(
+    cr: Any,
+    ids: dict[str, list[int]],
+    internal_relations: set[tuple[str, str, str]],
+    *,
+    indirect_rows: dict[tuple[str, str, str], list[int]] | None = None,
+) -> None:
+    indirect_rows = indirect_rows or {}
+    for (source, _column, target), rows in indirect_rows.items():
+        if source not in ids or target not in ids or not set(rows).issubset(ids[source]):
+            raise RuntimeError("Internal reference rows must belong to retiring source and target cohorts")
+
     model_targets = {table.replace("_", "."): records for table, records in ids.items()}
     models = list(model_targets)
     cr.execute(
@@ -967,20 +978,23 @@ def _check_references(cr: Any, ids: dict[str, list[int]], internal_relations: se
             if column not in indirect_columns:
                 continue
             for model, model_id in model_ids.items():
-                _identified(
-                    cr,
+                query = (
                     "SELECT 1 FROM %s record WHERE %s = ANY(%s) AND "
                     "(EXISTS (SELECT 1 FROM jsonb_each_text(to_jsonb(record)) value WHERE value.value = %s) "
                     "OR EXISTS (SELECT 1 FROM jsonb_each_text(to_jsonb(record)) value "
-                    "WHERE value.key = ANY(%s) AND value.value = %s)) LIMIT 1",
-                    (table, column),
-                    (
-                        [str(record) for record in ids[model.replace(".", "_")]] if text_storage else ids[model.replace(".", "_")],
-                        model,
-                        list(model_columns.get(table, ())),
-                        str(model_id),
-                    ),
+                    "WHERE value.key = ANY(%s) AND value.value = %s))"
                 )
+                parameters = (
+                    [str(record) for record in ids[model.replace(".", "_")]] if text_storage else ids[model.replace(".", "_")],
+                    model,
+                    list(model_columns.get(table, ())),
+                    str(model_id),
+                )
+                allowed = indirect_rows.get((table, column, model.replace(".", "_")))
+                if allowed:
+                    query += " AND NOT (record.id = ANY(%s))"
+                    parameters += (allowed,)
+                _identified(cr, query + " LIMIT 1", (table, column), parameters)
                 if cr.fetchone():
                     raise RuntimeError(f"Indirectly referenced core transition row: {table}.{column}")
     cr.execute("SELECT 1 FROM pg_trigger WHERE tgrelid = ANY(%s::regclass[]) AND NOT tgisinternal LIMIT 1", (list(ids),))
