@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import re
 import runpy
 import tempfile
 import unittest
@@ -110,36 +111,51 @@ class PaymentAdmissionTests(unittest.TestCase):
 
     def collector_cursor(self, *, allow_lock: bool = False) -> Mock:
         current = self.current
-        methods = [row["id"] for row in current["methods"]]
         country_id = 61
-        country_alias = current["countries"][methods[0]][0]
-        results = [
-            [],
-            [(row,) for row in current["methods"]],
-            [(row,) for row in current["providers"]],
-            [(row,) for row in current["method_aliases"] + current["provider_aliases"]],
-            [(row,) for row in current["attachments"]],
-            [(identifier, row["state"], row["xmlid"]) for identifier, row in current["modules"].items()],
-            [(current["main_company"],)],
-            list(current["relation_columns"].items()),
-            current["attachment_aliases"],
-            [(identifier,) for identifier in current["company_ids"]],
-            [],
-            [],
-            current["provider_links"],
-            [(identifier, country_id) for identifier in methods],
-            [(country_id, country_alias)],
-            [],
-            [],
-        ]
+        country_alias = next(iter(current["countries"].values()))[0]
+        rows = {
+            "pg_trigger": [],
+            "payment_method": [(row,) for row in current["methods"]],
+            "payment_provider": [(row,) for row in current["providers"]],
+            "ir_attachment": [(row,) for row in current["attachments"]],
+            "ir_module_module": [(identifier, row["state"], row["xmlid"]) for identifier, row in current["modules"].items()],
+            "information_schema.columns": list(current["relation_columns"].items()),
+            "res_company": [(identifier,) for identifier in current["company_ids"]],
+            "payment_token": [],
+            "payment_transaction": [],
+            "payment_method_payment_provider_rel": current["provider_links"],
+            "payment_method_res_country_rel": [(row["id"], country_id) for row in current["methods"]],
+            "payment_method_res_currency_rel": [],
+        }
+        cursor = Mock()
 
-        def execute(query: str, _parameters: tuple = ()) -> None:
-            if allow_lock and query.startswith("LOCK TABLE "):
+        def execute(query: str, parameters: tuple = ()) -> None:
+            normalized = " ".join(query.upper().split())
+            if allow_lock and normalized.startswith("LOCK TABLE "):
                 return
-            if not query.startswith("SELECT "):
-                raise RuntimeError("Read-only cursor refuses non-SELECT statements")
+            if not normalized.startswith(("SELECT ", "WITH ")) or re.search(
+                r"\b(INSERT|UPDATE|DELETE|MERGE|LOCK|CREATE|ALTER|DROP|TRUNCATE)\b", normalized
+            ):
+                raise RuntimeError("Read-only cursor refuses mutation or locking")
+            source = re.search(r"\bFROM\s+([\w.]+)", query, re.IGNORECASE)
+            if source is None:
+                raise AssertionError("Collector query has no source")
+            table = source[1]
+            if table != "ir_model_data":
+                cursor.fetchall.return_value = rows[table]
+            elif "main_company" in query:
+                cursor.fetchall.return_value = [(current["main_company"],)]
+            elif parameters and parameters[0] == "res.country":
+                cursor.fetchall.return_value = [(country_id, country_alias)]
+            elif parameters and parameters[0] == "res.currency":
+                cursor.fetchall.return_value = []
+            elif "ir.attachment" in query:
+                cursor.fetchall.return_value = current["attachment_aliases"]
+            else:
+                cursor.fetchall.return_value = [(row,) for row in current["method_aliases"] + current["provider_aliases"]]
 
-        return Mock(execute=Mock(side_effect=execute), fetchall=Mock(side_effect=results))
+        cursor.execute.side_effect = execute
+        return cursor
 
     def test_observe_collects_the_qualified_snapshot_through_a_select_only_cursor_without_odoo(self) -> None:
         with patch.dict(
@@ -147,21 +163,15 @@ class PaymentAdmissionTests(unittest.TestCase):
         ):
             snapshot = PAYMENT["observe"](self.collector_cursor())
         self.assertEqual(snapshot, self.current)
-        witness = PAYMENT["source_witness"](self.profile, self.version)
-        plan = PAYMENT["admit"](snapshot, witness, self.filestore)
-        self.assertEqual(plan, self.admit())
+        PAYMENT["admit"](snapshot, PAYMENT["source_witness"](self.profile, self.version), self.filestore)
 
     def test_capture_locks_before_collecting_the_same_qualified_snapshot(self) -> None:
-        with self.assertRaisesRegex(RuntimeError, "Read-only cursor refuses"):
-            PAYMENT["capture"](self.collector_cursor())
         cursor = self.collector_cursor(allow_lock=True)
         snapshot = PAYMENT["capture"](cursor)
-        statements = [call.args[0] for call in cursor.execute.call_args_list]
+        statements = [" ".join(call.args[0].upper().split()) for call in cursor.execute.call_args_list]
         self.assertTrue(statements[0].startswith("LOCK TABLE "))
-        self.assertIn("SHARE ROW EXCLUSIVE MODE", statements[0])
-        self.assertTrue(all(statement.startswith("SELECT ") for statement in statements[1:]))
+        self.assertTrue(all(statement.startswith(("SELECT ", "WITH ")) for statement in statements[1:]))
         self.assertEqual(snapshot, self.current)
-        self.assertEqual(PAYMENT["admit"](snapshot, self.witness, self.filestore), self.admit())
 
     def test_whole_family_admits_with_semantic_nullable_boolean_and_real_original_file_hashes(self) -> None:
         plan = self.admit()

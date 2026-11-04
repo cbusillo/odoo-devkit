@@ -663,7 +663,9 @@ Notes
   This is source and original-artifact evidence, not an invented independent
   database reference. Read-only before observers use `payment_20.observe(cursor)`
   to collect the same snapshot using only SELECT statements, without an Odoo
-  import or a table lock. Reuse `source_witness` and `admit` to qualify it;
+  import or a table lock. For a consistent snapshot across those queries, the
+  caller supplies a `REPEATABLE READ, READ ONLY` transaction. Reuse
+  `source_witness` and `admit` to qualify it;
   observation alone grants no retirement authority. Native `capture` takes its
   table lock before calling that same collector, and `retire` still uses capture
   and the incoming-reference checks before effects.
