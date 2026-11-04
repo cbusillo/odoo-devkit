@@ -21,26 +21,30 @@ class PaymentAdmissionTests(unittest.TestCase):
         self.version = "19.0.source"
         self.witness: dict[str, Any] = {
             "source_version": self.version,
-            "source_commit": hashlib.sha1(b"public source commit").hexdigest(),
-            "source_files": {"public.py": hashlib.sha256(b"public definitions").hexdigest()},
-            "asset_qualification": {
-                "public_source_receipt_sha256": hashlib.sha256(b"public raster proof").hexdigest(),
-                "original_representation_receipt_sha256": hashlib.sha256(b"qualified original representation").hexdigest(),
-            },
             "attachment_defaults": {"public": False, "url": None, "access_token": None},
             "methods": {},
             "providers": {"payment.provider_fixture": {"module": "base.module_fixture", "methods": []}},
         }
+        company_id = 31
         self.current: dict[str, Any] = {
             "methods": [],
-            "providers": [],
+            "providers": [
+                {
+                    "id": 41,
+                    "company_id": company_id,
+                    "module_id": 51,
+                    "code": "none",
+                    "state": "disabled",
+                    "retained_message": "Retain all provider configuration",
+                }
+            ],
             "method_aliases": [],
-            "provider_aliases": [],
+            "provider_aliases": [self.alias(81, 41, "provider_fixture", "payment.provider")],
             "attachments": [],
             "attachment_aliases": [],
-            "modules": {},
-            "main_company": 31,
-            "company_ids": [31],
+            "modules": {51: {"xmlid": "base.module_fixture", "state": "uninstalled"}},
+            "main_company": company_id,
+            "company_ids": [company_id],
             "tokens": False,
             "transactions": False,
             "provider_links": [],
@@ -50,18 +54,6 @@ class PaymentAdmissionTests(unittest.TestCase):
                 table: sorted(("payment_method_id", column)) for table, column, _model in PAYMENT["RELATIONS"].values()
             },
         }
-        self.current["providers"] = [
-            {
-                "id": 41,
-                "company_id": self.current["main_company"],
-                "module_id": 51,
-                "code": "none",
-                "state": "disabled",
-                "retained_message": "Retain all provider configuration",
-            }
-        ]
-        self.current["provider_aliases"] = [self.alias(81, 41, "provider_fixture", "payment.provider")]
-        self.current["modules"] = {51: {"xmlid": "base.module_fixture", "state": "uninstalled"}}
         for index, alias in enumerate(("payment.primary_fixture", "payment.brand_fixture"), 1):
             identity = 100 + index
             parent = None if index == 1 else self.current["methods"][0]["id"]
@@ -88,7 +80,7 @@ class PaymentAdmissionTests(unittest.TestCase):
                 self.current["attachments"].append(
                     {
                         "id": identity * 10 + offset,
-                        "res_model": "payment.method",
+                        "res_model": self.current["method_aliases"][-1]["model"],
                         "res_id": identity,
                         "res_field": field,
                         "name": field,
@@ -156,7 +148,7 @@ class PaymentAdmissionTests(unittest.TestCase):
             "extra_company": lambda current: current["company_ids"].append(999),
             "alias_protection": lambda current: current["method_aliases"][0].update(noupdate=False),
             "alias_material": lambda current: current["method_aliases"][0].update(custom_value="Keep this alias metadata"),
-            "coalias": lambda current: current["method_aliases"].append(dict(current["method_aliases"][0], id=999)),
+            "additional_alias": lambda current: current["method_aliases"].append(dict(current["method_aliases"][0], id=999)),
             "asset_alias": lambda current: current["attachment_aliases"].append((999,)),
             "asset_company": lambda current: current["attachments"][0].update(company_id=None),
             "asset_metadata": lambda current: current["attachments"][0].update(access_token="keep"),

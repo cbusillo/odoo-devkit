@@ -7,7 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 AUDIT = {"create_uid", "create_date", "write_uid", "write_date"}
 IMAGE_FIELDS = {"image", "image_payment_form"}
@@ -25,8 +25,12 @@ class Retirement:
     aliases: list[int]
 
 
-def _fail(subject: str) -> None:
-    raise RuntimeError(f"Unqualified stock payment retirement: {subject}")
+def _retirement_error(subject: str) -> RuntimeError:
+    return RuntimeError(f"Unqualified stock payment retirement: {subject}")
+
+
+def _fail(subject: str) -> NoReturn:
+    raise _retirement_error(subject)
 
 
 def _semantic_values(values: dict[str, Any], expected: dict[str, Any]) -> dict[str, Any]:
@@ -45,7 +49,7 @@ def _semantic_values(values: dict[str, Any], expected: dict[str, Any]) -> dict[s
 def source_witness(profile: dict[str, Any], version: str) -> dict[str, Any]:
     witness = profile.get("payment")
     if not isinstance(witness, dict):
-        _fail("missing public source witness")
+        raise _retirement_error("missing public source witness")
     if witness.get("source_version") != version or version.split(".", 1)[0] != "19":
         _fail("public source version")
     for family in ("methods", "providers"):
@@ -140,7 +144,7 @@ def admit(snapshot: dict[str, Any], witness: dict[str, Any], filestore: Path) ->
         parent = values["primary_payment_method_id"]
         if parent is not None and parent not in methods:
             _fail("outside brand parent")
-        values["primary_payment_method_id"] = methods.get(parent)
+        values["primary_payment_method_id"] = None if parent is None else methods[parent]
         values["supported_country_ids"] = snapshot["countries"][row["id"]]
         values["supported_currency_ids"] = snapshot["currencies"][row["id"]]
         if _semantic_values(values, expected) != expected:
@@ -195,14 +199,14 @@ def _rows(cr: Any, query: str, parameters: tuple = ()) -> list[Any]:
 
 
 def _logical_links(cr: Any, table: str, column: str, model: str, methods: list[int]) -> dict[int, list[str]]:
-    SQL = import_module("odoo.tools").SQL
+    sql = import_module("odoo.tools").SQL
 
     cr.execute(
-        SQL(
+        sql(
             "SELECT payment_method_id, %s FROM %s ORDER BY payment_method_id, %s",
-            SQL.identifier(column),
-            SQL.identifier(table),
-            SQL.identifier(column),
+            sql.identifier(column),
+            sql.identifier(table),
+            sql.identifier(column),
         )
     )
     pairs = cr.fetchall()
@@ -299,9 +303,9 @@ def capture(cr: Any) -> dict[str, Any]:
 
 
 def _delete_exact(cr: Any, table: str, identifiers: list[int]) -> None:
-    SQL = import_module("odoo.tools").SQL
+    sql = import_module("odoo.tools").SQL
 
-    cr.execute(SQL("DELETE FROM %s WHERE id=ANY(%s) RETURNING id", SQL.identifier(table), identifiers))
+    cr.execute(sql("DELETE FROM %s WHERE id=ANY(%s) RETURNING id", sql.identifier(table), identifiers))
     if sorted(row[0] for row in cr.fetchall()) != identifiers:
         _fail("retirement identity changed")
 
@@ -315,7 +319,9 @@ def retire(cr: Any, profile: dict[str, Any], version: str, filestore: Path, chec
         ("ir_attachment", "res_id", "payment_method"): plan.attachments,
         ("ir_model_data", "res_id", "payment_method"): plan.aliases,
     }
-    internal_relations = {(table, "payment_method_id", "payment_method") for table, _column, _model in RELATIONS.values()}
+    internal_relations: set[tuple[str, str, str]] = {
+        (table, "payment_method_id", "payment_method") for table, _column, _model in RELATIONS.values()
+    }
     internal_relations.add(("payment_method", "primary_payment_method_id", "payment_method"))
     check_references(cr, targets, internal_relations, indirect_rows=indirect_rows)
     for table in ("ir_attachment", "ir_model_data", "payment_method"):
