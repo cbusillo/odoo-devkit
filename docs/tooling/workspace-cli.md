@@ -649,6 +649,24 @@ Notes
   The existing `CM_WEBSITE_MAIL_REFERENCE` and
   `CM_WEBSITE_MAIL_REFERENCE_SHA256` inputs remain the reference contract for
   shared consumers. A missing or changed artifact refuses before effects.
+  The version-qualified Payment pre-stage uses a separately qualified `payment`
+  witness in that same authenticated profile. It supports only the obsolete
+  stock global-method family with disabled `none` providers whose connector
+  modules remain uninstalled. The custodian binds material values and links to
+  exact public native source, and qualifies each original image representation
+  against native stock output before recording its immutable byte digests.
+  This is source and original-artifact evidence, not an invented independent
+  database reference. Unknown fields, translations, owners, configured providers,
+  payment history, images or outside references refuse before deletion.
+  Admission checks the whole method, alias and field-attachment cohorts,
+  including incoming links to the retiring aliases and attachments. Only exact
+  admitted internal edges are allowed; other reference protections still apply.
+  The pre-stage retires those database records before Payment initializes its
+  required provider ownership. Provider records, configuration and every file
+  remain unchanged. Native provider addons own any later scoped methods; the
+  bridge creates no default provider or replacement catalog. Final readback must
+  prove the selected record fates, surviving provider settings and native
+  constraints; a completed registry alone does not establish preservation.
   A source custodian can use `qualify_source_family(profile, source_manifest,
   manifest_sha256, automation_source)` to add the one stock Base Automation
   extension without changing the independent reference. The separate immutable

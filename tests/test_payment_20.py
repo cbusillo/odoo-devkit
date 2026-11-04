@@ -1,0 +1,257 @@
+from __future__ import annotations
+
+import copy
+import hashlib
+import runpy
+import tempfile
+import unittest
+from contextlib import nullcontext
+from pathlib import Path
+from typing import Any
+from unittest.mock import Mock, patch
+
+SCRIPTS = Path(__file__).resolve().parents[1] / "docker/scripts"
+PAYMENT = runpy.run_path(str(SCRIPTS / "payment_20.py"))
+
+
+class PaymentAdmissionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.filestore = Path(directory.name)
+        self.version = "19.0.source"
+        self.witness: dict[str, Any] = {
+            "source_version": self.version,
+            "source_commit": hashlib.sha1(b"public source commit").hexdigest(),
+            "source_files": {"public.py": hashlib.sha256(b"public definitions").hexdigest()},
+            "asset_qualification": {
+                "public_source_receipt_sha256": hashlib.sha256(b"public raster proof").hexdigest(),
+                "original_representation_receipt_sha256": hashlib.sha256(b"qualified original representation").hexdigest(),
+            },
+            "attachment_defaults": {"public": False, "url": None, "access_token": None},
+            "methods": {},
+            "providers": {"payment.provider_fixture": {"module": "base.module_fixture", "methods": []}},
+        }
+        self.current: dict[str, Any] = {
+            "methods": [],
+            "providers": [],
+            "method_aliases": [],
+            "provider_aliases": [],
+            "attachments": [],
+            "attachment_aliases": [],
+            "modules": {},
+            "main_company": 31,
+            "company_ids": [31],
+            "tokens": False,
+            "transactions": False,
+            "provider_links": [],
+            "countries": {},
+            "currencies": {},
+            "relation_columns": {
+                table: sorted(("payment_method_id", column)) for table, column, _model in PAYMENT["RELATIONS"].values()
+            },
+        }
+        self.current["providers"] = [
+            {
+                "id": 41,
+                "company_id": self.current["main_company"],
+                "module_id": 51,
+                "code": "none",
+                "state": "disabled",
+                "retained_message": "Retain all provider configuration",
+            }
+        ]
+        self.current["provider_aliases"] = [self.alias(81, 41, "provider_fixture", "payment.provider")]
+        self.current["modules"] = {51: {"xmlid": "base.module_fixture", "state": "uninstalled"}}
+        for index, alias in enumerate(("payment.primary_fixture", "payment.brand_fixture"), 1):
+            identity = 100 + index
+            parent = None if index == 1 else self.current["methods"][0]["id"]
+            values = {"name": {"en_US": alias}, "active": False, "primary_payment_method_id": parent}
+            self.current["methods"].append({"id": identity, **values})
+            self.current["method_aliases"].append(self.alias(200 + index, identity, alias.split(".")[1], "payment.method"))
+            self.current["countries"][identity] = ["base.fixture_country"]
+            self.current["currencies"][identity] = []
+            expected = dict(values, primary_payment_method_id=None if parent is None else "payment.primary_fixture")
+            expected.update(supported_country_ids=["base.fixture_country"], supported_currency_ids=[])
+            self.witness["methods"][alias] = {"values": expected, "images": {}}
+            for offset, field in enumerate(sorted(PAYMENT["IMAGE_FIELDS"]), 1):
+                body = (alias + ":" + field + ":qualified immutable representation").encode()
+                checksum = hashlib.sha1(body).hexdigest()
+                key = checksum[:2] + "/" + checksum
+                path = self.filestore / key
+                path.parent.mkdir(exist_ok=True)
+                path.write_bytes(body)
+                self.witness["methods"][alias]["images"][field] = {
+                    "sha1": checksum,
+                    "sha256": hashlib.sha256(body).hexdigest(),
+                    "bytes": len(body),
+                }
+                self.current["attachments"].append(
+                    {
+                        "id": identity * 10 + offset,
+                        "res_model": "payment.method",
+                        "res_id": identity,
+                        "res_field": field,
+                        "name": field,
+                        "type": "binary",
+                        "mimetype": "image/png",
+                        "company_id": self.current["main_company"],
+                        "checksum": checksum,
+                        "file_size": len(body),
+                        "store_fname": key,
+                        "has_db_datas": False,
+                        "public": None,
+                        "url": None,
+                        "access_token": None,
+                    }
+                )
+            self.current["provider_links"].append((41, identity))
+            self.witness["providers"]["payment.provider_fixture"]["methods"].append(alias)
+        self.profile = {"payment": self.witness}
+
+    @staticmethod
+    def alias(identity: int, record: int, name: str, model: str) -> dict[str, Any]:
+        return {"id": identity, "module": "payment", "name": name, "res_id": record, "model": model, "noupdate": True}
+
+    def admit(self) -> Any:
+        witness = PAYMENT["source_witness"](self.profile, self.version)
+        return PAYMENT["admit"](self.current, witness, self.filestore)
+
+    def test_whole_family_admits_with_semantic_nullable_boolean_and_real_original_file_hashes(self) -> None:
+        plan = self.admit()
+        self.assertEqual(set(plan.methods), {row["id"] for row in self.current["methods"]})
+        self.assertEqual(set(plan.attachments), {row["id"] for row in self.current["attachments"]})
+        self.assertEqual(set(plan.aliases), {row["id"] for row in self.current["method_aliases"]})
+        self.current["methods"][0]["active"] = None
+        self.admit()
+
+    def test_material_and_ownership_changes_refuse_with_unchanged_positive_control(self) -> None:
+        changes = {
+            "translation": lambda current: current["methods"][0]["name"].update(fr_FR="Changed"),
+            "missing_boolean": lambda current: current["methods"][0].pop("active"),
+            "unknown_field": lambda current: current["methods"][0].update(custom_value="Keep"),
+            "outside_parent": lambda current: current["methods"][1].update(primary_payment_method_id=999),
+            "country": lambda current: current["countries"][current["methods"][0]["id"]].clear(),
+            "provider_link": lambda current: current["provider_links"].pop(),
+            "relation_payload": lambda current: next(iter(current["relation_columns"].values())).append("custom_payload"),
+            "provider_state": lambda current: current["providers"][0].update(state="enabled"),
+            "connector": lambda current: current["modules"][51].update(state="installed"),
+            "tokens": lambda current: current.update(tokens=True),
+            "transactions": lambda current: current.update(transactions=True),
+            "extra_company": lambda current: current["company_ids"].append(999),
+            "alias_protection": lambda current: current["method_aliases"][0].update(noupdate=False),
+            "alias_material": lambda current: current["method_aliases"][0].update(custom_value="Keep this alias metadata"),
+            "coalias": lambda current: current["method_aliases"].append(dict(current["method_aliases"][0], id=999)),
+            "asset_alias": lambda current: current["attachment_aliases"].append((999,)),
+            "asset_company": lambda current: current["attachments"][0].update(company_id=None),
+            "asset_metadata": lambda current: current["attachments"][0].update(access_token="keep"),
+            "asset_unknown": lambda current: current["attachments"][0].update(extra_value="keep"),
+            "user_attachment": lambda current: current["attachments"].append(
+                dict(current["attachments"][0], id=999, res_field=None)
+            ),
+            "missing_image": lambda current: current["attachments"].pop(),
+        }
+        baseline = copy.deepcopy(self.current)
+        for subject, change in changes.items():
+            with self.subTest(subject=subject):
+                self.current = copy.deepcopy(baseline)
+                self.admit()
+                change(self.current)
+                with self.assertRaises(RuntimeError):
+                    self.admit()
+
+    def test_new_representation_cannot_replace_the_qualified_original_even_with_consistent_database_checksum(self) -> None:
+        self.admit()
+        attachment = self.current["attachments"][0]
+        body = b"different representation"
+        checksum = hashlib.sha1(body).hexdigest()
+        key = checksum[:2] + "/" + checksum
+        path = self.filestore / key
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(body)
+        attachment.update(checksum=checksum, store_fname=key, file_size=len(body))
+        with self.assertRaises(RuntimeError):
+            self.admit()
+
+    def test_original_corruption_and_symlink_storage_refuse(self) -> None:
+        self.admit()
+        attachment = self.current["attachments"][0]
+        path = self.filestore / attachment["store_fname"]
+        body = path.read_bytes()
+        path.write_bytes(body + b"changed")
+        with self.assertRaises(RuntimeError):
+            self.admit()
+        path.write_bytes(body)
+        self.admit()
+        other = self.filestore / "other"
+        other.write_bytes(body)
+        path.unlink()
+        path.symlink_to(other)
+        with self.assertRaises(RuntimeError):
+            self.admit()
+
+    def test_missing_wrong_version_or_database_reference_cannot_substitute_for_public_source_qualification(self) -> None:
+        self.admit()
+        for change in ("missing", "version", "database", "asset_provenance"):
+            with self.subTest(change=change):
+                profile = copy.deepcopy(self.profile)
+                if change == "missing":
+                    profile.clear()
+                elif change == "version":
+                    profile["payment"]["source_version"] += ".different"
+                elif change == "database":
+                    profile["payment"]["database_uuid"] = "invented independent reference"
+                else:
+                    profile["payment"].pop("asset_qualification")
+                with self.assertRaises(RuntimeError):
+                    PAYMENT["source_witness"](profile, self.version)
+
+    def test_native_stage_fresh_and_completed_paths_do_not_load_a_reference_or_odoo(self) -> None:
+        stage = runpy.run_path(str(SCRIPTS / "nativeupgrade/payment/20.0.2.0/pre-global-methods.py"))
+        target_version = ".".join(("20", *self.version.split(".")[1:]))
+        for version in (None, "", target_version):
+            with self.subTest(version=version):
+                stage["migrate"](Mock(), version)
+
+    def test_reference_refusal_precedes_every_effect_and_valid_plan_preserves_providers_and_files(self) -> None:
+        self.admit()
+        function = PAYMENT["retire"]
+        effects = []
+        cursor = Mock()
+        cursor.savepoint.side_effect = lambda **_kwargs: nullcontext()
+        cursor.fetchone.return_value = None
+        providers = copy.deepcopy(self.current["providers"])
+        file_bytes = {path: path.read_bytes() for path in self.admit().files}
+        checker = Mock(side_effect=RuntimeError("outside incoming reference"))
+        with patch.dict(
+            function.__globals__,
+            {
+                "capture": lambda _cursor: copy.deepcopy(self.current),
+                "_delete_exact": lambda _cursor, table, identifiers: effects.append((table, set(identifiers))),
+                "_rows": lambda _cursor, _query, _parameters=(): [(row,) for row in providers],
+                "_check_relation_cleanup": lambda _cursor: None,
+            },
+        ):
+            with self.assertRaises(RuntimeError):
+                function(cursor, self.profile, self.version, self.filestore, checker)
+            self.assertFalse(effects)
+            checker.side_effect = None
+            plan = function(cursor, self.profile, self.version, self.filestore, checker)
+        self.assertEqual(
+            dict(effects),
+            {
+                "payment_method": set(plan.methods),
+                "ir_attachment": set(plan.attachments),
+                "ir_model_data": set(plan.aliases),
+            },
+        )
+        self.assertEqual(self.current["providers"], providers)
+        self.assertEqual({path: path.read_bytes() for path in file_bytes}, file_bytes)
+        targets, internal_rows = checker.call_args.args[1], checker.call_args.kwargs["internal_rows"]
+        for (source, _column, target), identifiers in internal_rows.items():
+            self.assertLessEqual(set(identifiers), set(targets[source]))
+            self.assertIn(target, targets)
+
+
+if __name__ == "__main__":
+    unittest.main()

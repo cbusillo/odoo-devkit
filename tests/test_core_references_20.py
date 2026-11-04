@@ -996,5 +996,129 @@ class LunchTests(EmptyChatFixture):
                 self.connection.execute("RELEASE reference_case")
 
 
+class RetiringReferenceTests(EmptyChatFixture):
+    def setUp(self) -> None:
+        super().setUp()
+        self.connection.executescript(
+            "CREATE TABLE payment_method (id INTEGER PRIMARY KEY, primary_payment_method_id INTEGER REFERENCES payment_method(id));"
+            "CREATE TABLE ir_attachment (id INTEGER PRIMARY KEY, res_model TEXT, res_id INTEGER);"
+            "CREATE TABLE payment_country_rel (method_id INTEGER REFERENCES payment_method(id), country_id INTEGER);"
+            "INSERT INTO ir_model VALUES (901,'payment.method'),(902,'ir.attachment'),(903,'ir.model.data');"
+            "INSERT INTO payment_method VALUES (41,NULL),(42,41);"
+            "INSERT INTO ir_attachment VALUES (41,'payment.method',41);"
+            "INSERT INTO ir_model_data(id,module,name,model,res_id,noupdate) VALUES (41,'payment','stock','payment.method',41,1);"
+            "INSERT INTO payment_country_rel VALUES (41,1),(42,1);"
+        )
+        self.targets = {"payment_method": [41, 42], "ir_attachment": [41], "ir_model_data": [41]}
+        self.internal_relations = {
+            ("payment_country_rel", "method_id", "payment_method"),
+            ("payment_method", "primary_payment_method_id", "payment_method"),
+        }
+        self.internal_rows = {
+            ("payment_method", "primary_payment_method_id", "payment_method"): [42],
+            ("ir_attachment", "res_id", "payment_method"): [41],
+            ("ir_model_data", "res_id", "payment_method"): [41],
+        }
+
+    def check_references(self) -> None:
+        bridge._check_references(self.cursor, self.targets, self.internal_relations, internal_rows=self.internal_rows)
+
+    def test_exact_internal_edges_admit_without_changing_any_rows(self) -> None:
+        before = self.all_rows()
+        self.check_references()
+        self.assertEqual(self.all_rows(), before)
+        for edge in self.internal_rows:
+            with self.subTest(edge=edge), self.assertRaises(RuntimeError):
+                bridge._check_references(
+                    self.cursor,
+                    self.targets,
+                    self.internal_relations - {edge},
+                    internal_rows={key: rows for key, rows in self.internal_rows.items() if key != edge},
+                )
+        self.assertEqual(self.all_rows(), before)
+
+    def test_outside_rows_in_admitted_tables_still_refuse(self) -> None:
+        self.check_references()
+        for statement in (
+            "INSERT INTO ir_attachment VALUES (42,'payment.method',41)",
+            "INSERT INTO ir_model_data(id,module,name,model,res_id) VALUES (42,'custom','outside','payment.method',41)",
+            "INSERT INTO payment_method VALUES (43,41)",
+        ):
+            with self.subTest(statement=statement):
+                self.connection.execute("SAVEPOINT outside_row")
+                self.connection.execute(statement)
+                before = self.all_rows()
+                with self.assertRaises(RuntimeError):
+                    self.check_references()
+                self.assertEqual(self.all_rows(), before)
+                self.connection.execute("ROLLBACK TO outside_row")
+                self.connection.execute("RELEASE outside_row")
+
+    def test_incoming_attachment_and_alias_foreign_keys_refuse(self) -> None:
+        self.check_references()
+        for target in ("ir_attachment", "ir_model_data"):
+            with self.subTest(target=target):
+                self.connection.execute("SAVEPOINT outside_target")
+                self.connection.execute(
+                    'CREATE TABLE retained_link (id INTEGER PRIMARY KEY, target_id INTEGER REFERENCES "' + target + '"(id))'
+                )
+                self.connection.execute("INSERT INTO retained_link VALUES (1,41)")
+                before = self.all_rows()
+                with self.assertRaises(RuntimeError):
+                    self.check_references()
+                self.assertEqual(self.all_rows(), before)
+                self.connection.execute("ROLLBACK TO outside_target")
+                self.connection.execute("RELEASE outside_target")
+
+    def test_admitted_row_has_no_allowance_for_another_column(self) -> None:
+        self.check_references()
+        self.connection.execute("ALTER TABLE ir_attachment ADD COLUMN alias_id INTEGER REFERENCES ir_model_data(id)")
+        self.connection.execute("UPDATE ir_attachment SET alias_id=41")
+        before = self.all_rows()
+        with self.assertRaises(RuntimeError):
+            self.check_references()
+        self.assertEqual(self.all_rows(), before)
+
+    def test_overlapping_ids_do_not_share_indirect_target_allowance(self) -> None:
+        self.check_references()
+        self.connection.execute("UPDATE ir_attachment SET res_model='ir.model.data'")
+        before = self.all_rows()
+        with self.assertRaises(RuntimeError):
+            self.check_references()
+        self.assertEqual(self.all_rows(), before)
+
+    def test_overlapping_ids_do_not_share_fkless_target_allowance(self) -> None:
+        self.check_references()
+        self.connection.executescript(
+            "ALTER TABLE ir_attachment ADD COLUMN related_id INTEGER;"
+            "UPDATE ir_attachment SET related_id=41;"
+            "INSERT INTO ir_model_fields(name,ttype,store,relation,model) "
+            "VALUES ('related_id','many2one',1,'ir.model.data','ir.attachment');"
+        )
+        self.internal_rows["ir_attachment", "related_id", "payment_method"] = [41]
+        before = self.all_rows()
+        with self.assertRaises(RuntimeError):
+            self.check_references()
+        self.assertEqual(self.all_rows(), before)
+        self.connection.execute("UPDATE ir_model_fields SET relation='payment.method' WHERE name='related_id'")
+        before = self.all_rows()
+        self.check_references()
+        self.assertEqual(self.all_rows(), before)
+
+    def test_allowance_cannot_admit_a_nonretiring_source_row(self) -> None:
+        self.check_references()
+        for edge, rows in (
+            (("ir_attachment", "res_id", "payment_method"), [42]),
+            (("res_partner", "res_id", "payment_method"), [41]),
+            (("ir_attachment", "res_id", "res_partner"), [41]),
+        ):
+            with self.subTest(edge=edge, rows=rows):
+                internal_rows = self.internal_rows | {edge: rows}
+                before = self.all_rows()
+                with self.assertRaises(RuntimeError):
+                    bridge._check_references(self.cursor, self.targets, self.internal_relations, internal_rows=internal_rows)
+                self.assertEqual(self.all_rows(), before)
+
+
 if __name__ == "__main__":
     unittest.main()
