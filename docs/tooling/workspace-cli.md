@@ -751,6 +751,23 @@ Notes
   before any bridge effects. Preparation replays before native loading; the
   bridge leaves completed major-20 crossings untouched. The target's own XML
   supplies its name, tag and path.
+  The renamed Stock product-template form and its Stock Account child use the
+  same identity preparation: their new native20 XMLIDs bind to the original
+  view rows before XML loading. Both sources, destinations, ownership,
+  restrictions, translations, topology and independent current/history
+  architectures qualify before any preparation effect. Supported public18
+  history need not equal the current public19 architecture. The canonical
+  source records and provenance live under `docker/scripts/legacy/stock/`.
+  Alias insertion leaves view data, audit fields, parent references and history
+  untouched; native XML loading owns subsequent updates and normal history
+  rotation. Ordinary native END cleanup removes the old aliases while the
+  loaded new aliases retain the same records. Same-record preparation reentry
+  adds nothing. An installed Stock Delivery contribution keeps its existing
+  alias and is qualified as the finite unchanged child, without staging,
+  deactivation or another binding. Custom or unknown source/history,
+  translations, extra owners or descendants, restrictions and conflicting or
+  protected targets refuse. Native loader/data/UI proof remains with the
+  migration owner's existing affected-input batch.
   The public and private Org Chart window actions move from `hr_org_chart` to
   `hr` by the same named binding: each retained action ID, path, incoming references and old
   protected alias stay intact. Native HR loads its own action, including mobile
