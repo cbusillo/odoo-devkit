@@ -15,6 +15,44 @@ from tests.git_fixture import commit_fixture_repository, init_fixture_repository
 
 
 class AddonCiTests(unittest.TestCase):
+    def test_tenant_preparation_uses_workspace_python_with_a_broader_ci_range(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name in ("runtime-python", "addon-tests"):
+                catalog = root / "docker" / name
+                catalog.mkdir(parents=True)
+                (catalog / "pyproject.toml").write_text('[project]\nrequires-python=">=3.13,<3.15"\n')
+                (catalog / "uv.lock").write_text("version=1\n")
+            tenant = root / "source"
+            tenant.mkdir()
+            (tenant / "workspace.toml").write_text("""schema_version=1
+tenant="fixture"
+workspace={name="fixture",python="3.13"}
+repos={tenant={name="fixture",path="."}}
+runtime={context="fixture",instance="local",database="fixture",addons_paths=[]}
+ide={mode="tenant_repo",focus_paths=[],attached_paths=[]}
+""")
+            manifest = addon_ci.load_workspace_manifest(tenant / "workspace.toml")
+            context = root / "context"
+            context.mkdir()
+            image = "registry.invalid/base@sha256:" + "a" * 64
+            with (
+                patch.object(addon_ci, "ROOT", root),
+                patch.object(addon_ci, "command", return_value=subprocess.CompletedProcess([], 0, "", "")) as command_mock,
+                patch.object(addon_ci, "derive_base_python_lock") as derive,
+                patch.object(addon_ci, "stage_publishable_dependency_workspace"),
+                patch.object(addon_ci, "read_base_python_catalogs", return_value=()),
+                patch("odoo_devkit.local_runtime.resolve_image_digest", return_value=image.split("@", 1)[1]),
+            ):
+                addon_ci.build_test_image(image, tenant, context, "fixture:test")
+            installation = next(
+                call.args[0] for call in command_mock.call_args_list if call.args[0][:3] == ["uv", "python", "install"]
+            )
+            self.assertEqual(installation[3], manifest.workspace.python_version)
+            self.assertTrue(derive.called)
+            for call in derive.call_args_list:
+                self.assertEqual(call.kwargs["python_version"], manifest.workspace.python_version)
+
     def test_copied_inputs_keep_current_code_without_credentials_or_masked_addons(self) -> None:
         for tracked in (False, True):
             with self.subTest(tracked=tracked), tempfile.TemporaryDirectory() as temporary:
