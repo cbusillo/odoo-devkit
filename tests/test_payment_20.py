@@ -108,6 +108,61 @@ class PaymentAdmissionTests(unittest.TestCase):
         witness = PAYMENT["source_witness"](self.profile, self.version)
         return PAYMENT["admit"](self.current, witness, self.filestore)
 
+    def collector_cursor(self, *, allow_lock: bool = False) -> Mock:
+        current = self.current
+        methods = [row["id"] for row in current["methods"]]
+        country_id = 61
+        country_alias = current["countries"][methods[0]][0]
+        results = [
+            [],
+            [(row,) for row in current["methods"]],
+            [(row,) for row in current["providers"]],
+            [(row,) for row in current["method_aliases"] + current["provider_aliases"]],
+            [(row,) for row in current["attachments"]],
+            [(identifier, row["state"], row["xmlid"]) for identifier, row in current["modules"].items()],
+            [(current["main_company"],)],
+            list(current["relation_columns"].items()),
+            current["attachment_aliases"],
+            [(identifier,) for identifier in current["company_ids"]],
+            [],
+            [],
+            current["provider_links"],
+            [(identifier, country_id) for identifier in methods],
+            [(country_id, country_alias)],
+            [],
+            [],
+        ]
+
+        def execute(query: str, _parameters: tuple = ()) -> None:
+            if allow_lock and query.startswith("LOCK TABLE "):
+                return
+            if not query.startswith("SELECT "):
+                raise RuntimeError("Read-only cursor refuses non-SELECT statements")
+
+        return Mock(execute=Mock(side_effect=execute), fetchall=Mock(side_effect=results))
+
+    def test_observe_collects_the_qualified_snapshot_through_a_select_only_cursor_without_odoo(self) -> None:
+        with patch.dict(
+            PAYMENT["observe"].__globals__, {"import_module": Mock(side_effect=AssertionError("Collector imports Odoo"))}
+        ):
+            snapshot = PAYMENT["observe"](self.collector_cursor())
+        self.assertEqual(snapshot, self.current)
+        witness = PAYMENT["source_witness"](self.profile, self.version)
+        plan = PAYMENT["admit"](snapshot, witness, self.filestore)
+        self.assertEqual(plan, self.admit())
+
+    def test_capture_locks_before_collecting_the_same_qualified_snapshot(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "Read-only cursor refuses"):
+            PAYMENT["capture"](self.collector_cursor())
+        cursor = self.collector_cursor(allow_lock=True)
+        snapshot = PAYMENT["capture"](cursor)
+        statements = [call.args[0] for call in cursor.execute.call_args_list]
+        self.assertTrue(statements[0].startswith("LOCK TABLE "))
+        self.assertIn("SHARE ROW EXCLUSIVE MODE", statements[0])
+        self.assertTrue(all(statement.startswith("SELECT ") for statement in statements[1:]))
+        self.assertEqual(snapshot, self.current)
+        self.assertEqual(PAYMENT["admit"](snapshot, self.witness, self.filestore), self.admit())
+
     def test_whole_family_admits_with_semantic_nullable_boolean_and_real_original_file_hashes(self) -> None:
         plan = self.admit()
         self.assertEqual(set(plan.methods), {row["id"] for row in self.current["methods"]})
