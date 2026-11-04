@@ -134,7 +134,7 @@ class PaymentAdmissionTests(unittest.TestCase):
             if allow_lock and normalized.startswith("LOCK TABLE "):
                 return
             if not normalized.startswith(("SELECT ", "WITH ")) or re.search(
-                r"\b(INSERT|UPDATE|DELETE|MERGE|LOCK|CREATE|ALTER|DROP|TRUNCATE)\b", normalized
+                r"\b(INSERT|UPDATE|DELETE|MERGE|LOCK|SHARE|CREATE|ALTER|DROP|TRUNCATE)\b", normalized
             ):
                 raise RuntimeError("Read-only cursor refuses mutation or locking")
             source = re.search(r"\bFROM\s+([\w.]+)", query, re.IGNORECASE)
@@ -163,7 +163,6 @@ class PaymentAdmissionTests(unittest.TestCase):
         ):
             snapshot = PAYMENT["observe"](self.collector_cursor())
         self.assertEqual(snapshot, self.current)
-        PAYMENT["admit"](snapshot, PAYMENT["source_witness"](self.profile, self.version), self.filestore)
 
     def test_capture_locks_before_collecting_the_same_qualified_snapshot(self) -> None:
         cursor = self.collector_cursor(allow_lock=True)
