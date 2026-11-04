@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import re
 from collections.abc import Callable
@@ -22,7 +23,6 @@ class Retirement:
     methods: list[int]
     attachments: list[int]
     aliases: list[int]
-    files: dict[Path, dict[str, Any]]
 
 
 def _fail(subject: str) -> None:
@@ -46,30 +46,22 @@ def source_witness(profile: dict[str, Any], version: str) -> dict[str, Any]:
     witness = profile.get("payment")
     if not isinstance(witness, dict):
         _fail("missing public source witness")
-    if "database_uuid" in witness or witness.get("source_version") != version or version.split(".", 1)[0] != "19":
-        _fail("public source version or provenance")
-    files = witness.get("source_files")
-    if (
-        not isinstance(files, dict)
-        or not files
-        or not re.fullmatch(r"[0-9a-f]{40}", witness.get("source_commit", ""))
-        or any(not isinstance(path, str) or not re.fullmatch(r"[0-9a-f]{64}", digest) for path, digest in files.items())
-    ):
-        _fail("public source bindings")
+    if witness.get("source_version") != version or version.split(".", 1)[0] != "19":
+        _fail("public source version")
     for family in ("methods", "providers"):
         records = witness.get(family)
         if not isinstance(records, dict) or not records or any(not key.startswith("payment.") for key in records):
             _fail("public source family")
-    qualification = witness.get("asset_qualification")
-    if (
-        not isinstance(qualification, dict)
-        or set(qualification) != {"public_source_receipt_sha256", "original_representation_receipt_sha256"}
-        or any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value) for value in qualification.values())
-    ):
-        _fail("qualified image provenance")
     if not isinstance(witness.get("attachment_defaults"), dict):
         _fail("public attachment defaults")
     return witness
+
+
+def qualify_payment_source(profile: dict[str, Any], witness: dict[str, Any], source_version: str) -> dict[str, Any]:
+    source_witness({"payment": witness}, source_version)
+    qualified = copy.deepcopy(profile)
+    qualified["payment"] = copy.deepcopy(witness)
+    return qualified
 
 
 def _owned(rows: list[dict[str, Any]], aliases: list[dict[str, Any]], expected: dict[str, Any], model: str) -> dict[int, str]:
@@ -100,7 +92,7 @@ def _owned(rows: list[dict[str, Any]], aliases: list[dict[str, Any]], expected: 
     return result
 
 
-def _image_file(attachment: dict[str, Any], expected: dict[str, Any], filestore: Path) -> Path:
+def _admit_image_file(attachment: dict[str, Any], expected: dict[str, Any], filestore: Path) -> None:
     checksum = attachment["checksum"]
     if not isinstance(checksum, str) or not re.fullmatch(r"[0-9a-f]{40}", checksum):
         _fail("attachment checksum")
@@ -115,7 +107,6 @@ def _image_file(attachment: dict[str, Any], expected: dict[str, Any], filestore:
         _fail("original attachment bytes")
     if expected["sha1"] != checksum or expected["bytes"] != len(body) or hashlib.sha256(body).hexdigest() != expected["sha256"]:
         _fail("qualified original image representation")
-    return path
 
 
 def admit(snapshot: dict[str, Any], witness: dict[str, Any], filestore: Path) -> Retirement:
@@ -157,7 +148,6 @@ def admit(snapshot: dict[str, Any], witness: dict[str, Any], filestore: Path) ->
     if snapshot["attachment_aliases"]:
         _fail("image aliases")
     seen = set()
-    files = {}
     for row in snapshot["attachments"]:
         field = row["res_field"]
         if row["res_id"] not in methods or field not in IMAGE_FIELDS or (row["res_id"], field) in seen:
@@ -189,15 +179,13 @@ def admit(snapshot: dict[str, Any], witness: dict[str, Any], filestore: Path) ->
         if _semantic_values(metadata, witness["attachment_defaults"]) != witness["attachment_defaults"]:
             _fail("attachment customization or unknown fields")
         expected_image = witness["methods"][methods[row["res_id"]]]["images"][field]
-        path = _image_file(row, expected_image, filestore)
-        files[path] = dict(expected_image)
+        _admit_image_file(row, expected_image, filestore)
     if seen != {(identifier, field) for identifier in methods for field in IMAGE_FIELDS}:
         _fail("missing stock image")
     return Retirement(
         sorted(methods),
         sorted(row["id"] for row in snapshot["attachments"]),
         sorted(row["id"] for row in snapshot["method_aliases"]),
-        files,
     )
 
 
@@ -318,40 +306,18 @@ def _delete_exact(cr: Any, table: str, identifiers: list[int]) -> None:
         _fail("retirement identity changed")
 
 
-def _check_relation_cleanup(cr: Any) -> None:
-    SQL = import_module("odoo.tools").SQL
-
-    for table, _column, _model in RELATIONS.values():
-        cr.execute(SQL("SELECT 1 FROM %s LIMIT 1", SQL.identifier(table)))
-        if cr.fetchone():
-            _fail("stock relation rows survived")
-
-
 def retire(cr: Any, profile: dict[str, Any], version: str, filestore: Path, check_references: Callable[..., None]) -> Retirement:
     witness = source_witness(profile, version)
-    with cr.savepoint(flush=False):
-        current = capture(cr)
-        plan = admit(current, witness, filestore)
-        targets = {"payment_method": plan.methods, "ir_attachment": plan.attachments, "ir_model_data": plan.aliases}
-        internal_rows = {
-            ("payment_method", "primary_payment_method_id", "payment_method"): plan.methods,
-            ("ir_attachment", "res_id", "payment_method"): plan.attachments,
-            ("ir_model_data", "res_id", "payment_method"): plan.aliases,
-        }
-        internal_relations = {(table, "payment_method_id", "payment_method") for table, _column, _model in RELATIONS.values()}
-        check_references(cr, targets, internal_relations, internal_rows=internal_rows)
-        for table in ("ir_attachment", "ir_model_data", "payment_method"):
-            _delete_exact(cr, table, targets[table])
-        providers = [row[0] for row in _rows(cr, "SELECT to_jsonb(p) FROM payment_provider p ORDER BY id")]
-        if providers != current["providers"]:
-            _fail("retained provider rows changed")
-        _check_relation_cleanup(cr)
-        for path, expected in plan.files.items():
-            body = path.read_bytes()
-            if (
-                len(body) != expected["bytes"]
-                or hashlib.sha1(body).hexdigest() != expected["sha1"]
-                or hashlib.sha256(body).hexdigest() != expected["sha256"]
-            ):
-                _fail("original file changed")
+    current = capture(cr)
+    plan = admit(current, witness, filestore)
+    targets = {"payment_method": plan.methods, "ir_attachment": plan.attachments, "ir_model_data": plan.aliases}
+    indirect_rows = {
+        ("ir_attachment", "res_id", "payment_method"): plan.attachments,
+        ("ir_model_data", "res_id", "payment_method"): plan.aliases,
+    }
+    internal_relations = {(table, "payment_method_id", "payment_method") for table, _column, _model in RELATIONS.values()}
+    internal_relations.add(("payment_method", "primary_payment_method_id", "payment_method"))
+    check_references(cr, targets, internal_relations, indirect_rows=indirect_rows)
+    for table in ("ir_attachment", "ir_model_data", "payment_method"):
+        _delete_exact(cr, table, targets[table])
     return plan

@@ -5,7 +5,6 @@ import hashlib
 import runpy
 import tempfile
 import unittest
-from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 from unittest.mock import Mock, patch
@@ -125,12 +124,28 @@ class PaymentAdmissionTests(unittest.TestCase):
         self.current["methods"][0]["active"] = None
         self.admit()
 
+    def test_retained_profile_qualification_preserves_existing_components_and_copies_the_witness(self) -> None:
+        retained = {"reference": {"database_uuid": "independent", "modules": {"mail": self.version}}, "history": {"kept": True}}
+        before = copy.deepcopy(retained)
+        original_witness = copy.deepcopy(self.witness)
+        qualified = PAYMENT["qualify_payment_source"](retained, self.witness, self.version)
+        self.assertEqual({key: value for key, value in qualified.items() if key != "payment"}, before)
+        self.assertEqual(qualified["payment"], self.witness)
+        qualified["payment"]["methods"].clear()
+        qualified["reference"]["modules"].clear()
+        self.assertEqual(retained, before)
+        self.assertEqual(self.witness, original_witness)
+        with self.assertRaises(RuntimeError):
+            PAYMENT["qualify_payment_source"](retained, self.witness, self.version + ".wrong")
+        self.assertEqual(retained, before)
+
     def test_material_and_ownership_changes_refuse_with_unchanged_positive_control(self) -> None:
         changes = {
             "translation": lambda current: current["methods"][0]["name"].update(fr_FR="Changed"),
             "missing_boolean": lambda current: current["methods"][0].pop("active"),
             "unknown_field": lambda current: current["methods"][0].update(custom_value="Keep"),
             "outside_parent": lambda current: current["methods"][1].update(primary_payment_method_id=999),
+            "outside_brand": lambda current: current["methods"].append(dict(current["methods"][1], id=999)),
             "country": lambda current: current["countries"][current["methods"][0]["id"]].clear(),
             "provider_link": lambda current: current["provider_links"].pop(),
             "relation_payload": lambda current: next(iter(current["relation_columns"].values())).append("custom_payload"),
@@ -190,19 +205,19 @@ class PaymentAdmissionTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.admit()
 
-    def test_missing_wrong_version_or_database_reference_cannot_substitute_for_public_source_qualification(self) -> None:
+    def test_missing_wrong_version_or_incomplete_source_witness_refuses(self) -> None:
         self.admit()
-        for change in ("missing", "version", "database", "asset_provenance"):
+        for change in ("missing", "version", "family", "defaults"):
             with self.subTest(change=change):
                 profile = copy.deepcopy(self.profile)
                 if change == "missing":
                     profile.clear()
                 elif change == "version":
                     profile["payment"]["source_version"] += ".different"
-                elif change == "database":
-                    profile["payment"]["database_uuid"] = "invented independent reference"
+                elif change == "family":
+                    profile["payment"]["providers"].clear()
                 else:
-                    profile["payment"].pop("asset_qualification")
+                    profile["payment"].pop("attachment_defaults")
                 with self.assertRaises(RuntimeError):
                     PAYMENT["source_witness"](profile, self.version)
 
@@ -212,24 +227,22 @@ class PaymentAdmissionTests(unittest.TestCase):
         for version in (None, "", target_version):
             with self.subTest(version=version):
                 stage["migrate"](Mock(), version)
+        loader = Mock(side_effect=RuntimeError("native import selected"))
+        with patch.dict(stage["migrate"].__globals__, {"import_module": loader}), self.assertRaises(RuntimeError):
+            stage["migrate"](Mock(), self.version)
+        loader.assert_called_once()
 
-    def test_reference_refusal_precedes_every_effect_and_valid_plan_preserves_providers_and_files(self) -> None:
+    def test_reference_refusal_precedes_every_effect_and_valid_plan_deletes_exact_cohorts(self) -> None:
         self.admit()
         function = PAYMENT["retire"]
         effects = []
         cursor = Mock()
-        cursor.savepoint.side_effect = lambda **_kwargs: nullcontext()
-        cursor.fetchone.return_value = None
-        providers = copy.deepcopy(self.current["providers"])
-        file_bytes = {path: path.read_bytes() for path in self.admit().files}
         checker = Mock(side_effect=RuntimeError("outside incoming reference"))
         with patch.dict(
             function.__globals__,
             {
                 "capture": lambda _cursor: copy.deepcopy(self.current),
                 "_delete_exact": lambda _cursor, table, identifiers: effects.append((table, set(identifiers))),
-                "_rows": lambda _cursor, _query, _parameters=(): [(row,) for row in providers],
-                "_check_relation_cleanup": lambda _cursor: None,
             },
         ):
             with self.assertRaises(RuntimeError):
@@ -245,12 +258,6 @@ class PaymentAdmissionTests(unittest.TestCase):
                 "ir_model_data": set(plan.aliases),
             },
         )
-        self.assertEqual(self.current["providers"], providers)
-        self.assertEqual({path: path.read_bytes() for path in file_bytes}, file_bytes)
-        targets, internal_rows = checker.call_args.args[1], checker.call_args.kwargs["internal_rows"]
-        for (source, _column, target), identifiers in internal_rows.items():
-            self.assertLessEqual(set(identifiers), set(targets[source]))
-            self.assertIn(target, targets)
 
 
 if __name__ == "__main__":

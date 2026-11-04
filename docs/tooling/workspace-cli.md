@@ -655,6 +655,11 @@ Notes
   modules remain uninstalled. The custodian binds material values and links to
   exact public native source, and qualifies each original image representation
   against native stock output before recording its immutable byte digests.
+  Use `payment_20.qualify_payment_source(profile, witness, source_version)`
+  on the authenticated retained profile before its existing serialization and
+  digest step. It returns a new profile and preserves every existing reference
+  component; it requires no fresh database capture. Source and receipt metadata
+  remain audit evidence, not extra runtime authentication by hash shape.
   This is source and original-artifact evidence, not an invented independent
   database reference. Unknown fields, translations, owners, configured providers,
   payment history, images or outside references refuse before deletion.

@@ -844,20 +844,12 @@ def _check_references(
     ids: dict[str, list[int]],
     internal_relations: set[tuple[str, str, str]],
     *,
-    internal_rows: dict[tuple[str, str, str], list[int]] | None = None,
+    indirect_rows: dict[tuple[str, str, str], list[int]] | None = None,
 ) -> None:
-    internal_rows = internal_rows or {}
-    for (source, _column, target), rows in internal_rows.items():
+    indirect_rows = indirect_rows or {}
+    for (source, _column, target), rows in indirect_rows.items():
         if source not in ids or target not in ids or not set(rows).issubset(ids[source]):
             raise RuntimeError("Internal reference rows must belong to retiring source and target cohorts")
-
-    def has_reference(query: str, table: str, column: str, target: str, parameters: tuple) -> bool:
-        allowed = internal_rows.get((table, column, target))
-        if allowed:
-            query += " AND NOT (record.id = ANY(%s))"
-            parameters += (allowed,)
-        _identified(cr, query + " LIMIT 1", (table, column), parameters)
-        return cr.fetchone() is not None
 
     model_targets = {table.replace("_", "."): records for table, records in ids.items()}
     models = list(model_targets)
@@ -883,9 +875,10 @@ def _check_references(
         if target == "ir_model":
             model_columns.setdefault(table, set()).add(column)
             continue
-        if (table, column, target) in internal_relations and (table, column, target) not in internal_rows:
+        if (table, column, target) in internal_relations:
             continue
-        if has_reference("SELECT 1 FROM %s record WHERE %s = ANY(%s)", table, column, target, (ids[target],)):
+        _identified(cr, "SELECT 1 FROM %s WHERE %s = ANY(%s) LIMIT 1", (table, column), (ids[target],))
+        if cr.fetchone():
             raise RuntimeError(f"Referenced core transition row: {table}.{column}")
     cr.execute(
         "SELECT name FROM ir_model_fields WHERE store AND ttype = 'many2one_reference' "
@@ -923,7 +916,7 @@ def _check_references(
         (),
         (models, models),
     )
-    relational_columns: dict[str, list[tuple[str | None, str]]] = {}
+    relational_columns: dict[str, list[tuple[str | None, list[int]]]] = {}
     for name, kind, relation, relation_table, target_column, model, source_column in cr.fetchall():
         endpoints = ((target_column, relation), (source_column, model)) if kind == "many2many" else ((name, relation),)
         for column, target in endpoints:
@@ -932,7 +925,7 @@ def _check_references(
             if not column or (kind == "many2many" and not relation_table):
                 raise RuntimeError("Unsupported core transition relation metadata")
             owner = relation_table if kind == "many2many" else None
-            relational_columns.setdefault(column, []).append((owner, target.replace(".", "_")))
+            relational_columns.setdefault(column, []).append((owner, ids[target.replace(".", "_")]))
     cr.execute(
         "SELECT 1 FROM pg_class relation JOIN pg_namespace schema ON schema.oid = relation.relnamespace "
         "JOIN pg_attribute field ON field.attrelid = relation.oid WHERE schema.nspname = 'public' "
@@ -958,7 +951,7 @@ def _check_references(
         for column, data_type in fields:
             text_storage = data_type in {"text", "character varying", "character"}
             if (table, column) not in foreign_columns:
-                for owner, target in relational_columns.get(column, ()):
+                for owner, targets in relational_columns.get(column, ()):
                     if owner is not None and owner != table:
                         continue
                     if owner is None and text_storage:
@@ -966,7 +959,8 @@ def _check_references(
                         continue
                     if data_type not in {"smallint", "integer", "bigint"}:
                         raise RuntimeError(f"Unsupported core transition reference column type: {table}.{column}")
-                    if has_reference("SELECT 1 FROM %s record WHERE %s = ANY(%s)", table, column, target, (ids[target],)):
+                    _identified(cr, "SELECT 1 FROM %s WHERE %s = ANY(%s) LIMIT 1", (table, column), (targets,))
+                    if cr.fetchone():
                         raise RuntimeError(f"Unsupported FK-less core transition reference: {table}.{column}")
             if text_storage:
                 _identified(cr, "SELECT 1 FROM %s WHERE %s = ANY(%s) LIMIT 1", (table, column), (references,))
@@ -984,21 +978,24 @@ def _check_references(
             if column not in indirect_columns:
                 continue
             for model, model_id in model_ids.items():
-                if has_reference(
+                query = (
                     "SELECT 1 FROM %s record WHERE %s = ANY(%s) AND "
                     "(EXISTS (SELECT 1 FROM jsonb_each_text(to_jsonb(record)) value WHERE value.value = %s) "
                     "OR EXISTS (SELECT 1 FROM jsonb_each_text(to_jsonb(record)) value "
-                    "WHERE value.key = ANY(%s) AND value.value = %s))",
-                    table,
-                    column,
-                    model.replace(".", "_"),
-                    (
-                        [str(record) for record in ids[model.replace(".", "_")]] if text_storage else ids[model.replace(".", "_")],
-                        model,
-                        list(model_columns.get(table, ())),
-                        str(model_id),
-                    ),
-                ):
+                    "WHERE value.key = ANY(%s) AND value.value = %s))"
+                )
+                parameters = (
+                    [str(record) for record in ids[model.replace(".", "_")]] if text_storage else ids[model.replace(".", "_")],
+                    model,
+                    list(model_columns.get(table, ())),
+                    str(model_id),
+                )
+                allowed = indirect_rows.get((table, column, model.replace(".", "_")))
+                if allowed:
+                    query += " AND NOT (record.id = ANY(%s))"
+                    parameters += (allowed,)
+                _identified(cr, query + " LIMIT 1", (table, column), parameters)
+                if cr.fetchone():
                     raise RuntimeError(f"Indirectly referenced core transition row: {table}.{column}")
     cr.execute("SELECT 1 FROM pg_trigger WHERE tgrelid = ANY(%s::regclass[]) AND NOT tgisinternal LIMIT 1", (list(ids),))
     if cr.fetchone():

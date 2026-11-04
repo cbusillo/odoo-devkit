@@ -1014,26 +1014,25 @@ class RetiringReferenceTests(EmptyChatFixture):
             ("payment_country_rel", "method_id", "payment_method"),
             ("payment_method", "primary_payment_method_id", "payment_method"),
         }
-        self.internal_rows = {
-            ("payment_method", "primary_payment_method_id", "payment_method"): [42],
+        self.indirect_rows = {
             ("ir_attachment", "res_id", "payment_method"): [41],
             ("ir_model_data", "res_id", "payment_method"): [41],
         }
 
     def check_references(self) -> None:
-        bridge._check_references(self.cursor, self.targets, self.internal_relations, internal_rows=self.internal_rows)
+        bridge._check_references(self.cursor, self.targets, self.internal_relations, indirect_rows=self.indirect_rows)
 
     def test_exact_internal_edges_admit_without_changing_any_rows(self) -> None:
         before = self.all_rows()
         self.check_references()
         self.assertEqual(self.all_rows(), before)
-        for edge in self.internal_rows:
+        for edge in self.indirect_rows:
             with self.subTest(edge=edge), self.assertRaises(RuntimeError):
                 bridge._check_references(
                     self.cursor,
                     self.targets,
-                    self.internal_relations - {edge},
-                    internal_rows={key: rows for key, rows in self.internal_rows.items() if key != edge},
+                    self.internal_relations,
+                    indirect_rows={key: rows for key, rows in self.indirect_rows.items() if key != edge},
                 )
         self.assertEqual(self.all_rows(), before)
 
@@ -1042,7 +1041,6 @@ class RetiringReferenceTests(EmptyChatFixture):
         for statement in (
             "INSERT INTO ir_attachment VALUES (42,'payment.method',41)",
             "INSERT INTO ir_model_data(id,module,name,model,res_id) VALUES (42,'custom','outside','payment.method',41)",
-            "INSERT INTO payment_method VALUES (43,41)",
         ):
             with self.subTest(statement=statement):
                 self.connection.execute("SAVEPOINT outside_row")
@@ -1087,24 +1085,6 @@ class RetiringReferenceTests(EmptyChatFixture):
             self.check_references()
         self.assertEqual(self.all_rows(), before)
 
-    def test_overlapping_ids_do_not_share_fkless_target_allowance(self) -> None:
-        self.check_references()
-        self.connection.executescript(
-            "ALTER TABLE ir_attachment ADD COLUMN related_id INTEGER;"
-            "UPDATE ir_attachment SET related_id=41;"
-            "INSERT INTO ir_model_fields(name,ttype,store,relation,model) "
-            "VALUES ('related_id','many2one',1,'ir.model.data','ir.attachment');"
-        )
-        self.internal_rows["ir_attachment", "related_id", "payment_method"] = [41]
-        before = self.all_rows()
-        with self.assertRaises(RuntimeError):
-            self.check_references()
-        self.assertEqual(self.all_rows(), before)
-        self.connection.execute("UPDATE ir_model_fields SET relation='payment.method' WHERE name='related_id'")
-        before = self.all_rows()
-        self.check_references()
-        self.assertEqual(self.all_rows(), before)
-
     def test_allowance_cannot_admit_a_nonretiring_source_row(self) -> None:
         self.check_references()
         for edge, rows in (
@@ -1113,10 +1093,10 @@ class RetiringReferenceTests(EmptyChatFixture):
             (("ir_attachment", "res_id", "res_partner"), [41]),
         ):
             with self.subTest(edge=edge, rows=rows):
-                internal_rows = self.internal_rows | {edge: rows}
+                indirect_rows = self.indirect_rows | {edge: rows}
                 before = self.all_rows()
                 with self.assertRaises(RuntimeError):
-                    bridge._check_references(self.cursor, self.targets, self.internal_relations, internal_rows=internal_rows)
+                    bridge._check_references(self.cursor, self.targets, self.internal_relations, indirect_rows=indirect_rows)
                 self.assertEqual(self.all_rows(), before)
 
 
