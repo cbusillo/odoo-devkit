@@ -15,7 +15,16 @@ manifest.
 
 Before the tests, the action runs the shared
 [comment check](https://github.com/cbusillo/codex-skills/blob/main/scripts/check_new_comments.py)
-on the caller's last commit, fetching its parent when the checkout is shallow.
+on the complete change. The shared resolver uses the pull request's base SHA,
+or the previous SHA for a push to the default branch. Other branches compare
+with the default branch even after incremental candidate pushes. Events without
+that metadata discover the remote's default branch; a scheduled or manual run
+at that branch's tip has no new comments to check. Callers with a different
+candidate construction can supply its exact `comparison-base` explicitly.
+The action fetches missing history before finding the merge base and fails if
+it cannot obtain the comparison. It never substitutes the last commit. This
+leaves the checked-out source SHA unchanged for addon tests, including exact-head
+source PRs and candidates containing multiple train entries.
 It fails on new Python comments outside the allowed exceptions; whether a
 docstring is rendered by a tool stays a review rule in
 [Names Instead Of Comments](https://github.com/cbusillo/codex-skills/blob/main/skills/references/python-odoo-style.md#names-instead-of-comments).

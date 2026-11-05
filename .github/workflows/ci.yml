@@ -39,7 +39,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
-          fetch-depth: 2
+          # noinspection UndefinedParamsPresent
+          persist-credentials: false
 
       - name: Install uv
         uses: astral-sh/setup-uv@v10.3.2
@@ -64,6 +65,9 @@ jobs:
           persist-credentials: false
 
       - name: Check new comments
-        run: >-
-          uv run --no-project --no-config .style-check-catalog/scripts/check_new_comments.py
-          --repo . --base HEAD^1 --format github
+        env:
+          STYLE_CHECK_TOKEN: ${{ github.token }}
+        run: |
+          base=$(bash .github/actions/addon-tests/comparison-base.sh .)
+          uv run --no-project --no-config .style-check-catalog/scripts/check_new_comments.py \
+            --repo . --base "$base" --format github
