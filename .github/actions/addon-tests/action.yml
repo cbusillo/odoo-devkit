@@ -25,6 +25,9 @@ inputs:
   comparison-base:
     description: Explicit comparison base; omitted to select the complete event range
     default: ''
+  style-only:
+    description: Run public style checks without Odoo, private sources or Docker resources
+    default: 'false'
 runs:
   using: composite
   steps:
@@ -75,6 +78,7 @@ runs:
         uv run --no-project --no-config "$GITHUB_WORKSPACE/.style-check-catalog/scripts/check_new_comments.py" \
           --repo "$source_root" --base "$base" --format github
     - name: Run addon tests
+      if: inputs.style-only != 'true'
       shell: bash
       env:
         ADDON_CI_ACTION: ${{ github.action_path }}

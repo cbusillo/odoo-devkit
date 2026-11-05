@@ -56,18 +56,11 @@ jobs:
       - name: Run unit tests
         run: uv run python -m unittest discover -s tests
 
-      - name: Check out style check
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Check shared style without private addon inputs
+        uses: ./.github/actions/addon-tests
+        # noinspection UndefinedParamsPresent
         with:
-          repository: cbusillo/codex-skills
-          ref: 051172a630559d37ecd5165b435b930a1bfdb328
-          path: .style-check-catalog
-          persist-credentials: false
-
-      - name: Check new comments
-        env:
-          STYLE_CHECK_TOKEN: ${{ github.token }}
-        run: |
-          base=$(bash .github/actions/addon-tests/comparison-base.sh .)
-          uv run --no-project --no-config .style-check-catalog/scripts/check_new_comments.py \
-            --repo . --base "$base" --format github
+          addons-root: .
+          command-metadata: .github/github.json
+          style-only: 'true'
+          output: ${{ runner.temp }}/style-only

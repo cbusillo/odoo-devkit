@@ -25,6 +25,13 @@ The action fetches missing history before finding the merge base and fails if
 it cannot obtain the comparison. It never substitutes the last commit. This
 leaves the checked-out source SHA unchanged for addon tests, including exact-head
 source PRs and candidates containing multiple train entries.
+
+Secretless callers set `style-only: 'true'` to run these same public style
+checks without the Odoo runner, private source resolution or Docker resources.
+They keep the separate source-screening command for workspace/lock/syntax
+validation. The default remains full addon validation. Devkit CI uses the
+style-only action directly, so the secretless style path is exercised without
+duplicating its checkout or comparison logic.
 It fails on new Python comments outside the allowed exceptions; whether a
 docstring is rendered by a tool stays a review rule in
 [Names Instead Of Comments](https://github.com/cbusillo/codex-skills/blob/main/skills/references/python-odoo-style.md#names-instead-of-comments).
