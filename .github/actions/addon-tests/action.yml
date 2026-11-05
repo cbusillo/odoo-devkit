@@ -22,6 +22,9 @@ inputs:
   command-metadata:
     description: Repository github.json for validation commands, relative to the workspace
     default: ''
+  comparison-base:
+    description: Full PR or candidate comparison base; defaults to the PR base or pre-push commit
+    default: ${{ github.event.pull_request.base.sha || github.event.before }}
 runs:
   using: composite
   steps:
@@ -64,16 +67,14 @@ runs:
       env:
         STYLE_CHECK_ROOT: ${{ inputs.addons-root }}
         STYLE_CHECK_TOKEN: ${{ github.token }}
+        STYLE_CHECK_BASE: ${{ inputs.comparison-base }}
+        STYLE_CHECK_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
       run: |
         set -euo pipefail
         source_root=$(git -C "$GITHUB_WORKSPACE/$STYLE_CHECK_ROOT" rev-parse --show-toplevel)
-        if ! git -C "$source_root" rev-parse --verify --quiet 'HEAD^1' >/dev/null; then
-          GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
-            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$STYLE_CHECK_TOKEN" | base64 -w0)" \
-            git -C "$source_root" fetch --quiet --no-tags --depth=2 origin "$(git -C "$source_root" rev-parse HEAD)"
-        fi
+        base=$(bash "${{ github.action_path }}/comparison-base.sh" "$source_root" "$STYLE_CHECK_BASE" "$STYLE_CHECK_DEFAULT_BRANCH")
         uv run --no-project --no-config "$GITHUB_WORKSPACE/.style-check-catalog/scripts/check_new_comments.py" \
-          --repo "$source_root" --base 'HEAD^1' --format github
+          --repo "$source_root" --base "$base" --format github
     - name: Run addon tests
       shell: bash
       env:

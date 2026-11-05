@@ -64,6 +64,11 @@ jobs:
           persist-credentials: false
 
       - name: Check new comments
-        run: >-
-          uv run --no-project --no-config .style-check-catalog/scripts/check_new_comments.py
-          --repo . --base HEAD^1 --format github
+        env:
+          STYLE_CHECK_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          STYLE_CHECK_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          STYLE_CHECK_TOKEN: ${{ github.token }}
+        run: |
+          base=$(bash .github/actions/addon-tests/comparison-base.sh . "$STYLE_CHECK_BASE" "$STYLE_CHECK_DEFAULT_BRANCH")
+          uv run --no-project --no-config .style-check-catalog/scripts/check_new_comments.py \
+            --repo . --base "$base" --format github
