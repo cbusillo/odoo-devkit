@@ -44,4 +44,4 @@ if $fetch_base || ! git -C "$source_root" rev-parse --verify --quiet --end-of-op
   source_git fetch --quiet --no-tags -- origin "$base"
   base=$(git -C "$source_root" rev-parse FETCH_HEAD)
 fi
-git -C "$source_root" merge-base -- "$base" HEAD
+git -C "$source_root" rev-parse --verify --end-of-options "$base^{commit}"

@@ -60,7 +60,7 @@ class StyleComparisonTests(unittest.TestCase):
         return payload
 
     def changed_paths(self, repo: Path, base: str) -> set[str]:
-        return set(self.git(repo, "diff", "--name-only", base, "HEAD").splitlines())
+        return set(self.git(repo, "diff", "--name-only", f"{base}...HEAD").splitlines())
 
     def test_exact_source_head_covers_both_commits_and_combined_entries(self) -> None:
         for construction in ("linear", "combined"):
