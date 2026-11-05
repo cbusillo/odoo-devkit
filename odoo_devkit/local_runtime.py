@@ -1690,10 +1690,13 @@ def _parse_instance_definition(*, context_name: str, instance_name: str, raw_ins
 
 def expand_project_addons_paths(*, stack_definition: StackDefinition, stack_file_path: Path) -> StackDefinition:
     repo_root = stack_file_path.parent.parent
-    expanded_paths = tuple(
-        str(path)
-        for path in expand_addon_paths((Path(path) for path in stack_definition.addons_path), source_root=repo_root / "addons")
-    )
+    try:
+        expanded_paths = tuple(
+            str(path)
+            for path in expand_addon_paths((Path(path) for path in stack_definition.addons_path), source_root=repo_root / "addons")
+        )
+    except ValueError as error:
+        raise RuntimeCommandError(str(error)) from error
     if expanded_paths == stack_definition.addons_path:
         return stack_definition
     return StackDefinition(

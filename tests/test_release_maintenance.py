@@ -4,10 +4,12 @@ import copy
 import hashlib
 import importlib.util
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from odoo_devkit.artifact_provenance import ArtifactProvenanceError, aggregate_release_inventories, load_examined_input_plan
 from odoo_devkit.local_runtime import BaseImageProvenance, build_runtime_artifact_manifest_payload
@@ -18,7 +20,8 @@ def load(name: str) -> Any:
     spec = importlib.util.spec_from_file_location(name, path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    with patch.object(sys, "path", [str(path.parent), *sys.path]):
+        spec.loader.exec_module(module)
     return module
 
 

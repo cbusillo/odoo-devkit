@@ -169,7 +169,7 @@ sources = []
 ```
 
 Tenants still pinned to the separate source keep that declaration until their
-shared-addons pin and module selection move together. Startup and data workflows
+shared-addons pin and module selection move together. Artifact inventory, startup and data workflows
 reject multiple `disable_odoo_online` copies on the addons path and report their
 locations. Remove the redundant source before adopting a shared-addons pin that
 contains the module. This prevents addons-path order from choosing behavior.
