@@ -174,6 +174,10 @@ reject multiple `disable_odoo_online` copies on the addons path and report their
 locations. Remove the redundant source before adopting a shared-addons pin that
 contains the module. This prevents addons-path order from choosing behavior.
 
+The tenant-overlay template still targets 19.0. Keep its separate source until
+converting the template's build declaration and shared-addon pin together; a
+19.0 starter must use matching 19.0 source pins rather than shared-addons main.
+
 An external source declaration, when needed, has this shape:
 
 ```toml
