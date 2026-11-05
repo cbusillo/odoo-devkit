@@ -15,10 +15,12 @@ manifest.
 
 Before the tests, the action runs the shared
 [comment check](https://github.com/cbusillo/codex-skills/blob/main/scripts/check_new_comments.py)
-on the complete change. `comparison-base` defaults to the pull request's base
-SHA or the push event's previous SHA. A new branch push, whose previous SHA is
-zero, compares with the repository's default branch. Callers with a different
-event or candidate construction can supply its exact comparison base explicitly.
+on the complete change. The shared resolver uses the pull request's base SHA,
+or the previous SHA for a push to the default branch. Other branches compare
+with the default branch even after incremental candidate pushes. Events without
+that metadata discover the remote's default branch; a scheduled or manual run
+at that branch's tip has no new comments to check. Callers with a different
+candidate construction can supply its exact `comparison-base` explicitly.
 The action fetches missing history before finding the merge base and fails if
 it cannot obtain the comparison. It never substitutes the last commit. This
 leaves the checked-out source SHA unchanged for addon tests, including exact-head

@@ -40,6 +40,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 2
+          persist-credentials: false
 
       - name: Install uv
         uses: astral-sh/setup-uv@v10.3.2
@@ -65,10 +66,8 @@ jobs:
 
       - name: Check new comments
         env:
-          STYLE_CHECK_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
-          STYLE_CHECK_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           STYLE_CHECK_TOKEN: ${{ github.token }}
         run: |
-          base=$(bash .github/actions/addon-tests/comparison-base.sh . "$STYLE_CHECK_BASE" "$STYLE_CHECK_DEFAULT_BRANCH")
+          base=$(bash .github/actions/addon-tests/comparison-base.sh .)
           uv run --no-project --no-config .style-check-catalog/scripts/check_new_comments.py \
             --repo . --base "$base" --format github
