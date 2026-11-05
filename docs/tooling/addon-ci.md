@@ -26,12 +26,6 @@ it cannot obtain the comparison. It never substitutes the last commit. This
 leaves the checked-out source SHA unchanged for addon tests, including exact-head
 source PRs and candidates containing multiple train entries.
 
-Secretless callers set `style-only: 'true'` to run these same public style
-checks without the Odoo runner, private source resolution or Docker resources.
-They keep the separate source-screening command for workspace/lock/syntax
-validation. The default remains full addon validation. Devkit CI uses the
-style-only action directly, so the secretless style path is exercised without
-duplicating its checkout or comparison logic.
 It fails on new Python comments outside the allowed exceptions; whether a
 docstring is rendered by a tool stays a review rule in
 [Names Instead Of Comments](https://github.com/cbusillo/codex-skills/blob/main/skills/references/python-odoo-style.md#names-instead-of-comments).
@@ -45,6 +39,11 @@ either failure or a tracked source edit fails the job. The action supplies its o
 as `ODOO_DEVKIT_REPO`, so the consumer's Ruff pointer, locked tool and addon
 runner use one source pin. Repositories adopt these fields after clearing their
 baseline; callers without the Ruff declaration keep their existing checks.
+
+Secretless callers set `style-only: 'true'` to run these style checks while
+skipping the Odoo runner. They also run
+[source screening](consumer-build-checks.md#source-only-pr-screening).
+The default remains full addon validation.
 
 The runner installs all installable owned addons, including ones without tests,
 and selects tests by the owned module names. Shared addons are installed as

@@ -26,7 +26,7 @@ inputs:
     description: Explicit comparison base; omitted to select the complete event range
     default: ''
   style-only:
-    description: Run public style checks without Odoo, private sources or Docker resources
+    description: Run style checks while skipping the Odoo addon runner
     default: 'false'
 runs:
   using: composite
