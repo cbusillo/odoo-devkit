@@ -266,6 +266,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     lock_acquired = False
 
     try:
+        workflow_runner._resolve_local_module_paths()
+    except ValueError as error:
+        _logger.error("Invalid addons path: %s", error)
+        return ExitCode.INVALID_ARGS
+
+    try:
         workflow_runner.acquire_data_workflow_lock()
         lock_acquired = True
         if update_only:
@@ -2462,6 +2468,7 @@ with registry.cursor() as cr:
         self._reset_db_connection()
 
     def run_bootstrap(self, *, do_sanitize: bool) -> None:
+        self._resolve_local_module_paths()
         _logger.info("Starting bootstrap for database '%s'", self.local.db_name)
         target_owner = self._resolve_filestore_owner()
         if target_owner:
@@ -2646,6 +2653,7 @@ with registry.cursor() as cr:
         if Path("/opt/extra_addons") not in candidate_dirs:
             candidate_dirs.append(Path("/opt/extra_addons"))
 
+        candidate_dirs = expand_addon_paths(candidate_dirs)
         discovered: dict[str, Path] = {}
         resolved_dirs: list[Path] = []
         for raw_dir in candidate_dirs:
@@ -3218,6 +3226,7 @@ with registry.cursor() as cr:
         _logger.info("Reset website.snippets inherit_id to base view before upgrade.")
 
     def run_restore(self, do_sanitize: bool = True) -> None:
+        self._resolve_local_module_paths()
         self._require_upstream()
         self._assert_filestore_capacity()
         backup_directory = self.local.data_workflow_lock_file.with_name(f".{self.local.db_name}-upstream-restore")

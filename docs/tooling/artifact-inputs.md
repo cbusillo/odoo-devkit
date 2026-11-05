@@ -160,13 +160,31 @@ Rules:
 
 ## Odoo example
 
-This is the current live use case for tenant runtime publish:
+Odoo 20 Community tenants get `disable_odoo_online` from shared addons; they
+need no external source for it. With no other external inputs:
+
+```toml
+schema_version = 1
+sources = []
+```
+
+Tenants still pinned to the separate source keep that declaration until their
+shared-addons pin and module selection move together. Artifact inventory, startup and data workflows
+reject multiple `disable_odoo_online` copies on the addons path and report their
+locations. Remove the redundant source before adopting a shared-addons pin that
+contains the module. This prevents addons-path order from choosing behavior.
+
+The tenant-overlay template still targets 19.0. Keep its separate source until
+converting the template's build declaration and shared-addon pin together; a
+19.0 starter must use matching 19.0 source pins rather than shared-addons main.
+
+An external source declaration, when needed, has this shape:
 
 ```toml
 schema_version = 1
 
 sources = [
-  { repository = "cbusillo/disable_odoo_online", selector = "main" },
+  { repository = "example-owner/addon-collection", selector = "main" },
 ]
 ```
 

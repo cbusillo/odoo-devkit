@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import runpy
 import subprocess
 import sys
 from pathlib import Path
@@ -151,7 +152,8 @@ def inventory(
 def module_paths(roots: list[Path]) -> dict[str, Path]:
     """Match Odoo's exposed addon namespaces and first-path precedence."""
     paths: dict[str, Path] = {}
-    for root in roots:
+    expand_addon_paths = runpy.run_path(str(Path(__file__).with_name("odoo_addon_paths.py")))["expand_addon_paths"]
+    for root in expand_addon_paths(roots):
         for manifest in sorted(root.glob("*/__manifest__.py")):
             name = manifest.parent.name
             if name in paths:
