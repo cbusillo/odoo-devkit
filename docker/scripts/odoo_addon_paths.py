@@ -32,4 +32,17 @@ def expand_addon_paths(paths: Iterable[Path], *, source_root: Path | None = None
         for addition in additions:
             if addition not in resolved:
                 resolved.append(addition)
+    copies: set[Path] = set()
+    for path in resolved:
+        local = (
+            source_root / path.relative_to(PROJECT_ADDONS_ROOT)
+            if source_root is not None and path.is_relative_to(PROJECT_ADDONS_ROOT)
+            else path
+        )
+        module = local / "disable_odoo_online"
+        if (module / "__manifest__.py").is_file():
+            copies.add(module.resolve())
+    if len(copies) > 1:
+        locations = ", ".join(str(path) for path in sorted(copies))
+        raise ValueError(f"Multiple disable_odoo_online copies on addons path: {locations}. Keep exactly one source.")
     return resolved

@@ -418,7 +418,10 @@ Notes
   prepend `launchplane_settings` and `disable_odoo_online` to the resolved Odoo
   install module list. Artifact inputs or base images make addon files
   available, but this install list is what activates those modules in each
-  database.
+  database. Odoo 20 Community supplies `disable_odoo_online` through shared
+  addons without an external source. Startup and data workflows reject distinct
+  copies of that module on the addons path; remove the redundant source rather
+  than relying on path order.
 - When a tenant repo contains `website-bootstrap.toml` (at the tenant repo root,
   or beside `workspace.toml`),
   runtime selection also folds that non-secret website intent into the same
