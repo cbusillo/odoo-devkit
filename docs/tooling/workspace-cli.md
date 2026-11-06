@@ -594,6 +594,15 @@ Notes
   The existing best-effort behavior when size estimation is unavailable stays.
   Use `DATA_WORKFLOW_SSH_KEY` for a dedicated identity. Provisioning upstream
   access and changing hosted settings remain outside the local devkit commands.
+- An offline migration that already holds an isolated restored database can call
+  `OdooDataWorkflowRunner.prepare_restored_modules(do_sanitize=True)`. Normal
+  restore calls the same sequence: OpenUpgrade, credential clearing, addon
+  installs, the Odoo 19 website refresh or configured updates, install-queue
+  reconciliation and final credential clearing. The offline caller first uses
+  `prepare_isolated_copy_before_registry(purpose="migration")`, checks core
+  schema health afterward and discards the copy on any error. Lane settings,
+  admin provisioning and filestore ownership remain
+  normal restore's later steps.
 - Every upstream restore onto an instance that is not explicitly production
   (`PLATFORM_INSTANCE` `prod` or `production`) clears the production
   integration credentials and signing keys that the copy brought with it.

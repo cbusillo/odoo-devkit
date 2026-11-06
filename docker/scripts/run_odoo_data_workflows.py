@@ -3303,6 +3303,12 @@ with registry.cursor() as cr:
     def _prepare_restored_database(self, target_owner: str | None, *, do_sanitize: bool) -> None:
         """Prepare a restored copy through settings apply and admin hardening. Callers drop the database on any error."""
         self.normalize_filestore_permissions(target_owner)
+        self.prepare_restored_modules(do_sanitize=do_sanitize)
+        self.apply_environment_overrides()
+        self.block_outgoing_mail_outside_production()
+        self.ensure_admin_user()
+
+    def prepare_restored_modules(self, *, do_sanitize: bool) -> None:
         if self.local.openupgrade_enabled:
             self.snapshot_module_states_before_openupgrade()
             self.run_openupgrade()
@@ -3326,12 +3332,7 @@ with registry.cursor() as cr:
         self.reconcile_missing_manifest_install_queue()
         self.assert_install_queue_is_resolvable()
 
-        # Install hooks and data can re-enable integration crons, so clear again, prove it, and only then
-        # let Launchplane apply this instance's own settings (which the clearing must not overwrite).
         self.prepare_credentials_before_registry(restored_copy=True, do_sanitize=do_sanitize)
-        self.apply_environment_overrides()
-        self.block_outgoing_mail_outside_production()
-        self.ensure_admin_user()
 
 
 class InProcessMaintenanceRunner(OdooDataWorkflowRunner):
