@@ -598,9 +598,10 @@ Notes
   `OdooDataWorkflowRunner.prepare_restored_modules(do_sanitize=True)`. Normal
   restore calls the same sequence: OpenUpgrade, credential clearing, addon
   installs, the Odoo 19 website refresh or configured updates, install-queue
-  reconciliation and final credential clearing. The caller establishes the
-  SQL-only boundary before the first registry and checks core schema health
-  afterward. Lane settings, admin provisioning and filestore ownership remain
+  reconciliation and final credential clearing. The offline caller first uses
+  `prepare_isolated_copy_before_registry(purpose="migration")`, checks core
+  schema health afterward and discards the copy on any error. Lane settings,
+  admin provisioning and filestore ownership remain
   normal restore's later steps.
 - Every upstream restore onto an instance that is not explicitly production
   (`PLATFORM_INSTANCE` `prod` or `production`) clears the production
