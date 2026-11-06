@@ -1109,6 +1109,45 @@ class DataWorkflowGuardTests(unittest.TestCase):
         drop_database.assert_not_called()
         runner.assert_core_schema_healthy.assert_called_once_with()
 
+    def test_offline_restored_modules_finish_the_website_and_pending_install_queue(self) -> None:
+        runner, _drop_database = self._restore_runner(OPENUPGRADE_ENABLED=True, OPENUPGRADE_TARGET_VERSION="19.0")
+        state = {"upgraded": False, "installed": False, "website_reset": False, "website_current": False, "pending": True}
+
+        def upgrade() -> None:
+            state["upgraded"] = True
+
+        def install(**_arguments: Any) -> None:
+            self.assertTrue(state["upgraded"])
+            state["installed"] = True
+
+        def reset_website() -> None:
+            self.assertTrue(state["installed"])
+            state["website_reset"] = True
+
+        def refresh_website(**_arguments: Any) -> None:
+            self.assertTrue(state["website_reset"])
+            state["website_current"] = True
+
+        def reconcile() -> None:
+            self.assertTrue(state["website_current"])
+            state["pending"] = False
+
+        def check_queue() -> None:
+            self.assertFalse(state["pending"])
+
+        runner.run_openupgrade.side_effect = upgrade
+        runner.install_addons.side_effect = install
+        runner.update_addons.side_effect = refresh_website
+        runner.reconcile_missing_manifest_install_queue.side_effect = reconcile
+        runner.assert_install_queue_is_resolvable.side_effect = check_queue
+        with patch.object(runner, "_reset_website_snippets_inheritance", side_effect=reset_website):
+            runner.prepare_restored_modules(do_sanitize=True)
+
+        self.assertTrue(state["website_current"])
+        self.assertFalse(state["pending"])
+        runner.apply_environment_overrides.assert_not_called()
+        runner.ensure_admin_user.assert_not_called()
+
     def test_restore_does_not_start_when_upstream_settings_are_missing(self) -> None:
         settings = odoo_data_workflows.LocalServerSettings(**self._LOCAL_ENVIRONMENT)
         runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
