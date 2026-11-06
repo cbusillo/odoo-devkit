@@ -422,6 +422,9 @@ Notes
   addons without an external source. Startup and data workflows reject distinct
   copies of that module on the addons path; remove the redundant source rather
   than relying on path order.
+- Artifact publication preserves resolved install roots without expanding addon
+  dependencies. The CM context declares the required Launchplane modules
+  explicitly so its artifact carries them through this same contract.
 - When a tenant repo contains `website-bootstrap.toml` (at the tenant repo root,
   or beside `workspace.toml`),
   runtime selection also folds that non-secret website intent into the same
