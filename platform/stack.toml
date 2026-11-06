@@ -41,6 +41,8 @@ POSTGRES_EFFECTIVE_IO_CONCURRENCY = 1
 database = "cm"
 install_modules = [
     "cm_custom",
+    "launchplane_settings",
+    "disable_odoo_online",
 ]
 
 [contexts.cm.instances.local]
