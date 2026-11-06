@@ -40,12 +40,6 @@ screening automatically.
 
 ## Full production consumer build
 
-The existing CM context in `platform/stack.toml` declares its bootstrap safety
-addons explicitly alongside `cm_custom`. Artifact publication preserves the
-resolved install roots; it does not expand addon dependencies into that list.
-These addons are already dependencies of `cm_custom`, so the explicit roots
-satisfy artifact admission without expanding its dependency closure.
-
 A devkit PR is checked against tenant `main` before the preparing agent posts
 `Ready for the merge train`. The tenant runs the check with its existing source
 and base-image read access. The agent dispatches and watches through the
