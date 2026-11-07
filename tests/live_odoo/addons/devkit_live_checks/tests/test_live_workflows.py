@@ -80,6 +80,7 @@ class TestLiveWorkflows(TransactionCase):
                         "store boolean,company_dependent boolean)"
                     )
                     cursor.execute("CREATE TABLE ir_default (field_id integer)")
+                    cursor.execute("CREATE TABLE ir_model_data (module text,name text,model text,res_id integer,noupdate boolean)")
                     cursor.execute("CREATE TABLE res_company (id integer PRIMARY KEY)")
                     cursor.execute("INSERT INTO res_company VALUES (2),(7)")
                     cursor.execute("INSERT INTO product_template VALUES (1,0),(2,8),(3,NULL)")
@@ -102,7 +103,9 @@ class TestLiveWorkflows(TransactionCase):
                     self.assertEqual(cursor.fetchall(), [(1, {"2": 0, "7": 0}), (2, {"2": 8, "7": 8}), (3, None)])
                     cursor.execute("SELECT company_dependent FROM ir_model_fields WHERE id=9")
                     self.assertEqual(cursor.fetchone(), (True,))
-                    self.assertEqual([json.loads(line)["status"] for line in report.read_text().splitlines()], ["passed"])
+                    events = [json.loads(line) for line in report.read_text().splitlines()]
+                    self.assertTrue(events)
+                    self.assertTrue(all(event["status"] == "passed" for event in events), events)
                     connection.rollback()
                     cursor.execute("SELECT id,sale_delay FROM product_template ORDER BY id")
                     self.assertEqual(cursor.fetchall(), [(1, 0), (2, 8), (3, None)])
