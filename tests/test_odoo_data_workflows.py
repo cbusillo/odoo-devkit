@@ -889,6 +889,50 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
                         self.assertNotIn("--init", command)
                     self.assertEqual(command[command.index("--update") + 1], "all")
 
+    def test_explicit_framework_load_applies_to_native_20_and_requires_its_source(self) -> None:
+        settings = self._local_settings()
+        settings.openupgrade_enabled = True
+        settings.openupgrade_target_version = "20.0"
+        settings.openupgrade_load_framework = True
+        runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
+        with TemporaryDirectory() as directory:
+            framework = Path(directory)
+            manifest = framework / "__manifest__.py"
+            manifest.write_text(repr({"version": settings.openupgrade_target_version + ".1.0.0"}))
+            with (
+                patch.object(runner, "_resolve_openupgrade_assets", return_value=([Path("/scripts")], framework)) as assets,
+                patch.object(runner, "run_command") as execute,
+            ):
+                runner.run_openupgrade()
+                for call in assets.call_args_list:
+                    self.assertTrue(call.kwargs["require_framework"])
+                manifest.write_text(repr({"version": "19.0.1.0.0"}))
+                with self.assertRaises(odoo_data_workflows.OdooRestorerError):
+                    runner.run_openupgrade()
+                execute.assert_called_once()
+        command = shlex.split(execute.call_args.args[0])
+        self.assertIn("openupgrade_framework", command[command.index("--load") + 1].split(","))
+
+    def test_ordinary_restore_cannot_complete_a_diagnostic_upgrade(self) -> None:
+        settings = self._local_settings()
+        settings.openupgrade_enabled = True
+        runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
+        runner.os_env["ODOO_MIGRATION_DIAGNOSTIC_REPORT"] = "/private/report.jsonl"
+        with (
+            patch.object(runner, "snapshot_module_states_before_openupgrade"),
+            patch.object(runner, "run_openupgrade"),
+            patch.object(runner, "install_addons") as install,
+            self.assertRaisesRegex(odoo_data_workflows.OdooRestorerError, "not a completed restore"),
+        ):
+            runner.prepare_restored_modules(do_sanitize=True)
+        install.assert_not_called()
+        with (
+            patch.object(runner, "_resolve_local_module_paths") as resolve,
+            self.assertRaisesRegex(odoo_data_workflows.OdooRestorerError, "saved19 diagnostic driver"),
+        ):
+            runner.run_restore()
+        resolve.assert_not_called()
+
     def test_openupgrade_releases_cached_connection_before_odoo_command(self) -> None:
         settings = self._local_settings()
         settings.openupgrade_enabled = True

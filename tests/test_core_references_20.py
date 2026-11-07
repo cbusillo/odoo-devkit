@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sqlite3
 import sys
 import tempfile
@@ -153,6 +154,43 @@ class CoreReferenceFixture(unittest.TestCase):
 
 
 class CoreReferenceTests(CoreReferenceFixture):
+    def test_diagnostic_reports_independent_failures_rolls_back_and_keeps_other_work(self) -> None:
+        report = Path(self.directory.name) / "diagnostic.jsonl"
+
+        def rejected() -> None:
+            self.connection.execute("UPDATE website SET name='must roll back'")
+            raise RuntimeError("retained customization")
+
+        before = self.snapshot()
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "ODOO_MIGRATION_DIAGNOSTIC_REPORT": str(report),
+                    "ODOO_COPY_PURPOSE": "migration",
+                    "PLATFORM_INSTANCE": "rehearsal",
+                    "OPENUPGRADE_TARGET_VERSION": "20.0",
+                },
+            ),
+            patch_attr(bridge, "_hr_preferences_view_plan", lambda _cr: rejected()),
+            patch_attr(bridge, "_lunch_plan", lambda _cr: rejected()),
+            patch_attr(bridge, "_admit_mail", lambda _cr: rejected()),
+        ):
+            self.apply()
+        events = [json.loads(line) for line in report.read_text().splitlines()]
+        self.assertEqual(
+            {event["check"] for event in events if event["status"] == "failed"},
+            {"HR preferences", "Calendar lunches", "Mail preservation"},
+        )
+        self.assertEqual(
+            {event["check"] for event in events if event["status"] == "blocked"},
+            {name + ": remaining guards" for name in ("HR preferences", "Calendar lunches", "Mail preservation")},
+        )
+        self.assertEqual(self.snapshot()["website"], before["website"])
+        self.assertIsNotNone(
+            self.connection.execute("SELECT id FROM ir_model_data WHERE module='base' AND name=?", (bridge.TARGET_STATE,)).fetchone()
+        )
+
     def test_hr_type_refusal_precedes_every_bridge_effect(self) -> None:
         before = self.snapshot()
         with (
