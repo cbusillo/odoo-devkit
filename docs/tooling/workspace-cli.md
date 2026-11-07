@@ -730,6 +730,11 @@ Notes
   public-source comparison and exact-byte checks. Recorded absence does not
   establish that an unused catalog was pristine, and never bypasses material-value,
   history, ownership or incoming-reference checks.
+  Each image may also record its original native `index_content` and `website_id`
+  context. Only the native image index marker or null and an explicit website
+  identity or null are supported; actual metadata must match exactly. Other
+  metadata stays bound to the attachment defaults. No website is selected by
+  position and no custom index text is admitted as stock.
   A source custodian can use `qualify_source_family(profile, source_manifest,
   manifest_sha256, automation_source)` to add the one stock Base Automation
   extension without changing the independent reference. The separate immutable

@@ -249,6 +249,23 @@ class PaymentAdmissionTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "alias material metadata"):
             self.admit()
 
+    def test_native_image_index_and_website_context_must_match_the_recorded_original(self) -> None:
+        for method in self.witness["methods"].values():
+            for image in method["images"].values():
+                image["metadata"] = {"index_content": "image", "website_id": 71}
+        for attachment in self.current["attachments"]:
+            attachment.update(index_content="image", website_id=71)
+        self.admit()
+        self.current["attachments"][0]["website_id"] = 72
+        with self.assertRaisesRegex(RuntimeError, "attachment customization"):
+            self.admit()
+        self.current["attachments"][0]["website_id"] = 71
+        for method in self.witness["methods"].values():
+            for image in method["images"].values():
+                image["metadata"]["index_content"] = "custom content"
+        with self.assertRaisesRegex(RuntimeError, "unsupported native image metadata"):
+            self.admit()
+
     def test_whole_family_admits_with_semantic_nullable_boolean_and_real_original_file_hashes(self) -> None:
         plan = self.admit()
         self.assertEqual(set(plan.methods), {row["id"] for row in self.current["methods"]})

@@ -236,11 +236,20 @@ def admit(snapshot: dict[str, Any], witness: dict[str, Any], filestore: Path) ->
             "has_db_datas",
         }
         metadata = {key: value for key, value in row.items() if key not in AUDIT | dynamic}
-        if _semantic_values(metadata, witness["attachment_defaults"]) != witness["attachment_defaults"]:
-            _fail("attachment customization or unknown fields")
         expected_image = witness["methods"][methods[row["res_id"]]]["images"][field]
         if expected_image is None:
             _fail("image differs from recorded source absence")
+        context = expected_image.get("metadata", {})
+        website_id = context.get("website_id")
+        if (
+            set(context) - {"index_content", "website_id"}
+            or context.get("index_content") not in (None, "image")
+            or (website_id is not None and (type(website_id) is not int or website_id <= 0))
+        ):
+            _fail("unsupported native image metadata")
+        expected_metadata = witness["attachment_defaults"] | context
+        if _semantic_values(metadata, expected_metadata) != expected_metadata:
+            _fail("attachment customization or unknown fields")
         _admit_image_file(row, expected_image, filestore)
     if seen != {
         (identifier, field)
