@@ -845,8 +845,11 @@ Notes
   unchanged. No view is deleted or deactivated and no module is uninstalled.
   The stock source is the exact official historical
   [19 file](https://github.com/odoo/odoo/blob/91a45b0685000b002fcb71600fdccfc5e31ef076/addons/hr_org_chart/views/hr_employee_public_views.xml)
-  under `docker/scripts/legacy/hr_org_chart/`; attribute differences, including
-  image preview placement, remain significant. Its hierarchy may retain the
+  under `docker/scripts/legacy/hr_org_chart/`. The hierarchy also accepts the
+  exact shipped19 image-options architecture retained in
+  `hr_employee_public_hierarchy_options_19.xml`, as current or previous history.
+  Both stock forms are compared in full; changed preview values, added options
+  and other attribute differences still refuse. Its hierarchy may retain the
   exact [stock18 architecture](https://github.com/odoo/odoo/blob/68d580d3d4703e7190055f7040682942d5f1a24f/addons/hr_org_chart/views/hr_employee_public_views.xml)
   as previous history while the current architecture still matches stock19.
   The public form extension likewise accepts exact18 history from the public

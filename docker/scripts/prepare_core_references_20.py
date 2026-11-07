@@ -556,6 +556,10 @@ def _hr_org_chart_view_plan(cr: Any) -> tuple[Reference, int | None]:
     previous = _hr_org_chart_stock_views("18")
     cr.execute("LOCK TABLE ir_ui_view, ir_ui_view_custom, ir_ui_view_group_rel, ir_model_data IN SHARE ROW EXCLUSIVE MODE")
     hierarchy_name = "hr_employee_public_hierarchy_view"
+    options_source = Path(__file__).with_name("legacy") / "hr_org_chart/hr_employee_public_hierarchy_options_19.xml"
+    options_architecture = ElementTree.parse(
+        options_source, parser=ElementTree.XMLParser(target=ElementTree.TreeBuilder(insert_comments=True))
+    ).getroot()
     hierarchy = _require_source(cr, "hr_org_chart", hierarchy_name, "ir.ui.view")
     target = _check_target(cr, hierarchy_name, hierarchy, module="hr")
     if (target is not None and target.noupdate) or (hierarchy.noupdate and target is None):
@@ -661,14 +665,17 @@ def _hr_org_chart_view_plan(cr: Any) -> tuple[Reference, int | None]:
         try:
             expected = normalize(expected)
             current = normalize(architectures["en_US"])
-            admitted_history = {expected}
+            stock_architectures = {expected}
+            if name == hierarchy_name:
+                stock_architectures.add(normalize(ElementTree.tostring(options_architecture, encoding="unicode")))
+            admitted_history = stock_architectures.copy()
             if name in previous:
                 admitted_history.add(normalize(ElementTree.tostring(previous[name]["arch"][0], encoding="unicode")))
             if view.get("arch_prev") and normalize(view["arch_prev"]) not in admitted_history:
                 raise RuntimeError("Preserve customized Org Chart previous architecture")
         except (ElementTree.ParseError, TypeError, ValueError) as error:
             raise RuntimeError("Unsupported Org Chart architecture") from error
-        if current == expected:
+        if current in stock_architectures:
             if inherited:
                 extension_change = source.record_id
         elif not inherited or current != normalize("<data/>"):
