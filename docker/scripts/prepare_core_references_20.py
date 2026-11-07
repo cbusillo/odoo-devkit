@@ -1260,12 +1260,17 @@ def _hr_preferences_view_plan(cr: Any) -> tuple[int, str] | None:
         modules["mail_bot_hr"] = (primary_name, child_name)
     references = {"base.view_users_form_simple_modif": _require_source(cr, "base", "view_users_form_simple_modif", "ir.ui.view")}
     stock: dict[str, dict[str, ElementTree.Element]] = {}
+    previous_stock: dict[str, Any] = {}
     for module, names in modules.items():
         path = Path(__file__).with_name("legacy") / module / ("res_users_19.xml" if module == "hr" else "res_users_views_19.xml")
         for name in names:
             key = f"{module}.{name}"
             references[key] = _require_source(cr, module, name, "ir.ui.view")
             stock[key] = _hr_native_fields(path, name, "ir.ui.view")
+        previous_name = primary_name if module == "hr" else child_name
+        previous_path = path.with_name("res_users_18.xml" if module == "hr" else "res_users_views_18.xml")
+        previous_fields = _hr_native_fields(previous_path, previous_name, "ir.ui.view")
+        previous_stock[f"{module}.{previous_name}"] = normalize(render(previous_fields["arch"]))
     cr.execute("LOCK TABLE ir_ui_view, ir_ui_view_custom, ir_ui_view_group_rel, ir_model_data IN SHARE ROW EXCLUSIVE MODE")
     if any(ref.noupdate for ref in references.values()) or len({ref.record_id for ref in references.values()}) != len(references):
         raise RuntimeError("Protected or overlapping HR preference ownership")
@@ -1356,7 +1361,7 @@ def _hr_preferences_view_plan(cr: Any) -> tuple[int, str] | None:
         try:
             expected = normalize(render(fields["arch"]))
             current = normalize(architectures["en_US"])
-            if view.get("arch_prev") and normalize(view["arch_prev"]) != expected:
+            if view.get("arch_prev") and normalize(view["arch_prev"]) not in (expected, previous_stock.get(key)):
                 raise RuntimeError("Preserve customized HR preferences history")
             if key == f"hr.{child_name}" and current == expected:
                 plan = source.record_id, target
