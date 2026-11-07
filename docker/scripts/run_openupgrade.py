@@ -74,6 +74,9 @@ def main(argument_values: Sequence[str] | None = None) -> int:
         logger.error("OpenUpgrade failed: %s", openupgrade_error)
         return int(ExitCode.OPENUPGRADE_FAILED)
 
+    if workflow_runner.os_env.get("ODOO_MIGRATION_DIAGNOSTIC_REPORT"):
+        logger.error("Diagnostic upgrade finished; inspect its report. This is not a completed migration.")
+        return int(ExitCode.OPENUPGRADE_FAILED)
     logger.info("OpenUpgrade completed successfully.")
     return int(ExitCode.SUCCESS)
 

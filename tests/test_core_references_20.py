@@ -182,7 +182,10 @@ class CoreReferenceTests(CoreReferenceFixture):
             {event["check"] for event in events if event["status"] == "failed"},
             {"HR preferences", "Calendar lunches", "Mail preservation"},
         )
-        self.assertEqual(len([event for event in events if event["status"] == "blocked"]), 4)
+        self.assertEqual(
+            {event["check"] for event in events if event["status"] == "blocked"},
+            {name + ": remaining guards" for name in ("HR preferences", "Calendar lunches", "Mail preservation")},
+        )
         self.assertEqual(self.snapshot()["website"], before["website"])
         self.assertIsNotNone(
             self.connection.execute("SELECT id FROM ir_model_data WHERE module='base' AND name=?", (bridge.TARGET_STATE,)).fetchone()

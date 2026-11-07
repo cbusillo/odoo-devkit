@@ -1634,10 +1634,13 @@ def migrate(cr: Any, version: str | None) -> None:
     calendar_views = diagnostics.check("Calendar preferences", lambda: _calendar_view_plan(cr), [], cursor=cr)
     hr_preferences = diagnostics.check("HR preferences", lambda: _hr_preferences_view_plan(cr), None, cursor=cr)
     hr_types = diagnostics.check("HR types", lambda: _hr_type_plan(cr), None, cursor=cr)
+    failures_before_org_chart = diagnostics.failed.copy()
     hr_org_chart = diagnostics.check("Public Org Chart action", lambda: _hr_org_chart_action_plan(cr), None, cursor=cr)
     hr_moved: dict[str, Reference] = {}
-    if hr_org_chart is not None:
-        hr_moved["action_hr_employee_public_org_chart"] = hr_org_chart
+    check_org_chart = hr_org_chart is not None or "Public Org Chart action" in diagnostics.failed
+    if check_org_chart:
+        if hr_org_chart is not None:
+            hr_moved["action_hr_employee_public_org_chart"] = hr_org_chart
 
         def private_plan() -> Reference:
             private = _hr_org_chart_action_plan(cr, private=True)
@@ -1675,10 +1678,14 @@ def migrate(cr: Any, version: str | None) -> None:
             if link is not None:
                 hr_moved[name] = link
     hr_org_chart_views = None
-    if hr_org_chart is not None:
+    if check_org_chart:
         hr_org_chart_views = diagnostics.check("Org Chart views", lambda: _hr_org_chart_view_plan(cr), None, cursor=cr)
-    elif diagnostics.path is not None:
-        diagnostics.record("Org Chart links and views", "blocked", "No admitted public Org Chart action")
+    if diagnostics.failed != failures_before_org_chart:
+        hr_moved.clear()
+        hr_org_chart_views = None
+        diagnostics.record(
+            "Org Chart changes", "blocked", "A dependent action, link or view failed; all Org Chart changes were skipped"
+        )
     diagnostics.check("Mail preservation", lambda: _admit_mail(cr), None, cursor=cr)
     for (module, name), source in stock_views.items():
         _bind_target(cr, name, source, module=module)

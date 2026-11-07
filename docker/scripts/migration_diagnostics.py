@@ -15,6 +15,7 @@ class MigrationDiagnostics:
     def __init__(self) -> None:
         report = os.environ.get("ODOO_MIGRATION_DIAGNOSTIC_REPORT")
         self.path = Path(report) if report else None
+        self.failed: set[str] = set()
         if self.path is not None and (
             os.environ.get("ODOO_COPY_PURPOSE") != "migration"
             or os.environ.get("PLATFORM_INSTANCE") != "rehearsal"
@@ -25,6 +26,8 @@ class MigrationDiagnostics:
     def record(self, name: str, status: str, detail: str = "") -> None:
         if self.path is None:
             return
+        if status == "failed":
+            self.failed.add(name)
         event = {"check": name, "status": status, "detail": detail}
         with self.path.open("a") as stream:
             stream.write(json.dumps(event) + "\n")
@@ -44,7 +47,9 @@ class MigrationDiagnostics:
             if cursor is not None:
                 cursor.execute("ROLLBACK TO SAVEPOINT migration_diagnostic_check")
             self.record(name, "failed", f"{type(error).__name__}: {error}")
-            self.record(name + ": remaining guards", "blocked", "The first failure stopped this check; its changes were skipped")
+            self.record(
+                name + ": remaining guards", "blocked", "Coverage beyond the reported error is unproved; changes were skipped"
+            )
             return fallback
         else:
             self.record(name, "passed")

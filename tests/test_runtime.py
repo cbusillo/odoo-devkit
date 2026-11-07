@@ -3527,6 +3527,7 @@ sources = [
                     DATA_WORKFLOW_SSH_DIR="${ODEV_PATH_ROOT:-~}/.ssh",
                     DATA_WORKFLOW_SSH_KEY="$ODEV_EXPANSION-key",
                     ODOO_UPSTREAM_FILESTORE_PATH="${DATA_WORKFLOW_SSH_DIR}/filestore",
+                    ODOO_MIGRATION_DIAGNOSTIC_REPORT="/workspace/shared/diagnostic20.jsonl",
                 )
                 payload = json.dumps({"context": "opw", "instance": "local", "environment": environment})
                 successful_run = self._runtime_data_workflow_side_effect()
@@ -3571,6 +3572,7 @@ sources = [
 
                 workflow_call = next(call for call in run_mock.call_args_list if local_runtime.DATA_WORKFLOW_SCRIPT in call.args[0])
                 forwarded = workflow_call.kwargs["env"]
+                self.assertEqual(forwarded["ODOO_MIGRATION_DIAGNOSTIC_REPORT"], environment["ODOO_MIGRATION_DIAGNOSTIC_REPORT"])
                 for key in (
                     "ODOO_DB_PASSWORD",
                     "ODOO_ADMIN_PASSWORD",

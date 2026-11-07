@@ -3100,6 +3100,17 @@ with registry.cursor() as cr:
 
     def _uses_openupgrade_framework(self) -> bool:
         requested = self.local.openupgrade_load_framework
+        if requested and self._is_native_20_upgrade():
+            _, framework = self._resolve_openupgrade_assets(require_framework=True)
+            try:
+                manifest = ast.literal_eval((framework / "__manifest__.py").read_text()) if framework is not None else {}
+                version = manifest.get("version", "")
+                if not isinstance(version, str) or version.split(".", 1)[0] != self._openupgrade_target_version().split(".", 1)[0]:
+                    raise ValueError("framework target mismatch")
+            except (OSError, SyntaxError, ValueError, AttributeError) as error:
+                raise OdooRestorerError(
+                    "Explicit framework loading requires a matching target-series framework manifest."
+                ) from error
         return requested if requested is not None else not self._is_native_20_upgrade()
 
     def reset_openupgrade_versions(self) -> list[str]:
@@ -3318,6 +3329,8 @@ with registry.cursor() as cr:
         if self.local.openupgrade_enabled:
             self.snapshot_module_states_before_openupgrade()
             self.run_openupgrade()
+            if self.os_env.get("ODOO_MIGRATION_DIAGNOSTIC_REPORT"):
+                raise OdooRestorerError("Diagnostic upgrade finished; inspect its report. This is not a completed restore.")
             # Migrations may reactivate crons or rewrite credentials. Preserve the
             # requested sanitize policy before the next registry/module process.
             self.prepare_credentials_before_registry(restored_copy=True, do_sanitize=do_sanitize)
