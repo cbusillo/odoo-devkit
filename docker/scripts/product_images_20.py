@@ -20,6 +20,7 @@ def scope_native_template_search(owner: Any, selected: list[int]) -> Iterator[No
     def search(records: Any, domain: Any, *args: Any, **kwargs: Any) -> Any:
         nonlocal first_search
         if first_search:
+            assert any(term.field_expr == "image_1920" for term in Domain(domain).iter_conditions())
             first_search = False
             domain = Domain(domain) & Domain("id", "in", selected)
         return original_search(records, domain, *args, **kwargs)

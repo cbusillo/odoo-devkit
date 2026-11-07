@@ -82,7 +82,7 @@ class TestLiveWorkflows(TransactionCase):
         nested = []
 
         def native(selected: Any) -> None:
-            observed.extend(selected.search([("id", "in", records.ids)]).ids)
+            observed.extend(selected.search([("id", "in", records.ids), ("image_1920", "=", False)]).ids)
             nested.append(selected.search([("id", "=", records[-1].id)]).ids)
 
         original = type(model).search
@@ -106,6 +106,13 @@ class TestLiveWorkflows(TransactionCase):
                     conversion["bounded_image_conversion"](fail)(model)
                 self.assertIs(type(model).search, original)
                 self.assertEqual(model.search([("id", "in", records.ids)], order="id").ids, records.ids)
+
+        def changed_native(selected: Any) -> None:
+            selected.search([("id", "in", records.ids)])
+
+        with self.assertRaises(AssertionError):
+            conversion["bounded_image_conversion"](changed_native)(model)
+        self.assertIs(type(model).search, original)
 
     def test_native_image_copy_ownership_and_shared_file_use_real_sql(self) -> None:
         check = runpy.run_path("/volumes/scripts/product_images_20.py")["native_image_copies"]

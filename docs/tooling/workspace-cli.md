@@ -693,6 +693,8 @@ Notes
   keep their existing refusal behavior.
   The Website Sale pre-stage calls the native image conversion in bounded groups,
   retaining native selection and image associations without committing between groups.
+  Attachment content reads memoize file bytes in the ORM raw cache. Each group
+  flushes and invalidates that cache; the first scoped search must name `image_1920`.
   Original business attachments remain strict. The saved19 driver recognizes new
   extra-image copies only when database ownership, source checksums and actual bytes
   match their own template or variant; rollback leaves no separate copy journal.
