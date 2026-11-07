@@ -241,6 +241,14 @@ class PaymentAdmissionTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "missing stock image"):
             self.admit()
 
+    def test_unset_studio_alias_marker_is_accepted_and_customized_alias_refuses(self) -> None:
+        for alias in self.current["method_aliases"] + self.current["provider_aliases"]:
+            alias["studio"] = None
+        self.admit()
+        self.current["method_aliases"][0]["studio"] = True
+        with self.assertRaisesRegex(RuntimeError, "alias material metadata"):
+            self.admit()
+
     def test_whole_family_admits_with_semantic_nullable_boolean_and_real_original_file_hashes(self) -> None:
         plan = self.admit()
         self.assertEqual(set(plan.methods), {row["id"] for row in self.current["methods"]})

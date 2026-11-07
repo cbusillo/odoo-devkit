@@ -126,7 +126,10 @@ def _owned(rows: list[dict[str, Any]], aliases: list[dict[str, Any]], expected: 
         _fail("duplicate row identity")
     result = {}
     for alias in aliases:
-        if set(alias) - AUDIT != {"id", "module", "name", "model", "res_id", "noupdate"}:
+        if set(alias) - AUDIT - {"studio"} != {"id", "module", "name", "model", "res_id", "noupdate"} or alias.get("studio") not in (
+            None,
+            False,
+        ):
             _fail("alias material metadata")
         key = alias["module"] + "." + alias["name"]
         identity = alias["res_id"]
