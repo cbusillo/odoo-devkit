@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import configparser
+import hashlib
 import json
 import os
 import runpy
@@ -68,6 +69,78 @@ def database_command(statement: sql.Composed) -> None:
 
 @tagged("post_install", "-at_install")
 class TestLiveWorkflows(TransactionCase):
+    def test_native_batch_scope_uses_real_recordsets_and_restores_search(self) -> None:
+        conversion = runpy.run_path("/volumes/scripts/product_images_20.py")
+        records = self.env["res.partner"].create(
+            [{"name": "Batch first"}, {"name": "Batch archived", "active": False}, {"name": "Batch last"}]
+        )
+        model = self.env["res.partner"].with_context(active_test=False)
+        observed = []
+        nested = []
+
+        def native(selected: Any) -> None:
+            observed.extend(selected.search([("id", "in", records.ids)], order="id").ids)
+            nested.append(selected.search([("id", "=", records[-1].id)]).ids)
+
+        original = type(model).search
+        with patch.dict(conversion["bounded_image_conversion"].__globals__, {"IMAGE_BATCH_SIZE": 1}):
+            conversion["bounded_image_conversion"](native)(model)
+        self.assertEqual(observed, records.ids)
+        self.assertTrue(all(ids == [records[-1].id] for ids in nested))
+        self.assertIs(type(model).search, original)
+
+    def test_native_image_copy_ownership_and_bytes_use_real_sql(self) -> None:
+        check = runpy.run_path("/volumes/scripts/product_images_20.py")["native_image_copies"]
+        with (
+            psycopg2.connect(host="database", user="odoo", dbname="postgres") as connection,
+            connection.cursor() as cursor,
+            tempfile.TemporaryDirectory() as directory,
+        ):
+            store = Path(directory)
+            payload = b"original product image"
+            checksum = hashlib.sha1(payload).hexdigest()
+            for name in ("source", "copy"):
+                (store / name).write_bytes(payload)
+            cursor.execute("CREATE TEMP TABLE product_image(id integer,product_tmpl_id integer)")
+            cursor.execute("CREATE TEMP TABLE product_product(id integer,product_tmpl_id integer)")
+            cursor.execute(
+                "CREATE TEMP TABLE ir_attachment(id integer,res_model text,res_id integer,res_field text,store_fname text,checksum text)"
+            )
+            cursor.execute("INSERT INTO product_image VALUES(22,1)")
+            cursor.execute("INSERT INTO product_product VALUES(2,1)")
+            cursor.executemany(
+                "INSERT INTO ir_attachment VALUES(%s,%s,%s,%s,%s,%s)",
+                [
+                    (1, "product.template", 1, "image_1920", "source", checksum),
+                    (2, "product.image", 22, "image_1920", "copy", checksum),
+                ],
+            )
+            self.assertEqual(check(cursor, store, 21), {("product.image", 22)})
+            self.assertEqual(check(cursor, store, 22), set())
+            cursor.execute("UPDATE ir_attachment SET res_model='product.product',res_id=2,res_field='image_variant_1920' WHERE id=1")
+            self.assertEqual(check(cursor, store, 21), {("product.image", 22)})
+            for statement in (
+                "UPDATE product_image SET product_tmpl_id=9",
+                "UPDATE ir_attachment SET res_field='image_1024' WHERE id=1",
+                "UPDATE ir_attachment SET res_field='image_1024' WHERE id=2",
+                "UPDATE ir_attachment SET checksum='different image' WHERE id=2",
+            ):
+                cursor.execute("SAVEPOINT image_copy_case")
+                cursor.execute(statement)
+                self.assertEqual(check(cursor, store, 21), set())
+                cursor.execute("ROLLBACK TO SAVEPOINT image_copy_case")
+                cursor.execute("RELEASE SAVEPOINT image_copy_case")
+            cursor.execute(
+                "INSERT INTO ir_attachment SELECT 3,res_model,res_id,res_field,store_fname,checksum FROM ir_attachment WHERE id=2"
+            )
+            with self.assertRaises(ValueError):
+                check(cursor, store, 21)
+            cursor.execute("DELETE FROM ir_attachment WHERE id=3")
+            (store / "copy").write_bytes(b"corrupt image bytes")
+            with self.assertRaises(ValueError):
+                check(cursor, store, 21)
+            connection.rollback()
+
     def test_translated_action_labels_preserve_record_reference_guards(self) -> None:
         check = runpy.run_path("/volumes/scripts/prepare_core_references_20.py")["_check_json_references"]
         cursor = self.env.cr

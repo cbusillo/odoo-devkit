@@ -1,86 +1,85 @@
 from __future__ import annotations
 
 import hashlib
-import json
-import os
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from functools import wraps
 from pathlib import Path
 from typing import Any
 
 IMAGE_BATCH_SIZE = 32
 
 
-def create_extra_variant_images(templates: Any) -> None:
-    from odoo import Command
+@contextmanager
+def scope_native_template_search(owner: Any, selected: list[int]) -> Iterator[None]:
+    from odoo.fields import Domain
 
-    identifiers = templates.search([("image_1920", "!=", False)]).ids
-    for offset in range(0, len(identifiers), IMAGE_BATCH_SIZE):
-        values = []
-        origins = []
-        for template in templates.browse(identifiers[offset : offset + IMAGE_BATCH_SIZE]):
-            template_image = template.image_1920
-            first_image = template.product_template_image_ids.sorted("sequence")[:1]
-            add_main = template_image.content != first_image.image_1920.content
-            main_attributes = templates.env["product.template.attribute.value"]
-            for product in template.product_variant_ids:
-                variant_image = product.image_variant_1920
-                first_variant_image = product.variant_image_ids.sorted("sequence")[:1]
-                if add_main and not variant_image and template_image.content == product.image_1920.content:
-                    main_attributes |= product.product_template_attribute_value_ids
-                if not variant_image or variant_image.content == first_variant_image.image_1920.content:
-                    continue
-                values.append(
-                    {
-                        "name": product.display_name,
-                        "product_tmpl_id": template.id,
-                        "attribute_value_ids": [Command.set(product.product_template_attribute_value_ids.ids)],
-                        "image_1920": variant_image,
-                        "sequence": first_variant_image.sequence - 1,
-                    }
-                )
-                origins.append(("product.product", product.id, "image_variant_1920", variant_image))
-            if add_main:
-                values.insert(
-                    0,
-                    {
-                        "name": template.display_name,
-                        "product_tmpl_id": template.id,
-                        "attribute_value_ids": [Command.set(main_attributes.ids)]
-                        if main_attributes and len(template.product_variant_ids) > 1
-                        else False,
-                        "image_1920": template_image,
-                        "sequence": first_image.sequence - 1,
-                    },
-                )
-                origins.insert(0, ("product.template", template.id, "image_1920", template_image))
-        expected = [
-            (model, identifier, field, hashlib.sha1(image.content).hexdigest()) for model, identifier, field, image in origins
-        ]
-        created = templates.env["product.image"].with_context(skip_update_main_image=True).create(values)
-        created_ids = created.ids
-        templates.env.flush_all()
-        templates.env.invalidate_all(flush=False)
-        copies = []
-        for image, (model, identifier, field, checksum) in zip(
-            templates.env["product.image"].browse(created_ids), expected, strict=True
-        ):
-            if hashlib.sha1(image.image_1920.content).hexdigest() != checksum:
-                raise RuntimeError("A native extra image differs from its original product image")
-            copies.append(
-                {"image_id": image.id, "source_model": model, "source_id": identifier, "source_field": field, "sha1": checksum}
-            )
-        report = os.environ.get("ODOO_MIGRATION_DIAGNOSTIC_REPORT")
-        if report and copies:
-            with Path(report).with_name("product-image-copies.jsonl").open("a") as stream:
-                stream.writelines(json.dumps(copy) + "\n" for copy in copies)
-                stream.flush()
-                os.fsync(stream.fileno())
-        templates.env.invalidate_all()
+    original_search = owner.search
+    inherited = "search" not in owner.__dict__
+    first_search = True
+
+    @wraps(original_search)
+    def search(records: Any, domain: Any, *args: Any, **kwargs: Any) -> Any:
+        nonlocal first_search
+        if first_search:
+            first_search = False
+            domain = Domain(domain) & Domain("id", "in", selected)
+        return original_search(records, domain, *args, **kwargs)
+
+    owner.search = search
+    try:
+        yield
+    finally:
+        if inherited:
+            del owner.search
+        else:
+            owner.search = original_search
+
+
+def bounded_image_conversion(native: Callable[[Any], None]) -> Callable[[Any], None]:
+    @wraps(native)
+    def convert(templates: Any) -> None:
+        identifiers = templates.ids or templates.with_context(active_test=False).search([]).ids
+        for offset in range(0, len(identifiers), IMAGE_BATCH_SIZE):
+            selected = identifiers[offset : offset + IMAGE_BATCH_SIZE]
+            with scope_native_template_search(type(templates), selected):
+                native(templates.browse(selected))
+            templates.env.flush_all()
+            templates.env.invalidate_all(flush=False)
+
+    return convert
 
 
 def install_bounded_image_conversion() -> None:
-    from odoo import api
     from odoo.addons.website_sale.models.product_template import ProductTemplate
 
-    if not callable(getattr(ProductTemplate, "_create_extra_variant_images", None)):
+    native = getattr(ProductTemplate, "_create_extra_variant_images", None)
+    if not callable(native):
         raise RuntimeError("The selected Website Sale has no native extra-image conversion")
-    ProductTemplate._create_extra_variant_images = api.model(create_extra_variant_images)
+    ProductTemplate._create_extra_variant_images = bounded_image_conversion(native)
+
+
+def native_image_copies(cursor: Any, store: Path, source_maximum: int) -> set[tuple[str, int]]:
+    cursor.execute(
+        "SELECT image.id,target.store_fname,target.checksum,source.store_fname "
+        "FROM product_image image "
+        "JOIN ir_attachment target ON target.res_model='product.image' AND target.res_id=image.id AND target.res_field='image_1920' "
+        "JOIN LATERAL (SELECT original.store_fname FROM ir_attachment original "
+        "LEFT JOIN product_product variant ON original.res_model='product.product' AND variant.id=original.res_id "
+        "WHERE original.checksum=target.checksum AND ((original.res_model='product.template' "
+        "AND original.res_field='image_1920' AND original.res_id=image.product_tmpl_id) OR "
+        "(original.res_model='product.product' AND original.res_field='image_variant_1920' "
+        "AND variant.product_tmpl_id=image.product_tmpl_id)) ORDER BY original.id LIMIT 1) source ON TRUE "
+        "WHERE image.id>%s ORDER BY image.id",
+        (source_maximum,),
+    )
+    rows = cursor.fetchall()
+    identifiers = {row[0] for row in rows}
+    if len(identifiers) != len(rows):
+        raise ValueError("Native image copies have ambiguous main attachments")
+    for _identifier, target, checksum, original in rows:
+        for name in {target, original}:
+            with (store / name).open("rb") as stream:
+                if hashlib.file_digest(stream, "sha1").hexdigest() != checksum:
+                    raise ValueError("Native image-copy bytes differ from their original product images")
+    return {("product.image", identifier) for identifier in identifiers}
