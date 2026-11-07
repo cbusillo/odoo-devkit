@@ -3243,6 +3243,8 @@ with registry.cursor() as cr:
         _logger.info("Reset website.snippets inherit_id to base view before upgrade.")
 
     def run_restore(self, do_sanitize: bool = True) -> None:
+        if self.os_env.get("ODOO_MIGRATION_DIAGNOSTIC_REPORT"):
+            raise OdooRestorerError("Use the saved19 diagnostic driver; ordinary restore cannot retain diagnostic results.")
         self._resolve_local_module_paths()
         self._require_upstream()
         self._assert_filestore_capacity()

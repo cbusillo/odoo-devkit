@@ -926,6 +926,12 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
         ):
             runner.prepare_restored_modules(do_sanitize=True)
         install.assert_not_called()
+        with (
+            patch.object(runner, "_resolve_local_module_paths") as resolve,
+            self.assertRaisesRegex(odoo_data_workflows.OdooRestorerError, "saved19 diagnostic driver"),
+        ):
+            runner.run_restore()
+        resolve.assert_not_called()
 
     def test_openupgrade_releases_cached_connection_before_odoo_command(self) -> None:
         settings = self._local_settings()

@@ -667,8 +667,9 @@ Notes
   fatal checks and before-effect behavior remain in force. Diagnostic reports
   are evidence of observed failures, never proof of a successful migration.
   Use a fresh private report path per diagnostic job. The ordinary restore
-  sequence and `run_openupgrade.py` command refuse a normal success result
-  when reporting is enabled. The OPW saved19 diagnostic driver owns its
+  entry refuses this mode before changing data. `run_openupgrade.py` refuses
+  a normal success result when reporting is enabled. The supported entry is
+  the OPW saved19 diagnostic driver, which owns its
   explicit diagnostic status, complete observed list and blocked coverage.
   A report pass describes a check, not committed migration effects.
   Native 20 also selects the packaged `docker/scripts/nativeupgrade` root.
