@@ -680,6 +680,13 @@ Notes
   Missing or unexpected metadata, column shapes, source defaults or companies
   refuse before conversion; diagnostics report the failure and skip changes.
   Already converted JSONB fields keep their defaults unchanged.
+  The Sale stage also handles the native accrued-revenue action changing from
+  a window action to a server action. It retires only the unchanged stock modal,
+  its sole XML ID and exact account-user group edge, after checking the target
+  definition and all incoming references. Native20 recreates the same XML ID.
+  Edited actions, extra aliases or groups, paths and incoming references report
+  failure before effects. Reference checks use upstream model/table mappings
+  so irregular action tables protect both concrete and generic action links.
   Its Mail pre-stage reuses the guarded stock-view conversion from
   [website227](https://github.com/cbusillo/odoo-tenant-cm-website/issues/227).
   Before any shared bridge effect, `mail_view_20.py` locks and compares the

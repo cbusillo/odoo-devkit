@@ -46,3 +46,5 @@ def migrate(cr: Any, version: str | None) -> None:
     root = Path(__file__).resolve().parents[3]
     diagnostics = runpy.run_path(str(root / "migration_diagnostics.py"))["MigrationDiagnostics"]()
     diagnostics.check("Sale company-dependent lead time preservation", lambda: preserve_lead_time(cr), None, cursor=cr)
+    preserve_action = runpy.run_path(str(root / "prepare_core_references_20.py"))["preserve_sale_accrual_action"]
+    diagnostics.check("Sale accrued revenue action preservation", lambda: preserve_action(cr), None, cursor=cr)

@@ -28,6 +28,7 @@ HR_EMPLOYEE_DATA_FILE = Path("/odoo/addons/hr/views/hr_employee_views.xml")
 HR_DEPARTMENT_DATA_FILE = Path("/odoo/addons/hr/views/hr_department_views.xml")
 HR_USERS_DATA_FILE = Path("/odoo/addons/hr/views/res_users.xml")
 HR_TYPE_DATA_FILE = Path("/odoo/addons/hr/data/hr_employee_type_data.xml")
+SALE_ACCRUAL_DATA_FILE = Path("/odoo/addons/sale/wizard/account_accrued_orders_wizard_views.xml")
 HR_TYPE_FIELD_OWNERS = ("hr.job", "hr.version", "hr.employee")
 UNTRACKED_PUBLIC_VIEW_DEFAULTS = {"track": (None, False), "visibility": (None, "")}
 _logger = logging.getLogger(__name__)
@@ -752,6 +753,78 @@ def _require_empty(row: dict[str, Any], ignored: set[str], defaults: dict[str, t
             raise RuntimeError(f"Customized or unsupported core transition state: {name}")
 
 
+def preserve_sale_accrual_action(cr: Any) -> None:
+    name = "action_accrued_revenue_entry_sale_order_line"
+    source = _reference(cr, "sale", name)
+    if source is None or source.model == "ir.actions.server":
+        return
+    if source.model != "ir.actions.act_window" or source.noupdate:
+        raise RuntimeError("Unsupported Sale accrual action ownership")
+    native = _hr_native_fields(SALE_ACCRUAL_DATA_FILE, name, "ir.actions.server")
+    if (
+        native.get("binding_model_id") is None
+        or native["binding_model_id"].attrib.get("ref") != "sale.model_sale_order_line"
+        or native.get("state") is None
+        or native["state"].text != "code"
+        or native.get("name") is None
+        or not native["name"].text
+    ):
+        raise RuntimeError("Unsupported native Sale accrual action")
+    binding = _require_source(cr, "sale", "model_sale_order_line", "ir.model")
+    group = _require_source(cr, "account", "group_account_user", "res.groups")
+    if _action_aliases(cr, source.record_id) != {("sale", name, source.model)}:
+        raise RuntimeError("Customized Sale accrual action aliases")
+    aliases = _rows(cr, "SELECT * FROM ir_model_data WHERE module=%s AND name=%s FOR UPDATE", ("sale", name))
+    if len(aliases) != 1 or aliases[0].get("studio"):
+        raise RuntimeError("Customized Sale accrual action metadata")
+    actions = _rows(cr, "SELECT * FROM ir_act_window WHERE id=%s FOR UPDATE", (source.record_id,))
+    if len(actions) != 1:
+        raise RuntimeError("Missing Sale accrual window action")
+    _require_empty(
+        actions[0],
+        {"id", "create_uid", "write_uid", "create_date", "write_date"},
+        {
+            "binding_model_id": (binding.record_id,),
+            "type": (source.model,),
+            "binding_type": ("action",),
+            "binding_view_types": ("list,form",),
+            "name": ({"en_US": native["name"].text},),
+            "limit": (80,),
+            "context": ("{}",),
+            "res_model": ("account.accrued.orders.wizard",),
+            "target": ("new",),
+            "view_mode": ("form",),
+            "mobile_view_mode": ("kanban",),
+            "cache": (True,),
+        },
+    )
+    cr.execute("SELECT tableoid::regclass::text,id FROM ir_actions WHERE id=%s FOR UPDATE", (source.record_id,))
+    if cr.fetchall() != [("ir_act_window", source.record_id)]:
+        raise RuntimeError("Ambiguous Sale accrual action storage")
+    cr.execute("SELECT gid FROM ir_act_window_group_rel WHERE act_id=%s FOR UPDATE", (source.record_id,))
+    if cr.fetchall() != [(group.record_id,)]:
+        raise RuntimeError("Customized Sale accrual action groups")
+    alias_id = aliases[0]["id"]
+    _check_references(
+        cr,
+        {"ir_act_window": [source.record_id], "ir_actions": [source.record_id], "ir_model_data": [alias_id]},
+        {("ir_act_window_group_rel", "act_id", "ir_act_window")},
+        indirect_rows={("ir_model_data", "res_id", "ir_act_window"): [alias_id]},
+    )
+    for query, parameters, expected in (
+        (
+            "DELETE FROM ir_act_window_group_rel WHERE act_id=%s AND gid=%s RETURNING act_id",
+            (source.record_id, group.record_id),
+            source.record_id,
+        ),
+        ("DELETE FROM ir_model_data WHERE id=%s RETURNING id", (alias_id,), alias_id),
+        ("DELETE FROM ir_act_window WHERE id=%s RETURNING id", (source.record_id,), source.record_id),
+    ):
+        cr.execute(query, parameters)
+        if cr.fetchall() != [(expected,)]:
+            raise RuntimeError("Sale accrual action retirement changed unexpectedly")
+
+
 def _pinned(member: dict[str, Any], channel: dict[str, Any]) -> bool:
     unpin = member["unpin_dt"]
     return not unpin or any(
@@ -858,7 +931,9 @@ def _check_references(
         if source not in ids or target not in ids or not set(rows).issubset(ids[source]):
             raise RuntimeError("Internal reference rows must belong to retiring source and target cohorts")
 
-    model_targets = {table.replace("_", "."): records for table, records in ids.items()}
+    utility = import_module("odoo.upgrade.util")
+    model_tables = {utility.model_of_table(cr, table): table for table in ids}
+    model_targets = {model: ids[table] for model, table in model_tables.items()}
     models = list(model_targets)
     cr.execute(
         "SELECT source_ns.nspname, source.relname, source_col.attname, target.relname, target_col.attname, "
@@ -932,7 +1007,7 @@ def _check_references(
             if not column or (kind == "many2many" and not relation_table):
                 raise RuntimeError("Unsupported core transition relation metadata")
             owner = relation_table if kind == "many2many" else None
-            relational_columns.setdefault(column, []).append((owner, ids[target.replace(".", "_")]))
+            relational_columns.setdefault(column, []).append((owner, model_targets[target]))
     cr.execute(
         "SELECT 1 FROM pg_class relation JOIN pg_namespace schema ON schema.oid = relation.relnamespace "
         "JOIN pg_attribute field ON field.attrelid = relation.oid WHERE schema.nspname = 'public' "
@@ -952,7 +1027,7 @@ def _check_references(
         )
         if cr.fetchone():
             raise RuntimeError("Unsupported core transition field default")
-    references = [f"{model},{record}" for model in model_ids for record in ids[model.replace(".", "_")]]
+    references = [f"{model},{record}" for model in model_ids for record in model_targets[model]]
     json_targets = json.dumps({"targets": [*model_ids, *references]})
     for table, fields in columns.items():
         for column, data_type in fields:
@@ -992,12 +1067,12 @@ def _check_references(
                     "WHERE value.key = ANY(%s) AND value.value = %s))"
                 )
                 parameters = (
-                    [str(record) for record in ids[model.replace(".", "_")]] if text_storage else ids[model.replace(".", "_")],
+                    [str(record) for record in model_targets[model]] if text_storage else model_targets[model],
                     model,
                     list(model_columns.get(table, ())),
                     str(model_id),
                 )
-                allowed = indirect_rows.get((table, column, model.replace(".", "_")))
+                allowed = indirect_rows.get((table, column, model_tables[model]))
                 if allowed:
                     query += " AND NOT (record.id = ANY(%s))"
                     parameters += (allowed,)

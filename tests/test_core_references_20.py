@@ -599,6 +599,9 @@ class EmptyChatFixture(CoreReferenceFixture):
         self.connection.create_function("jsonb_path_exists", 3, self.json_reference)
         self.cursor = DiscussCursor(self.connection)
         patch_attr(bridge, "_identified", self.cursor.identified).start()
+        importer = bridge.import_module
+        utility = Mock(model_of_table=lambda _cr, table: table.replace("_", "."))
+        patch_attr(bridge, "import_module", lambda name: utility if name == "odoo.upgrade.util" else importer(name)).start()
 
     @staticmethod
     def json_reference(value: str | None, _path: str, variables: str) -> bool:
@@ -1136,6 +1139,116 @@ class RetiringReferenceTests(EmptyChatFixture):
                 with self.assertRaises(RuntimeError):
                     bridge._check_references(self.cursor, self.targets, self.internal_relations, indirect_rows=indirect_rows)
                 self.assertEqual(self.all_rows(), before)
+
+
+class SaleAccrualActionTests(EmptyChatFixture):
+    def setUp(self) -> None:
+        super().setUp()
+        self.native = Path(self.directory.name) / "sale.xml"
+        self.native.write_text(
+            '<odoo><record id="action_accrued_revenue_entry_sale_order_line" model="ir.actions.server">'
+            '<field name="name">Accrued Revenue Entry</field>'
+            '<field name="binding_model_id" ref="sale.model_sale_order_line"/>'
+            '<field name="state">code</field></record></odoo>'
+        )
+        patch_attr(bridge, "SALE_ACCRUAL_DATA_FILE", self.native).start()
+        self.connection.executescript(
+            "CREATE TABLE ir_actions (id INTEGER PRIMARY KEY);"
+            "CREATE TABLE ir_act_window (id INTEGER PRIMARY KEY,binding_model_id INTEGER,type TEXT,binding_type TEXT,"
+            'binding_view_types TEXT,name TEXT,"limit" INTEGER,context TEXT,res_model TEXT,target TEXT,view_mode TEXT,'
+            "mobile_view_mode TEXT,cache BOOLEAN,path TEXT,custom_value TEXT);"
+            "CREATE TABLE ir_act_window_group_rel (act_id INTEGER REFERENCES ir_act_window(id),gid INTEGER);"
+            'INSERT INTO ir_model VALUES (901,"ir.actions.act_window"),(902,"ir.actions.actions"),(903,"ir.model.data");'
+            'INSERT INTO ir_act_window VALUES (1051,626,"ir.actions.act_window","action","list,form",'
+            '\'{"en_US":"Accrued Revenue Entry"}\',80,"{}","account.accrued.orders.wizard","new","form","kanban",1,NULL,NULL);'
+            "INSERT INTO ir_act_window_group_rel VALUES (1051,59);"
+        )
+        self.xmlid("sale", "action_accrued_revenue_entry_sale_order_line", "ir.actions.act_window", 1051, False)
+        self.xmlid("sale", "model_sale_order_line", "ir.model", 626, True)
+        self.xmlid("account", "group_account_user", "res.groups", 59, True)
+        execute = self.cursor.execute
+        rows = bridge._rows
+        importer = bridge.import_module
+        utility = Mock(
+            model_of_table=lambda _cr, table: {"ir_act_window": "ir.actions.act_window", "ir_actions": "ir.actions.actions"}.get(
+                table, table.replace("_", ".")
+            )
+        )
+        patch_attr(bridge, "import_module", lambda name: utility if name == "odoo.upgrade.util" else importer(name)).start()
+
+        def action_rows(cr: Any, query: str, parameters: tuple = ()) -> list[dict[str, Any]]:
+            result = rows(cr, query, parameters)
+            if "FROM ir_act_window WHERE" in query:
+                for row in result:
+                    row["name"] = json.loads(row["name"])
+            return result
+
+        def inherited_actions(query: str, parameters: tuple = ()) -> Any:
+            if "tableoid::regclass" in query:
+                result = self.connection.execute("SELECT id FROM ir_act_window WHERE id=?", parameters).fetchall()
+                return self.cursor._catalog([("ir_act_window", row[0]) for row in result], 2)
+            return execute(query, parameters)
+
+        patch_attr(bridge, "_rows", action_rows).start()
+        patch_attr(self.cursor, "execute", inherited_actions).start()
+
+    def retire_action(self) -> None:
+        bridge.preserve_sale_accrual_action(self.cursor)
+
+    def test_stock_unreferenced_modal_is_retired_and_other_rows_survive(self) -> None:
+        before = self.all_rows()
+        self.retire_action()
+        after = self.all_rows()
+        self.assertEqual(after["ir_act_window"], [])
+        self.assertEqual(after["ir_act_window_group_rel"], [])
+        self.assertEqual(len(before["ir_model_data"]) - len(after["ir_model_data"]), 1)
+        for table in before.keys() - {"ir_act_window", "ir_act_window_group_rel", "ir_model_data"}:
+            self.assertEqual(after[table], before[table])
+        self.retire_action()
+        self.assertEqual(self.all_rows(), after)
+
+    def test_customizations_and_references_refuse_before_any_effect(self) -> None:
+        self.connection.executescript(
+            "CREATE TABLE custom_action_link (window_id INTEGER REFERENCES ir_act_window(id),"
+            "action_id INTEGER REFERENCES ir_actions(id),reference TEXT,payload JSON);"
+            "CREATE TABLE ir_filters (id INTEGER PRIMARY KEY,action_id INTEGER);"
+            "INSERT INTO ir_model_fields(name,ttype,store,relation,model) "
+            "VALUES ('action_id','many2one',1,'ir.actions.actions','ir.filters');"
+        )
+        for change in (
+            "UPDATE ir_act_window SET path='custom'",
+            "UPDATE ir_act_window SET custom_value='retained'",
+            """UPDATE ir_act_window SET context='{"default_name":"Custom"}'""",
+            """UPDATE ir_act_window SET name='{"en_US":"Custom"}'""",
+            "UPDATE ir_act_window SET binding_model_id=627",
+            "UPDATE ir_act_window_group_rel SET gid=60",
+            "DELETE FROM ir_act_window_group_rel",
+            "UPDATE ir_model_data SET noupdate=1 WHERE model='ir.actions.act_window'",
+            "INSERT INTO ir_model_data(module,name,model,res_id) VALUES ('custom','action','ir.actions.act_window',1051)",
+            "INSERT INTO custom_action_link(window_id) VALUES (1051)",
+            "INSERT INTO custom_action_link(reference) VALUES ('ir.actions.actions,1051')",
+            "INSERT INTO custom_action_link(reference) VALUES ('ir.actions.act_window,1051')",
+            """INSERT INTO custom_action_link(payload) VALUES ('{"action":"ir.actions.act_window,1051"}')""",
+            "INSERT INTO ir_filters VALUES (1,1051)",
+            "INSERT INTO mail_message VALUES (1,'ir.actions.act_window',1051,'Retain history')",
+            "INSERT INTO deletion_triggers VALUES ('retain_action')",
+        ):
+            with self.subTest(change=change):
+                self.connection.execute("SAVEPOINT action_change")
+                self.connection.execute(change)
+                before = self.all_rows()
+                with self.assertRaises(RuntimeError):
+                    self.retire_action()
+                self.assertEqual(self.all_rows(), before)
+                self.connection.execute("ROLLBACK TO action_change")
+                self.connection.execute("RELEASE action_change")
+
+    def test_changed_native_model_refuses_before_any_effect(self) -> None:
+        self.native.write_text(self.native.read_text().replace("ir.actions.server", "ir.actions.client"))
+        before = self.all_rows()
+        with self.assertRaises(RuntimeError):
+            self.retire_action()
+        self.assertEqual(self.all_rows(), before)
 
 
 if __name__ == "__main__":
