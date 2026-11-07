@@ -651,6 +651,27 @@ Notes
   retain their existing OpenUpgrade selection. Native 20 rejects
   `--reset-versions` before asset discovery or database access; run it without
   that flag to preserve the installed versions.
+  `OPENUPGRADE_LOAD_FRAMEWORK=true` explicitly loads an available framework
+  for major20 too, including subsequent addon commands. Supply the matching
+  upstream20 source first in `ODOO_ADDONS_PATH`; its manifest must match the
+  selected target series. This does not convert a19
+  framework into a20 framework. Unset keeps the existing selection above.
+  For a disposable saved19-to20 diagnostic, set
+  `ODOO_MIGRATION_DIAGNOSTIC_REPORT` to a private JSONL report path, with
+  `ODOO_COPY_PURPOSE=migration`, `PLATFORM_INSTANCE=rehearsal` and target20.0.
+  Independent preservation cohorts then report and continue. Each failed
+  cohort rolls back to its savepoint and skips its changes; remaining guards
+  inside that cohort are reported as blocked. Other cohorts still run and
+  apply admitted changes. Mail and Payment migration preservation use the
+  same reporting path. Without the explicit diagnostic report, the original
+  fatal checks and before-effect behavior remain in force. Diagnostic reports
+  are evidence of observed failures, never proof of a successful migration.
+  Use a fresh private report path per diagnostic job. The ordinary restore
+  entry refuses this mode before changing data. `run_openupgrade.py` refuses
+  a normal success result when reporting is enabled. The supported entry is
+  the OPW saved19 diagnostic driver, which owns its
+  explicit diagnostic status, complete observed list and blocked coverage.
+  A report pass describes a check, not committed migration effects.
   Native 20 also selects the packaged `docker/scripts/nativeupgrade` root.
   Its Mail pre-stage reuses the guarded stock-view conversion from
   [website227](https://github.com/cbusillo/odoo-tenant-cm-website/issues/227).
@@ -848,6 +869,9 @@ Notes
   under `docker/scripts/legacy/hr_org_chart/`. The hierarchy also accepts the
   exact shipped19 image-options architecture retained in
   `hr_employee_public_hierarchy_options_19.xml`, as current or previous history.
+  That extract comes from `/odoo/addons/hr_org_chart/views/hr_employee_public_views.xml`
+  in `ghcr.io/cbusillo/odoo-tenant-opw@sha256:723eee28cf5e3dc5e4aec827002acb2d5413556569776c3874eafb43e9ca7b70`;
+  the full source file SHA256 is `21caf7642174c099e31c49004a067b6fba0893ef5c71d8750a616f0b777f946c`.
   Both stock forms are compared in full; changed preview values, added options
   and other attribute differences still refuse. Its hierarchy may retain the
   exact [stock18 architecture](https://github.com/odoo/odoo/blob/68d580d3d4703e7190055f7040682942d5f1a24f/addons/hr_org_chart/views/hr_employee_public_views.xml)

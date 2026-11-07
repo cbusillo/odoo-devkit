@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from pathlib import Path
 from unittest.mock import Mock, patch
 from xml.etree import ElementTree
@@ -227,6 +228,35 @@ class HrOrgChartActionFixture(CoreReferenceFixture):
 
 
 class HrOrgChartActionTests(HrOrgChartActionFixture):
+    def test_diagnostic_checks_every_org_chart_piece_but_skips_all_moves_after_one_failure(self) -> None:
+        report = Path(self.directory.name) / "diagnostic.jsonl"
+        identity = self.cohort_links[0][1]
+        self.connection.execute("UPDATE ir_act_window_view SET sequence=99 WHERE id=?", (identity,))
+        before = self.snapshot()
+        views = Mock(return_value=None)
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "ODOO_MIGRATION_DIAGNOSTIC_REPORT": str(report),
+                    "ODOO_COPY_PURPOSE": "migration",
+                    "PLATFORM_INSTANCE": "rehearsal",
+                    "OPENUPGRADE_TARGET_VERSION": "20.0",
+                },
+            ),
+            patch_attr(bridge, "_hr_org_chart_view_plan", views),
+        ):
+            self.apply()
+        after = self.snapshot()
+        for table in ("ir_act_window", "ir_act_window_view", "action_links"):
+            self.assertEqual(after[table], before[table])
+        for snapshot in (before, after):
+            snapshot["ir_model_data"] = [row for row in snapshot["ir_model_data"] if row[1] in {"hr", "hr_org_chart"}]
+        self.assertEqual(after["ir_model_data"], before["ir_model_data"])
+        views.assert_called_once_with(self.cursor)
+        events = [json.loads(line) for line in report.read_text().splitlines()]
+        self.assertIn("Org Chart changes", {event["check"] for event in events if event["status"] == "blocked"})
+
     def test_all_moved_actions_and_links_reuse_preserved_rows_before_native_creation(self) -> None:
         components = [
             (self.private_name, self.private_action),
