@@ -963,8 +963,9 @@ Notes
   and previous architectures retain comments, attributes and nonblank text in
   the shared comparison. The HR primary and MailBot preference child can retain
   their exact stock18 previous architectures after an 18→19 upgrade; these
-  histories remain unchanged during preparation. IDs, aliases, incoming references, users/preferences,
-  roles, attribution and every other column remain unchanged during preparation.
+  histories remain unchanged during preparation. IDs, aliases, incoming
+  references, users/preferences, roles, attribution and every other column
+  remain unchanged during preparation.
   The two surviving stock MailBot descendants are checked against their own 19
   source and stay untouched; the known old Homeworking descendant also stays
   untouched, with its separate module disposition left to the migration owner.

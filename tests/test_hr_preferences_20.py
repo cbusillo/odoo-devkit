@@ -125,6 +125,9 @@ class HrPreferencesTests(CoreReferenceFixture):
 
     def test_customized_stock18_history_refuses_before_effects(self) -> None:
         for identity, architecture in self.stock18_histories().items():
+            for other in self.identities.values():
+                if other != identity:
+                    self.assert_refused("UPDATE ir_ui_view SET arch_prev=? WHERE id=?", (architecture, other))
             for attribute in (False, True):
                 document = ElementTree.fromstring(
                     architecture, parser=ElementTree.XMLParser(target=ElementTree.TreeBuilder(insert_comments=True))
