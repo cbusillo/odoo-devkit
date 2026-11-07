@@ -51,9 +51,8 @@ class MigrationDiagnostics:
                 name + ": remaining guards", "blocked", "Coverage beyond the reported error is unproved; changes were skipped"
             )
             return fallback
-        else:
-            self.record(name, "passed")
-            return result
         finally:
             if cursor is not None:
                 cursor.execute("RELEASE SAVEPOINT migration_diagnostic_check")
+        self.record(name, "passed")
+        return result

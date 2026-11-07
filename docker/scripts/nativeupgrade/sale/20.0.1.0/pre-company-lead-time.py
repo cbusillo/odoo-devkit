@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import runpy
-from importlib import import_module
 from pathlib import Path
 from typing import Any
 
@@ -17,23 +16,29 @@ def preserve_lead_time(cr: Any) -> None:
         raise RuntimeError("Sale lead time has missing or unsupported source metadata")
     field_id, _type, _stored, company_dependent = metadata[0]
     cr.execute(
-        "SELECT data_type FROM information_schema.columns WHERE table_schema='public' "
+        "SELECT data_type,column_default FROM information_schema.columns WHERE table_schema='public' "
         "AND table_name='product_template' AND column_name='sale_delay'"
     )
     columns = cr.fetchall()
-    if columns == [("jsonb",)] and company_dependent:
+    if len(columns) == 1 and columns[0][0] == "jsonb" and company_dependent:
         return
-    if columns != [("integer",)] or company_dependent:
+    if columns != [("integer", None)] or company_dependent:
         raise RuntimeError("Sale lead time has an unsupported source column")
     cr.execute("SELECT 1 FROM ir_default WHERE field_id=%s LIMIT 1", (field_id,))
     if cr.fetchall():
         raise RuntimeError("Sale lead time has source defaults requiring preservation")
-    cr.execute("SELECT 1 FROM res_company LIMIT 1")
-    if not cr.fetchall():
+    cr.execute("SELECT id FROM res_company ORDER BY id")
+    companies = cr.fetchall()
+    if not companies:
         raise RuntimeError("Sale lead time has no existing company")
-    import_module("odoo.upgrade.util").make_field_company_dependent(
-        cr, "product.template", "sale_delay", "integer", company_field=None
+    # The upstream bulk converter commits, which would destroy the diagnostic savepoint.
+    values = " || ".join("jsonb_build_object(%s,sale_delay)" for _ in companies)
+    cr.execute(
+        "ALTER TABLE product_template ALTER COLUMN sale_delay TYPE jsonb "
+        f"USING CASE WHEN sale_delay IS NULL THEN NULL ELSE {values} END",
+        tuple(str(company_id) for (company_id,) in companies),
     )
+    cr.execute("UPDATE ir_model_fields SET company_dependent=TRUE WHERE id=%s", (field_id,))
 
 
 def migrate(cr: Any, version: str | None) -> None:

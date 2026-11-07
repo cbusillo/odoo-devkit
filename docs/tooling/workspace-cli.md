@@ -671,10 +671,12 @@ Notes
   a normal success result when reporting is enabled. The supported entry is
   the OPW saved19 diagnostic driver, which owns its
   explicit diagnostic status, complete observed list and blocked coverage.
-  A report pass describes a check, not committed migration effects.
+  A report pass follows successful savepoint cleanup and describes a check,
+  not committed migration effects.
   Native 20 also selects the packaged `docker/scripts/nativeupgrade` root.
   Its Sale pre-stage converts the stored global integer `product.template.sale_delay`
-  through upstream's `make_field_company_dependent` with all existing companies.
+  atomically to JSONB values for all existing companies. The upstream bulk
+  converter commits, so it cannot preserve this diagnostic transaction boundary.
   Missing or unexpected metadata, column shapes, source defaults or companies
   refuse before conversion; diagnostics report the failure and skip changes.
   Already converted JSONB fields keep their defaults unchanged.
@@ -722,7 +724,7 @@ Notes
   prove the selected record fates, surviving provider settings and native
   constraints; a completed registry alone does not establish preservation.
   Native wire-transfer and Cash on Delivery methods stay outside this retirement
-  cohort. Their exact aliases, installed connector and exclusive existing provider
+  cohort. Their exact aliases, installed or scheduled-for-upgrade connector and exclusive existing provider
   link must agree with the native target bindings before carrying that same owner
   into `provider_id`. Their records, images, aliases and provider settings remain.
   A witness may explicitly record an absent source image as `null`; an unexpected

@@ -6,6 +6,7 @@ import base64
 import configparser
 import json
 import os
+import runpy
 import subprocess
 import sys
 import tempfile
@@ -67,6 +68,47 @@ def database_command(statement: sql.Composed) -> None:
 
 @tagged("post_install", "-at_install")
 class TestLiveWorkflows(TransactionCase):
+    def test_sale_lead_times_keep_company_values_and_the_diagnostic_transaction(self) -> None:
+        migrate = runpy.run_path("/volumes/scripts/nativeupgrade/sale/20.0.1.0/pre-company-lead-time.py")["migrate"]
+        with self.target(empty=True) as runner:
+            database_command(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(runner.local.db_name)))
+            with psycopg2.connect(host="database", user="odoo", dbname=runner.local.db_name) as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute("CREATE TABLE product_template (id integer PRIMARY KEY, sale_delay integer)")
+                    cursor.execute(
+                        "CREATE TABLE ir_model_fields (id integer PRIMARY KEY,model text,name text,ttype text,"
+                        "store boolean,company_dependent boolean)"
+                    )
+                    cursor.execute("CREATE TABLE ir_default (field_id integer)")
+                    cursor.execute("CREATE TABLE res_company (id integer PRIMARY KEY)")
+                    cursor.execute("INSERT INTO res_company VALUES (2),(7)")
+                    cursor.execute("INSERT INTO product_template VALUES (1,0),(2,8),(3,NULL)")
+                    cursor.execute("INSERT INTO ir_model_fields VALUES (9,'product.template','sale_delay','integer',TRUE,FALSE)")
+                    connection.commit()
+                    report = self.root / (runner.local.db_name + "-sale-report.jsonl")
+                    with patch.dict(
+                        os.environ,
+                        {
+                            "ODOO_MIGRATION_DIAGNOSTIC_REPORT": str(report),
+                            "ODOO_COPY_PURPOSE": "migration",
+                            "PLATFORM_INSTANCE": "rehearsal",
+                            "OPENUPGRADE_TARGET_VERSION": "20.0",
+                        },
+                    ):
+                        cursor.execute("SAVEPOINT caller_boundary")
+                        migrate(cursor, "19.0.1.0")
+                        cursor.execute("RELEASE SAVEPOINT caller_boundary")
+                    cursor.execute("SELECT id,sale_delay FROM product_template ORDER BY id")
+                    self.assertEqual(cursor.fetchall(), [(1, {"2": 0, "7": 0}), (2, {"2": 8, "7": 8}), (3, None)])
+                    cursor.execute("SELECT company_dependent FROM ir_model_fields WHERE id=9")
+                    self.assertEqual(cursor.fetchone(), (True,))
+                    self.assertEqual([json.loads(line)["status"] for line in report.read_text().splitlines()], ["passed"])
+                    connection.rollback()
+                    cursor.execute("SELECT id,sale_delay FROM product_template ORDER BY id")
+                    self.assertEqual(cursor.fetchall(), [(1, 0), (2, 8), (3, None)])
+                    cursor.execute("SELECT company_dependent FROM ir_model_fields WHERE id=9")
+                    self.assertEqual(cursor.fetchone(), (False,))
+
     def planned_payload(self, runner: workflows.OdooDataWorkflowRunner) -> dict[str, Any]:
         graph = runner.release_module_graph()
         image = "fixture/image@sha256:" + "a" * 64

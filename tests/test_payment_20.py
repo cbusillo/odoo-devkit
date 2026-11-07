@@ -199,6 +199,13 @@ class PaymentAdmissionTests(unittest.TestCase):
         self.assertNotIn(401, plan.aliases)
         self.assertEqual(self.current, before)
 
+    def test_scheduled_native_connector_upgrade_preserves_the_existing_provider(self) -> None:
+        self.add_native_method()
+        self.current["modules"][303]["state"] = "to upgrade"
+        plan = self.admit()
+        self.assertEqual(plan.preserved_methods, [(301, 302)])
+        self.assertNotIn(301, plan.methods)
+
     def test_native_ownership_requires_the_exact_existing_connector_and_exclusive_link(self) -> None:
         self.add_native_method()
         before = copy.deepcopy(self.current)
@@ -207,6 +214,9 @@ class PaymentAdmissionTests(unittest.TestCase):
             lambda: self.current["provider_links"].append((302, 101)),
             lambda: self.current["provider_links"].remove((302, 301)),
             lambda: self.current["modules"][303].update(state="uninstalled"),
+            lambda: self.current["modules"][303].update(state="to install"),
+            lambda: self.current["modules"][303].update(state="to remove"),
+            lambda: self.current["modules"][303].update(xmlid="base.module_other"),
             lambda: self.current["providers"][-1].update(custom_mode="wire_transfer"),
             lambda: self.current["method_aliases"][-1].update(noupdate=False),
         ):

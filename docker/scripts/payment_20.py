@@ -50,11 +50,13 @@ def _separate_native_provider_methods(snapshot: dict[str, Any]) -> tuple[dict[st
         if len(records) != 1 or providers[0]["model"] != "payment.provider" or providers[0]["noupdate"] is not True:
             _fail("native provider identity")
         provider = records[0]
+        connector = snapshot["modules"].get(provider["module_id"], {})
         if (
             provider["code"] != "custom"
             or provider.get("custom_mode") != mode
             or methods[0]["code"] != mode
-            or snapshot["modules"].get(provider["module_id"]) != {"xmlid": "base.module_" + module, "state": "installed"}
+            or connector.get("xmlid") != "base.module_" + module
+            or connector.get("state") not in {"installed", "to upgrade"}
             or [edge for edge in snapshot["provider_links"] if edge[0] == provider_id or edge[1] == method_id]
             != [(provider_id, method_id)]
             or len([row for row in snapshot["method_aliases"] if row["res_id"] == method_id]) != 1
