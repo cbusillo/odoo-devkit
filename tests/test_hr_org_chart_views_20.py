@@ -87,6 +87,64 @@ class HrOrgChartViewFixture(HrOrgChartActionFixture):
 
 
 class HrOrgChartViewTests(HrOrgChartViewFixture):
+    def options_architecture(self) -> str:
+        source = Path(bridge.__file__).parent / "legacy/hr_org_chart/hr_employee_public_hierarchy_options_19.xml"
+        root = ElementTree.parse(source, parser=ElementTree.XMLParser(target=ElementTree.TreeBuilder(insert_comments=True)))
+        return ElementTree.tostring(root.getroot(), encoding="unicode")
+
+    def test_native19_image_options_preserve_current_history_links_and_replay(self) -> None:
+        identity = self.views["hr_employee_public_hierarchy_view"]
+        original = self.connection.execute("SELECT arch_db FROM ir_ui_view WHERE id=?", (identity,)).fetchone()[0]
+        source = Path(bridge.__file__).parent / "legacy/hr_org_chart/hr_employee_public_views_18.xml"
+        previous = ElementTree.parse(source).find("record[@id='hr_employee_public_hierarchy_view']/field[@name='arch']")
+        assert previous is not None
+        history18 = ElementTree.tostring(previous[0], encoding="unicode")
+        options = self.options_architecture()
+        for case, current, history in (
+            ("current_options", json.dumps({"en_US": options}), history18),
+            ("previous_options", original, options),
+        ):
+            with self.subTest(case=case):
+                self.connection.execute("SAVEPOINT options_form")
+                try:
+                    self.connection.execute("UPDATE ir_ui_view SET arch_db=?,arch_prev=? WHERE id=?", (current, history, identity))
+                    before = self.connection.execute("SELECT * FROM ir_ui_view WHERE id=?", (identity,)).fetchone()
+                    links = self.snapshot()["view_links"]
+                    self.apply()
+                    self.assertEqual(self.connection.execute("SELECT * FROM ir_ui_view WHERE id=?", (identity,)).fetchone(), before)
+                    self.assertEqual(self.snapshot()["view_links"], links)
+                    after = self.snapshot()
+                    self.apply()
+                    self.assertEqual(self.snapshot(), after)
+                finally:
+                    self.connection.execute("ROLLBACK TO options_form")
+                    self.connection.execute("RELEASE options_form")
+
+    def test_changed_native19_image_options_refuse_before_effects(self) -> None:
+        identity = self.views["hr_employee_public_hierarchy_view"]
+        stock_image = self.stock["hr_employee_public_hierarchy_view"]["arch"].find(".//field[@preview_image]")
+        assert stock_image is not None
+        preview = stock_image.attrib["preview_image"]
+        for extra_option in (False, True):
+            root = ElementTree.fromstring(self.options_architecture())
+            image = root.find(".//field[@widget='background_image']")
+            assert image is not None
+            options = image.attrib["options"]
+            image.set(
+                "options",
+                options[:-1] + ", 'custom': true}" if extra_option else options.replace(repr(preview), repr(preview + "_custom")),
+            )
+            changed = ElementTree.tostring(root, encoding="unicode")
+            for column, value in (("arch_db", json.dumps({"en_US": changed})), ("arch_prev", changed)):
+                with self.subTest(extra_option=extra_option, column=column):
+                    self.connection.execute("SAVEPOINT changed_options")
+                    try:
+                        self.connection.execute("UPDATE ir_ui_view SET " + column + "=? WHERE id=?", (value, identity))
+                        self.assert_refuses_without_effects()
+                    finally:
+                        self.connection.execute("ROLLBACK TO changed_options")
+                        self.connection.execute("RELEASE changed_options")
+
     def test_untracked_public_website_defaults_are_preserved_and_changed_values_refuse(self) -> None:
         self.connection.executescript(
             "ALTER TABLE ir_ui_view ADD COLUMN track BOOLEAN; ALTER TABLE ir_ui_view ADD COLUMN visibility TEXT;"
