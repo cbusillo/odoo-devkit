@@ -82,20 +82,20 @@ class TestLiveWorkflows(TransactionCase):
         nested = []
 
         def native(selected: Any) -> None:
-            observed.extend(selected.search([("id", "in", records.ids)], order="id").ids)
+            observed.extend(selected.search([("id", "in", records.ids)]).ids)
             nested.append(selected.search([("id", "=", records[-1].id)]).ids)
 
         original = type(model).search
         with patch.dict(conversion["bounded_image_conversion"].__globals__, {"IMAGE_BATCH_SIZE": 1}):
             conversion["bounded_image_conversion"](native)(model)
-        self.assertEqual(observed, records.ids)
+        self.assertEqual(observed, model.search([("id", "in", records.ids)]).ids)
         self.assertTrue(all(ids == [records[-1].id] for ids in nested))
         self.assertIs(type(model).search, original)
         observed.clear()
         globals_ = conversion["bounded_image_conversion"].__globals__
         with patch.dict(globals_, {"IMAGE_BATCH_SIZE": 1, "scope_native_template_search": lambda *_: nullcontext()}):
             conversion["bounded_image_conversion"](native)(model)
-        self.assertNotEqual(observed, records.ids)
+        self.assertNotEqual(observed, model.search([("id", "in", records.ids)]).ids)
 
         def fail(_records: Any) -> None:
             raise RuntimeError("native failure before the first search")
