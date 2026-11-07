@@ -673,6 +673,11 @@ Notes
   explicit diagnostic status, complete observed list and blocked coverage.
   A report pass describes a check, not committed migration effects.
   Native 20 also selects the packaged `docker/scripts/nativeupgrade` root.
+  Its Sale pre-stage converts the stored global integer `product.template.sale_delay`
+  through upstream's `make_field_company_dependent` with all existing companies.
+  Missing or unexpected metadata, column shapes, source defaults or companies
+  refuse before conversion; diagnostics report the failure and skip changes.
+  Already converted JSONB fields keep their defaults unchanged.
   Its Mail pre-stage reuses the guarded stock-view conversion from
   [website227](https://github.com/cbusillo/odoo-tenant-cm-website/issues/227).
   Before any shared bridge effect, `mail_view_20.py` locks and compares the
@@ -716,6 +721,15 @@ Notes
   bridge creates no default provider or replacement catalog. Final readback must
   prove the selected record fates, surviving provider settings and native
   constraints; a completed registry alone does not establish preservation.
+  Native wire-transfer and Cash on Delivery methods stay outside this retirement
+  cohort. Their exact aliases, installed connector and exclusive existing provider
+  link must agree with the native target bindings before carrying that same owner
+  into `provider_id`. Their records, images, aliases and provider settings remain.
+  A witness may explicitly record an absent source image as `null`; an unexpected
+  image or an unrecorded loss still refuses. Present original images keep their
+  public-source comparison and exact-byte checks. Recorded absence does not
+  establish that an unused catalog was pristine, and never bypasses material-value,
+  history, ownership or incoming-reference checks.
   A source custodian can use `qualify_source_family(profile, source_manifest,
   manifest_sha256, automation_source)` to add the one stock Base Automation
   extension without changing the independent reference. The separate immutable
