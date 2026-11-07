@@ -687,6 +687,10 @@ Notes
   Edited actions, extra aliases or groups, paths and incoming references report
   failure before effects. Reference checks use upstream model/table mappings
   so irregular action tables protect both concrete and generic action links.
+  JSON guards distinguish reflected translated text from record-reference
+  payloads. A language-keyed label naming an action class is retained as text;
+  complete model/record references, unknown encodings and other JSON payloads
+  keep their existing refusal behavior.
   Its Mail pre-stage reuses the guarded stock-view conversion from
   [website227](https://github.com/cbusillo/odoo-tenant-cm-website/issues/227).
   Before any shared bridge effect, `mail_view_20.py` locks and compares the

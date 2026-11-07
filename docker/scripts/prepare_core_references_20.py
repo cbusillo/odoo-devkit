@@ -919,6 +919,42 @@ def _check_encoded_relations(cr: Any, table: str, column: str, targets: dict[str
             raise RuntimeError(f"Referenced core transition row: {table}.{column}")
 
 
+def _check_json_references(
+    cr: Any,
+    table: str,
+    column: str,
+    targets: list[str],
+    references: set[str],
+    languages: set[str] | None = None,
+) -> None:
+    variables = json.dumps({"targets": targets})
+    if languages is None:
+        _identified(
+            cr,
+            "SELECT 1 FROM %s WHERE jsonb_path_exists(%s::jsonb, '$.** ? (@ == $targets[*])', %s::jsonb) LIMIT 1",
+            (table, column),
+            (variables,),
+        )
+        invalid = cr.fetchone() is not None
+    else:
+        _identified(
+            cr,
+            "SELECT DISTINCT %s::jsonb AS reference_value FROM %s "
+            "WHERE jsonb_path_exists(%s::jsonb, '$.** ? (@ == $targets[*])', %s::jsonb)",
+            (column, table, column),
+            (variables,),
+        )
+        invalid = any(
+            not isinstance(value, dict)
+            or not set(value).issubset(languages)
+            or any(not isinstance(label, str) and label is not None for label in value.values())
+            or any(label in references for label in value.values() if isinstance(label, str))
+            for (value,) in cr.fetchall()
+        )
+    if invalid:
+        raise RuntimeError(f"Unsupported core transition JSON reference: {table}.{column}")
+
+
 def _check_references(
     cr: Any,
     ids: dict[str, list[int]],
@@ -1027,8 +1063,20 @@ def _check_references(
         )
         if cr.fetchone():
             raise RuntimeError("Unsupported core transition field default")
+    cr.execute("SELECT model,name,translate FROM ir_model_fields WHERE store AND ttype IN ('char','text','html')")
+    translated_columns = {
+        (utility.table_of_model(cr, model), name)
+        for model, name, translation in cr.fetchall()
+        if translation not in (None, False, "", "false", "f")
+    }
+    languages = None
+    if translated_columns:
+        cr.execute("SELECT code FROM res_lang")
+        languages = {row[0] for row in cr.fetchall()}
+        if not languages:
+            raise RuntimeError("Missing language metadata for translated reference storage")
     references = [f"{model},{record}" for model in model_ids for record in model_targets[model]]
-    json_targets = json.dumps({"targets": [*model_ids, *references]})
+    json_targets = [*model_ids, *references]
     for table, fields in columns.items():
         for column, data_type in fields:
             text_storage = data_type in {"text", "character varying", "character"}
@@ -1049,14 +1097,14 @@ def _check_references(
                 if cr.fetchone():
                     raise RuntimeError(f"Referenced core transition row: {table}.{column}")
             if data_type in {"json", "jsonb"}:
-                _identified(
+                _check_json_references(
                     cr,
-                    "SELECT 1 FROM %s WHERE jsonb_path_exists(%s::jsonb, '$.** ? (@ == $targets[*])', %s::jsonb) LIMIT 1",
-                    (table, column),
-                    (json_targets,),
+                    table,
+                    column,
+                    json_targets,
+                    set(references),
+                    languages if (table, column) in translated_columns else None,
                 )
-                if cr.fetchone():
-                    raise RuntimeError(f"Unsupported core transition JSON reference: {table}.{column}")
             if column not in indirect_columns:
                 continue
             for model, model_id in model_ids.items():

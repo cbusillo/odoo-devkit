@@ -42,7 +42,7 @@ class Cursor:
         return [
             tuple(
                 json.loads(value)
-                if column[0] == "arch_db"
+                if column[0] in {"arch_db", "reference_value"}
                 else datetime.fromisoformat(value)
                 if column[0] == "create_date" and value is not None
                 else value
@@ -578,7 +578,9 @@ class EmptyChatFixture(CoreReferenceFixture):
             "custom_notifications TEXT, mute_until_dt TEXT, fetched_message_id INTEGER, seen_message_id INTEGER, "
             "new_message_separator INTEGER, unpin_dt TEXT, last_interest_dt TEXT, last_seen_dt TEXT, create_date TEXT);"
             "CREATE TABLE ir_model (id INTEGER PRIMARY KEY, model TEXT);"
-            "CREATE TABLE ir_model_fields (name TEXT, ttype TEXT, store BOOLEAN, company_dependent BOOLEAN, relation TEXT, model TEXT, relation_table TEXT, column2 TEXT, column1 TEXT);"
+            "CREATE TABLE ir_model_fields (name TEXT, ttype TEXT, store BOOLEAN, company_dependent BOOLEAN, relation TEXT, model TEXT, relation_table TEXT, column2 TEXT, column1 TEXT, translate TEXT);"
+            "CREATE TABLE res_lang (code TEXT PRIMARY KEY);"
+            "INSERT INTO res_lang VALUES ('en_US'),('fr_FR');"
             "CREATE TABLE mail_message (id INTEGER PRIMARY KEY, model TEXT, res_id INTEGER, body TEXT);"
             "CREATE TABLE deletion_triggers (name TEXT);"
             "CREATE TABLE materialized_references (name TEXT);"
@@ -600,7 +602,10 @@ class EmptyChatFixture(CoreReferenceFixture):
         self.cursor = DiscussCursor(self.connection)
         patch_attr(bridge, "_identified", self.cursor.identified).start()
         importer = bridge.import_module
-        utility = Mock(model_of_table=lambda _cr, table: table.replace("_", "."))
+        utility = Mock(
+            model_of_table=lambda _cr, table: table.replace("_", "."),
+            table_of_model=lambda _cr, model: model.replace(".", "_"),
+        )
         patch_attr(bridge, "import_module", lambda name: utility if name == "odoo.upgrade.util" else importer(name)).start()
 
     @staticmethod
@@ -1162,6 +1167,10 @@ class SaleAccrualActionTests(EmptyChatFixture):
             'INSERT INTO ir_act_window VALUES (1051,626,"ir.actions.act_window","action","list,form",'
             '\'{"en_US":"Accrued Revenue Entry"}\',80,"{}","account.accrued.orders.wizard","new","form","kanban",1,NULL,NULL);'
             "INSERT INTO ir_act_window_group_rel VALUES (1051,59);"
+            "CREATE TABLE ir_model_fields_selection (id INTEGER PRIMARY KEY,name JSON);"
+            """INSERT INTO ir_model_fields_selection VALUES (30,'{"en_US":"ir.actions.act_window"}');"""
+            "INSERT INTO ir_model_fields(name,model,ttype,store,translate) "
+            "VALUES ('name','ir.model.fields.selection','char',1,'standard');"
         )
         self.xmlid("sale", "action_accrued_revenue_entry_sale_order_line", "ir.actions.act_window", 1051, False)
         self.xmlid("sale", "model_sale_order_line", "ir.model", 626, True)
@@ -1172,7 +1181,10 @@ class SaleAccrualActionTests(EmptyChatFixture):
         utility = Mock(
             model_of_table=lambda _cr, table: {"ir_act_window": "ir.actions.act_window", "ir_actions": "ir.actions.actions"}.get(
                 table, table.replace("_", ".")
-            )
+            ),
+            table_of_model=lambda _cr, model: {"ir.actions.act_window": "ir_act_window", "ir.actions.actions": "ir_actions"}.get(
+                model, model.replace(".", "_")
+            ),
         )
         patch_attr(bridge, "import_module", lambda name: utility if name == "odoo.upgrade.util" else importer(name)).start()
 
@@ -1229,6 +1241,12 @@ class SaleAccrualActionTests(EmptyChatFixture):
             "INSERT INTO custom_action_link(reference) VALUES ('ir.actions.actions,1051')",
             "INSERT INTO custom_action_link(reference) VALUES ('ir.actions.act_window,1051')",
             """INSERT INTO custom_action_link(payload) VALUES ('{"action":"ir.actions.act_window,1051"}')""",
+            """INSERT INTO custom_action_link(payload) VALUES ('{"model":"ir.actions.act_window","id":1051}')""",
+            """UPDATE ir_model_fields_selection SET name='{"en_US":"ir.actions.act_window,1051"}'""",
+            """INSERT INTO ir_model_fields_selection VALUES (31,'{"en_US":"ir.actions.act_window,1051"}')""",
+            """UPDATE ir_model_fields_selection SET name='{"en_US":{"model":"ir.actions.act_window","id":1051}}'""",
+            """UPDATE ir_model_fields_selection SET name='{"unknown":"ir.actions.act_window"}'""",
+            "UPDATE ir_model_fields SET translate=NULL WHERE model='ir.model.fields.selection'",
             "INSERT INTO ir_filters VALUES (1,1051)",
             "INSERT INTO mail_message VALUES (1,'ir.actions.act_window',1051,'Retain history')",
             "INSERT INTO deletion_triggers VALUES ('retain_action')",

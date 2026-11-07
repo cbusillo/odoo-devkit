@@ -68,6 +68,39 @@ def database_command(statement: sql.Composed) -> None:
 
 @tagged("post_install", "-at_install")
 class TestLiveWorkflows(TransactionCase):
+    def test_translated_action_labels_preserve_record_reference_guards(self) -> None:
+        check = runpy.run_path("/volumes/scripts/prepare_core_references_20.py")["_check_json_references"]
+        cursor = self.env.cr
+        cursor.execute("CREATE TEMP TABLE devkit_reference_payload (content jsonb) ON COMMIT DROP")
+        model = "ir.actions.act_window"
+        reference = f"{model},1051"
+        labels = {"en_US": model, "fr_FR": "Window action"}
+
+        def store(value: Any) -> None:
+            cursor.execute("DELETE FROM devkit_reference_payload")
+            cursor.execute("INSERT INTO devkit_reference_payload VALUES (%s::jsonb)", (json.dumps(value),))
+
+        store(labels)
+        check(cursor, "devkit_reference_payload", "content", [model, reference], {reference}, {"en_US", "fr_FR"})
+        cursor.execute("SELECT content FROM devkit_reference_payload")
+        self.assertEqual(cursor.fetchone(), (labels,))
+        cursor.execute("INSERT INTO devkit_reference_payload VALUES (%s::jsonb)", (json.dumps({"en_US": reference}),))
+        with self.assertRaises(RuntimeError):
+            check(cursor, "devkit_reference_payload", "content", [model, reference], {reference}, {"en_US", "fr_FR"})
+        for value in (
+            {"en_US": reference},
+            {"en_US": {"model": model, "id": 1051}},
+            {"unknown": model},
+            [model, 1051],
+        ):
+            with self.subTest(value=value):
+                store(value)
+                with self.assertRaises(RuntimeError):
+                    check(cursor, "devkit_reference_payload", "content", [model, reference], {reference}, {"en_US", "fr_FR"})
+        store(labels)
+        with self.assertRaises(RuntimeError):
+            check(cursor, "devkit_reference_payload", "content", [model, reference], {reference})
+
     def test_sale_lead_times_keep_company_values_and_the_diagnostic_transaction(self) -> None:
         migrate = runpy.run_path("/volumes/scripts/nativeupgrade/sale/20.0.1.0/pre-company-lead-time.py")["migrate"]
         with self.target(empty=True) as runner:
