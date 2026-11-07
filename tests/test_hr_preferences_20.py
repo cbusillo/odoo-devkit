@@ -101,6 +101,44 @@ class HrPreferencesTests(CoreReferenceFixture):
                 self.connection.execute("ROLLBACK TO unsupported")
                 self.connection.execute("RELEASE unsupported")
 
+    def stock18_histories(self) -> dict[int, str]:
+        histories = {}
+        for module, name, filename in (
+            ("hr", self.primary, "res_users_18.xml"),
+            ("mail_bot_hr", self.child, "res_users_views_18.xml"),
+        ):
+            source = Path(bridge.__file__).with_name("legacy") / module / filename
+            fields = bridge._hr_native_fields(source, name, "ir.ui.view")
+            histories[self.identities[f"{module}.{name}"]] = self.helpers["_render_architecture"](fields["arch"])
+        return histories
+
+    def test_stock18_history_survives_staging_and_repeated_preparation(self) -> None:
+        for identity, architecture in self.stock18_histories().items():
+            self.connection.execute("UPDATE ir_ui_view SET arch_prev=? WHERE id=?", (architecture, identity))
+        before = self.connection.execute("SELECT id,arch_prev FROM ir_ui_view ORDER BY id").fetchall()
+        links = self.connection.execute("SELECT * FROM view_links ORDER BY view_id").fetchall()
+        self.apply()
+        self.assertEqual(self.connection.execute("SELECT id,arch_prev FROM ir_ui_view ORDER BY id").fetchall(), before)
+        self.assertEqual(self.connection.execute("SELECT * FROM view_links ORDER BY view_id").fetchall(), links)
+        self.apply()
+        self.assertEqual(self.connection.execute("SELECT id,arch_prev FROM ir_ui_view ORDER BY id").fetchall(), before)
+
+    def test_customized_stock18_history_refuses_before_effects(self) -> None:
+        for identity, architecture in self.stock18_histories().items():
+            for other in self.identities.values():
+                if other != identity:
+                    self.assert_refused("UPDATE ir_ui_view SET arch_prev=? WHERE id=?", (architecture, other))
+            for attribute in (False, True):
+                document = ElementTree.fromstring(
+                    architecture, parser=ElementTree.XMLParser(target=ElementTree.TreeBuilder(insert_comments=True))
+                )
+                if attribute:
+                    document.set("custom_attribute", "preserve")
+                else:
+                    document.append(ElementTree.Comment("customized"))
+                changed = ElementTree.tostring(document, encoding="unicode")
+                self.assert_refused("UPDATE ir_ui_view SET arch_prev=? WHERE id=?", (changed, identity))
+
     def test_stages_selected_target_child_and_preserves_every_other_column_and_dependent_row(self) -> None:
         before = self.snapshot()
         self.apply()

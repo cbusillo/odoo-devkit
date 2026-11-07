@@ -961,8 +961,11 @@ Notes
   place would fail before the child's own XML record reloads. The qualified HR
   primary architecture is identical in 19 and 20 and stays unchanged. Stock current
   and previous architectures retain comments, attributes and nonblank text in
-  the shared comparison. IDs, aliases, incoming references, users/preferences,
-  roles, attribution and every other column remain unchanged during preparation.
+  the shared comparison. The HR primary and MailBot preference child can retain
+  their exact stock18 previous architectures after an 18→19 upgrade; these
+  histories remain unchanged during preparation. IDs, aliases, incoming
+  references, users/preferences, roles, attribution and every other column
+  remain unchanged during preparation.
   The two surviving stock MailBot descendants are checked against their own 19
   source and stay untouched; the known old Homeworking descendant also stays
   untouched, with its separate module disposition left to the migration owner.
@@ -977,6 +980,8 @@ Notes
   custody remain separate. The exact public admission inputs under
   `docker/scripts/legacy/hr/` and `legacy/mail_bot_hr/` come from
   [official 19](https://github.com/odoo/odoo/tree/a789a218fff7aeb5ce97be2b170333a026804f63/addons).
+  The two stock18 history records are extracts from
+  [official 18](https://github.com/odoo/odoo/tree/9a2a3c8694fe7d5e6b97a3d2fc1a337e54a21189/addons).
   Every effective saved user privacy must equal the global native fallback
   (`public` when the parameter is absent); divergent preferences or ambiguous
   settings owners refuse before effects. User settings remain unchanged. This
