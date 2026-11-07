@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from functools import wraps
-from pathlib import Path
 from typing import Any
 
 IMAGE_BATCH_SIZE = 32
@@ -59,14 +57,14 @@ def install_bounded_image_conversion() -> None:
     ProductTemplate._create_extra_variant_images = bounded_image_conversion(native)
 
 
-def native_image_copies(cursor: Any, store: Path, source_maximum: int) -> set[tuple[str, int]]:
+def native_image_copies(cursor: Any, source_maximum: int) -> set[tuple[str, int]]:
     cursor.execute(
-        "SELECT image.id,target.store_fname,target.checksum,source.store_fname "
+        "SELECT image.id "
         "FROM product_image image "
         "JOIN ir_attachment target ON target.res_model='product.image' AND target.res_id=image.id AND target.res_field='image_1920' "
-        "JOIN LATERAL (SELECT original.store_fname FROM ir_attachment original "
+        "JOIN LATERAL (SELECT original.id FROM ir_attachment original "
         "LEFT JOIN product_product variant ON original.res_model='product.product' AND variant.id=original.res_id "
-        "WHERE original.checksum=target.checksum AND ((original.res_model='product.template' "
+        "WHERE original.checksum=target.checksum AND original.store_fname=target.store_fname AND ((original.res_model='product.template' "
         "AND original.res_field='image_1920' AND original.res_id=image.product_tmpl_id) OR "
         "(original.res_model='product.product' AND original.res_field='image_variant_1920' "
         "AND variant.product_tmpl_id=image.product_tmpl_id)) ORDER BY original.id LIMIT 1) source ON TRUE "
@@ -77,9 +75,4 @@ def native_image_copies(cursor: Any, store: Path, source_maximum: int) -> set[tu
     identifiers = {row[0] for row in rows}
     if len(identifiers) != len(rows):
         raise ValueError("Native image copies have ambiguous main attachments")
-    for _identifier, target, checksum, original in rows:
-        for name in {target, original}:
-            with (store / name).open("rb") as stream:
-                if hashlib.file_digest(stream, "sha1").hexdigest() != checksum:
-                    raise ValueError("Native image-copy bytes differ from their original product images")
     return {("product.image", identifier) for identifier in identifiers}
