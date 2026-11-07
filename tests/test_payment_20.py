@@ -172,18 +172,20 @@ class PaymentAdmissionTests(unittest.TestCase):
         self.assertTrue(all(statement.startswith(("SELECT ", "WITH ")) for statement in statements[1:]))
         self.assertEqual(snapshot, self.current)
 
-    def add_native_method(self) -> None:
-        self.current["methods"].append({"id": 301, "code": "cash_on_delivery", "active": True})
-        method = self.alias(401, 301, "payment_method_cash_on_delivery", "payment.method")
-        method["module"] = "delivery"
+    def add_native_method(self, mode: str = "cash_on_delivery") -> None:
+        wire = mode == "wire_transfer"
+        self.current["methods"].append({"id": 301, "code": mode, "active": True})
+        method = self.alias(401, 301, "payment_method_" + mode, "payment.method")
+        method["module"] = "payment_custom" if wire else "delivery"
         self.current["method_aliases"].append(method)
-        self.current["providers"].append(
-            {"id": 302, "code": "custom", "custom_mode": "cash_on_delivery", "state": "enabled", "module_id": 303}
-        )
-        provider = self.alias(402, 302, "payment_provider_cod", "payment.provider")
-        provider["module"] = "delivery"
+        self.current["providers"].append({"id": 302, "code": "custom", "custom_mode": mode, "state": "enabled", "module_id": 303})
+        provider = self.alias(402, 302, "payment_provider_transfer" if wire else "payment_provider_cod", "payment.provider")
+        provider["module"] = "payment" if wire else "delivery"
         self.current["provider_aliases"].append(provider)
-        self.current["modules"][303] = {"xmlid": "base.module_delivery", "state": "installed"}
+        self.current["modules"][303] = {
+            "xmlid": "base.module_payment_custom" if wire else "base.module_delivery",
+            "state": "installed",
+        }
         self.current["provider_links"].append((302, 301))
         self.current["countries"][301] = []
         self.current["currencies"][301] = []
@@ -205,6 +207,24 @@ class PaymentAdmissionTests(unittest.TestCase):
         plan = self.admit()
         self.assertEqual(plan.preserved_methods, [(301, 302)])
         self.assertNotIn(301, plan.methods)
+
+    def test_preserved_native_method_cannot_lose_a_retiring_brand_parent(self) -> None:
+        before = copy.deepcopy(self.current)
+        for mode in ("cash_on_delivery", "wire_transfer"):
+            with self.subTest(mode=mode):
+                self.current = copy.deepcopy(before)
+                self.add_native_method(mode)
+                self.current["methods"][-1]["primary_payment_method_id"] = self.current["methods"][0]["id"]
+                with self.assertRaisesRegex(RuntimeError, "native method brand parent"):
+                    self.admit()
+
+    def test_wire_transfer_provider_handoff_preserves_the_payment_module_alias(self) -> None:
+        self.add_native_method("wire_transfer")
+        before = copy.deepcopy(self.current)
+        plan = self.admit()
+        self.assertEqual(plan.preserved_methods, [(301, 302)])
+        self.assertNotIn(301, plan.methods)
+        self.assertEqual(self.current, before)
 
     def test_native_ownership_requires_the_exact_existing_connector_and_exclusive_link(self) -> None:
         self.add_native_method()
