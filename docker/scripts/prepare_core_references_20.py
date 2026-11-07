@@ -1605,39 +1605,81 @@ def migrate(cr: Any, version: str | None) -> None:
         return
     if major != "19":
         raise RuntimeError("Core reference preparation requires a native 19-to-20 crossing")
-    state = _state_source(cr)
-    website = _website_source(cr)
-    state_target = _check_target(cr, TARGET_STATE, state, protect=state.noupdate)
-    website_target = _check_target(cr, "default_website", website, protect=True) if website is not None else None
-    inherited_views = [(view, _inherited_view_source(cr, view)) for view in INHERITED_VIEWS]
-    empty_chats = _empty_chat_plan(cr)
-    lunches = _lunch_plan(cr)
-    policies = _policy_xmlid_plan(cr)
-    stock_valuation = _stock_valuation_action_plan(cr)
-    stock_views = _stock_product_view_plan(cr)
-    calendar_views = _calendar_view_plan(cr)
-    hr_preferences = _hr_preferences_view_plan(cr)
-    hr_types = _hr_type_plan(cr)
-    hr_org_chart = _hr_org_chart_action_plan(cr)
+    diagnostics = runpy.run_path(str(Path(__file__).with_name("migration_diagnostics.py")))["MigrationDiagnostics"]()
+
+    def state_plan() -> tuple[Reference, Reference | None]:
+        source = _state_source(cr)
+        return source, _check_target(cr, TARGET_STATE, source, protect=source.noupdate)
+
+    def website_plan() -> tuple[Reference | None, Reference | None]:
+        source = _website_source(cr)
+        return source, _check_target(cr, "default_website", source, protect=True) if source is not None else None
+
+    state, state_target = diagnostics.check("State references", state_plan, (None, None), cursor=cr)
+    website, website_target = diagnostics.check("Website references", website_plan, (None, None), cursor=cr)
+    inherited_views = [
+        (
+            view,
+            diagnostics.check(
+                f"Inherited view {view.module}.{view.name}", lambda view=view: _inherited_view_source(cr, view), None, cursor=cr
+            ),
+        )
+        for view in INHERITED_VIEWS
+    ]
+    empty_chats = diagnostics.check("Empty chats", lambda: _empty_chat_plan(cr), [], cursor=cr)
+    lunches = diagnostics.check("Calendar lunches", lambda: _lunch_plan(cr), [], cursor=cr)
+    policies = diagnostics.check("Policy identities", lambda: _policy_xmlid_plan(cr), [], cursor=cr)
+    stock_valuation = diagnostics.check("Stock valuation action", lambda: _stock_valuation_action_plan(cr), None, cursor=cr)
+    stock_views = diagnostics.check("Stock product views", lambda: _stock_product_view_plan(cr), {}, cursor=cr)
+    calendar_views = diagnostics.check("Calendar preferences", lambda: _calendar_view_plan(cr), [], cursor=cr)
+    hr_preferences = diagnostics.check("HR preferences", lambda: _hr_preferences_view_plan(cr), None, cursor=cr)
+    hr_types = diagnostics.check("HR types", lambda: _hr_type_plan(cr), None, cursor=cr)
+    hr_org_chart = diagnostics.check("Public Org Chart action", lambda: _hr_org_chart_action_plan(cr), None, cursor=cr)
     hr_moved: dict[str, Reference] = {}
     if hr_org_chart is not None:
         hr_moved["action_hr_employee_public_org_chart"] = hr_org_chart
-        private = _hr_org_chart_action_plan(cr, private=True)
-        if private is None:
-            raise RuntimeError("Missing private Org Chart source owner")
-        hr_moved["action_hr_employee_org_chart"] = private
-        hr_moved["act_hr_employee_public_hierarchy_view"] = _hr_org_chart_link_plan(cr)
+
+        def private_plan() -> Reference:
+            private = _hr_org_chart_action_plan(cr, private=True)
+            if private is None:
+                raise RuntimeError("Missing private Org Chart source owner")
+            return private
+
+        private = diagnostics.check("Private Org Chart action", private_plan, None, cursor=cr)
+        if private is not None:
+            hr_moved["action_hr_employee_org_chart"] = private
+        public_link = diagnostics.check("Public Org Chart link", lambda: _hr_org_chart_link_plan(cr), None, cursor=cr)
+        if public_link is not None:
+            hr_moved["act_hr_employee_public_hierarchy_view"] = public_link
         name = "act_open_view_employee_list_my_hierarchy_view"
-        hr_moved[name] = _hr_org_chart_link_plan(
-            cr, name, path=HR_EMPLOYEE_DATA_FILE, parent="open_view_employee_list_my", model="hr.employee"
+        link = diagnostics.check(
+            name,
+            lambda: _hr_org_chart_link_plan(
+                cr, name, path=HR_EMPLOYEE_DATA_FILE, parent="open_view_employee_list_my", model="hr.employee"
+            ),
+            None,
+            cursor=cr,
         )
+        if link is not None:
+            hr_moved[name] = link
         for suffix, parent in (("kanban", "hr_department_kanban_action"), ("tree", "hr_department_tree_action")):
             name = f"act_hr_department_hierarchy_view_{suffix}_action"
-            hr_moved[name] = _hr_org_chart_link_plan(
-                cr, name, path=HR_DEPARTMENT_DATA_FILE, parent=parent, model="hr.department", sequence=25
+            link = diagnostics.check(
+                name,
+                lambda name=name, parent=parent: _hr_org_chart_link_plan(
+                    cr, name, path=HR_DEPARTMENT_DATA_FILE, parent=parent, model="hr.department", sequence=25
+                ),
+                None,
+                cursor=cr,
             )
-    hr_org_chart_views = _hr_org_chart_view_plan(cr) if hr_org_chart is not None else None
-    _admit_mail(cr)
+            if link is not None:
+                hr_moved[name] = link
+    hr_org_chart_views = None
+    if hr_org_chart is not None:
+        hr_org_chart_views = diagnostics.check("Org Chart views", lambda: _hr_org_chart_view_plan(cr), None, cursor=cr)
+    elif diagnostics.path is not None:
+        diagnostics.record("Org Chart links and views", "blocked", "No admitted public Org Chart action")
+    diagnostics.check("Mail preservation", lambda: _admit_mail(cr), None, cursor=cr)
     for (module, name), source in stock_views.items():
         _bind_target(cr, name, source, module=module)
     if hr_types is not None:
@@ -1654,7 +1696,7 @@ def migrate(cr: Any, version: str | None) -> None:
             )
     for record_id in calendar_views:
         cr.execute("UPDATE ir_ui_view SET arch_db = %s::jsonb WHERE id = %s", (json.dumps({"en_US": "<data/>"}), record_id))
-    if state_target is None:
+    if state is not None and state_target is None:
         _bind_target(cr, TARGET_STATE, state)
     if website is not None and website_target is None:
         _bind_target(cr, "default_website", website)

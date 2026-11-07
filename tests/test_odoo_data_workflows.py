@@ -889,6 +889,21 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
                         self.assertNotIn("--init", command)
                     self.assertEqual(command[command.index("--update") + 1], "all")
 
+    def test_explicit_framework_load_applies_to_native_20_and_requires_its_source(self) -> None:
+        settings = self._local_settings()
+        settings.openupgrade_enabled = True
+        settings.openupgrade_target_version = "20.0"
+        settings.openupgrade_load_framework = True
+        runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
+        with (
+            patch.object(runner, "_resolve_openupgrade_assets", return_value=([Path("/scripts")], Path("/framework"))) as assets,
+            patch.object(runner, "run_command") as execute,
+        ):
+            runner.run_openupgrade()
+        assets.assert_called_once_with(require_framework=True)
+        command = shlex.split(execute.call_args.args[0])
+        self.assertIn("openupgrade_framework", command[command.index("--load") + 1].split(","))
+
     def test_openupgrade_releases_cached_connection_before_odoo_command(self) -> None:
         settings = self._local_settings()
         settings.openupgrade_enabled = True

@@ -651,6 +651,20 @@ Notes
   retain their existing OpenUpgrade selection. Native 20 rejects
   `--reset-versions` before asset discovery or database access; run it without
   that flag to preserve the installed versions.
+  `OPENUPGRADE_LOAD_FRAMEWORK=true` explicitly loads an available framework
+  for major20 too, including subsequent addon commands. Supply the matching
+  upstream20 source first in `ODOO_ADDONS_PATH`; this does not convert a19
+  framework into a20 framework. Unset keeps the existing selection above.
+  For a disposable saved19-to20 diagnostic, set
+  `ODOO_MIGRATION_DIAGNOSTIC_REPORT` to a private JSONL report path, with
+  `ODOO_COPY_PURPOSE=migration`, `PLATFORM_INSTANCE=rehearsal` and target20.0.
+  Independent preservation cohorts then report and continue. Each failed
+  cohort rolls back to its savepoint and skips its changes; remaining guards
+  inside that cohort are reported as blocked. Other cohorts still run and
+  apply admitted changes. Mail and Payment migration preservation use the
+  same reporting path. Without the explicit diagnostic report, the original
+  fatal checks and before-effect behavior remain in force. Diagnostic reports
+  are evidence of observed failures, never proof of a successful migration.
   Native 20 also selects the packaged `docker/scripts/nativeupgrade` root.
   Its Mail pre-stage reuses the guarded stock-view conversion from
   [website227](https://github.com/cbusillo/odoo-tenant-cm-website/issues/227).

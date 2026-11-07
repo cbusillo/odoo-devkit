@@ -17,4 +17,10 @@ def migrate(cr: Any, version: str | None) -> None:
     profile = views["load_reference"](target)
     helpers = runpy.run_path(str(root / "payment_20.py"))
     references = runpy.run_path(str(root / "prepare_core_references_20.py"))
-    helpers["retire"](cr, profile, version, Path(config.filestore(cr.dbname)), references["_check_references"])
+    diagnostics = runpy.run_path(str(root / "migration_diagnostics.py"))["MigrationDiagnostics"]()
+    diagnostics.check(
+        "Payment migration preservation",
+        lambda: helpers["retire"](cr, profile, version, Path(config.filestore(cr.dbname)), references["_check_references"]),
+        None,
+        cursor=cr,
+    )

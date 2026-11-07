@@ -9,4 +9,5 @@ def migrate(cr: Any, version: str | None) -> None:
 
     helpers = runpy.run_path(str(Path(__file__).resolve().parents[3] / "mail_view_20.py"))
     target = Path(get_module_path("mail")) / "views/ir_actions_server_views.xml"
-    helpers["migrate_mail"](cr, version, target)
+    diagnostics = runpy.run_path(str(Path(__file__).resolve().parents[3] / "migration_diagnostics.py"))["MigrationDiagnostics"]()
+    diagnostics.check("Mail migration preservation", lambda: helpers["migrate_mail"](cr, version, target), None, cursor=cr)
