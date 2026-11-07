@@ -31,7 +31,6 @@ def preserve_lead_time(cr: Any) -> None:
     companies = cr.fetchall()
     if not companies:
         raise RuntimeError("Sale lead time has no existing company")
-    # The upstream bulk converter commits, which would destroy the diagnostic savepoint.
     values = " || ".join("jsonb_build_object(%s,sale_delay)" for _ in companies)
     cr.execute(
         "ALTER TABLE product_template ALTER COLUMN sale_delay TYPE jsonb "
