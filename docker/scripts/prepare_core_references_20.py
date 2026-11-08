@@ -29,6 +29,8 @@ HR_DEPARTMENT_DATA_FILE = Path("/odoo/addons/hr/views/hr_department_views.xml")
 HR_USERS_DATA_FILE = Path("/odoo/addons/hr/views/res_users.xml")
 HR_TYPE_DATA_FILE = Path("/odoo/addons/hr/data/hr_employee_type_data.xml")
 SALE_ACCRUAL_DATA_FILE = Path("/odoo/addons/sale/wizard/account_accrued_orders_wizard_views.xml")
+WEBSITE_ATTRIBUTE_DATA_FILE = Path("/odoo/addons/website_sale/views/product_attribute_category_views.xml")
+WEBSITE_ATTRIBUTE_ACTION = "product_attribute_category_action"
 HR_TYPE_FIELD_OWNERS = ("hr.job", "hr.version", "hr.employee")
 UNTRACKED_PUBLIC_VIEW_DEFAULTS = {"track": (None, False), "visibility": (None, "")}
 _logger = logging.getLogger(__name__)
@@ -228,6 +230,50 @@ def _stock_valuation_action_plan(cr: Any) -> Reference | None:
             "binding_view_types": ("list,form",),
         },
     )
+    return source
+
+
+def _website_attribute_action_plan(cr: Any) -> Reference | None:
+    cr.execute("SELECT state FROM ir_module_module WHERE name = 'website_sale_comparison'")
+    installed = cr.fetchone()
+    if installed is None or installed[0] not in {"installed", "to upgrade"}:
+        return None
+    name = WEBSITE_ATTRIBUTE_ACTION
+    source = _require_source(cr, "website_sale_comparison", name, "ir.actions.act_window")
+    target = _check_target(cr, name, source, module="website_sale")
+    if (target is not None and target.noupdate) or (source.noupdate and target is None):
+        raise RuntimeError("Protected Website attribute action ownership")
+    fields = _hr_native_fields(WEBSITE_ATTRIBUTE_DATA_FILE, name, source.model)
+    if set(fields) != {"name", "res_model", "path", "view_mode", "help"} or any(
+        field.attrib != ({"name": key, "type": "html"} if key == "help" else {"name": key}) for key, field in fields.items()
+    ):
+        raise RuntimeError("Unsupported native Website attribute action fields")
+    native = {key: (field.text or "").strip() for key, field in fields.items()}
+    if native["res_model"] != "product.attribute.category" or not all(native[key] for key in ("name", "path", "view_mode")):
+        raise RuntimeError("Unsupported native Website attribute action")
+    actions = _rows(cr, "SELECT * FROM ir_act_window WHERE id = %s FOR UPDATE", (source.record_id,))
+    if len(actions) != 1:
+        raise RuntimeError("Missing Website attribute action")
+    action = actions[0]
+    cr.execute("SELECT tableoid::regclass::text, id FROM ir_actions WHERE id = %s FOR UPDATE", (source.record_id,))
+    if cr.fetchall() != [("ir_act_window", source.record_id)]:
+        raise RuntimeError("Ambiguous Website attribute action storage")
+    cr.execute("SELECT id FROM ir_act_window WHERE path = %s FOR UPDATE", (native["path"],))
+    if cr.fetchall() != [(source.record_id,)]:
+        raise RuntimeError("Changed Website attribute action path")
+    if action["type"] != source.model or any(action[key] != native[key] for key in ("res_model", "path", "view_mode")):
+        raise RuntimeError("Customized Website attribute action fields")
+    native_help = "".join(ElementTree.tostring(child, encoding="unicode") for child in fields["help"])
+    try:
+        if (
+            not isinstance(action["name"], dict)
+            or action["name"].get("en_US") != native["name"]
+            or not isinstance(action["help"], dict)
+            or _action_help(action["help"]["en_US"]) != _action_help(native_help)
+        ):
+            raise ValueError("Changed action text")
+    except (KeyError, ValueError, TypeError, ElementTree.ParseError) as error:
+        raise RuntimeError("Customized Website attribute action text") from error
     return source
 
 
@@ -1753,6 +1799,7 @@ def migrate(cr: Any, version: str | None) -> None:
     lunches = diagnostics.check("Calendar lunches", lambda: _lunch_plan(cr), [], cursor=cr)
     policies = diagnostics.check("Policy identities", lambda: _policy_xmlid_plan(cr), [], cursor=cr)
     stock_valuation = diagnostics.check("Stock valuation action", lambda: _stock_valuation_action_plan(cr), None, cursor=cr)
+    website_attribute = diagnostics.check("Website attribute action", lambda: _website_attribute_action_plan(cr), None, cursor=cr)
     stock_views = diagnostics.check("Stock product views", lambda: _stock_product_view_plan(cr), {}, cursor=cr)
     calendar_views = diagnostics.check("Calendar preferences", lambda: _calendar_view_plan(cr), [], cursor=cr)
     hr_preferences = diagnostics.check("HR preferences", lambda: _hr_preferences_view_plan(cr), None, cursor=cr)
@@ -1843,5 +1890,7 @@ def migrate(cr: Any, version: str | None) -> None:
     _release_policy_xmlids(cr, policies)
     if stock_valuation is not None:
         _bind_moved_action(cr, stock_valuation, "action_report_stock_valuation", "stock_account", "account")
+    if website_attribute is not None:
+        _bind_moved_action(cr, website_attribute, WEBSITE_ATTRIBUTE_ACTION, "website_sale_comparison", "website_sale")
     for name, source in hr_moved.items():
         _bind_moved_action(cr, source, name, "hr_org_chart", "hr")

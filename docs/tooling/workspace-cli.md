@@ -698,6 +698,13 @@ Notes
   Original business attachments remain strict. The saved19 driver recognizes new
   extra-image copies only when database ownership, source checksums and actual bytes
   match their own template or variant; rollback leaves no separate copy journal.
+  The attribute-category action moves from `website_sale_comparison` to
+  `website_sale` by binding the new XML ID to the retained window action and
+  protecting its old alias. Action IDs, incoming links, custom aliases, context
+  and translations remain intact. Preparation compares the fields native XML
+  will overwrite with the selected target definition; conflicting ownership,
+  storage, paths or edited native values report failure before binding.
+  Other action types keep their independently unique paths.
   Its Mail pre-stage reuses the guarded stock-view conversion from
   [website227](https://github.com/cbusillo/odoo-tenant-cm-website/issues/227).
   Before any shared bridge effect, `mail_view_20.py` locks and compares the
