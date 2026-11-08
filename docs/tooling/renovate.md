@@ -20,6 +20,13 @@ Renovate opens a pull request for each alert it can fix.
   consumer's exact odoo-devkit pins, in `workspace.toml` and in workflow
   `uses:` references, to the head commit of devkit `main`
   ([build-tool upgrades](build-tool-upgrades.md#moving-the-pin)).
+  It also moves `[repos.shared_addons].ref` to shared-addons `main` as an
+  exact commit when `[build].odoo_version` is `20.0` and the repository is
+  `cbusillo/odoo-shared-addons`. Renovate reads the consumer's base branch
+  manifest, so landing its Odoo 20 conversion activates these updates; an
+  unmerged conversion does not. Odoo 19 shared-addons pins stay unchanged.
+  Shared-addons updates use ordinary visible pull requests, preview checks
+  and the merge train. Production still requires Client release acceptance.
 
 ## Repository Config
 
