@@ -637,7 +637,7 @@ Notes
   authenticates nothing, and Odoo's own neutralize keeps it too.
 - For an OpenUpgrade target in major 20, selected from the explicit target
   or `ODOO_VERSION`, the existing packaged runner
-  uses native `base,web` loading and selects its SQL-only
+  loads `base,web,openupgrade_framework` and selects its SQL-only
   `prepare_core_references_20.py` with native `--pre-upgrade-scripts`.
   Explicit `ODOO_INSTALL_MODULES` (comma- or colon-separated) selects initial
   installs with `--init` in the same invocation as `--update all`, so their
@@ -646,8 +646,9 @@ Notes
   selection during OpenUpgrade. The later restore install phase cannot
   substitute for an initial migration ownership handoff.
   It retains the discovered upgrade roots; it does not load the Odoo 19
-  OpenUpgrade framework or reset module states or versions. Subsequent addon
-  maintenance and release-plan shells also skip that framework. Other targets
+  OpenUpgrade framework or reset module states or versions. Supply the matching
+  upstream20 framework in the artifact inputs. Subsequent addon
+  maintenance and release-plan shells skip it unless explicitly requested. Other targets
   retain their existing OpenUpgrade selection. Native 20 rejects
   `--reset-versions` before asset discovery or database access; run it without
   that flag to preserve the installed versions.
@@ -655,7 +656,8 @@ Notes
   for major20 too, including subsequent addon commands. Supply the matching
   upstream20 source first in `ODOO_ADDONS_PATH`; its manifest must match the
   selected target series. This does not convert a19
-  framework into a20 framework. Unset keeps the existing selection above.
+  framework into a20 framework. `OPENUPGRADE_LOAD_FRAMEWORK=false` selects an
+  explicit framework-free pass; unset loads the framework during the crossing.
   For a disposable saved19-to20 diagnostic, set
   `ODOO_MIGRATION_DIAGNOSTIC_REPORT` to a private JSONL report path, with
   `ODOO_COPY_PURPOSE=migration`, `PLATFORM_INSTANCE=rehearsal` and target20.0.
