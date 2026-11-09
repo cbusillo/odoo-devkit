@@ -450,7 +450,9 @@ Notes
   `LAUNCHPLANE_INSTANCE_OVERRIDES_REQUIRED=true` to require a valid typed
   override payload with managed settings before startup or data workflows
   continue. `LAUNCHPLANE_WEBSITE_BOOTSTRAP_REQUIRED=true` additionally requires
-  a non-empty `website_bootstrap` object in that payload. These flags are
+  a non-empty `website_bootstrap` object in that payload and fails when the
+  website module is not installed; without it, a payload for a database that
+  lacks Website logs the skip and continues. These flags are
   runtime assertions supplied by Launchplane-managed records or operator input;
   local runtimes remain optional unless a caller explicitly sets them.
 - Legacy setting-shaped inputs such as `ENV_OVERRIDE_CONFIG_PARAM__*`,
