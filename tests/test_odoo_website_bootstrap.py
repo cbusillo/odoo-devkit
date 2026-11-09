@@ -177,11 +177,19 @@ class WebsiteBootstrapHelperTests(unittest.TestCase):
                         env, {"website_bootstrap": {"homepage_url": "/shop", "routes_source": {"module": "website_sale"}}}
                     )
 
-    def test_base_website_without_installed_addon_refuses_bootstrap(self) -> None:
+    def test_required_bootstrap_refuses_when_website_is_not_installed(self) -> None:
         env = FakeEnv()
         env.modules.record = FakeRecord(truthy=False)
-        with self.assertRaisesRegex(RuntimeError, "website module is not installed"):
+        with patch.dict(os.environ, {website_bootstrap.LAUNCHPLANE_WEBSITE_BOOTSTRAP_REQUIRED_ENV_KEY: "true"}, clear=False):
+            with self.assertRaisesRegex(RuntimeError, "website module is not installed"):
+                website_bootstrap.apply_website_bootstrap(env, {"website_bootstrap": {"name": "Unsupported"}})
+
+    def test_optional_bootstrap_does_not_fail_a_database_without_website(self) -> None:
+        env = FakeEnv()
+        env.modules.record = FakeRecord(truthy=False)
+        with patch.dict(os.environ, {website_bootstrap.LAUNCHPLANE_WEBSITE_BOOTSTRAP_REQUIRED_ENV_KEY: ""}, clear=False):
             website_bootstrap.apply_website_bootstrap(env, {"website_bootstrap": {"name": "Unsupported"}})
+        self.assertIsNone(env.website.name)
 
     def test_attachment_binary_uses_encoded_content_instead_of_proxy_text(self) -> None:
         class BinaryAttachment:
