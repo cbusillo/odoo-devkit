@@ -431,7 +431,10 @@ def apply_website_bootstrap(env: Any, parsed_payload: dict[str, object] | None) 
     if not website_payload:
         return
     if not website_is_loaded(env):
-        raise RuntimeError("Website bootstrap supplied, but the website module is not installed.")
+        if _env_flag_enabled(LAUNCHPLANE_WEBSITE_BOOTSTRAP_REQUIRED_ENV_KEY):
+            raise RuntimeError("Website bootstrap supplied, but the website module is not installed.")
+        print("Website bootstrap skipped: the website module is not installed.")
+        return
 
     canonical_url = str(website_payload.get("canonical_url") or _payload_web_base_url(parsed_payload) or "").strip()
 
