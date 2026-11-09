@@ -22,6 +22,14 @@ uv run --project "${ODOO_DEVKIT_REPO:-../odoo-devkit}" --locked ruff format --ch
 
 Ruff is supplied by devkit's locked development dependencies. The consumer's
 pinned devkit checkout owns both its version and the shared configuration.
+The shared configuration leaves `target-version` unset so normal Ruff discovery
+uses the consumer's `pyproject.toml` `requires-python`: Python 3.14 for adopted
+Odoo 20 consumers and Python 3.13 for supported Odoo 19 consumers. Devkit's root
+tools retain their own Python 3.13 target. Consumers without Python project
+metadata use Ruff's conservative default; an explicit consumer target still
+takes precedence. Use normal configuration discovery, since passing a file with
+`--config` disables version inference. See
+[Ruff's version inference](https://docs.astral.sh/ruff/configuration/#inferring-the-python-version).
 
 [`.idea/inspectionProfiles/Project_Default.xml`](../../.idea/inspectionProfiles/Project_Default.xml)
 is the shared inspection asset. Keep it at that path as a regular
@@ -32,12 +40,13 @@ inspection remains disabled, as in both tenant profiles, following the amended
 There is no Odoo SCSS scope: Odoo bundles assets across addons and uses QWeb
 selectors the IDE does not index reliably.
 Its Python compatibility
-inspection checks 3.13 and 3.14, following the
+inspection checks 3.13 and 3.14 for the supported consumers, following the
 [Director decision](https://github.com/cbusillo/odoo-devkit/issues/302#issuecomment-6607466966).
-Ruff continues to target the current 3.13 runtime. The
-[image upgrade](https://github.com/cbusillo/odoo-devkit/issues/373) owns raising that
-target after the images move. Tenant selection and pointer adoption remain on
-the owning issue. Consumers declare the external profile path in
+Both checks remain necessary while Odoo 19 and root tools support 3.13;
+the profile has no separate Odoo 20 temporary target to retire. The
+[Odoo 20 image qualification and preview proof](https://github.com/cbusillo/odoo-devkit/issues/373)
+precede the consumer's 3.14 lint target. Tenant selection and pointer adoption
+remain on the owning issue. Consumers declare the external profile path in
 `qualityGate.inspection.profile`; task worktrees use the inspection helper's
 `--profile` option when their devkit is outside the sibling layout. The
 canonical file remains in devkit rather than in each consumer.
