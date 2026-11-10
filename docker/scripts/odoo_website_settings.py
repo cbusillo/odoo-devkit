@@ -135,7 +135,8 @@ def apply_website_settings(env: Any, payload: dict[str, object] | None, *, insta
             if head_digest(str(website.custom_code_head or "")) != plan["after_sha256"]:
                 raise RuntimeError("Native website indexing readback failed.")
     except BaseException:
-        env.registry.clear_cache("stable")
+        if clear_cache := getattr(env.registry, "clear_cache", None):
+            clear_cache("stable")
         raise
     print("website_indexing=" + json.dumps({**plan, "readback_verified": True}, sort_keys=True, separators=(",", ":")))
     return digest
