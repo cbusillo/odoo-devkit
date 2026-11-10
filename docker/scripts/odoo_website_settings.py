@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit
 
 PRODUCTION_INSTANCE_NAMES = frozenset({"prod", "production"})
 INDEXING_PARAMETER = "cm_website.public_indexing_enabled"
@@ -35,6 +35,23 @@ def head_digest(head: str) -> str:
     return hashlib.sha256(head.encode()).hexdigest()
 
 
+def parse_public_origin(origin: object) -> SplitResult:
+    if not isinstance(origin, str):
+        raise RuntimeError("Website settings require a public HTTPS origin.")
+    parsed = urlsplit(origin)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise RuntimeError("Website settings require a public HTTPS origin.")
+    return parsed
+
+
 def indexing_website(env: Any, raw: dict[str, Any]) -> Any:
     website_id = raw["website_id"]
     if type(website_id) is not int or website_id < 1:
@@ -43,20 +60,11 @@ def indexing_website(env: Any, raw: dict[str, Any]) -> Any:
     if not isinstance(origin, str) or any(character.isspace() for character in origin):
         raise RuntimeError("Website indexing requires an exact public HTTPS origin.")
     try:
-        parsed = urlsplit(origin)
+        parsed = parse_public_origin(origin)
         valid_port = parsed.port is None or 0 < parsed.port <= 65535
     except ValueError as error:
         raise RuntimeError("Website indexing requires an exact public HTTPS origin.") from error
-    if (
-        parsed.scheme != "https"
-        or not parsed.hostname
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.path not in {"", "/"}
-        or parsed.query
-        or parsed.fragment
-        or not valid_port
-    ):
+    if parsed.username is not None or not valid_port:
         raise RuntimeError("Website indexing requires an exact public HTTPS origin.")
     websites = env["website"].sudo()
     host = str(parsed.netloc).lower().encode("idna")
@@ -85,6 +93,13 @@ def plan_website_indexing(env: Any, payload: dict[str, object] | None, *, instan
         raise RuntimeError("Website indexing requires a matching production payload.")
     if not isinstance(raw, dict) or set(raw) != INDEXING_FIELDS or raw["production_use"] not in ("prelaunch", "live"):
         raise RuntimeError("Invalid Launchplane website indexing actuation data.")
+    legacy = payload.get("website_settings")
+    if legacy is not None and (
+        not isinstance(legacy, dict)
+        or legacy.get("website_id") != raw["website_id"]
+        or str(legacy.get("public_origin", "")).rstrip("/") != str(raw["public_origin"]).rstrip("/")
+    ):
+        raise RuntimeError("Website settings and indexing must select the same native website and origin.")
     if not website_is_loaded(env):
         raise RuntimeError("Website indexing requires the installed website addon.")
     website = indexing_website(env, raw)
@@ -207,19 +222,7 @@ def apply_legacy_website_settings(env: Any, payload: dict[str, object] | None, *
     if analytics and not (raw["cookies_bar"] and raw["block_third_party_domains"]):
         raise RuntimeError("Website analytics requires the cookie bar and third-party blocking.")
     origin = raw["public_origin"]
-    if not isinstance(origin, str):
-        raise RuntimeError("Website settings require a public HTTPS origin.")
-    parsed = urlsplit(origin)
-    if (
-        parsed.scheme != "https"
-        or not parsed.hostname
-        or parsed.username
-        or parsed.password
-        or parsed.path not in {"", "/"}
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise RuntimeError("Website settings require a public HTTPS origin.")
+    parse_public_origin(origin)
     if operation == "disable_collection":
         # Historical recovery has no verified selector. Disable collection across
         # the database while preserving every website's consent/embedding choices.

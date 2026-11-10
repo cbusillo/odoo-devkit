@@ -59,7 +59,7 @@ class WebsiteIndexingTests(unittest.TestCase):
         website = self.env.websites.records[0]
         self.assertEqual(receipt["after_sha256"], hashlib.sha256(website.custom_code_head.encode()).hexdigest())
         self.assertEqual(receipt["after_sha256"], plan["after_sha256"])
-        self.assertIn('content="noindex"', website.custom_code_head)
+        self.assertTrue(receipt["managed_noindex_after"])
         self.assertTrue(website.custom_code_head.endswith(self.original))
         self.assertEqual(website.google_analytics_key, "G-COPIED")
         self.assertEqual(website.domain, "https://site.example")
@@ -96,11 +96,19 @@ class WebsiteIndexingTests(unittest.TestCase):
         protected = self.env.websites.records[0].custom_code_head
         self.payload["website_indexing"]["production_use"] = "live"
         self.payload["website_settings"] = settings()
-        self.env.websites.records[0].persist_writes = False
+        self.env.parameters.values[consumer.INDEXING_PARAMETER] = "0"
+        self.env.websites.records[0].ignored_write_fields = {"custom_code_head"}
         with self.assertRaises(RuntimeError):
             self.apply()
         self.assertEqual(self.env.websites.records[0].custom_code_head, protected)
         self.assertEqual(self.env.websites.records[0].google_analytics_key, "G-COPIED")
+        self.assertEqual(self.env.parameters.values[consumer.INDEXING_PARAMETER], "0")
+
+    def test_combined_payload_cannot_select_different_websites(self) -> None:
+        self.payload["website_settings"] = {**settings(), "website_id": 2, "public_origin": "https://unrelated.example"}
+        with self.assertRaises(RuntimeError):
+            consumer.apply_website_settings(self.env, self.payload, instance="prod")
+        self.assertFalse(any(website.writes for website in self.env.websites.records))
 
     def test_nonproduction_payload_cannot_remove_protection(self) -> None:
         self.apply()

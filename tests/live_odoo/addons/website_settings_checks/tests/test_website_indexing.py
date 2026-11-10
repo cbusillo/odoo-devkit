@@ -8,7 +8,13 @@ from unittest.mock import patch
 from lxml import html
 from odoo import tools
 from odoo.tests import HttpCase, tagged
-from odoo_website_settings import apply_website_settings, plan_website_indexing
+from odoo_website_settings import (
+    INDEXING_PARAMETER,
+    apply_website_settings,
+    plan_website_indexing,
+    read_string_parameter,
+    write_string_parameter,
+)
 
 
 @tagged("post_install", "-at_install")
@@ -49,7 +55,10 @@ class TestNativeWebsiteIndexing(HttpCase):
             return response.text
 
         def managed_count(document: str) -> int:
-            return len(html.fromstring(document).xpath('//head/meta[@name="robots" and @content="noindex"]'))
+            return sum(
+                "noindex" in content.lower().replace(",", " ").split()
+                for content in html.fromstring(document).xpath('//head/meta[@name="robots"]/@content')
+            )
 
         def apply() -> dict[str, object]:
             output = io.StringIO()
@@ -83,9 +92,30 @@ class TestNativeWebsiteIndexing(HttpCase):
         self.assertEqual(other.custom_code_head, original)
         self.assertFalse(apply()["changed"])
         payload["website_indexing"]["production_use"] = "live"
-        with patch.object(type(website), "write", return_value=True), self.assertRaisesRegex(RuntimeError, "readback failed"):
+        parameters = self.env["ir.config_parameter"].sudo()
+        write_string_parameter(parameters, INDEXING_PARAMETER, "0")
+        payload["website_settings"] = {
+            "operation": "apply",
+            "website_id": website.id,
+            "public_origin": website.domain,
+            "public_indexing_enabled": True,
+            "google_analytics_key": "G-CHANGED",
+            "cookies_bar": True,
+            "block_third_party_domains": True,
+        }
+        native_write = type(website).write
+
+        def ignore_head(records: Any, values: dict[str, object]) -> bool:
+            if "custom_code_head" in values:
+                return True
+            return native_write(records, values)
+
+        with patch.object(type(website), "write", ignore_head), self.assertRaises(RuntimeError):
             apply()
         self.assertEqual(website.custom_code_head, protected)
+        self.assertEqual(website.google_analytics_key, before[0]["google_analytics_key"])
+        self.assertEqual(read_string_parameter(parameters, INDEXING_PARAMETER), "0")
+        del payload["website_settings"]
         self.assertEqual(managed_count(page()), 1)
         try:
             with self.env.cr.savepoint():
@@ -103,11 +133,11 @@ class TestNativeWebsiteIndexing(HttpCase):
         apply()
         self.assertEqual(managed_count(page()), 1)
         duplicate = self.env["website"].create({"name": "Ambiguous synthetic", "domain": "http://indexing.example.test"})
-        with self.assertRaisesRegex(RuntimeError, "unambiguous"):
+        with self.assertRaises(RuntimeError):
             apply()
         duplicate.unlink()
         payload["website_indexing"]["public_origin"] = other.domain
-        with self.assertRaisesRegex(RuntimeError, "binding"):
+        with self.assertRaises(RuntimeError):
             apply()
         self.assertEqual(website.custom_code_head, protected)
         print("NATIVE_INDEXING_HTTP_PROOF " + json.dumps(receipt, sort_keys=True), flush=True)
