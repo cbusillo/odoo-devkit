@@ -5,6 +5,7 @@ import json
 import unittest
 from contextlib import contextmanager, redirect_stdout
 from typing import Any
+from unittest.mock import MagicMock
 
 from tests.test_odoo_website_settings import Environment, consumer, settings
 
@@ -29,6 +30,8 @@ class IndexingEnvironment(Environment):
     def __init__(self) -> None:
         super().__init__()
         self.cr = Cursor(self)
+        self.registry = MagicMock()
+        self.registry.__contains__.side_effect = {"website"}.__contains__
 
 
 class WebsiteIndexingTests(unittest.TestCase):

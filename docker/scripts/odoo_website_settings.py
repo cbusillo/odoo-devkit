@@ -121,18 +121,22 @@ def apply_website_settings(env: Any, payload: dict[str, object] | None, *, insta
     if plan is None:
         return apply_legacy_website_settings(env, payload, instance=instance)
     website = indexing_website(env, plan)
-    with env.cr.savepoint():
-        digest = apply_legacy_website_settings(env, payload, instance=instance)
-        before = str(website.custom_code_head or "")
-        if head_digest(before) != plan["before_sha256"]:
-            raise RuntimeError("Native website head changed after indexing planning.")
-        after = indexing_head(before, plan["production_use"])
-        if before != after:
-            website.write({"custom_code_head": after or False})
-        website.flush_recordset(["custom_code_head"])
-        website.invalidate_recordset(["custom_code_head"])
-        if head_digest(str(website.custom_code_head or "")) != plan["after_sha256"]:
-            raise RuntimeError("Native website indexing readback failed.")
+    try:
+        with env.cr.savepoint():
+            digest = apply_legacy_website_settings(env, payload, instance=instance)
+            before = str(website.custom_code_head or "")
+            if head_digest(before) != plan["before_sha256"]:
+                raise RuntimeError("Native website head changed after indexing planning.")
+            after = indexing_head(before, plan["production_use"])
+            if before != after:
+                website.write({"custom_code_head": after or False})
+            website.flush_recordset(["custom_code_head"])
+            website.invalidate_recordset(["custom_code_head"])
+            if head_digest(str(website.custom_code_head or "")) != plan["after_sha256"]:
+                raise RuntimeError("Native website indexing readback failed.")
+    except BaseException:
+        env.registry.clear_cache("stable")
+        raise
     print("website_indexing=" + json.dumps({**plan, "readback_verified": True}, sort_keys=True, separators=(",", ":")))
     return digest
 
