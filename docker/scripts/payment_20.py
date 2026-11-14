@@ -4,7 +4,7 @@ import copy
 import hashlib
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib import import_module
 from pathlib import Path
 from typing import Any, NoReturn
@@ -23,6 +23,63 @@ class Retirement:
     methods: list[int]
     attachments: list[int]
     aliases: list[int]
+    preserved_methods: list[tuple[int, int]] = field(default_factory=list)
+
+
+def _separate_native_provider_methods(snapshot: dict[str, Any]) -> tuple[dict[str, Any], list[tuple[int, int]]]:
+    bindings = {
+        "payment_custom.payment_method_wire_transfer": ("payment.payment_provider_transfer", "payment_custom", "wire_transfer"),
+        "delivery.payment_method_cash_on_delivery": ("delivery.payment_provider_cod", "delivery", "cash_on_delivery"),
+    }
+    preserved = []
+    provider_ids = set()
+    for alias, (provider_alias, module, mode) in bindings.items():
+        owners = [row for row in snapshot["method_aliases"] if row["module"] + "." + row["name"] == alias]
+        if not owners:
+            continue
+        if len(owners) != 1:
+            _fail("native method alias ambiguity")
+        owner = owners[0]
+        method_id = owner["res_id"]
+        methods = [row for row in snapshot["methods"] if row["id"] == method_id]
+        providers = [row for row in snapshot["provider_aliases"] if row["module"] + "." + row["name"] == provider_alias]
+        if len(methods) != 1 or len(providers) != 1 or owner["model"] != "payment.method" or owner["noupdate"] is not True:
+            _fail("native provider binding")
+        provider_id = providers[0]["res_id"]
+        records = [row for row in snapshot["providers"] if row["id"] == provider_id]
+        if len(records) != 1 or providers[0]["model"] != "payment.provider" or providers[0]["noupdate"] is not True:
+            _fail("native provider identity")
+        provider = records[0]
+        connector = snapshot["modules"].get(provider["module_id"], {})
+        if (
+            provider["code"] != "custom"
+            or provider.get("custom_mode") != mode
+            or methods[0]["code"] != mode
+            or connector.get("xmlid") != "base.module_" + module
+            or connector.get("state") not in {"installed", "to upgrade"}
+            or [edge for edge in snapshot["provider_links"] if edge[0] == provider_id or edge[1] == method_id]
+            != [(provider_id, method_id)]
+            or len([row for row in snapshot["method_aliases"] if row["res_id"] == method_id]) != 1
+            or len([row for row in snapshot["provider_aliases"] if row["res_id"] == provider_id]) != 1
+        ):
+            _fail("native provider ownership or connector")
+        preserved.append((method_id, provider_id))
+        provider_ids.add(provider_id)
+    method_ids = {method_id for method_id, _provider_id in preserved}
+    retiring_ids = {row["id"] for row in snapshot["methods"]} - method_ids
+    if any(row["id"] in method_ids and row.get("primary_payment_method_id") in retiring_ids for row in snapshot["methods"]):
+        _fail("native method brand parent would be retired")
+    filtered = dict(snapshot)
+    for key in ("methods", "method_aliases", "attachments"):
+        field_name = "id" if key == "methods" else "res_id"
+        filtered[key] = [row for row in snapshot[key] if row[field_name] not in method_ids]
+    for key in ("providers", "provider_aliases"):
+        field_name = "id" if key == "providers" else "res_id"
+        filtered[key] = [row for row in snapshot[key] if row[field_name] not in provider_ids]
+    filtered["provider_links"] = [edge for edge in snapshot["provider_links"] if edge[0] not in provider_ids]
+    for key in ("countries", "currencies"):
+        filtered[key] = {identifier: values for identifier, values in snapshot[key].items() if identifier not in method_ids}
+    return filtered, preserved
 
 
 def _retirement_error(subject: str) -> RuntimeError:
@@ -74,7 +131,10 @@ def _owned(rows: list[dict[str, Any]], aliases: list[dict[str, Any]], expected: 
         _fail("duplicate row identity")
     result = {}
     for alias in aliases:
-        if set(alias) - AUDIT != {"id", "module", "name", "model", "res_id", "noupdate"}:
+        if set(alias) - AUDIT - {"studio"} != {"id", "module", "name", "model", "res_id", "noupdate"} or alias.get("studio") not in (
+            None,
+            False,
+        ):
             _fail("alias material metadata")
         key = alias["module"] + "." + alias["name"]
         identity = alias["res_id"]
@@ -114,6 +174,7 @@ def _admit_image_file(attachment: dict[str, Any], expected: dict[str, Any], file
 
 
 def admit(snapshot: dict[str, Any], witness: dict[str, Any], filestore: Path) -> Retirement:
+    snapshot, preserved = _separate_native_provider_methods(snapshot)
     if snapshot["relation_columns"] != {
         table: sorted(("payment_method_id", column)) for table, column, _model in RELATIONS.values()
     }:
@@ -180,16 +241,33 @@ def admit(snapshot: dict[str, Any], witness: dict[str, Any], filestore: Path) ->
             "has_db_datas",
         }
         metadata = {key: value for key, value in row.items() if key not in AUDIT | dynamic}
-        if _semantic_values(metadata, witness["attachment_defaults"]) != witness["attachment_defaults"]:
-            _fail("attachment customization or unknown fields")
         expected_image = witness["methods"][methods[row["res_id"]]]["images"][field]
+        if expected_image is None:
+            _fail("image differs from recorded source absence")
+        context = expected_image.get("metadata", {})
+        website_id = context.get("website_id")
+        if (
+            set(context) - {"index_content", "website_id"}
+            or context.get("index_content") not in (None, "image")
+            or (website_id is not None and (type(website_id) is not int or website_id <= 0))
+        ):
+            _fail("unsupported native image metadata")
+        expected_metadata = witness["attachment_defaults"] | context
+        if _semantic_values(metadata, expected_metadata) != expected_metadata:
+            _fail("attachment customization or unknown fields")
         _admit_image_file(row, expected_image, filestore)
-    if seen != {(identifier, field) for identifier in methods for field in IMAGE_FIELDS}:
+    if seen != {
+        (identifier, field)
+        for identifier, alias in methods.items()
+        for field in IMAGE_FIELDS
+        if witness["methods"][alias]["images"][field] is not None
+    }:
         _fail("missing stock image")
     return Retirement(
         sorted(methods),
         sorted(row["id"] for row in snapshot["attachments"]),
         sorted(row["id"] for row in snapshot["method_aliases"]),
+        preserved,
     )
 
 
@@ -273,7 +351,7 @@ def observe(cr: Any) -> dict[str, Any]:
         _fail("main company binding")
     columns = _rows(
         cr,
-        "SELECT table_name,array_agg(column_name ORDER BY column_name) FROM information_schema.columns "
+        "SELECT table_name,array_agg(column_name::text ORDER BY column_name) FROM information_schema.columns "
         "WHERE table_schema='public' AND table_name=ANY(%s) GROUP BY table_name",
         ([relation[0] for relation in RELATIONS.values()],),
     )
@@ -325,6 +403,12 @@ def retire(cr: Any, profile: dict[str, Any], version: str, filestore: Path, chec
     }
     internal_relations.add(("payment_method", "primary_payment_method_id", "payment_method"))
     check_references(cr, targets, internal_relations, indirect_rows=indirect_rows)
+    if plan.preserved_methods:
+        cr.execute("ALTER TABLE payment_method ADD COLUMN provider_id integer REFERENCES payment_provider(id) ON DELETE CASCADE")
+        for method_id, provider_id in plan.preserved_methods:
+            cr.execute("UPDATE payment_method SET provider_id=%s WHERE id=%s RETURNING id", (provider_id, method_id))
+            if cr.fetchall() != [(method_id,)]:
+                _fail("native provider assignment changed")
     for table in ("ir_attachment", "ir_model_data", "payment_method"):
         _delete_exact(cr, table, targets[table])
     return plan

@@ -172,6 +172,130 @@ class PaymentAdmissionTests(unittest.TestCase):
         self.assertTrue(all(statement.startswith(("SELECT ", "WITH ")) for statement in statements[1:]))
         self.assertEqual(snapshot, self.current)
 
+    def add_native_method(self, mode: str = "cash_on_delivery") -> None:
+        wire = mode == "wire_transfer"
+        self.current["methods"].append({"id": 301, "code": mode, "active": True})
+        method = self.alias(401, 301, "payment_method_" + mode, "payment.method")
+        method["module"] = "payment_custom" if wire else "delivery"
+        self.current["method_aliases"].append(method)
+        self.current["providers"].append({"id": 302, "code": "custom", "custom_mode": mode, "state": "enabled", "module_id": 303})
+        provider = self.alias(402, 302, "payment_provider_transfer" if wire else "payment_provider_cod", "payment.provider")
+        provider["module"] = "payment" if wire else "delivery"
+        self.current["provider_aliases"].append(provider)
+        self.current["modules"][303] = {
+            "xmlid": "base.module_payment_custom" if wire else "base.module_delivery",
+            "state": "installed",
+        }
+        self.current["provider_links"].append((302, 301))
+        self.current["countries"][301] = []
+        self.current["currencies"][301] = []
+        self.current["attachments"].append({"id": 403, "res_id": 301, "res_field": "image"})
+
+    def test_native_method_and_enabled_provider_are_preserved_outside_stock_retirement(self) -> None:
+        self.add_native_method()
+        before = copy.deepcopy(self.current)
+        plan = self.admit()
+        self.assertEqual(plan.preserved_methods, [(301, 302)])
+        self.assertNotIn(301, plan.methods)
+        self.assertNotIn(403, plan.attachments)
+        self.assertNotIn(401, plan.aliases)
+        self.assertEqual(self.current, before)
+
+    def test_scheduled_native_connector_upgrade_preserves_the_existing_provider(self) -> None:
+        self.add_native_method()
+        self.current["modules"][303]["state"] = "to upgrade"
+        plan = self.admit()
+        self.assertEqual(plan.preserved_methods, [(301, 302)])
+        self.assertNotIn(301, plan.methods)
+
+    def test_preserved_native_method_cannot_lose_a_retiring_brand_parent(self) -> None:
+        before = copy.deepcopy(self.current)
+        for mode in ("cash_on_delivery", "wire_transfer"):
+            with self.subTest(mode=mode):
+                self.current = copy.deepcopy(before)
+                self.add_native_method(mode)
+                self.current["methods"][-1]["primary_payment_method_id"] = self.current["methods"][0]["id"]
+                with self.assertRaisesRegex(RuntimeError, "native method brand parent"):
+                    self.admit()
+
+    def test_wire_transfer_provider_handoff_preserves_the_payment_module_alias(self) -> None:
+        self.add_native_method("wire_transfer")
+        before = copy.deepcopy(self.current)
+        plan = self.admit()
+        self.assertEqual(plan.preserved_methods, [(301, 302)])
+        self.assertNotIn(301, plan.methods)
+        self.assertEqual(self.current, before)
+
+    def test_native_ownership_requires_the_exact_existing_connector_and_exclusive_link(self) -> None:
+        self.add_native_method()
+        before = copy.deepcopy(self.current)
+        for mutate in (
+            lambda: self.current["provider_links"].append((41, 301)),
+            lambda: self.current["provider_links"].append((302, 101)),
+            lambda: self.current["provider_links"].remove((302, 301)),
+            lambda: self.current["modules"][303].update(state="uninstalled"),
+            lambda: self.current["modules"][303].update(state="to install"),
+            lambda: self.current["modules"][303].update(state="to remove"),
+            lambda: self.current["modules"][303].update(xmlid="base.module_other"),
+            lambda: self.current["providers"][-1].update(custom_mode="wire_transfer"),
+            lambda: self.current["method_aliases"][-1].update(noupdate=False),
+        ):
+            self.current = copy.deepcopy(before)
+            mutate()
+            with self.assertRaises(RuntimeError):
+                self.admit()
+
+    def test_native_owner_assignment_waits_for_all_incoming_reference_checks(self) -> None:
+        self.add_native_method()
+        function = PAYMENT["retire"]
+        cursor = Mock()
+        cursor.fetchall.return_value = [(301,)]
+        checker = Mock(side_effect=RuntimeError("outside reference"))
+        with patch.dict(function.__globals__, {"capture": lambda _cursor: self.current, "_delete_exact": Mock()}):
+            with self.assertRaises(RuntimeError):
+                function(cursor, self.profile, self.version, self.filestore, checker)
+            cursor.execute.assert_not_called()
+            checker.side_effect = None
+            function(cursor, self.profile, self.version, self.filestore, checker)
+        self.assertEqual(cursor.execute.call_args.args[1], (302, 301))
+
+    def test_recorded_source_image_absence_refuses_an_added_image_and_an_unrecorded_loss(self) -> None:
+        alias = next(iter(self.witness["methods"]))
+        attachment = self.current["attachments"][0]
+        self.witness["methods"][alias]["images"][attachment["res_field"]] = None
+        with self.assertRaisesRegex(RuntimeError, "recorded source absence"):
+            self.admit()
+        self.current["attachments"].remove(attachment)
+        self.admit()
+        self.current["attachments"].pop()
+        with self.assertRaisesRegex(RuntimeError, "missing stock image"):
+            self.admit()
+
+    def test_unset_studio_alias_marker_is_accepted_and_customized_alias_refuses(self) -> None:
+        for alias in self.current["method_aliases"] + self.current["provider_aliases"]:
+            alias["studio"] = None
+        self.admit()
+        self.current["method_aliases"][0]["studio"] = True
+        with self.assertRaisesRegex(RuntimeError, "alias material metadata"):
+            self.admit()
+
+    def test_native_image_index_and_website_context_must_match_the_recorded_original(self) -> None:
+        for method in self.witness["methods"].values():
+            for image in method["images"].values():
+                image["metadata"] = {"index_content": "image", "website_id": 71}
+        for attachment in self.current["attachments"]:
+            attachment.update(index_content="image", website_id=71)
+        self.admit()
+        self.current["attachments"][0]["website_id"] = 72
+        with self.assertRaisesRegex(RuntimeError, "attachment customization"):
+            self.admit()
+        self.current["attachments"][0]["website_id"] = 71
+        for method in self.witness["methods"].values():
+            for image in method["images"].values():
+                image["metadata"]["index_content"] = "custom content"
+        with self.assertRaisesRegex(RuntimeError, "unsupported native image metadata"):
+            self.admit()
+
     def test_whole_family_admits_with_semantic_nullable_boolean_and_real_original_file_hashes(self) -> None:
         plan = self.admit()
         self.assertEqual(set(plan.methods), {row["id"] for row in self.current["methods"]})

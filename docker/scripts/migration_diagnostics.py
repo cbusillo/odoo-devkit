@@ -44,16 +44,13 @@ class MigrationDiagnostics:
         try:
             result = action()
         except Exception as error:
+            self.record(name, "failed", f"{type(error).__name__}: {error}")
+            self.record(name + ": remaining guards", "blocked", "Coverage beyond the reported error is unproved")
             if cursor is not None:
                 cursor.execute("ROLLBACK TO SAVEPOINT migration_diagnostic_check")
-            self.record(name, "failed", f"{type(error).__name__}: {error}")
-            self.record(
-                name + ": remaining guards", "blocked", "Coverage beyond the reported error is unproved; changes were skipped"
-            )
             return fallback
-        else:
-            self.record(name, "passed")
-            return result
         finally:
             if cursor is not None:
                 cursor.execute("RELEASE SAVEPOINT migration_diagnostic_check")
+        self.record(name, "passed")
+        return result

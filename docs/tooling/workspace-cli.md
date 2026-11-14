@@ -725,8 +725,26 @@ Notes
   a normal success result when reporting is enabled. The supported entry is
   the OPW saved19 diagnostic driver, which owns its
   explicit diagnostic status, complete observed list and blocked coverage.
-  A report pass describes a check, not committed migration effects.
+  A report pass follows successful savepoint cleanup and describes a check,
+  not committed migration effects.
   Native 20 also selects the packaged `docker/scripts/nativeupgrade` root.
+  Its Sale pre-stage converts the stored global integer `product.template.sale_delay`
+  atomically to JSONB values for all existing companies. The upstream bulk
+  converter commits, so it cannot preserve this diagnostic transaction boundary.
+  Missing or unexpected metadata, column shapes, source defaults or companies
+  refuse before conversion; diagnostics report the failure and skip changes.
+  Already converted JSONB fields keep their defaults unchanged.
+  The Sale stage also handles the native accrued-revenue action changing from
+  a window action to a server action. It retires only the unchanged stock modal,
+  its sole XML ID and exact account-user group edge, after checking the target
+  definition and all incoming references. Native20 recreates the same XML ID.
+  Edited actions, extra aliases or groups, paths and incoming references report
+  failure before effects. Reference checks use upstream model/table mappings
+  so irregular action tables protect both concrete and generic action links.
+  JSON guards distinguish reflected translated text from record-reference
+  payloads. A language-keyed label naming an action class is retained as text;
+  complete model/record references, unknown encodings and other JSON payloads
+  keep their existing refusal behavior.
   Its Mail pre-stage reuses the guarded stock-view conversion from
   [website227](https://github.com/cbusillo/odoo-tenant-cm-website/issues/227).
   Before any shared bridge effect, `mail_view_20.py` locks and compares the
@@ -770,6 +788,20 @@ Notes
   bridge creates no default provider or replacement catalog. Final readback must
   prove the selected record fates, surviving provider settings and native
   constraints; a completed registry alone does not establish preservation.
+  Native wire-transfer and Cash on Delivery methods stay outside this retirement
+  cohort. Their exact aliases, installed or scheduled-for-upgrade connector and exclusive existing provider
+  link must agree with the native target bindings before carrying that same owner
+  into `provider_id`. Their records, images, aliases and provider settings remain.
+  A witness may explicitly record an absent source image as `null`; an unexpected
+  image or an unrecorded loss still refuses. Present original images keep their
+  public-source comparison and exact-byte checks. Recorded absence does not
+  establish that an unused catalog was pristine, and never bypasses material-value,
+  history, ownership or incoming-reference checks.
+  Each image may also record its original native `index_content` and `website_id`
+  context. Only the native image index marker or null and an explicit website
+  identity or null are supported; actual metadata must match exactly. Other
+  metadata stays bound to the attachment defaults. No website is selected by
+  position and no custom index text is admitted as stock.
   A source custodian can use `qualify_source_family(profile, source_manifest,
   manifest_sha256, automation_source)` to add the one stock Base Automation
   extension without changing the independent reference. The separate immutable
