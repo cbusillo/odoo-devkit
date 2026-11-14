@@ -797,6 +797,7 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
         settings = self._local_settings()
         settings.openupgrade_enabled = True
         settings.openupgrade_target_version = "20.0"
+        settings.openupgrade_load_framework = False
         settings.install_modules = "replacement"
         settings.copy_purpose = "migration"
         runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
@@ -829,10 +830,11 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
                     operation()
                 execute.assert_not_called()
 
-    def test_native_20_uses_migration_roots_without_requiring_the_legacy_framework(self) -> None:
+    def test_explicit_framework_opt_out_keeps_native_20_migration_roots(self) -> None:
         settings = self._local_settings()
         settings.openupgrade_enabled = True
         settings.openupgrade_target_version = "20.0"
+        settings.openupgrade_load_framework = False
         runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -852,6 +854,7 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
                 self.assertEqual(Path(selected_roots[0]), (checkout / "src").resolve())
                 selected_modules = {module for path in selected_roots for module in runner._collect_openupgrade_modules(Path(path))}
                 self.assertIn("mail", selected_modules)
+                settings.openupgrade_load_framework = True
                 settings.openupgrade_target_version = "19.0"
                 with self.assertRaises(odoo_data_workflows.OdooRestorerError):
                     runner.run_openupgrade()
@@ -875,6 +878,7 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
                     settings.openupgrade_target_version = target
                     settings.odoo_version = runtime
                     settings.install_modules = declaration
+                    settings.openupgrade_load_framework = False
                     runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
                     with (
                         patch.object(runner, "_resolve_openupgrade_assets", return_value=([Path("/scripts")], None)),
@@ -889,11 +893,11 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
                         self.assertNotIn("--init", command)
                     self.assertEqual(command[command.index("--update") + 1], "all")
 
-    def test_explicit_framework_load_applies_to_native_20_and_requires_its_source(self) -> None:
+    def test_default_framework_load_applies_to_native_20_and_rejects_a_19_framework(self) -> None:
         settings = self._local_settings()
         settings.openupgrade_enabled = True
         settings.openupgrade_target_version = "20.0"
-        settings.openupgrade_load_framework = True
+        settings.openupgrade_load_framework = None
         runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
         with TemporaryDirectory() as directory:
             framework = Path(directory)

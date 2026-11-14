@@ -3098,9 +3098,10 @@ with registry.cursor() as cr:
     def _is_native_20_upgrade(self) -> bool:
         return self._openupgrade_target_version().split(".", 1)[0] == "20"
 
-    def _uses_openupgrade_framework(self) -> bool:
+    def _uses_openupgrade_framework(self, *, crossing: bool = False) -> bool:
         requested = self.local.openupgrade_load_framework
-        if requested and self._is_native_20_upgrade():
+        enabled = requested if requested is not None else crossing or not self._is_native_20_upgrade()
+        if enabled and self._is_native_20_upgrade():
             _, framework = self._resolve_openupgrade_assets(require_framework=True)
             try:
                 manifest = ast.literal_eval((framework / "__manifest__.py").read_text()) if framework is not None else {}
@@ -3108,10 +3109,8 @@ with registry.cursor() as cr:
                 if not isinstance(version, str) or version.split(".", 1)[0] != self._openupgrade_target_version().split(".", 1)[0]:
                     raise ValueError("framework target mismatch")
             except (OSError, SyntaxError, ValueError, AttributeError) as error:
-                raise OdooRestorerError(
-                    "Explicit framework loading requires a matching target-series framework manifest."
-                ) from error
-        return requested if requested is not None else not self._is_native_20_upgrade()
+                raise OdooRestorerError("Framework loading requires a matching target-series framework manifest.") from error
+        return enabled
 
     def reset_openupgrade_versions(self) -> list[str]:
         if self._is_native_20_upgrade():
@@ -3148,7 +3147,7 @@ with registry.cursor() as cr:
 
         target_version = self._openupgrade_target_version()
         native_20 = self._is_native_20_upgrade()
-        framework = self._uses_openupgrade_framework()
+        framework = self._uses_openupgrade_framework(crossing=True)
         scripts_paths, _ = self._resolve_openupgrade_assets(require_framework=framework)
         if target_version:
             self.os_env["OPENUPGRADE_TARGET_VERSION"] = target_version
