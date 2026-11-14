@@ -450,9 +450,63 @@ Notes
   `LAUNCHPLANE_INSTANCE_OVERRIDES_REQUIRED=true` to require a valid typed
   override payload with managed settings before startup or data workflows
   continue. `LAUNCHPLANE_WEBSITE_BOOTSTRAP_REQUIRED=true` additionally requires
-  a non-empty `website_bootstrap` object in that payload. These flags are
+  a non-empty `website_bootstrap` object in that payload and fails when the
+  website module is not installed; without it, a payload for a database that
+  lacks Website logs the skip and continues. These flags are
   runtime assertions supplied by Launchplane-managed records or operator input;
   local runtimes remain optional unless a caller explicitly sets them.
+- Launchplane may include `website_indexing` alongside the unchanged
+  `website_settings` in the existing post-deploy payload:
+
+  ```json
+  {
+    "instance": "prod",
+    "website_indexing": {
+      "website_id": 1,
+      "public_origin": "https://site.example.test",
+      "production_use": "prelaunch"
+    }
+  }
+  ```
+
+  These three fields are required and no extra fields are accepted. They are
+  actuation data derived from Launchplane's current production state and exact
+  production website binding, never an operator SEO flag. Only `prelaunch` and
+  `live` are accepted, on a production instance with a matching production
+  envelope. Omission preserves legacy behavior. The selected native website
+  must have that exact HTTPS domain (an optional trailing slash is ignored),
+  with no second website competing for the host and port even under another
+  scheme. When both payload objects are present, their website ID and origin
+  must agree before either can write.
+  Missing addons, fields, selectors and ambiguous managed markup refuse.
+
+  `plan_website_indexing(env, payload, instance=...)` is the read-only dry-run
+  function for Launchplane's generator to invoke; this does not add a CLI or
+  enable a target operation. The producer must accept the new payload object
+  and regenerate its embedded consumer from the reviewed devkit commit.
+  It returns the selector, origin, supplied state, native field, SHA-256 of the
+  current and proposed head, `changed`, and managed-element presence before and
+  after. `apply_website_settings` uses that same plan, preserves the caller's
+  transaction, verifies native database readback and prints `website_indexing=`
+  followed by that JSON plus `readback_verified`. It never commits. This is
+  tentative transaction evidence until the caller commits successfully; the
+  legacy return digest and `website_settings_sha256` retain their meaning.
+  A savepoint rolls back this consumer's writes on failure, and an outer
+  transaction rollback also restores the prior head. A rollback after an
+  already committed transition must supply the authoritative restored state
+  through this same consumer; no recorded production state is inferred here.
+
+  Prelaunch prepends one identifiable robots `noindex` meta element to native
+  `website.custom_code_head`; live removes only that exact managed prefix.
+  All pre-existing head content is retained. Indexing-only payloads do not
+  change analytics, consent, robots.txt, domain, routes, pages or other sites.
+  Live removes only this protection; independent existing indexing choices,
+  including the legacy accepted setting, continue to apply.
+  The setting covers HTML pages rendering the native website layout, not every
+  downloadable resource. It neither removes sitemap entries nor proves removal
+  from search results. Existing robots rules remain unchanged: crawlers must
+  be able to fetch a page to observe its noindex directive, as described by
+  [Google](https://developers.google.com/search/docs/crawling-indexing/block-indexing).
 - Legacy setting-shaped inputs such as `ENV_OVERRIDE_CONFIG_PARAM__*`,
   `ENV_OVERRIDE_AUTHENTIK__*`, and `ENV_OVERRIDE_SHOPIFY__*` are still accepted
   as a compatibility input and converted into the same typed payload, but they
