@@ -1,6 +1,6 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "description": "Moves a consumer's exact odoo-devkit pins to devkit main's head commit (cbusillo/odoo-devkit#248).",
+  "description": "Moves exact devkit pins and Odoo 20 shared-addons pins to their main head commits.",
   "customManagers": [
     {
       "customType": "regex",
@@ -21,6 +21,17 @@
       "currentValueTemplate": "main",
       "packageNameTemplate": "https://github.com/{{{depName}}}",
       "datasourceTemplate": "git-refs"
+    },
+    {
+      "customType": "jsonata",
+      "fileFormat": "toml",
+      "managerFilePatterns": ["/^workspace\\.toml$/"],
+      "matchStrings": [
+        "$[build.odoo_version = '20.0'].repos.shared_addons[repository = 'cbusillo/odoo-shared-addons' and $exists(ref) and $contains(ref, /^[0-9a-f]{40}$/)].{'depName': repository, 'currentDigest': ref}"
+      ],
+      "currentValueTemplate": "main",
+      "packageNameTemplate": "https://github.com/{{{depName}}}",
+      "datasourceTemplate": "git-refs"
     }
   ],
   "packageRules": [
@@ -28,6 +39,12 @@
       "matchManagers": ["custom.regex"],
       "matchDepNames": ["cbusillo/odoo-devkit"],
       "commitMessageTopic": "odoo-devkit pin",
+      "schedule": ["at any time"]
+    },
+    {
+      "matchManagers": ["custom.jsonata"],
+      "matchDepNames": ["cbusillo/odoo-shared-addons"],
+      "commitMessageTopic": "shared-addons pin",
       "schedule": ["at any time"]
     }
   ]

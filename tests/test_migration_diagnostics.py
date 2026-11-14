@@ -16,6 +16,27 @@ Diagnostics = runpy.run_path(str(Path(__file__).resolve().parents[1] / "docker/s
 
 
 class MigrationDiagnosticsTests(unittest.TestCase):
+    def test_action_failure_is_reported_before_lost_savepoint_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            report = Path(directory) / "report.jsonl"
+            with patch.dict(
+                os.environ,
+                {
+                    "ODOO_MIGRATION_DIAGNOSTIC_REPORT": str(report),
+                    "ODOO_COPY_PURPOSE": "migration",
+                    "PLATFORM_INSTANCE": "rehearsal",
+                    "OPENUPGRADE_TARGET_VERSION": "20.0",
+                },
+            ):
+                cursor = Mock()
+                cursor.execute.side_effect = [None, RuntimeError("savepoint disappeared"), RuntimeError("savepoint disappeared")]
+                with self.assertRaisesRegex(RuntimeError, "savepoint disappeared"):
+                    Diagnostics().check("conversion", self.reject, None, cursor=cursor)
+            events = [json.loads(line) for line in report.read_text().splitlines()] if report.exists() else []
+            self.assertTrue(any(event["status"] == "failed" and "preserve" in event["detail"] for event in events))
+            self.assertTrue(any(event["status"] == "blocked" for event in events))
+            self.assertFalse(any(event["status"] == "passed" for event in events))
+
     def test_savepoint_cleanup_failure_never_records_a_pass(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             report = Path(directory) / "report.jsonl"

@@ -66,6 +66,9 @@ def _separate_native_provider_methods(snapshot: dict[str, Any]) -> tuple[dict[st
         preserved.append((method_id, provider_id))
         provider_ids.add(provider_id)
     method_ids = {method_id for method_id, _provider_id in preserved}
+    retiring_ids = {row["id"] for row in snapshot["methods"]} - method_ids
+    if any(row["id"] in method_ids and row.get("primary_payment_method_id") in retiring_ids for row in snapshot["methods"]):
+        _fail("native method brand parent would be retired")
     filtered = dict(snapshot)
     for key in ("methods", "method_aliases", "attachments"):
         field_name = "id" if key == "methods" else "res_id"
