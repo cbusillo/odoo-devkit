@@ -745,6 +745,13 @@ Notes
   payloads. A language-keyed label naming an action class is retained as text;
   complete model/record references, unknown encodings and other JSON payloads
   keep their existing refusal behavior.
+  The Website Sale pre-stage calls the native image conversion in bounded groups,
+  retaining native selection and image associations without committing between groups.
+  Attachment content reads memoize file bytes in the ORM raw cache. Each group
+  flushes and invalidates that cache; the first scoped search must name `image_1920`.
+  Original business attachments remain strict. The saved19 driver recognizes new
+  extra-image copies only when database ownership, source checksums and actual bytes
+  match their own template or variant; rollback leaves no separate copy journal.
   Its Mail pre-stage reuses the guarded stock-view conversion from
   [website227](https://github.com/cbusillo/odoo-tenant-cm-website/issues/227).
   Before any shared bridge effect, `mail_view_20.py` locks and compares the
