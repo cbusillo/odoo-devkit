@@ -13,7 +13,7 @@ import tempfile
 import time
 import uuid
 from collections.abc import Callable, Iterator
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, closing, contextmanager, nullcontext
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -51,7 +51,11 @@ def run(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
 
 
 def query(database: str, statement: str, params: tuple = ()) -> list[tuple]:
-    with psycopg2.connect(host="database", user="odoo", dbname=database) as connection, connection.cursor() as cursor:
+    with (
+        closing(psycopg2.connect(host="database", user="odoo", dbname=database)) as connection,
+        connection,
+        connection.cursor() as cursor,
+    ):
         cursor.execute(statement, params)
         return cursor.fetchall() if cursor.description else []
 
@@ -68,6 +72,94 @@ def database_command(statement: sql.Composed) -> None:
 
 @tagged("post_install", "-at_install")
 class TestLiveWorkflows(TransactionCase):
+    def test_native_batch_scope_uses_real_recordsets_and_restores_search(self) -> None:
+        conversion = runpy.run_path("/volumes/scripts/product_images_20.py")
+        records = self.env["res.partner"].create(
+            [{"name": "Batch first"}, {"name": "Batch archived", "active": False}, {"name": "Batch last"}]
+        )
+        model = self.env["res.partner"].with_context(active_test=False)
+        observed = []
+        nested = []
+
+        def native(selected: Any) -> None:
+            observed.extend(selected.search([("id", "in", records.ids), ("image_1920", "=", False)]).ids)
+            nested.append(selected.search([("id", "=", records[-1].id)]).ids)
+
+        original = type(model).search
+        with patch.dict(conversion["bounded_image_conversion"].__globals__, {"IMAGE_BATCH_SIZE": 1}):
+            conversion["bounded_image_conversion"](native)(model)
+        self.assertEqual(observed, model.search([("id", "in", records.ids)]).ids)
+        self.assertTrue(all(ids == [records[-1].id] for ids in nested))
+        self.assertIs(type(model).search, original)
+        observed.clear()
+        globals_ = conversion["bounded_image_conversion"].__globals__
+        with patch.dict(globals_, {"IMAGE_BATCH_SIZE": 1, "scope_native_template_search": lambda *_: nullcontext()}):
+            conversion["bounded_image_conversion"](native)(model)
+        self.assertNotEqual(observed, model.search([("id", "in", records.ids)]).ids)
+
+        def fail(_records: Any) -> None:
+            raise RuntimeError("native failure before the first search")
+
+        for local in (False, True):
+            with patch.object(type(model), "search", original) if local else nullcontext():
+                with self.assertRaises(RuntimeError):
+                    conversion["bounded_image_conversion"](fail)(model)
+                self.assertIs(type(model).search, original)
+                self.assertEqual(model.search([("id", "in", records.ids)], order="id").ids, records.ids)
+
+        def changed_native(selected: Any) -> None:
+            selected.search([("id", "in", records.ids)])
+
+        with self.assertRaises(AssertionError):
+            conversion["bounded_image_conversion"](changed_native)(model)
+        self.assertIs(type(model).search, original)
+
+    def test_native_image_copy_ownership_and_shared_file_use_real_sql(self) -> None:
+        check = runpy.run_path("/volumes/scripts/product_images_20.py")["native_image_copies"]
+        with (
+            closing(psycopg2.connect(host="database", user="odoo", dbname="postgres")) as connection,
+            connection,
+            connection.cursor() as cursor,
+        ):
+            checksum = "source image checksum"
+            cursor.execute("CREATE TEMP TABLE product_image(id integer,product_tmpl_id integer)")
+            cursor.execute("CREATE TEMP TABLE product_product(id integer,product_tmpl_id integer)")
+            cursor.execute(
+                "CREATE TEMP TABLE ir_attachment(id integer,res_model text,res_id integer,res_field text,store_fname text,checksum text)"
+            )
+            cursor.execute("INSERT INTO product_image VALUES(22,1)")
+            cursor.execute("INSERT INTO product_product VALUES(2,1)")
+            cursor.executemany(
+                "INSERT INTO ir_attachment VALUES(%s,%s,%s,%s,%s,%s)",
+                [
+                    (1, "product.template", 1, "image_1920", "source", checksum),
+                    (2, "product.image", 22, "image_1920", "source", checksum),
+                ],
+            )
+            self.assertEqual(check(cursor, 21), {("product.image", 22)})
+            self.assertEqual(check(cursor, 22), set())
+            cursor.execute("UPDATE ir_attachment SET res_model='product.product',res_id=2,res_field='image_variant_1920' WHERE id=1")
+            self.assertEqual(check(cursor, 21), {("product.image", 22)})
+            for statement in (
+                "UPDATE product_image SET product_tmpl_id=9",
+                "UPDATE ir_attachment SET res_field='image_1024' WHERE id=1",
+                "UPDATE ir_attachment SET res_field='image_1024' WHERE id=2",
+                "UPDATE ir_attachment SET checksum='different image' WHERE id=2",
+                "UPDATE ir_attachment SET store_fname='different file' WHERE id=2",
+            ):
+                cursor.execute("SAVEPOINT image_copy_case")
+                cursor.execute(statement)
+                self.assertEqual(check(cursor, 21), set())
+                cursor.execute("ROLLBACK TO SAVEPOINT image_copy_case")
+                cursor.execute("RELEASE SAVEPOINT image_copy_case")
+            cursor.execute(
+                "INSERT INTO ir_attachment SELECT 3,res_model,res_id,res_field,store_fname,checksum FROM ir_attachment WHERE id=2"
+            )
+            with self.assertRaises(ValueError):
+                check(cursor, 21)
+            cursor.execute("DELETE FROM ir_attachment WHERE id=3")
+            connection.rollback()
+
     def test_translated_action_labels_preserve_record_reference_guards(self) -> None:
         check = runpy.run_path("/volumes/scripts/prepare_core_references_20.py")["_check_json_references"]
         cursor = self.env.cr
@@ -105,7 +197,7 @@ class TestLiveWorkflows(TransactionCase):
         migrate = runpy.run_path("/volumes/scripts/nativeupgrade/sale/20.0.1.0/pre-company-lead-time.py")["migrate"]
         with self.target(empty=True) as runner:
             database_command(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(runner.local.db_name)))
-            with psycopg2.connect(host="database", user="odoo", dbname=runner.local.db_name) as connection:
+            with closing(psycopg2.connect(host="database", user="odoo", dbname=runner.local.db_name)) as connection, connection:
                 with connection.cursor() as cursor:
                     cursor.execute("CREATE TABLE product_template (id integer PRIMARY KEY, sale_delay integer)")
                     cursor.execute(
