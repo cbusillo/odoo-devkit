@@ -90,6 +90,10 @@
         </value>
       </option>
     </inspection_tool>
+    <!-- Off in the Generated scope: generated code is regenerated, never edited. -->
+    <inspection_tool class="PyInvalidCastInspection" enabled="true" level="WARNING" enabled_by_default="true">
+      <scope name="Generated" level="WARNING" enabled="false" />
+    </inspection_tool>
     <inspection_tool class="PyMethodMayBeStaticInspection" enabled="true" level="WEAK WARNING" enabled_by_default="true">
       <scope name="Generated" level="WEAK WARNING" enabled="false" />
     </inspection_tool>
@@ -115,6 +119,10 @@
     </inspection_tool>
     <inspection_tool class="PyShadowingBuiltinsInspection" enabled="true" level="WEAK WARNING" enabled_by_default="true">
       <scope name="Generated" level="WEAK WARNING" enabled="false" />
+    </inspection_tool>
+    <!-- Off in the Generated scope: generated code is regenerated, never edited. -->
+    <inspection_tool class="PyTypeCheckerInspection" enabled="true" level="WARNING" enabled_by_default="true">
+      <scope name="Generated" level="WARNING" enabled="false" />
     </inspection_tool>
     <inspection_tool class="PyUnreachableCodeInspection" enabled="true" level="WARNING" enabled_by_default="true">
       <scope name="Generated" level="WARNING" enabled="false" editorAttributes="NOT_USED_ELEMENT_ATTRIBUTES" />
