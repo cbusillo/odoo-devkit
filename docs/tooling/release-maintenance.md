@@ -121,54 +121,41 @@ attest public traffic or cutover readiness.
 
 ## One-time major-version conversion
 
-A tenant selects the existing native upgrade runner for ordinary post-deploy
-maintenance with `OPENUPGRADE_ENABLED=true`, `OPENUPGRADE_SOURCE_VERSION=19.0`
-and target/runtime version 20. Set `OPENUPGRADE_PRE_UPGRADE_SCRIPTS` to the
-ordered, comma-separated absolute tenant script paths in the artifact, and
-`OPENUPGRADE_SCRIPTS_PATH` to its native module migration root. Devkit appends
-its shared `prepare_core_references_20.py` after the tenant scripts and retains
-the existing official utility and shared native migration roots. Framework
-selection follows the existing `OPENUPGRADE_LOAD_FRAMEWORK` contract.
+For ordinary post-deploy maintenance, select `OPENUPGRADE_ENABLED=true`,
+`OPENUPGRADE_SOURCE_VERSION=19.0`, and target/runtime version 20. Supply ordered,
+comma-separated absolute tenant scripts in `OPENUPGRADE_PRE_UPGRADE_SCRIPTS` and
+its module migration root in `OPENUPGRADE_SCRIPTS_PATH`. Shared preparation is
+appended after the tenant scripts; official utility and shared migration roots
+remain selected. Framework selection retains the existing
+`OPENUPGRADE_LOAD_FRAMEWORK` contract.
 
-Maintenance reads the installed base version through SQL, without opening a
-registry. An installed 19 database runs the committed/read-back credential and
-mail boundary first, then native `--update all` with the declared initial
-installs, `--no-http --stop-after-init` and the ordered preparation scripts. No
-ordinary install or update process precedes that conversion. Maintenance uses
-restore's existing module-state snapshot and post-upgrade credential/mail
-boundary, then verifies every installed module's committed target major before
-its existing settings and health checks.
-A database already on 20 keeps ordinary maintenance and never replays conversion.
-A mixed-major database refuses both maintenance paths, including after a failed
-conversion committed base but left other modules on 19. Native Odoo normalizes
-installed versions with its runtime series; a mixed major is unfinished crossing,
-not an ordinary addon patch update.
-Unknown versions, other source versions, disabled upgrades or a mismatched target
-runtime refuse. Omitting the source selector retains existing behavior.
+The installed SQL versions select conversion before the first target registry.
+It shares restore's module snapshot and committed credential/mail boundaries.
+Successful conversion replaces the ordinary install/update pass. Already-20
+modules keep ordinary maintenance without replay; unknown or mixed majors
+refuse. Installed modules retired by tenant scripts need no target manifest.
 
-The tenant still owns every conversion admission and private input. Supply
-qualified reference files and their digests through deployment runtime inputs;
-do not put private history snapshots or references in source, images or logs.
-Devkit passes the runtime environment to the upgrade process unchanged, including
-tenant input paths and digests. It does not generate a reference from the
-candidate, invent a digest, bypass missing input guards or provide file transport.
-The deployment must make those paths readable in its maintenance container.
+A committed pending parameter protects the period before native execution and
+its verified completion. Any failed crossing leaves it present. All maintenance
+entrypoints refuse that state, even with the selector removed, so a failed END
+admission cannot be bypassed merely because module versions already committed.
+Recover from a clean source using the caller's supported restore path; no
+partial-upgrade replay or manual marker-clearing flow is provided. This does
+not change deployment rollback. Existing converted databases need no marker.
 
-A release module plan cannot describe an all-module major crossing. Planned
-maintenance explicitly refuses a selected 19-to-20 crossing before plan
-resolution, credential changes or any registry. Use ordinary stopped-web
-maintenance for that crossing. Once base is 20, planned maintenance validates
-and executes the supplied plan normally. A failed planned repeat invalidates
-its old passing receipt as before.
-`--update-only` also refuses the selected crossing before opening a registry.
+A release module plan and `--update-only` explicitly refuse a selected crossing.
+After successful conversion, planned maintenance validates and executes its
+supplied plan normally. Omitting the selector keeps existing behavior unless a
+previous crossing is pending. A refused planned run invalidates an old receipt.
 
-This selection does not change deployment rollback or make a partially converted
-database resumable. The caller owns the stopped writers and failure recovery.
-
-Without a source selector, existing restore/bootstrap and legacy post-deploy callers
-retain their behavior. New zero-downtime orchestration must supply a complete
-plan and must not treat absence/refusal as an empty update list. Launchplane's
-cutover issue owns adoption.
+Tenant admissions and private input delivery remain the tenant's responsibility.
+Make independently qualified reference files, immutable history snapshots and
+their digests readable in the maintenance container through deployment runtime
+inputs. Devkit passes their environment through unchanged; it neither generates
+references from the candidate nor provides file transport. Never put private
+inputs in source, images or logs. Stopped writers and recovery remain with the
+caller. New zero-downtime orchestration still requires a complete release plan;
+absence or refusal never means an empty update list.
 
 Artifact-specific tags and devkit commits remain in `image.tags` and
 `build_provenance.build_tools`; they are not repeated as generic build flags.

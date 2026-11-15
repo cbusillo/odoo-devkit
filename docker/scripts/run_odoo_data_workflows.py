@@ -65,6 +65,7 @@ class ExitCode(IntEnum):
 
 RUNTIME_SCRIPTS_PATH = "/volumes/scripts"
 BOUNDARY_COMMIT_PARAMETER = "odoo_devkit.credential_boundary_commit"
+PENDING_MAJOR_UPGRADE_PARAMETER = "odoo_devkit.pending_major_upgrade"
 
 
 @dataclass(frozen=True)
@@ -275,9 +276,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         workflow_runner.acquire_data_workflow_lock()
         lock_acquired = True
         if update_only:
+            workflow_runner.require_environment_override_payloads_if_configured()
             if workflow_runner.maintenance_requires_major_upgrade():
                 raise OdooDatabaseUpdateError("Update-only cannot execute a major-version conversion; use post-deploy maintenance.")
-            workflow_runner.require_environment_override_payloads_if_configured()
             workflow_runner.prepare_credentials_before_registry()
             workflow_runner.update_addons(reason="post-deploy upgrade")
             _logger.info("Addon update completed successfully.")
@@ -2552,7 +2553,41 @@ with registry.cursor() as cr:
                 "Major-version conversion has not completed for every installed module; recover the database."
             )
 
+    def major_upgrade_is_pending(self) -> bool:
+        try:
+            with self.connect_to_db().cursor() as cursor:
+                cursor.execute("SELECT value FROM ir_config_parameter WHERE key = %s", (PENDING_MAJOR_UPGRADE_PARAMETER,))
+                return cursor.fetchone() is not None
+        except psycopg2.Error as error:
+            self._reset_db_connection()
+            raise OdooDatabaseUpdateError("Could not read the major-version conversion boundary.") from error
+
+    def set_major_upgrade_pending(self, *, pending: bool) -> None:
+        value = "19->20" if pending else None
+        try:
+            conn = self.connect_to_db()
+            with conn.cursor() as cursor:
+                if pending:
+                    cursor.execute(
+                        "INSERT INTO ir_config_parameter (key, value) VALUES (%s, %s)", (PENDING_MAJOR_UPGRADE_PARAMETER, value)
+                    )
+                else:
+                    cursor.execute("DELETE FROM ir_config_parameter WHERE key = %s", (PENDING_MAJOR_UPGRADE_PARAMETER,))
+            conn.commit()
+        finally:
+            self._reset_db_connection()
+        try:
+            with self.connect_to_db().cursor() as cursor:
+                self._verify_pre_registry_parameters(cursor, {PENDING_MAJOR_UPGRADE_PARAMETER: value})
+        finally:
+            self._reset_db_connection()
+
     def maintenance_requires_major_upgrade(self) -> bool:
+        if self.major_upgrade_is_pending():
+            self._reset_db_connection()
+            raise OdooDatabaseUpdateError(
+                "An earlier major-version conversion did not finish; recover the database before maintenance."
+            )
         source = self.local.openupgrade_source_version
         if source is None:
             return False
@@ -2583,8 +2618,10 @@ with registry.cursor() as cr:
         crossing = self.maintenance_requires_major_upgrade()
         self.prepare_credentials_before_registry()
         if crossing:
+            self.set_major_upgrade_pending(pending=True)
             self.run_prepared_openupgrade()
             self.assert_major_upgrade_complete()
+            self.set_major_upgrade_pending(pending=False)
         else:
             self.install_addons(reason="post-deploy install")
             self.update_addons(reason="post-deploy upgrade")
