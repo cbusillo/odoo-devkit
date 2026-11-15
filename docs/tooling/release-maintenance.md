@@ -133,10 +133,16 @@ selection follows the existing `OPENUPGRADE_LOAD_FRAMEWORK` contract.
 Maintenance reads the installed base version through SQL, without opening a
 registry. An installed 19 database runs the committed/read-back credential and
 mail boundary first, then native `--update all` with the declared initial
-installs, HTTP/workers/cron disabled and the ordered preparation scripts. No
-ordinary install or update process precedes that conversion. Maintenance verifies
-the committed target base version before its existing settings and health checks.
+installs, `--no-http --stop-after-init` and the ordered preparation scripts. No
+ordinary install or update process precedes that conversion. Maintenance uses
+restore's existing module-state snapshot and post-upgrade credential/mail
+boundary, then verifies every installed module's committed target major before
+its existing settings and health checks.
 A database already on 20 keeps ordinary maintenance and never replays conversion.
+A mixed-major database refuses both maintenance paths, including after a failed
+conversion committed base but left other modules on 19. Native Odoo normalizes
+installed versions with its runtime series; a mixed major is unfinished crossing,
+not an ordinary addon patch update.
 Unknown versions, other source versions, disabled upgrades or a mismatched target
 runtime refuse. Omitting the source selector retains existing behavior.
 
@@ -154,6 +160,7 @@ resolution, credential changes or any registry. Use ordinary stopped-web
 maintenance for that crossing. Once base is 20, planned maintenance validates
 and executes the supplied plan normally. A failed planned repeat invalidates
 its old passing receipt as before.
+`--update-only` also refuses the selected crossing before opening a registry.
 
 This selection does not change deployment rollback or make a partially converted
 database resumable. The caller owns the stopped writers and failure recovery.
