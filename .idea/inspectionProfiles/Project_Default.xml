@@ -40,8 +40,10 @@
     <inspection_tool class="CssUnusedSymbol" enabled="false" level="WARNING" enabled_by_default="false">
       <scope name="Generated" level="WARNING" enabled="false" />
     </inspection_tool>
+    <!-- Off in a tenant's Migrations scope: Odoo loads each versioned migration script as a standalone module, so addons cannot share code between their migrations. -->
     <inspection_tool class="DuplicatedCode" enabled="true" level="WEAK WARNING" enabled_by_default="true">
       <scope name="Generated" level="WEAK WARNING" enabled="false" />
+      <scope name="Migrations" level="WEAK WARNING" enabled="false" />
     </inspection_tool>
     <inspection_tool class="Eslint" enabled="true" level="WARNING" enabled_by_default="true" />
     <inspection_tool class="HttpUrlsUsage" enabled="true" level="WEAK WARNING" enabled_by_default="true">

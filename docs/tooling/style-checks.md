@@ -52,7 +52,9 @@ the tenant's Git-ignored `.idea/inspectionProfiles/Project_Default.xml`, so it
 resolves from any worktree, and consumers declare that path in
 `qualityGate.inspection.profile`. The SQL resolution check is off with its
 reason recorded in the profile: tenant SQL targets earlier and transitional
-schemas that no single attached schema describes.
+schemas that no single attached schema describes. Duplicated-code checks are off in a tenant's
+`Migrations` scope (`.idea/scopes/Migrations.xml`), because Odoo loads each
+versioned migration script as a standalone module.
 Native inspection continues through the catalog's `jetbrains-inspection` skill;
 see [Python inspection](python-inspection.md). Resolving quoted Odoo model/value
 types also requires the Odoo IDE plugin, the matching Odoo source roots and the
