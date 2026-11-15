@@ -155,12 +155,14 @@ def _repository_history(path: Path) -> frozenset[str]:
 def _pinned_roots(project_path: Path, pinned_checkouts: tuple[PinnedCheckout, ...]) -> list[PinnedRoot]:
     roots = []
     for pinned in pinned_checkouts:
-        if pinned.checkout is None:
+        supplied_checkout, repository = pinned.checkout, pinned.repository
+        pinned_ref = repository.ref if repository else None
+        if supplied_checkout is None:
             continue
-        if pinned.repository is None or not pinned.repository.ref:
+        if not pinned_ref:
             raise ValueError(f"The manifest pins no {pinned.label} ref to verify the supplied checkout against")
-        checkout = _outside_project(pinned.checkout, project_path, f"{pinned.label} dependency")
-        _verify_clean_checkout(checkout, pinned.repository.ref, pinned.label)
+        checkout = _outside_project(supplied_checkout, project_path, f"{pinned.label} dependency")
+        _verify_clean_checkout(checkout, pinned_ref, pinned.label)
         root = (checkout / pinned.attached_directory).resolve()
         if not root.is_relative_to(checkout) or not root.is_dir():
             raise ValueError(f"The {pinned.label} checkout has no {pinned.attached_directory} directory inside it to attach")

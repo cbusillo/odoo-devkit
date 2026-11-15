@@ -133,7 +133,8 @@ class OdooSourcesTestCase(unittest.TestCase):
             runtime_source=runtime,
             shared_profile=SHARED_PROFILE,
         )
-        module_path = Path(str(summary["module_path"]))
+        module_path = summary["module_path"]
+        assert isinstance(module_path, str)
         content_urls = [content.get("url") for content in ElementTree.parse(module_path).findall("./component/content")]
         self.assertEqual(content_urls[1:], [f"file://{self.source}", f"file://{shared}", f"file://{runtime / 'docker' / 'scripts'}"])
         arguments = build_parser().parse_args(
