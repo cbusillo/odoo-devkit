@@ -204,6 +204,10 @@ class OdooSourcesTestCase(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "different shared addons checkout"):
             self.prepare_pinned(moved, runtime)
         self.assertEqual(module_path.read_bytes(), before)
+        module = ElementTree.parse(module_path)
+        ElementTree.SubElement(required_element(module, "./component"), "content", {"url": f"file://{runtime / 'docker'}"})
+        module.write(module_path)
+        self.assertFalse(self.prepare_pinned(shared, runtime)["changed"])
 
     def test_runtime_scripts_symlinked_outside_the_checkout_are_not_attached(self) -> None:
         _shared, runtime = self.pinned_checkouts()

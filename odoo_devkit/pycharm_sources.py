@@ -27,6 +27,7 @@ class PinnedCheckout(NamedTuple):
 class PinnedRoot(NamedTuple):
     label: str
     path: Path
+    checkout: Path
     history: frozenset[str]
 
 
@@ -137,8 +138,9 @@ def _reject_other_pinned_checkouts(attached_paths: set[Path], pinned_roots: list
         if not attached_path.is_dir() or any(attached_path == pinned.path for pinned in pinned_roots):
             continue
         attached_history = _repository_history(attached_path)
+        attached_checkout = _checkout_root(attached_path)
         for pinned in pinned_roots:
-            if attached_history == pinned.history:
+            if attached_history == pinned.history and attached_checkout != pinned.checkout:
                 raise ValueError(f"A different {pinned.label} checkout is already attached; reconcile it in Project Structure first")
 
 
@@ -150,6 +152,16 @@ def _repository_history(path: Path) -> frozenset[str]:
         env=sanitized_subprocess_environment(),
     )
     return frozenset(result.stdout.split()) if result.returncode == 0 else frozenset()
+
+
+def _checkout_root(path: Path) -> Path | None:
+    result = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+        env=sanitized_subprocess_environment(),
+    )
+    return Path(result.stdout.strip()).resolve() if result.returncode == 0 else None
 
 
 def _pinned_roots(project_path: Path, pinned_checkouts: tuple[PinnedCheckout, ...]) -> list[PinnedRoot]:
@@ -166,7 +178,7 @@ def _pinned_roots(project_path: Path, pinned_checkouts: tuple[PinnedCheckout, ..
         root = (checkout / pinned.attached_directory).resolve()
         if not root.is_relative_to(checkout) or not root.is_dir():
             raise ValueError(f"The {pinned.label} checkout has no {pinned.attached_directory} directory inside it to attach")
-        roots.append(PinnedRoot(pinned.label, root, _repository_history(checkout)))
+        roots.append(PinnedRoot(pinned.label, root, checkout, _repository_history(checkout)))
     return roots
 
 
