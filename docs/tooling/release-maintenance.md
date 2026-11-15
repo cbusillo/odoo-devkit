@@ -119,10 +119,48 @@ credential preparation. Isolated tests count registry-load log events and
 compare the whole run with the legacy multi-process path. A receipt does not
 attest public traffic or cutover readiness.
 
-Without a plan file, existing restore/bootstrap and legacy post-deploy callers
-retain their behavior. New zero-downtime orchestration must supply a complete
-plan and must not treat absence/refusal as an empty update list. Launchplane's
-cutover issue owns adoption.
+## One-time major-version conversion
+
+For ordinary post-deploy maintenance, select `OPENUPGRADE_ENABLED=true`,
+`OPENUPGRADE_SOURCE_VERSION=19.0`, and target/runtime version 20. Supply ordered,
+comma-separated absolute tenant scripts in `OPENUPGRADE_PRE_UPGRADE_SCRIPTS` and
+its module migration root in `OPENUPGRADE_SCRIPTS_PATH`. Shared preparation is
+appended after the tenant scripts; official utility and shared migration roots
+remain selected. Framework selection retains the existing
+`OPENUPGRADE_LOAD_FRAMEWORK` contract.
+These script inputs also apply to explicit native upgrades during restore;
+remove one-time tenant inputs after a completed crossing before restoring a 20 copy.
+
+The installed SQL versions select conversion before the first target registry.
+It shares restore's module snapshot and committed credential/mail boundaries.
+Successful conversion replaces the ordinary update pass; install reconciliation
+still handles missing local modules selected by `AUTO`. Already-20
+modules keep ordinary maintenance without replay; unknown or mixed majors
+refuse. Installed modules retired by tenant scripts need no target manifest.
+
+A committed pending parameter protects the period before native execution and
+its verified completion. Any failed crossing leaves it present. All maintenance
+entrypoints refuse that state, even with the selector removed, so a failed END
+admission cannot be bypassed merely because module versions already committed.
+Recover from a clean source using the caller's supported restore path; no
+partial-upgrade replay or manual marker-clearing flow is provided. This does
+not change deployment rollback. Existing converted databases need no marker.
+
+A release module plan and `--update-only` explicitly refuse a selected crossing.
+Diagnostic conversion is refused before any crossing changes. After successful
+conversion, planned maintenance validates and executes its
+supplied plan normally. Omitting the selector refuses a base/runtime major
+mismatch instead of opening a target registry. Matching majors retain ordinary
+behavior unless a previous crossing is pending. A refused planned run invalidates an old receipt.
+
+Tenant admissions and private input delivery remain the tenant's responsibility.
+Make independently qualified reference files, immutable history snapshots and
+their digests readable in the maintenance container through deployment runtime
+inputs. Devkit passes their environment through unchanged; it neither generates
+references from the candidate nor provides file transport. Never put private
+inputs in source, images or logs. Stopped writers and recovery remain with the
+caller. New zero-downtime orchestration still requires a complete release plan;
+absence or refusal never means an empty update list.
 
 Artifact-specific tags and devkit commits remain in `image.tags` and
 `build_provenance.build_tools`; they are not repeated as generic build flags.

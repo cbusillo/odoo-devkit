@@ -65,6 +65,7 @@ class ExitCode(IntEnum):
 
 RUNTIME_SCRIPTS_PATH = "/volumes/scripts"
 BOUNDARY_COMMIT_PARAMETER = "odoo_devkit.credential_boundary_commit"
+PENDING_MAJOR_UPGRADE_PARAMETER = "odoo_devkit.pending_major_upgrade"
 
 
 @dataclass(frozen=True)
@@ -276,6 +277,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         lock_acquired = True
         if update_only:
             workflow_runner.require_environment_override_payloads_if_configured()
+            if workflow_runner.maintenance_requires_major_upgrade():
+                raise OdooDatabaseUpdateError("Update-only cannot execute a major-version conversion; use post-deploy maintenance.")
             workflow_runner.prepare_credentials_before_registry()
             workflow_runner.update_addons(reason="post-deploy upgrade")
             _logger.info("Addon update completed successfully.")
@@ -464,6 +467,8 @@ class LocalServerSettings(BaseSettings):
     openupgrade_enabled: bool = Field(False, alias="OPENUPGRADE_ENABLED")
     openupgrade_scripts_path: Path | None = Field(None, alias="OPENUPGRADE_SCRIPTS_PATH")
     openupgrade_target_version: str | None = Field(None, alias="OPENUPGRADE_TARGET_VERSION")
+    openupgrade_source_version: str | None = Field(None, alias="OPENUPGRADE_SOURCE_VERSION")
+    openupgrade_pre_upgrade_scripts: str | None = Field(None, alias="OPENUPGRADE_PRE_UPGRADE_SCRIPTS")
     openupgrade_load_framework: bool | None = Field(None, alias="OPENUPGRADE_LOAD_FRAMEWORK")
     openupgrade_skip_update_addons: bool = Field(True, alias="OPENUPGRADE_SKIP_UPDATE_ADDONS")
     odoo_key: SecretStr | None = Field(None, alias="ODOO_KEY")
@@ -486,6 +491,8 @@ class LocalServerSettings(BaseSettings):
         "update_modules",
         "local_addons_dirs",
         "openupgrade_target_version",
+        "openupgrade_source_version",
+        "openupgrade_pre_upgrade_scripts",
         "restore_kept_integrations",
         mode="before",
     )
@@ -2522,15 +2529,109 @@ with registry.cursor() as cr:
         self.ensure_gpt_users()
         _logger.info("Bootstrap completed successfully.")
 
+    def installed_module_majors(self) -> dict[str, int]:
+        try:
+            with self.connect_to_db().cursor() as cursor:
+                cursor.execute("SELECT name, latest_version FROM ir_module_module WHERE state IN ('installed', 'to upgrade')")
+                rows = cursor.fetchall()
+            versions: dict[str, int] = {}
+            for name, version in rows:
+                if not isinstance(version, str) or not re.fullmatch(r"\d+\.\d+(?:\.\w+)*", version):
+                    raise OdooDatabaseUpdateError(f"Cannot verify installed version for major-version conversion: {name}")
+                versions[name] = int(version.split(".", 1)[0])
+            if "base" not in versions:
+                raise OdooDatabaseUpdateError("Cannot verify installed base for major-version conversion.")
+            return versions
+        finally:
+            self._reset_db_connection()
+
+    def assert_major_upgrade_complete(self, versions: dict[str, int] | None = None) -> None:
+        if versions is None:
+            versions = self.installed_module_majors()
+        if any(major != 20 for major in versions.values()):
+            raise OdooDatabaseUpdateError(
+                "Major-version conversion has not completed for every installed module; recover the database."
+            )
+
+    def major_upgrade_is_pending(self) -> bool:
+        try:
+            with self.connect_to_db().cursor() as cursor:
+                cursor.execute("SELECT value FROM ir_config_parameter WHERE key = %s", (PENDING_MAJOR_UPGRADE_PARAMETER,))
+                return cursor.fetchone() is not None
+        except psycopg2.Error as error:
+            self._reset_db_connection()
+            raise OdooDatabaseUpdateError("Could not read the major-version conversion boundary.") from error
+
+    def set_major_upgrade_pending(self, *, pending: bool) -> None:
+        value = "19->20" if pending else None
+        try:
+            conn = self.connect_to_db()
+            with conn.cursor() as cursor:
+                if pending:
+                    cursor.execute(
+                        "INSERT INTO ir_config_parameter (key, value) VALUES (%s, %s)", (PENDING_MAJOR_UPGRADE_PARAMETER, value)
+                    )
+                else:
+                    cursor.execute("DELETE FROM ir_config_parameter WHERE key = %s", (PENDING_MAJOR_UPGRADE_PARAMETER,))
+            conn.commit()
+        finally:
+            self._reset_db_connection()
+        try:
+            with self.connect_to_db().cursor() as cursor:
+                self._verify_pre_registry_parameters(cursor, {PENDING_MAJOR_UPGRADE_PARAMETER: value})
+        finally:
+            self._reset_db_connection()
+
+    def maintenance_requires_major_upgrade(self) -> bool:
+        if self.major_upgrade_is_pending():
+            self._reset_db_connection()
+            raise OdooDatabaseUpdateError(
+                "An earlier major-version conversion did not finish; recover the database before maintenance."
+            )
+        source = self.local.openupgrade_source_version
+        if source is None:
+            runtime = (self.local.odoo_version or "").split(".", 1)[0]
+            if runtime.isdigit() and self.installed_module_majors()["base"] != int(runtime):
+                raise OdooDatabaseUpdateError(
+                    "Installed base differs from the runtime; select its major-version conversion explicitly."
+                )
+            return False
+        if (
+            not self.local.openupgrade_enabled
+            or source.split(".", 1)[0] != "19"
+            or self._openupgrade_target_version().split(".", 1)[0] != "20"
+            or (self.local.odoo_version or "").split(".", 1)[0] != "20"
+        ):
+            raise OdooDatabaseUpdateError(
+                "Selected maintenance conversion requires enabled native 19-to-20 upgrade and target runtime 20."
+            )
+        versions = self.installed_module_majors()
+        installed = versions["base"]
+        if installed == 20:
+            self.assert_major_upgrade_complete(versions)
+            return False
+        if installed != 19:
+            raise OdooDatabaseUpdateError("Installed base does not match the selected major-version conversion source or target.")
+        if self.os_env.get("ODOO_MIGRATION_DIAGNOSTIC_REPORT"):
+            raise OdooDatabaseUpdateError("Post-deploy maintenance cannot run a diagnostic major-version conversion.")
+        return True
+
     def run_post_deploy_maintenance(self) -> None:
         _logger.info("Starting post-deploy maintenance for database '%s'", self.local.db_name)
         plan_file = self.os_env.get("ODOO_RELEASE_MODULE_PLAN_FILE", "")
         if plan_file:
             self.run_planned_post_deploy_maintenance(Path(plan_file))
             return
+        crossing = self.maintenance_requires_major_upgrade()
         self.prepare_credentials_before_registry()
+        if crossing:
+            self.set_major_upgrade_pending(pending=True)
+            self.run_prepared_openupgrade()
+            self.assert_major_upgrade_complete()
+            self.set_major_upgrade_pending(pending=False)
         self.install_addons(reason="post-deploy install")
-        self.update_addons(reason="post-deploy upgrade")
+        if not crossing:
+            self.update_addons(reason="post-deploy upgrade")
         self.connect_to_db()
         self.reconcile_missing_manifest_install_queue()
         self.assert_install_queue_is_resolvable()
@@ -2557,6 +2658,10 @@ with registry.cursor() as cr:
         if output:
             # A failed repeat must never leave yesterday's passing receipt.
             Path(output).write_text(json.dumps({"state": "running", "run_id": run_id}) + "\n")
+        if self.maintenance_requires_major_upgrade():
+            raise OdooDatabaseUpdateError(
+                "A release module plan cannot execute a major-version conversion; use ordinary stopped-web maintenance for the crossing."
+            )
         try:
             payload = load_plan(plan_file)
             declaration_file = getattr(
@@ -3173,8 +3278,14 @@ with registry.cursor() as cr:
             install_modules, _ = self._resolve_install_modules()
             if install_modules:
                 cmd_parts += ["--init", shlex.quote(",".join(install_modules))]
-            reference_script = Path(__file__).with_name("prepare_core_references_20.py")
-            cmd_parts += ["--pre-upgrade-scripts", shlex.quote(str(reference_script))]
+            scripts = [
+                Path(value.strip()) for value in (self.local.openupgrade_pre_upgrade_scripts or "").split(",") if value.strip()
+            ]
+            for script in scripts:
+                if not script.is_absolute() or not script.is_file():
+                    raise OdooRestorerError(f"Pre-upgrade script must be an existing absolute file: {script}")
+            scripts.append(Path(__file__).with_name("prepare_core_references_20.py"))
+            cmd_parts += ["--pre-upgrade-scripts", shlex.quote(",".join(str(script) for script in scripts))]
         cmd_parts += self._odoo_runtime_connection_flags()
 
         generated_config_path = "/volumes/config/_generated.conf"
@@ -3326,15 +3437,16 @@ with registry.cursor() as cr:
         self.block_outgoing_mail_outside_production()
         self.ensure_admin_user()
 
+    def run_prepared_openupgrade(self, *, restored_copy: bool = False, do_sanitize: bool = False) -> None:
+        self.snapshot_module_states_before_openupgrade()
+        self.run_openupgrade()
+        if self.os_env.get("ODOO_MIGRATION_DIAGNOSTIC_REPORT"):
+            raise OdooRestorerError("Diagnostic upgrade finished; inspect its report. This is not a completed restore.")
+        self.prepare_credentials_before_registry(restored_copy=restored_copy, do_sanitize=do_sanitize)
+
     def prepare_restored_modules(self, *, do_sanitize: bool) -> None:
         if self.local.openupgrade_enabled:
-            self.snapshot_module_states_before_openupgrade()
-            self.run_openupgrade()
-            if self.os_env.get("ODOO_MIGRATION_DIAGNOSTIC_REPORT"):
-                raise OdooRestorerError("Diagnostic upgrade finished; inspect its report. This is not a completed restore.")
-            # Migrations may reactivate crons or rewrite credentials. Preserve the
-            # requested sanitize policy before the next registry/module process.
-            self.prepare_credentials_before_registry(restored_copy=True, do_sanitize=do_sanitize)
+            self.run_prepared_openupgrade(restored_copy=True, do_sanitize=do_sanitize)
 
         self.install_addons(reason="restore install")
 
