@@ -46,10 +46,13 @@ Both checks remain necessary while Odoo 19 and root tools support 3.13;
 the profile has no separate Odoo 20 temporary target to retire. The
 [Odoo 20 image qualification and preview proof](https://github.com/cbusillo/odoo-devkit/issues/373)
 precede the consumer's 3.14 lint target. Tenant selection and pointer adoption
-remain on the owning issue. Consumers declare the external profile path in
-`qualityGate.inspection.profile`; task worktrees use the inspection helper's
-`--profile` option when their devkit is outside the sibling layout. The
-canonical file remains in devkit rather than in each consumer.
+remain on the owning issue. The canonical file remains in devkit rather than
+in each consumer: `workspace prepare-ide` writes the pinned devkit's copy to
+the tenant's Git-ignored `.idea/inspectionProfiles/Project_Default.xml`, so it
+resolves from any worktree, and consumers declare that path in
+`qualityGate.inspection.profile`. The SQL resolution check is off with its
+reason recorded in the profile: tenant SQL targets earlier and transitional
+schemas that no single attached schema describes.
 Native inspection continues through the catalog's `jetbrains-inspection` skill;
 see [Python inspection](python-inspection.md). Resolving quoted Odoo model/value
 types also requires the Odoo IDE plugin, the matching Odoo source roots and the

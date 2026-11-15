@@ -127,8 +127,8 @@ those workspaces.
   `sources/runtime`, and runtime commands fail closed until `workspace sync`
   has materialized that checkout.
 - Runtime Odoo core is inherited from the image/tooling chain. For IDE analysis,
-  `workspace prepare-ide` attaches an explicit, pinned community source checkout
-  to the exact tenant project; see the [workspace CLI guide](docs/tooling/workspace-cli.md#workspace-prepare-ide).
+  `workspace prepare-ide` attaches explicit, pinned community, shared-addon and
+  runtime-script checkouts to the exact tenant project; see the [workspace CLI guide](docs/tooling/workspace-cli.md#workspace-prepare-ide).
 - `workspace status` compares deterministic generated surfaces, the manifest
   hash, source materialization, and the local lock snapshot. `--check` exits
   nonzero for stale guidance or materialization while reporting ordinary source

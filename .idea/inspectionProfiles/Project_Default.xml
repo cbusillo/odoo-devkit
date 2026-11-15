@@ -120,6 +120,8 @@
     <inspection_tool class="PyUnusedLocalInspection" enabled="true" level="WEAK WARNING" enabled_by_default="true">
       <scope name="Generated" level="WEAK WARNING" enabled="false" />
     </inspection_tool>
+    <!-- Off: Odoo builds its schema at runtime from the installed modules, and tenant SQL runs in migrations, upgrade scripts, install and retirement hooks, and their tests, against earlier and transitional schemas. No single attached schema describes those tables, so table and column resolution would only report false findings. -->
+    <inspection_tool class="SqlResolveInspection" enabled="false" level="WARNING" enabled_by_default="false" />
     <inspection_tool class="SpellCheckingInspection" enabled="true" level="TYPO" enabled_by_default="true">
       <scope name="Generated" level="TYPO" enabled="false">
         <option name="processCode" value="true" />

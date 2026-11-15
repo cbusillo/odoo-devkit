@@ -6,12 +6,22 @@ import re
 import subprocess
 import tomllib
 from pathlib import Path
-from typing import cast
+from typing import NamedTuple, cast
 from xml.etree import ElementTree
 
 from .atomic_files import atomic_write_bytes
-from .manifest import WorkspaceManifest
+from .manifest import RepoDefinition, WorkspaceManifest
 from .runtime_environment import sanitized_subprocess_environment
+
+RUNTIME_SCRIPTS = Path("docker") / "scripts"
+INSPECTION_PROFILE = Path(".idea") / "inspectionProfiles" / "Project_Default.xml"
+
+
+class PinnedCheckout(NamedTuple):
+    label: str
+    checkout: Path | None
+    repository: RepoDefinition | None
+    attached_directory: Path
 
 
 def prepare_odoo_sources(
@@ -21,6 +31,9 @@ def prepare_odoo_sources(
     expected_commit: str,
     expected_series: str,
     path_variables_file: Path | None = None,
+    shared_addons_source: Path | None = None,
+    runtime_source: Path | None = None,
+    shared_profile: Path | None = None,
 ) -> dict[str, object]:
     """Prepare local project content roots before opening the exact tenant worktree."""
     project_path = manifest.tenant_repo.resolve_path(manifest_directory=manifest.manifest_directory)
@@ -31,10 +44,15 @@ def prepare_odoo_sources(
         raise ValueError("IDE preparation requires tenant_repo mode and a manifest in the exact tenant checkout")
     if Path(_git(project_path, "rev-parse", "--show-toplevel")).resolve() != project_path:
         raise ValueError("The tenant project must be a Git worktree root")
-    source_path = source_path.expanduser().resolve()
-    if source_path.is_relative_to(project_path) or project_path.is_relative_to(source_path):
-        raise ValueError("Keep the Odoo dependency checkout outside the tenant worktree")
+    source_path = _outside_project(source_path, project_path, "Odoo dependency")
     source_commit, source_series = _verify_source(source_path, expected_commit, expected_series)
+    pinned_roots = _pinned_roots(
+        project_path,
+        (
+            PinnedCheckout("shared addons", shared_addons_source, manifest.shared_addons_repo, Path()),
+            PinnedCheckout("runtime", runtime_source, manifest.runtime_repo, RUNTIME_SCRIPTS),
+        ),
+    )
     path_variables = _read_path_variables(path_variables_file)
 
     idea_path = project_path / ".idea"
@@ -45,20 +63,26 @@ def prepare_odoo_sources(
     manager = module_root.find("./component[@name='NewModuleRootManager']")
     if manager is None:
         raise ValueError(f"Missing NewModuleRootManager in {module_path.name}")
-    attached = False
+    attached_paths = set()
     for content in manager.findall("content"):
         content_path = _idea_path(content.get("url", ""), project_path, _module_directory(module_path), path_variables).resolve()
-        if content_path == source_path:
-            attached = True
-        elif (content_path / "odoo" / "release.py").is_file():
+        attached_paths.add(content_path)
+        if content_path != source_path and (content_path / "odoo" / "release.py").is_file():
             raise ValueError("A different Odoo source root is already attached; reconcile it in Project Structure first")
 
     writes: dict[Path, bytes] = {}
-    if not attached:
-        ElementTree.SubElement(manager, "content", {"url": _idea_url(source_path)})
+    missing_roots = [root for root in (source_path, *pinned_roots) if root not in attached_paths]
+    for root in missing_roots:
+        ElementTree.SubElement(manager, "content", {"url": _idea_url(root)})
+    if missing_roots:
         writes[module_path] = _xml_bytes(module_root)
     if modules_root is not None:
         writes[modules_path] = _xml_bytes(modules_root)
+    profile_path = project_path / INSPECTION_PROFILE
+    if shared_profile is not None:
+        profile_bytes = shared_profile.read_bytes()
+        if not profile_path.is_file() or profile_path.read_bytes() != profile_bytes:
+            writes[profile_path] = profile_bytes
     # Preflight every destination before writing any project metadata. Tracked
     # configuration is policy, not a place to persist a machine-local source path.
     for path in writes:
@@ -66,6 +90,7 @@ def prepare_odoo_sources(
     written_paths = []
     try:
         for path, content_bytes in writes.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
             atomic_write_bytes(path=path, content=content_bytes)
             written_paths.append(path)
     except OSError:
@@ -82,21 +107,50 @@ def prepare_odoo_sources(
         "odoo_source_path": str(source_path),
         "odoo_commit": source_commit,
         "odoo_series": source_series,
+        "pinned_roots": [str(root) for root in pinned_roots],
         "changed": bool(writes),
         "written_paths": [str(path) for path in writes],
     }
 
 
-def _verify_source(source_path: Path, expected_commit: str, expected_series: str) -> tuple[str, str]:
+def _outside_project(path: Path, project_path: Path, label: str) -> Path:
+    path = path.expanduser().resolve()
+    if path.is_relative_to(project_path) or project_path.is_relative_to(path):
+        raise ValueError(f"Keep the {label} checkout outside the tenant worktree")
+    return path
+
+
+def _pinned_roots(project_path: Path, pinned_checkouts: tuple[PinnedCheckout, ...]) -> list[Path]:
+    roots = []
+    for pinned in pinned_checkouts:
+        if pinned.checkout is None:
+            continue
+        if pinned.repository is None or not pinned.repository.ref:
+            raise ValueError(f"The manifest pins no {pinned.label} ref to verify the supplied checkout against")
+        checkout = _outside_project(pinned.checkout, project_path, f"{pinned.label} dependency")
+        _verify_clean_checkout(checkout, pinned.repository.ref, pinned.label)
+        root = checkout / pinned.attached_directory
+        if not root.is_dir():
+            raise ValueError(f"The {pinned.label} checkout has no {pinned.attached_directory} directory to attach")
+        roots.append(root)
+    return roots
+
+
+def _verify_clean_checkout(checkout: Path, expected_commit: str, label: str) -> str:
     if not re.fullmatch(r"[0-9a-fA-F]{40}", expected_commit):
-        raise ValueError("--odoo-commit must be a full 40-character Git commit SHA")
-    if Path(_git(source_path, "rev-parse", "--show-toplevel")).resolve() != source_path:
-        raise ValueError("--odoo-source must name the Odoo Git checkout root")
-    commit = _git(source_path, "rev-parse", "HEAD")
+        raise ValueError(f"The {label} commit must be a full 40-character Git commit SHA")
+    if Path(_git(checkout, "rev-parse", "--show-toplevel")).resolve() != checkout:
+        raise ValueError(f"The {label} source must name its Git checkout root")
+    commit = _git(checkout, "rev-parse", "HEAD")
     if commit != expected_commit.lower():
-        raise ValueError(f"Odoo source commit mismatch: expected {expected_commit}, found {commit}")
-    if _git(source_path, "status", "--porcelain", "--untracked-files=all"):
-        raise ValueError("Odoo source checkout has local changes; use a clean pinned dependency checkout")
+        raise ValueError(f"The {label} source commit mismatch: expected {expected_commit}, found {commit}")
+    if _git(checkout, "status", "--porcelain", "--untracked-files=all"):
+        raise ValueError(f"The {label} source checkout has local changes; use a clean pinned dependency checkout")
+    return commit
+
+
+def _verify_source(source_path: Path, expected_commit: str, expected_series: str) -> tuple[str, str]:
+    commit = _verify_clean_checkout(source_path, expected_commit, "Odoo")
     if (
         not (source_path / "odoo" / "addons" / "base" / "__manifest__.py").is_file()
         or not (source_path / "addons" / "web" / "__manifest__.py").is_file()
