@@ -182,6 +182,63 @@ class OdooSourcesTestCase(unittest.TestCase):
             )
         self.assertFalse((self.project / ".idea").exists())
 
+    def prepare_pinned(self, shared: Path | None = None, runtime: Path | None = None) -> dict[str, object]:
+        return prepare_odoo_sources(
+            manifest=load_workspace_manifest(self.manifest_path),
+            source_path=self.source,
+            expected_commit=self.commit,
+            expected_series="19.0",
+            shared_addons_source=shared,
+            runtime_source=runtime,
+            shared_profile=SHARED_PROFILE,
+        )
+
+    def test_another_checkout_of_a_pinned_repository_must_be_reconciled_first(self) -> None:
+        shared, runtime = self.pinned_checkouts()
+        self.prepare_pinned(shared, runtime)
+        moved = self.root / "shared-addons-next"
+        subprocess.run(["git", "clone", "--quiet", str(shared), str(moved)], check=True, capture_output=True)
+        module_path = self.project / ".idea" / "tenant-dependencies.iml"
+        before = module_path.read_bytes()
+        with self.assertRaisesRegex(ValueError, "different shared addons checkout"):
+            self.prepare_pinned(moved, runtime)
+        self.assertEqual(module_path.read_bytes(), before)
+
+    def test_runtime_scripts_symlinked_outside_the_checkout_are_not_attached(self) -> None:
+        _shared, runtime = self.pinned_checkouts()
+        outside = self.root / "outside-scripts"
+        outside.mkdir()
+        scripts = runtime / "docker" / "scripts"
+        for child in scripts.iterdir():
+            child.unlink()
+        scripts.rmdir()
+        scripts.symlink_to(outside, target_is_directory=True)
+        commit_fixture_repository(runtime, "Point scripts elsewhere")
+        self.manifest_path.write_text(
+            self.manifest_path.read_text().rsplit('ref = "', 1)[0] + f'ref = "{self.git(runtime, "rev-parse", "HEAD")}"\n'
+        )
+        with self.assertRaisesRegex(ValueError, "inside it"):
+            self.prepare_pinned(runtime=runtime)
+        self.assertFalse((self.project / ".idea").exists())
+
+    def test_failed_profile_write_restores_an_existing_module(self) -> None:
+        shared, _runtime = self.pinned_checkouts()
+        self.prepare()
+        module_path = self.project / ".idea" / "tenant-dependencies.iml"
+        before = module_path.read_bytes()
+        from odoo_devkit.atomic_files import atomic_write_bytes
+
+        def fail_profile(*, path: Path, content: bytes) -> None:
+            if path.name == INSPECTION_PROFILE.name:
+                raise PermissionError("injected profile write failure")
+            atomic_write_bytes(path=path, content=content)
+
+        with mock.patch("odoo_devkit.pycharm_sources.atomic_write_bytes", side_effect=fail_profile):
+            with self.assertRaisesRegex(PermissionError, "injected"):
+                self.prepare_pinned(shared)
+        self.assertEqual(module_path.read_bytes(), before)
+        self.assertFalse((self.project / INSPECTION_PROFILE).exists())
+
     def test_existing_module_preserves_sdk_roots_comments_and_other_ide_files(self) -> None:
         self.prepare()
         module_path = self.project / ".idea" / "tenant-dependencies.iml"

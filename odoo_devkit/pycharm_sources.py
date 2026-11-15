@@ -24,6 +24,12 @@ class PinnedCheckout(NamedTuple):
     attached_directory: Path
 
 
+class PinnedRoot(NamedTuple):
+    label: str
+    path: Path
+    history: frozenset[str]
+
+
 def prepare_odoo_sources(
     *,
     manifest: WorkspaceManifest,
@@ -69,9 +75,10 @@ def prepare_odoo_sources(
         attached_paths.add(content_path)
         if content_path != source_path and (content_path / "odoo" / "release.py").is_file():
             raise ValueError("A different Odoo source root is already attached; reconcile it in Project Structure first")
+    _reject_other_pinned_checkouts(attached_paths - {project_path, source_path}, pinned_roots)
 
     writes: dict[Path, bytes] = {}
-    missing_roots = [root for root in (source_path, *pinned_roots) if root not in attached_paths]
+    missing_roots = [root for root in (source_path, *(pinned.path for pinned in pinned_roots)) if root not in attached_paths]
     for root in missing_roots:
         ElementTree.SubElement(manager, "content", {"url": _idea_url(root)})
     if missing_roots:
@@ -87,6 +94,7 @@ def prepare_odoo_sources(
     # configuration is policy, not a place to persist a machine-local source path.
     for path in writes:
         _require_local_ignored_file(project_path, path)
+    previous_bytes = {path: path.read_bytes() if path.is_file() else None for path in writes}
     written_paths = []
     try:
         for path, content_bytes in writes.items():
@@ -94,12 +102,7 @@ def prepare_odoo_sources(
             atomic_write_bytes(path=path, content=content_bytes)
             written_paths.append(path)
     except OSError:
-        if modules_root is not None:
-            # Both files are newly owned when creating a project. Do not leave
-            # an orphan module if publishing its modules.xml fails.
-            for path in written_paths:
-                if path.read_bytes() == writes[path]:
-                    path.unlink()
+        _restore_previous_bytes(written_paths, previous_bytes)
         raise
     return {
         "project_path": str(project_path),
@@ -107,7 +110,7 @@ def prepare_odoo_sources(
         "odoo_source_path": str(source_path),
         "odoo_commit": source_commit,
         "odoo_series": source_series,
-        "pinned_roots": [str(root) for root in pinned_roots],
+        "pinned_roots": [str(pinned.path) for pinned in pinned_roots],
         "changed": bool(writes),
         "written_paths": [str(path) for path in writes],
     }
@@ -120,7 +123,36 @@ def _outside_project(path: Path, project_path: Path, label: str) -> Path:
     return path
 
 
-def _pinned_roots(project_path: Path, pinned_checkouts: tuple[PinnedCheckout, ...]) -> list[Path]:
+def _restore_previous_bytes(written_paths: list[Path], previous_bytes: dict[Path, bytes | None]) -> None:
+    for path in written_paths:
+        original = previous_bytes[path]
+        if original is None:
+            path.unlink()
+        else:
+            atomic_write_bytes(path=path, content=original)
+
+
+def _reject_other_pinned_checkouts(attached_paths: set[Path], pinned_roots: list[PinnedRoot]) -> None:
+    for attached_path in attached_paths:
+        if not attached_path.is_dir() or any(attached_path == pinned.path for pinned in pinned_roots):
+            continue
+        attached_history = _repository_history(attached_path)
+        for pinned in pinned_roots:
+            if attached_history == pinned.history:
+                raise ValueError(f"A different {pinned.label} checkout is already attached; reconcile it in Project Structure first")
+
+
+def _repository_history(path: Path) -> frozenset[str]:
+    result = subprocess.run(
+        ["git", "-C", str(path), "rev-list", "--max-parents=0", "HEAD"],
+        capture_output=True,
+        text=True,
+        env=sanitized_subprocess_environment(),
+    )
+    return frozenset(result.stdout.split()) if result.returncode == 0 else frozenset()
+
+
+def _pinned_roots(project_path: Path, pinned_checkouts: tuple[PinnedCheckout, ...]) -> list[PinnedRoot]:
     roots = []
     for pinned in pinned_checkouts:
         if pinned.checkout is None:
@@ -129,10 +161,10 @@ def _pinned_roots(project_path: Path, pinned_checkouts: tuple[PinnedCheckout, ..
             raise ValueError(f"The manifest pins no {pinned.label} ref to verify the supplied checkout against")
         checkout = _outside_project(pinned.checkout, project_path, f"{pinned.label} dependency")
         _verify_clean_checkout(checkout, pinned.repository.ref, pinned.label)
-        root = checkout / pinned.attached_directory
-        if not root.is_dir():
-            raise ValueError(f"The {pinned.label} checkout has no {pinned.attached_directory} directory to attach")
-        roots.append(root)
+        root = (checkout / pinned.attached_directory).resolve()
+        if not root.is_relative_to(checkout) or not root.is_dir():
+            raise ValueError(f"The {pinned.label} checkout has no {pinned.attached_directory} directory inside it to attach")
+        roots.append(PinnedRoot(pinned.label, root, _repository_history(checkout)))
     return roots
 
 
