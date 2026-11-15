@@ -119,7 +119,46 @@ credential preparation. Isolated tests count registry-load log events and
 compare the whole run with the legacy multi-process path. A receipt does not
 attest public traffic or cutover readiness.
 
-Without a plan file, existing restore/bootstrap and legacy post-deploy callers
+## One-time major-version conversion
+
+A tenant selects the existing native upgrade runner for ordinary post-deploy
+maintenance with `OPENUPGRADE_ENABLED=true`, `OPENUPGRADE_SOURCE_VERSION=19.0`
+and target/runtime version 20. Set `OPENUPGRADE_PRE_UPGRADE_SCRIPTS` to the
+ordered, comma-separated absolute tenant script paths in the artifact, and
+`OPENUPGRADE_SCRIPTS_PATH` to its native module migration root. Devkit appends
+its shared `prepare_core_references_20.py` after the tenant scripts and retains
+the existing official utility and shared native migration roots. Framework
+selection follows the existing `OPENUPGRADE_LOAD_FRAMEWORK` contract.
+
+Maintenance reads the installed base version through SQL, without opening a
+registry. An installed 19 database runs the committed/read-back credential and
+mail boundary first, then native `--update all` with the declared initial
+installs, HTTP/workers/cron disabled and the ordered preparation scripts. No
+ordinary install or update process precedes that conversion. Maintenance verifies
+the committed target base version before its existing settings and health checks.
+A database already on 20 keeps ordinary maintenance and never replays conversion.
+Unknown versions, other source versions, disabled upgrades or a mismatched target
+runtime refuse. Omitting the source selector retains existing behavior.
+
+The tenant still owns every conversion admission and private input. Supply
+qualified reference files and their digests through deployment runtime inputs;
+do not put private history snapshots or references in source, images or logs.
+Devkit passes the runtime environment to the upgrade process unchanged, including
+tenant input paths and digests. It does not generate a reference from the
+candidate, invent a digest, bypass missing input guards or provide file transport.
+The deployment must make those paths readable in its maintenance container.
+
+A release module plan cannot describe an all-module major crossing. Planned
+maintenance explicitly refuses a selected 19-to-20 crossing before plan
+resolution, credential changes or any registry. Use ordinary stopped-web
+maintenance for that crossing. Once base is 20, planned maintenance validates
+and executes the supplied plan normally. A failed planned repeat invalidates
+its old passing receipt as before.
+
+This selection does not change deployment rollback or make a partially converted
+database resumable. The caller owns the stopped writers and failure recovery.
+
+Without a source selector, existing restore/bootstrap and legacy post-deploy callers
 retain their behavior. New zero-downtime orchestration must supply a complete
 plan and must not treat absence/refusal as an empty update list. Launchplane's
 cutover issue owns adoption.

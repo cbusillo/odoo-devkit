@@ -167,6 +167,11 @@ Current runtime ownership is intentionally narrow and explicit:
   SQL credential boundary before the first Odoo registry or module hook. See
   [the data-workflow contract](docs/tooling/workspace-cli.md) for managed
   overrides, lane handling and failure behavior.
+- Tenants can select a one-time native 19-to-20 conversion from ordinary
+  post-deploy maintenance. The installed base version prevents replay; ordered
+  tenant preparation precedes shared preparation and the first target registry.
+  A release module plan explicitly refuses the crossing and remains supported
+  after conversion. See [conversion inputs and outcomes](docs/tooling/release-maintenance.md#one-time-major-version-conversion).
 - The startup wrapper maps explicitly supplied `ODOO_SMTP_SERVER`,
   `ODOO_SMTP_PORT`, `ODOO_SMTP_USER`, `ODOO_SMTP_PASSWORD`, `ODOO_SMTP_SSL`,
   `ODOO_EMAIL_FROM`, and `ODOO_FROM_FILTER` to Odoo's native mail options.

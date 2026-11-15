@@ -464,6 +464,8 @@ class LocalServerSettings(BaseSettings):
     openupgrade_enabled: bool = Field(False, alias="OPENUPGRADE_ENABLED")
     openupgrade_scripts_path: Path | None = Field(None, alias="OPENUPGRADE_SCRIPTS_PATH")
     openupgrade_target_version: str | None = Field(None, alias="OPENUPGRADE_TARGET_VERSION")
+    openupgrade_source_version: str | None = Field(None, alias="OPENUPGRADE_SOURCE_VERSION")
+    openupgrade_pre_upgrade_scripts: str | None = Field(None, alias="OPENUPGRADE_PRE_UPGRADE_SCRIPTS")
     openupgrade_load_framework: bool | None = Field(None, alias="OPENUPGRADE_LOAD_FRAMEWORK")
     openupgrade_skip_update_addons: bool = Field(True, alias="OPENUPGRADE_SKIP_UPDATE_ADDONS")
     odoo_key: SecretStr | None = Field(None, alias="ODOO_KEY")
@@ -486,6 +488,8 @@ class LocalServerSettings(BaseSettings):
         "update_modules",
         "local_addons_dirs",
         "openupgrade_target_version",
+        "openupgrade_source_version",
+        "openupgrade_pre_upgrade_scripts",
         "restore_kept_integrations",
         mode="before",
     )
@@ -2522,15 +2526,55 @@ with registry.cursor() as cr:
         self.ensure_gpt_users()
         _logger.info("Bootstrap completed successfully.")
 
+    def installed_base_major(self) -> int:
+        try:
+            with self.connect_to_db().cursor() as cursor:
+                cursor.execute(
+                    "SELECT latest_version FROM ir_module_module WHERE name = %s AND state IN ('installed', 'to upgrade')", ("base",)
+                )
+                row = cursor.fetchone()
+            version = row[0] if row else None
+            if not isinstance(version, str) or not re.fullmatch(r"\d+\.\d+(?:\.[\w]+)*", version):
+                raise OdooDatabaseUpdateError("Cannot verify the installed base version for major-version conversion.")
+            return int(version.split(".", 1)[0])
+        finally:
+            self._reset_db_connection()
+
+    def maintenance_requires_major_upgrade(self) -> bool:
+        source = self.local.openupgrade_source_version
+        if source is None:
+            return False
+        if (
+            not self.local.openupgrade_enabled
+            or source.split(".", 1)[0] != "19"
+            or self._openupgrade_target_version().split(".", 1)[0] != "20"
+            or (self.local.odoo_version or "").split(".", 1)[0] != "20"
+        ):
+            raise OdooDatabaseUpdateError(
+                "Selected maintenance conversion requires enabled native 19-to-20 upgrade and target runtime 20."
+            )
+        installed = self.installed_base_major()
+        if installed == 20:
+            return False
+        if installed != 19:
+            raise OdooDatabaseUpdateError("Installed base does not match the selected major-version conversion source or target.")
+        return True
+
     def run_post_deploy_maintenance(self) -> None:
         _logger.info("Starting post-deploy maintenance for database '%s'", self.local.db_name)
         plan_file = self.os_env.get("ODOO_RELEASE_MODULE_PLAN_FILE", "")
         if plan_file:
             self.run_planned_post_deploy_maintenance(Path(plan_file))
             return
+        crossing = self.maintenance_requires_major_upgrade()
         self.prepare_credentials_before_registry()
-        self.install_addons(reason="post-deploy install")
-        self.update_addons(reason="post-deploy upgrade")
+        if crossing:
+            self.run_openupgrade()
+            if self.installed_base_major() != 20:
+                raise OdooDatabaseUpdateError("Major-version conversion did not commit the target base version.")
+        else:
+            self.install_addons(reason="post-deploy install")
+            self.update_addons(reason="post-deploy upgrade")
         self.connect_to_db()
         self.reconcile_missing_manifest_install_queue()
         self.assert_install_queue_is_resolvable()
@@ -2557,6 +2601,10 @@ with registry.cursor() as cr:
         if output:
             # A failed repeat must never leave yesterday's passing receipt.
             Path(output).write_text(json.dumps({"state": "running", "run_id": run_id}) + "\n")
+        if self.maintenance_requires_major_upgrade():
+            raise OdooDatabaseUpdateError(
+                "A release module plan cannot execute a major-version conversion; use ordinary stopped-web maintenance for the crossing."
+            )
         try:
             payload = load_plan(plan_file)
             declaration_file = getattr(
@@ -3173,8 +3221,15 @@ with registry.cursor() as cr:
             install_modules, _ = self._resolve_install_modules()
             if install_modules:
                 cmd_parts += ["--init", shlex.quote(",".join(install_modules))]
-            reference_script = Path(__file__).with_name("prepare_core_references_20.py")
-            cmd_parts += ["--pre-upgrade-scripts", shlex.quote(str(reference_script))]
+            scripts = [
+                Path(value.strip()) for value in (self.local.openupgrade_pre_upgrade_scripts or "").split(",") if value.strip()
+            ]
+            for script in scripts:
+                if not script.is_absolute() or not script.is_file():
+                    raise OdooRestorerError(f"Pre-upgrade script must be an existing absolute file: {script}")
+            scripts.append(Path(__file__).with_name("prepare_core_references_20.py"))
+            cmd_parts += ["--pre-upgrade-scripts", shlex.quote(",".join(str(script) for script in scripts))]
+            cmd_parts += ["--workers=0", "--max-cron-threads=0"]
         cmd_parts += self._odoo_runtime_connection_flags()
 
         generated_config_path = "/volumes/config/_generated.conf"

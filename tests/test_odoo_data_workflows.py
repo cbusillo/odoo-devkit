@@ -518,6 +518,131 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
 
         self.assertEqual(runner.os_env["PYTHONPATH"], "/volumes/scripts:/opt/custom")
 
+    def test_selected_major_upgrade_precedes_installs_and_never_replays_on_target(self) -> None:
+        settings = self._local_settings()
+        settings.openupgrade_enabled = True
+        settings.odoo_version = "20.0"
+        settings.openupgrade_target_version = "20.0"
+        settings.openupgrade_source_version = "19.0"
+        runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
+        connection = MagicMock()
+        cursor = connection.cursor.return_value.__enter__.return_value
+        cursor.fetchone.side_effect = [("19.0.1.0",), ("20.0.1.0",), ("20.0.1.0",)]
+        events: list[str] = []
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(runner, "connect_to_db", return_value=connection))
+            for name in (
+                "prepare_credentials_before_registry",
+                "run_openupgrade",
+                "install_addons",
+                "update_addons",
+                "reconcile_missing_manifest_install_queue",
+                "assert_install_queue_is_resolvable",
+                "apply_environment_overrides",
+                "block_outgoing_mail_outside_production",
+                "ensure_admin_user",
+                "assert_core_schema_healthy",
+                "ensure_gpt_users",
+            ):
+                stack.enter_context(patch.object(runner, name, side_effect=lambda *args, _name=name, **kwargs: events.append(_name)))
+            runner.run_post_deploy_maintenance()
+            self.assertEqual(events[:2], ["prepare_credentials_before_registry", "run_openupgrade"])
+            self.assertNotIn("install_addons", events)
+            self.assertNotIn("update_addons", events)
+            events.clear()
+            runner.run_post_deploy_maintenance()
+            self.assertNotIn("run_openupgrade", events)
+            self.assertEqual(events[:3], ["prepare_credentials_before_registry", "install_addons", "update_addons"])
+
+    def test_crossing_refuses_release_plan_before_any_plan_or_registry_work(self) -> None:
+        settings = self._local_settings()
+        settings.openupgrade_enabled = True
+        settings.odoo_version = "20.0"
+        settings.openupgrade_source_version = "19.0"
+        runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
+        connection = MagicMock()
+        connection.cursor.return_value.__enter__.return_value.fetchone.return_value = ("19.0.1.0",)
+        with (
+            patch.object(runner, "connect_to_db", return_value=connection),
+            patch.object(odoo_data_workflows, "load_plan") as load_plan,
+            patch.object(runner, "prepare_credentials_before_registry") as boundary,
+            patch.object(runner, "run_openupgrade") as upgrade,
+        ):
+            runner.os_env["ODOO_RELEASE_MODULE_PLAN_FILE"] = "/fixture/plan.json"
+            for action in (
+                runner.run_post_deploy_maintenance,
+                lambda: runner.run_planned_post_deploy_maintenance(Path("/fixture/plan.json")),
+            ):
+                with self.assertRaisesRegex(odoo_data_workflows.OdooDatabaseUpdateError, "major-version conversion"):
+                    action()
+            load_plan.assert_not_called()
+            boundary.assert_not_called()
+            upgrade.assert_not_called()
+
+    def test_major_upgrade_refuses_unknown_source_and_unverified_target(self) -> None:
+        settings = self._local_settings()
+        settings.openupgrade_enabled = True
+        settings.odoo_version = "20.0"
+        settings.openupgrade_source_version = "19.0"
+        runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
+        connection = MagicMock()
+        cursor = connection.cursor.return_value.__enter__.return_value
+        with (
+            patch.object(runner, "connect_to_db", return_value=connection),
+            patch.object(runner, "prepare_credentials_before_registry") as boundary,
+            patch.object(runner, "run_openupgrade") as upgrade,
+            patch.object(runner, "install_addons") as install,
+        ):
+            for row in (None, (None,), ("",), ("18.0.1.0",)):
+                cursor.fetchone.return_value = row
+                with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
+                    runner.run_post_deploy_maintenance()
+            boundary.assert_not_called()
+            upgrade.assert_not_called()
+            cursor.fetchone.side_effect = [("19.0.1.0",), ("19.0.1.0",)]
+            with self.assertRaisesRegex(odoo_data_workflows.OdooDatabaseUpdateError, "target"):
+                runner.run_post_deploy_maintenance()
+            install.assert_not_called()
+
+    def test_conversion_selection_requires_enabled_matching_target_runtime(self) -> None:
+        for enabled, source, target, runtime in (
+            (False, "19.0", "20.0", "20.0"),
+            (True, "18.0", "20.0", "20.0"),
+            (True, "19.0", "19.0", "20.0"),
+            (True, "19.0", "20.0", "19.0"),
+            (True, "19.0", "20.0", None),
+        ):
+            with self.subTest(enabled=enabled, source=source, target=target, runtime=runtime):
+                settings = self._local_settings()
+                settings.openupgrade_enabled = enabled
+                settings.openupgrade_source_version = source
+                settings.openupgrade_target_version = target
+                settings.odoo_version = runtime
+                runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
+                with patch.object(runner, "connect_to_db") as connect:
+                    with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
+                        runner.run_post_deploy_maintenance()
+                    connect.assert_not_called()
+
+    def test_converted_database_still_validates_the_release_plan(self) -> None:
+        settings = self._local_settings()
+        settings.openupgrade_enabled = True
+        settings.odoo_version = "20.0"
+        settings.openupgrade_source_version = "19.0"
+        runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
+        connection = MagicMock()
+        connection.cursor.return_value.__enter__.return_value.fetchone.return_value = ("20.0.1.0",)
+        with (
+            patch.object(runner, "connect_to_db", return_value=connection),
+            patch.object(odoo_data_workflows, "load_plan", side_effect=ValueError("invalid plan")) as load_plan,
+            patch.object(runner, "run_openupgrade") as upgrade,
+        ):
+            plan = Path("/fixture/plan.json")
+            with self.assertRaisesRegex(odoo_data_workflows.OdooDatabaseUpdateError, "release module plan"):
+                runner.run_planned_post_deploy_maintenance(plan)
+            load_plan.assert_called_once_with(plan)
+            upgrade.assert_not_called()
+
     def test_post_deploy_maintenance_runs_overrides_and_service_user_provisioning(self) -> None:
         calls: list[str] = []
         runner = odoo_data_workflows.OdooDataWorkflowRunner(self._local_settings(), upstream=None, env_file=None)
@@ -838,6 +963,13 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
         runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
         with TemporaryDirectory() as directory:
             root = Path(directory)
+            tenant_scripts = [root / "admit.py", root / "prepare with spaces.py"]
+            for script in tenant_scripts:
+                script.touch()
+            settings.openupgrade_pre_upgrade_scripts = ",".join(str(script) for script in tenant_scripts)
+            tenant_migrations = root / "tenant-upgrades"
+            tenant_migrations.mkdir()
+            settings.openupgrade_scripts_path = tenant_migrations
             (root / "openupgrade_scripts_custom" / "scripts").mkdir(parents=True)
             checkout = root / "_checkouts" / "official-upgrade"
             (checkout / "src/util").mkdir(parents=True)
@@ -852,6 +984,12 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
                 command = shlex.split(run_command.call_args.args[0])
                 selected_roots = command[command.index("--upgrade-path") + 1].split(",")
                 self.assertEqual(Path(selected_roots[0]), (checkout / "src").resolve())
+                self.assertIn(str(tenant_migrations), selected_roots)
+                selected_scripts = command[command.index("--pre-upgrade-scripts") + 1].split(",")
+                shared_script = Path(odoo_data_workflows.__file__).with_name("prepare_core_references_20.py")
+                self.assertEqual(selected_scripts, [*(str(script) for script in tenant_scripts), str(shared_script)])
+                self.assertIn("--max-cron-threads=0", command)
+                self.assertIn("--workers=0", command)
                 selected_modules = {module for path in selected_roots for module in runner._collect_openupgrade_modules(Path(path))}
                 self.assertIn("mail", selected_modules)
                 settings.openupgrade_load_framework = True
@@ -859,6 +997,23 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
                 with self.assertRaises(odoo_data_workflows.OdooRestorerError):
                     runner.run_openupgrade()
                 run_command.assert_called_once()
+
+    def test_missing_tenant_preparation_refuses_before_upgrade_process(self) -> None:
+        settings = self._local_settings()
+        settings.openupgrade_enabled = True
+        settings.openupgrade_target_version = "20.0"
+        settings.openupgrade_load_framework = False
+        runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
+        with (
+            TemporaryDirectory() as directory,
+            patch.object(runner, "_resolve_openupgrade_assets", return_value=([Path("/scripts")], None)),
+            patch.object(runner, "run_command") as command,
+        ):
+            for script in (Path(directory) / "absent.py", Path("relative.py")):
+                settings.openupgrade_pre_upgrade_scripts = str(script)
+                with self.assertRaises(odoo_data_workflows.OdooRestorerError):
+                    runner.run_openupgrade()
+            command.assert_not_called()
 
     def test_native_20_selects_only_declared_initial_installs_alongside_update_all(self) -> None:
         for target, runtime in (("20.0", "19.0"), (None, "20.0")):
