@@ -2590,6 +2590,11 @@ with registry.cursor() as cr:
             )
         source = self.local.openupgrade_source_version
         if source is None:
+            runtime = (self.local.odoo_version or "").split(".", 1)[0]
+            if runtime.isdigit() and self.installed_module_majors()["base"] != int(runtime):
+                raise OdooDatabaseUpdateError(
+                    "Installed base differs from the runtime; select its major-version conversion explicitly."
+                )
             return False
         if (
             not self.local.openupgrade_enabled
@@ -2607,6 +2612,8 @@ with registry.cursor() as cr:
             return False
         if installed != 19:
             raise OdooDatabaseUpdateError("Installed base does not match the selected major-version conversion source or target.")
+        if self.os_env.get("ODOO_MIGRATION_DIAGNOSTIC_REPORT"):
+            raise OdooDatabaseUpdateError("Post-deploy maintenance cannot run a diagnostic major-version conversion.")
         return True
 
     def run_post_deploy_maintenance(self) -> None:
@@ -2622,8 +2629,8 @@ with registry.cursor() as cr:
             self.run_prepared_openupgrade()
             self.assert_major_upgrade_complete()
             self.set_major_upgrade_pending(pending=False)
-        else:
-            self.install_addons(reason="post-deploy install")
+        self.install_addons(reason="post-deploy install")
+        if not crossing:
             self.update_addons(reason="post-deploy upgrade")
         self.connect_to_db()
         self.reconcile_missing_manifest_install_queue()

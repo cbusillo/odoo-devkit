@@ -518,54 +518,6 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
 
         self.assertEqual(runner.os_env["PYTHONPATH"], "/volumes/scripts:/opt/custom")
 
-    def test_selected_major_upgrade_precedes_installs_and_never_replays_on_target(self) -> None:
-        settings = self._local_settings()
-        settings.openupgrade_enabled = True
-        settings.odoo_version = "20.0"
-        settings.openupgrade_target_version = "20.0"
-        settings.openupgrade_source_version = "19.0"
-        runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
-        connection = MagicMock()
-        cursor = connection.cursor.return_value.__enter__.return_value
-        cursor.fetchone.return_value = None
-        cursor.fetchall.side_effect = [[("base", "19.0.1.0")], [("base", "20.0.1.0")], [("base", "20.0.1.0")]]
-        events: list[str] = []
-        with ExitStack() as stack:
-            stack.enter_context(patch.object(runner, "connect_to_db", return_value=connection))
-            for name in (
-                "prepare_credentials_before_registry",
-                "set_major_upgrade_pending",
-                "snapshot_module_states_before_openupgrade",
-                "run_openupgrade",
-                "install_addons",
-                "update_addons",
-                "reconcile_missing_manifest_install_queue",
-                "assert_install_queue_is_resolvable",
-                "apply_environment_overrides",
-                "block_outgoing_mail_outside_production",
-                "ensure_admin_user",
-                "assert_core_schema_healthy",
-                "ensure_gpt_users",
-            ):
-                stack.enter_context(patch.object(runner, name, side_effect=lambda *args, _name=name, **kwargs: events.append(_name)))
-            runner.run_post_deploy_maintenance()
-            self.assertEqual(
-                events[:5],
-                [
-                    "prepare_credentials_before_registry",
-                    "set_major_upgrade_pending",
-                    "snapshot_module_states_before_openupgrade",
-                    "run_openupgrade",
-                    "prepare_credentials_before_registry",
-                ],
-            )
-            self.assertNotIn("install_addons", events)
-            self.assertNotIn("update_addons", events)
-            events.clear()
-            runner.run_post_deploy_maintenance()
-            self.assertNotIn("run_openupgrade", events)
-            self.assertEqual(events[:3], ["prepare_credentials_before_registry", "install_addons", "update_addons"])
-
     def test_crossing_refuses_release_plan_before_any_plan_or_registry_work(self) -> None:
         settings = self._local_settings()
         settings.openupgrade_enabled = True
@@ -676,6 +628,13 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
         settings.odoo_version = "20.0"
         settings.openupgrade_source_version = "19.0"
         runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
+        events: list[str] = []
+        snapshot = runner.snapshot_module_states_before_openupgrade
+
+        def capture_snapshot() -> None:
+            events.append("snapshot")
+            snapshot()
+
         with TemporaryDirectory() as directory:
             database_path = Path(directory) / "source.db"
             with sqlite3.connect(database_path) as database:
@@ -689,6 +648,7 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
                 return _BoundaryConnection(sqlite3.connect(database_path), owns_connection=True)
 
             def upgrade() -> None:
+                events.append("upgrade")
                 with sqlite3.connect(database_path) as writer:
                     self.assertIsNotNone(
                         writer.execute(
@@ -702,10 +662,12 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
             with ExitStack() as stack:
                 stack.enter_context(patch.object(runner, "_connect_with_retry", side_effect=connect))
                 conversion = stack.enter_context(patch.object(runner, "run_openupgrade", side_effect=upgrade))
+                stack.enter_context(patch.object(runner, "snapshot_module_states_before_openupgrade", side_effect=capture_snapshot))
+                for method in ("prepare_credentials_before_registry", "install_addons", "update_addons"):
+                    stack.enter_context(
+                        patch.object(runner, method, side_effect=lambda *args, _name=method, **kwargs: events.append(_name))
+                    )
                 for name in (
-                    "prepare_credentials_before_registry",
-                    "install_addons",
-                    "update_addons",
                     "reconcile_missing_manifest_install_queue",
                     "assert_install_queue_is_resolvable",
                     "apply_environment_overrides",
@@ -716,6 +678,16 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
                 ):
                     stack.enter_context(patch.object(runner, name))
                 runner.run_post_deploy_maintenance()
+                self.assertEqual(
+                    events,
+                    [
+                        "prepare_credentials_before_registry",
+                        "snapshot",
+                        "upgrade",
+                        "prepare_credentials_before_registry",
+                        "install_addons",
+                    ],
+                )
                 with sqlite3.connect(database_path) as reader:
                     self.assertIsNone(
                         reader.execute(
@@ -723,7 +695,9 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
                             (odoo_data_workflows.PENDING_MAJOR_UPGRADE_PARAMETER,),
                         ).fetchone()
                     )
+                events.clear()
                 runner.run_post_deploy_maintenance()
+                self.assertEqual(events, ["prepare_credentials_before_registry", "install_addons", "update_addons"])
                 conversion.assert_called_once()
             runner._reset_db_connection()
 
@@ -749,6 +723,47 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
                     with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
                         runner.run_post_deploy_maintenance()
                     connect.assert_not_called()
+
+    def test_unselected_and_diagnostic_crossings_refuse_all_maintenance_before_changes(self) -> None:
+        for source, diagnostic in ((None, None), ("19.0", "/private/diagnostic.jsonl")):
+            with self.subTest(source=source, diagnostic=diagnostic):
+                settings = self._local_settings()
+                settings.openupgrade_enabled = True
+                settings.odoo_version = "20.0"
+                settings.openupgrade_source_version = source
+                runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
+                if diagnostic:
+                    runner.os_env["ODOO_MIGRATION_DIAGNOSTIC_REPORT"] = diagnostic
+                connection = MagicMock()
+                cursor = connection.cursor.return_value.__enter__.return_value
+                cursor.fetchone.return_value = None
+                cursor.fetchall.return_value = [("base", "19.0.1.0")]
+                with (
+                    patch.object(runner, "connect_to_db", return_value=connection),
+                    patch.object(runner, "prepare_credentials_before_registry") as boundary,
+                    patch.object(runner, "set_major_upgrade_pending") as pending,
+                    patch.object(runner, "install_addons") as install,
+                    patch.object(runner, "update_addons") as update,
+                    patch.object(odoo_data_workflows, "LocalServerSettings", return_value=settings),
+                    patch.object(odoo_data_workflows, "UpstreamServerSettings", return_value=None),
+                    patch.object(odoo_data_workflows, "OdooDataWorkflowRunner", return_value=runner),
+                    patch.object(runner, "_resolve_local_module_paths"),
+                    patch.object(runner, "acquire_data_workflow_lock"),
+                    patch.object(runner, "release_data_workflow_lock"),
+                ):
+                    for action in (
+                        runner.run_post_deploy_maintenance,
+                        lambda selected_runner=runner: selected_runner.run_planned_post_deploy_maintenance(
+                            Path("/fixture/plan.json")
+                        ),
+                    ):
+                        with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
+                            action()
+                    self.assertEqual(odoo_data_workflows.main(["--update-only"]), odoo_data_workflows.ExitCode.BOOTSTRAP_FAILED)
+                    boundary.assert_not_called()
+                    pending.assert_not_called()
+                    install.assert_not_called()
+                    update.assert_not_called()
 
     def test_update_only_refuses_selected_crossing_without_starting_odoo(self) -> None:
         settings = self._local_settings()
@@ -978,6 +993,7 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
                     patch.object(runner, "release_module_graph", return_value={}),
                     patch.object(runner, "module_update_witnesses", return_value={}),
                     patch.object(runner, "major_upgrade_is_pending", return_value=False),
+                    patch.object(runner, "installed_module_majors", return_value={"base": int(runtime.split(".")[0])}),
                     patch.object(runner, "prepare_credentials_before_registry", side_effect=lambda: events.append("credentials")),
                     patch.object(runner, "_ensure_odoo_shell_preflight", side_effect=lambda: events.append("preflight")),
                     patch.object(runner, "_odoo_shell_command", return_value=["odoo", "shell", "-d", settings.db_name]),

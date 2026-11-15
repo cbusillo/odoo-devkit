@@ -128,10 +128,13 @@ its module migration root in `OPENUPGRADE_SCRIPTS_PATH`. Shared preparation is
 appended after the tenant scripts; official utility and shared migration roots
 remain selected. Framework selection retains the existing
 `OPENUPGRADE_LOAD_FRAMEWORK` contract.
+These script inputs also apply to explicit native upgrades during restore;
+remove one-time tenant inputs after a completed crossing before restoring a 20 copy.
 
 The installed SQL versions select conversion before the first target registry.
 It shares restore's module snapshot and committed credential/mail boundaries.
-Successful conversion replaces the ordinary install/update pass. Already-20
+Successful conversion replaces the ordinary update pass; install reconciliation
+still handles missing local modules selected by `AUTO`. Already-20
 modules keep ordinary maintenance without replay; unknown or mixed majors
 refuse. Installed modules retired by tenant scripts need no target manifest.
 
@@ -144,9 +147,11 @@ partial-upgrade replay or manual marker-clearing flow is provided. This does
 not change deployment rollback. Existing converted databases need no marker.
 
 A release module plan and `--update-only` explicitly refuse a selected crossing.
-After successful conversion, planned maintenance validates and executes its
-supplied plan normally. Omitting the selector keeps existing behavior unless a
-previous crossing is pending. A refused planned run invalidates an old receipt.
+Diagnostic conversion is refused before any crossing changes. After successful
+conversion, planned maintenance validates and executes its
+supplied plan normally. Omitting the selector refuses a base/runtime major
+mismatch instead of opening a target registry. Matching majors retain ordinary
+behavior unless a previous crossing is pending. A refused planned run invalidates an old receipt.
 
 Tenant admissions and private input delivery remain the tenant's responsibility.
 Make independently qualified reference files, immutable history snapshots and
