@@ -20,6 +20,7 @@ from functools import partial
 from pathlib import Path
 from unittest import mock
 
+from test_image_environment import built_image
 from test_upgrade_paths import HELPERS
 
 from odoo_devkit import artifact_inputs, local_runtime
@@ -1398,6 +1399,8 @@ homepage = true
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             manifest, runtime_commit = self._prepare_artifact_check(root)
+            manifest = replace(manifest, build=replace(manifest.build, image_environment=(("SELECTED", "true"),)))
+            (root / "runtime-repo/docker/artifact.Dockerfile").write_text("FROM scratch\n")
             self._configure_publish_runtime_payload(
                 instance="local",
                 environment={
@@ -1757,6 +1760,11 @@ homepage = true
                 instance_name="local",
                 build_inputs=True,
             )
+            environment = {"SELECTED": "true", "LITERAL": '$HOME "quoted" \\path'}
+            with manifest_path.open("a") as manifest_file:
+                manifest_file.write("\n[build.image_environment]\n")
+                for environment_key, environment_value in environment.items():
+                    manifest_file.write(f"{environment_key} = {json.dumps(environment_value)}\n")
             subprocess.run(["git", "add", "workspace.toml"], cwd=tenant_repo_path, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "workspace manifest"], cwd=tenant_repo_path, check=True, capture_output=True)
             manifest = load_workspace_manifest(manifest_path)
@@ -1783,6 +1791,10 @@ homepage = true
                     self.assertTrue((runtime_repo_path / "addons" / "opw_custom" / "__manifest__.py").exists())
                     self.assertTrue((runtime_repo_path / "addons" / "shared" / "shared_module" / "__manifest__.py").exists())
                     self.assertFalse((runtime_repo_path / "addons" / "shared" / "tenant_shadow.txt").exists())
+                    with built_image(runtime_repo_path / "docker/artifact.Dockerfile") as tag:
+                        config = json.loads(subprocess.check_output(["docker", "image", "inspect", tag]))[0]["Config"]
+                        actual = dict(item.split("=", 1) for item in config["Env"])
+                        self.assertEqual({name: actual.get(name) for name in environment}, environment)
 
             output_file = temp_root / "artifact.json"
             with mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_base_images"):
@@ -4642,7 +4654,7 @@ attached_paths = ["sources/devkit"]
         (runtime_repo_path / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
         (runtime_repo_path / "platform" / "compose" / "base.yaml").write_text("services: {}\n", encoding="utf-8")
         (runtime_repo_path / "docker" / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
-        (runtime_repo_path / "docker" / "artifact.Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+        (runtime_repo_path / "docker" / "artifact.Dockerfile").write_text("FROM scratch AS production\n", encoding="utf-8")
         (runtime_repo_path / "docker" / "dependency-evidence.Dockerfile").write_text(
             "ARG ARTIFACT_IMAGE\nFROM ${ARTIFACT_IMAGE} AS artifact\nFROM scratch\n",
             encoding="utf-8",

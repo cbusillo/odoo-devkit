@@ -21,6 +21,32 @@ from tests.git_fixture import commit_fixture_repository, fixture_git_environment
 
 
 class WorkspaceSyncTestCase(unittest.TestCase):
+    def test_manifest_preserves_image_environment_defaults_without_changing_legacy_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manifest_path = self._write_minimal_manifest(Path(directory))
+            self.assertEqual(dict(load_workspace_manifest(manifest_path).build.image_environment), {})
+            environment = {"CONVERSION_ENABLED": "true", "EMPTY": "", "LITERAL": '  $HOME "quoted" \\path  '}
+            with manifest_path.open("a") as manifest_file:
+                manifest_file.write("\n[build.image_environment]\n")
+                for name, value in environment.items():
+                    manifest_file.write(f"{name} = {json.dumps(value)}\n")
+            self.assertEqual(dict(load_workspace_manifest(manifest_path).build.image_environment), environment)
+
+    def test_manifest_rejects_image_environment_that_cannot_be_literal_docker_defaults(self) -> None:
+        for raw_value in (
+            "42",
+            "{ VALID = true }",
+            '{ "bad-name" = "value" }',
+            '{ VALID = "line\\nbreak" }',
+            '{ VALID = "\\u0000" }',
+        ):
+            with self.subTest(raw_value=raw_value), tempfile.TemporaryDirectory() as directory:
+                manifest_path = self._write_minimal_manifest(Path(directory))
+                with manifest_path.open("a") as manifest_file:
+                    manifest_file.write(f"\n[build]\nimage_environment = {raw_value}\n")
+                with self.assertRaisesRegex(ValueError, r"build\.image_environment"):
+                    load_workspace_manifest(manifest_path)
+
     def test_cli_related_repo_root_syncs_isolated_tenant_sources(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

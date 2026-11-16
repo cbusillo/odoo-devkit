@@ -47,6 +47,9 @@ odoo_version = "19.0"               # ODOO_VERSION
 base_runtime_image = "registry.invalid/private-enterprise-runtime:19.0-runtime"
 base_devtools_image = "registry.invalid/private-enterprise-devtools:19.0-devtools"
 
+[build.image_environment]
+CONVERSION_ENABLED = "true"
+
 [repos.devkit]
 name = "odoo-devkit"
 repository = "example-owner/odoo-devkit"   # what hosted publish checks out
@@ -66,6 +69,25 @@ repository = "example-owner/odoo-shared-addons"
   record of what was built.
 - `repository` is an `owner/name` slug. It names the repository a hosted build
   checks out; `path` and `url` keep their workspace-sync meaning.
+- Optional `[build.image_environment]` declares non-secret runtime defaults
+  belonging to this version of the product. Names use letters, digits and
+  underscores and cannot start with a digit. Values are literal single-line
+  strings without NUL; empty strings, spaces, quotes, backslashes and dollar
+  signs are preserved. Never declare credentials here: these values are public
+  in the tracked manifest and image metadata.
+- The normal production artifact build and build-only consumer check bake
+  these defaults into the final image, after dependency installation. Hosted
+  runtime environment values override them in the usual container way. They
+  do not become build arguments or local Compose runtime settings. Omitting
+  the table preserves existing image behavior. Version-specific conversion
+  selectors can therefore travel with an Odoo 20 artifact without affecting
+  a restore that still runs the Odoo 19 artifact.
+
+The image-default tests build small scratch metadata images using Docker and
+inspect their image/container configuration; they pull no base and start no
+container. Run them with `uv run python -m unittest discover -s tests -p
+test_image_environment.py`. The normal publisher test also builds its staged
+fixture Dockerfile to verify that manifest defaults reach the image.
 
 ## Immutable publish handoff
 
