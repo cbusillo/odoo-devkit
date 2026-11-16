@@ -782,7 +782,17 @@ Notes
   The existing `CM_WEBSITE_MAIL_REFERENCE` and
   `CM_WEBSITE_MAIL_REFERENCE_SHA256` inputs remain the reference contract for
   shared consumers. A missing or changed artifact refuses before effects.
-  The version-qualified Payment pre-stage uses a separately qualified `payment`
+  A tenant may pass `allow_same_run_reference=True` to `mail_view_20.write_reference`
+  or call its `same_run_evidence` helper while writing its own profile. The same
+  opt-in admits the candidate's Mail identity and captures Payment source values,
+  logical aliases and verified original image hashes in the digest-bound profile
+  before preparation effects. Payment's native stage still compares that earlier
+  evidence, checks ownership, disabled connectors, absence of payment history,
+  original files and incoming-reference closure, then deletes the exact admitted
+  cohorts. Changes after capture still refuse. No environment-wide switch is used;
+  profiles without the explicit Boolean opt-in keep their existing behavior.
+  An opted-in writer may omit `source_image`; the target image remains required.
+  The version-qualified Payment pre-stage otherwise uses a separately qualified `payment`
   witness in that same authenticated profile. It supports only the obsolete
   stock global-method family with disabled `none` providers whose connector
   modules remain uninstalled. The custodian binds material values and links to
@@ -802,8 +812,12 @@ Notes
   observation alone grants no retirement authority. Native `capture` takes its
   table lock before calling that same collector, and `retire` still uses capture
   and the incoming-reference checks before effects.
-  Unknown fields, translations, owners, configured providers,
-  payment history, images or outside references refuse before deletion.
+  Without the opt-in, unknown fields, translations, owners, configured providers,
+  payment history, images or outside references refuse before deletion. With it,
+  obsolete catalog values and original images are compared to the candidate's
+  earlier capture rather than public stock values. This can retire edited unused
+  catalog configuration; ownership, configured-provider, payment-history, file
+  integrity and outside-reference protections still apply.
   Admission checks the whole method, alias and field-attachment cohorts,
   including incoming links to the retiring aliases and attachments. Only exact
   admitted internal edges are allowed; other reference protections still apply.
@@ -819,7 +833,8 @@ Notes
   into `provider_id`. Their records, images, aliases and provider settings remain.
   A witness may explicitly record an absent source image as `null`; an unexpected
   image or an unrecorded loss still refuses. Present original images keep their
-  public-source comparison and exact-byte checks. Recorded absence does not
+  exact-byte checks; the comparison is against the captured candidate under the
+  opt-in and against public source evidence otherwise. Recorded absence does not
   establish that an unused catalog was pristine, and never bypasses material-value,
   history, ownership or incoming-reference checks.
   Each image may also record its original native `index_content` and `website_id`

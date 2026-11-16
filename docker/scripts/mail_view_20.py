@@ -4,6 +4,8 @@ import copy
 import hashlib
 import json
 import os
+import runpy
+from importlib import import_module
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
@@ -284,13 +286,14 @@ def write_reference(
     cr: Any,
     output: Path,
     target_xml: Path,
-    source_image: str,
+    source_image: str | None,
     target_image: str,
     *,
     history: dict[str, Any] | None = None,
     footer: dict[str, Any] | None = None,
     templates: dict[str, Any] | None = None,
     countries: dict[str, Any] | None = None,
+    allow_same_run_reference: bool = False,
 ) -> str:
     cr.execute("SHOW transaction_read_only")
     if cr.fetchone()[0] != "on":
@@ -308,15 +311,20 @@ def write_reference(
     if set(reference["target"].get("arch_db", {})) != {"en_US"}:
         raise RuntimeError("Reference requires a separately qualified translation rebase")
     canonical_architecture(target_xml)
-    for image in (source_image, target_image):
-        if "@sha256:" not in image:
-            raise RuntimeError("Reference images must be immutable digest references")
-    profile = {
+    if (
+        "@sha256:" not in target_image
+        or (source_image is None and not allow_same_run_reference)
+        or (source_image is not None and "@sha256:" not in source_image)
+    ):
+        raise RuntimeError("Reference images must be immutable digest references")
+    profile: dict[str, Any] = {
         "reference": reference,
         "source_image": source_image,
         "target_image": target_image,
         "target_xml_sha256": hashlib.sha256(target_xml.read_bytes()).hexdigest(),
     }
+    if allow_same_run_reference:
+        profile.update(same_run_evidence(cr, reference["modules"]))
     if history is not None:
         if history.get("database_uuid") != reference["database_uuid"] or history.get("modules") != reference["modules"]:
             raise RuntimeError("History and view reference must come from the same independent source database")
@@ -341,6 +349,15 @@ def write_reference(
     with output.open("xb") as stream:
         stream.write(payload)
     return hashlib.sha256(payload).hexdigest()
+
+
+def same_run_evidence(cr: Any, modules: dict[str, str]) -> dict[str, Any]:
+    evidence: dict[str, Any] = {"allow_same_run_reference": True}
+    if version := modules.get("payment"):
+        config = import_module("odoo.tools").config
+        payment = runpy.run_path(str(Path(__file__).with_name("payment_20.py")))
+        evidence["payment"] = payment["same_run_witness"](cr, version, Path(config.filestore(cr.dbname)))
+    return evidence
 
 
 def load_reference(target_xml: Path) -> dict[str, Any]:
