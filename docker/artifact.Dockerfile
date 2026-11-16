@@ -68,7 +68,7 @@ RUN mkdir -p /volumes /opt/project \
 
 RUN /venv/bin/python /volumes/scripts/odoo_release_inventory.py --base-tools /opt/launchplane/evidence/base-devtools-inventory.json
 
-FROM base-runtime AS production-runtime
+FROM base-runtime AS production
 ARG TARGETPLATFORM
 COPY --from=base-devtools /opt/launchplane/evidence/base-devtools-inventory.json /opt/launchplane/evidence/base-devtools-inventory.json
 WORKDIR /opt/project
@@ -80,13 +80,3 @@ RUN /venv/bin/python /volumes/scripts/odoo_release_inventory.py \
     && rm /opt/launchplane/evidence/release-inventory-inputs.json
 WORKDIR /
 USER ubuntu
-
-FROM base-devtools AS development
-ARG TARGETPLATFORM
-WORKDIR /opt/project
-
-RUN --mount=type=cache,target=/home/ubuntu/.cache/uv,uid=1000,gid=1000,sharing=locked \
-	TARGETPLATFORM="${TARGETPLATFORM}" ODOO_PYTHON_SYNC_SKIP_ADDONS="${ODOO_PYTHON_SYNC_SKIP_ADDONS}" /usr/local/bin/odoo-python-sync.sh dev
-USER ubuntu
-
-FROM production-runtime AS production

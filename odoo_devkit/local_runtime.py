@@ -43,7 +43,12 @@ from .dependency_workspace import (
 )
 from .ide_support import write_pycharm_odoo_conf
 from .manifest import WorkspaceManifest
-from .runtime_environment import RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR, sanitized_subprocess_environment
+from .runtime_environment import (
+    ENVIRONMENT_VARIABLE_NAME_PATTERN,
+    RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR,
+    is_single_line_environment_value,
+    sanitized_subprocess_environment,
+)
 
 
 class _ExpandAddonPaths(Protocol):
@@ -60,7 +65,6 @@ ScalarMap = dict[str, ScalarValue]
 DEFAULT_ARTIFACT_IMAGE_PLATFORMS = BASE_PYTHON_PLATFORMS
 GIT_SHA_PATTERN = re.compile(r"[0-9a-fA-F]{7,40}")
 DEPENDENCY_SOURCE_REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
-ENVIRONMENT_VARIABLE_NAME_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 ARTIFACT_SOURCE_ENV_KEYS = ("ODOO_ADDON_REPOSITORIES", "OPENUPGRADE_ADDON_REPOSITORY")
 SOURCE_GITHUB_TOKEN_ENV_KEYS = ("ODOO_DEVKIT_SOURCE_GITHUB_TOKEN", "ODOO_SOURCE_GITHUB_TOKEN")
 THROWAWAY_REPOSITORY_GIT_OPTIONS = ("-c", "maintenance.auto=false", "-c", "gc.auto=0")
@@ -1808,10 +1812,7 @@ def load_environment_from_explicit_payload(
         raise RuntimeCommandError(
             f"{RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR} environment keys must be valid environment variable names."
         )
-    if any(
-        "\x00" in environment_value or (bool(environment_value) and environment_value.splitlines() != [environment_value])
-        for environment_value in raw_environment.values()
-    ):
+    if any(not is_single_line_environment_value(environment_value) for environment_value in raw_environment.values()):
         raise RuntimeCommandError(
             f"{RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR} environment values must not contain line separators or NUL bytes."
         )
@@ -2623,12 +2624,13 @@ def sha256_file(path: Path) -> str:
 def write_artifact_image_environment(dockerfile: Path, environment: tuple[tuple[str, str], ...]) -> None:
     if not environment:
         return
-    stages = re.findall(r"(?im)^FROM\s+[^\n]+\s+AS\s+(\S+)\s*$", dockerfile.read_text(encoding="utf-8"))
-    if not stages or stages[-1].lower() != "production":
+    stages = re.findall(r"(?im)^FROM[ \t]+([^\r\n]+)", dockerfile.read_text(encoding="utf-8"))
+    if not stages or re.search(r"\sAS\s+production\s*$", stages[-1], flags=re.IGNORECASE) is None:
         raise RuntimeCommandError(
             "Image environment defaults require the final artifact stage to be production; update repos.runtime."
         )
     with dockerfile.open("a", encoding="utf-8") as output:
+        output.write("\n")
         for name, value in environment:
             escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$")
             output.write(f'ENV {name}="{escaped}"\n')
@@ -2658,7 +2660,8 @@ def stage_artifact_build_context(
         destination_path=staged_context_root / "docker",
         label="runtime docker directory",
     )
-    write_artifact_image_environment(staged_context_root / "docker" / "artifact.Dockerfile", manifest.build.image_environment)
+    if not working_tree:
+        write_artifact_image_environment(staged_context_root / "docker" / "artifact.Dockerfile", manifest.build.image_environment)
     copy_required_path(
         repo_path=runtime_source.repo_path,
         source_commit=None if working_tree else runtime_source.commit,

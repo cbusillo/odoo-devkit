@@ -83,6 +83,12 @@ repository = "example-owner/odoo-shared-addons"
   selectors can therefore travel with an Odoo 20 artifact without affecting
   a restore that still runs the Odoo 19 artifact.
 
+The image-default tests build small scratch metadata images using Docker and
+inspect their image/container configuration; they pull no base and start no
+container. Run them with `uv run python -m unittest discover -s tests -p
+test_image_environment.py`. The normal publisher test also builds its staged
+fixture Dockerfile to verify that manifest defaults reach the image.
+
 ## Immutable publish handoff
 
 Before `platform runtime publish`, run `platform dependencies check` and commit

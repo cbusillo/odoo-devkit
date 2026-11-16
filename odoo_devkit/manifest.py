@@ -6,6 +6,7 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from odoo_devkit.runtime_environment import ENVIRONMENT_VARIABLE_NAME_PATTERN, is_single_line_environment_value
 from odoo_devkit.toml_values import read_optional_string as _read_optional_string
 from odoo_devkit.toml_values import read_required_string as _read_required_string
 
@@ -183,9 +184,9 @@ def _read_image_environment(build_table: dict[str, object]) -> tuple[tuple[str, 
         raise ValueError("Expected build.image_environment to be a table")
     values: list[tuple[str, str]] = []
     for name, value in environment.items():
-        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) is None:
+        if ENVIRONMENT_VARIABLE_NAME_PATTERN.fullmatch(name) is None:
             raise ValueError("Expected build.image_environment keys to be environment variable names")
-        if not isinstance(value, str) or any(character in value for character in "\0\r\n"):
+        if not isinstance(value, str) or not is_single_line_environment_value(value):
             raise ValueError(f"Expected build.image_environment.{name} to be a single-line string without NUL")
         values.append((name, value))
     return tuple(sorted(values))
