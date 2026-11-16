@@ -122,7 +122,10 @@ attest public traffic or cutover readiness.
 ## One-time major-version conversion
 
 For ordinary post-deploy maintenance, select `OPENUPGRADE_ENABLED=true`,
-`OPENUPGRADE_SOURCE_VERSION=19.0`, and target/runtime version 20. Supply ordered,
+`OPENUPGRADE_SOURCE_VERSION=19.0`, and target version 20. The runtime version
+is the one in the image's own `/odoo/odoo/release.py`; deployed containers need
+no `ODOO_VERSION`. One that disagrees with the image refuses, and so does
+maintenance when neither says which major runs. Supply ordered,
 comma-separated absolute tenant scripts in `OPENUPGRADE_PRE_UPGRADE_SCRIPTS` and
 its module migration root in `OPENUPGRADE_SCRIPTS_PATH`. Shared preparation is
 appended after the tenant scripts; official utility and shared migration roots

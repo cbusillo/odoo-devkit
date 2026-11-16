@@ -66,6 +66,8 @@ class ExitCode(IntEnum):
 RUNTIME_SCRIPTS_PATH = "/volumes/scripts"
 BOUNDARY_COMMIT_PARAMETER = "odoo_devkit.credential_boundary_commit"
 PENDING_MAJOR_UPGRADE_PARAMETER = "odoo_devkit.pending_major_upgrade"
+# Deployed containers carry no ODOO_VERSION; this image's own Odoo says which major runs.
+ODOO_RELEASE_FILE = Path("/odoo/odoo/release.py")
 
 
 @dataclass(frozen=True)
@@ -390,6 +392,17 @@ class SqlCall:
     model: str
     data: KeyValuePair | None = None
     where: KeyValuePair | None = None
+
+
+def _running_odoo_major() -> int | None:
+    if not ODOO_RELEASE_FILE.is_file():
+        return None
+    spec = importlib.util.spec_from_file_location("_running_odoo_release", ODOO_RELEASE_FILE)
+    if spec is None or spec.loader is None:
+        return None
+    release = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(release)
+    return int(release.version_info[0])
 
 
 def _blank_to_none(value: object) -> object:
@@ -2582,6 +2595,17 @@ with registry.cursor() as cr:
         finally:
             self._reset_db_connection()
 
+    def runtime_odoo_major(self) -> int:
+        declared = (self.local.odoo_version or "").split(".", 1)[0]
+        running = _running_odoo_major()
+        if running is not None and declared.isdigit() and int(declared) != running:
+            raise OdooDatabaseUpdateError(f"ODOO_VERSION {self.local.odoo_version} disagrees with the running Odoo {running}.")
+        if running is not None:
+            return running
+        if declared.isdigit():
+            return int(declared)
+        raise OdooDatabaseUpdateError("Cannot determine the running Odoo major version.")
+
     def maintenance_requires_major_upgrade(self) -> bool:
         if self.major_upgrade_is_pending():
             self._reset_db_connection()
@@ -2590,8 +2614,7 @@ with registry.cursor() as cr:
             )
         source = self.local.openupgrade_source_version
         if source is None:
-            runtime = (self.local.odoo_version or "").split(".", 1)[0]
-            if runtime.isdigit() and self.installed_module_majors()["base"] != int(runtime):
+            if self.installed_module_majors()["base"] != self.runtime_odoo_major():
                 raise OdooDatabaseUpdateError(
                     "Installed base differs from the runtime; select its major-version conversion explicitly."
                 )
@@ -2600,7 +2623,7 @@ with registry.cursor() as cr:
             not self.local.openupgrade_enabled
             or source.split(".", 1)[0] != "19"
             or self._openupgrade_target_version().split(".", 1)[0] != "20"
-            or (self.local.odoo_version or "").split(".", 1)[0] != "20"
+            or self.runtime_odoo_major() != 20
         ):
             raise OdooDatabaseUpdateError(
                 "Selected maintenance conversion requires enabled native 19-to-20 upgrade and target runtime 20."
