@@ -3,7 +3,7 @@ name = "odoo-runtime-support"
 version = "0.0.0"
 requires-python = ">=3.13"
 dependencies = [
-    "hatchling==1.32.4",
+    "hatchling==1.33.0",
     "markdown",
     "passlib>=1.7.4",
     "pydantic>=2.14.1",

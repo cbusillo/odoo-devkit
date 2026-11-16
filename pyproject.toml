@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["ruff==0.17.2"]
+dev = ["ruff==0.17.4"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["odoo_devkit"]
