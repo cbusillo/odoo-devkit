@@ -117,6 +117,17 @@ def _semantic_values(values: dict[str, Any], expected: dict[str, Any]) -> dict[s
     return result
 
 
+def _method_values(row: dict[str, Any], methods: dict[int, str], snapshot: dict[str, Any]) -> dict[str, Any]:
+    values = {key: value for key, value in row.items() if key not in AUDIT | {"id"}}
+    parent = values["primary_payment_method_id"]
+    if parent is not None and parent not in methods:
+        _fail("outside brand parent")
+    values["primary_payment_method_id"] = None if parent is None else methods[parent]
+    values["supported_country_ids"] = snapshot["countries"][row["id"]]
+    values["supported_currency_ids"] = snapshot["currencies"][row["id"]]
+    return values
+
+
 def source_witness(profile: dict[str, Any], version: str) -> dict[str, Any]:
     witness = profile.get("payment")
     if not isinstance(witness, dict):
@@ -162,13 +173,7 @@ def same_run_witness(cr: Any, version: str, filestore: Path) -> dict[str, Any]:
     )
     witness: dict[str, Any] = {"source_version": version, "methods": {}, "providers": {}, "attachment_defaults": {}}
     for row in current["methods"]:
-        values = {key: value for key, value in row.items() if key not in AUDIT | {"id"}}
-        parent = values["primary_payment_method_id"]
-        if parent is not None and parent not in methods:
-            _fail("outside brand parent")
-        values["primary_payment_method_id"] = None if parent is None else methods[parent]
-        values["supported_country_ids"] = current["countries"][row["id"]]
-        values["supported_currency_ids"] = current["currencies"][row["id"]]
+        values = _method_values(row, methods, current)
         witness["methods"][methods[row["id"]]] = {"values": values, "images": dict.fromkeys(IMAGE_FIELDS)}
     for row in current["providers"]:
         witness["providers"][providers[row["id"]]] = {
@@ -281,13 +286,7 @@ def admit(snapshot: dict[str, Any], witness: dict[str, Any], filestore: Path) ->
         _fail("provider stock associations")
     for row in snapshot["methods"]:
         expected = witness["methods"][methods[row["id"]]]["values"]
-        values = {key: value for key, value in row.items() if key not in AUDIT | {"id"}}
-        parent = values["primary_payment_method_id"]
-        if parent is not None and parent not in methods:
-            _fail("outside brand parent")
-        values["primary_payment_method_id"] = None if parent is None else methods[parent]
-        values["supported_country_ids"] = snapshot["countries"][row["id"]]
-        values["supported_currency_ids"] = snapshot["currencies"][row["id"]]
+        values = _method_values(row, methods, snapshot)
         if _semantic_values(values, expected) != expected:
             _fail("method values, translations or relations")
     if snapshot["attachment_aliases"]:
