@@ -66,7 +66,6 @@ class ExitCode(IntEnum):
 RUNTIME_SCRIPTS_PATH = "/volumes/scripts"
 BOUNDARY_COMMIT_PARAMETER = "odoo_devkit.credential_boundary_commit"
 PENDING_MAJOR_UPGRADE_PARAMETER = "odoo_devkit.pending_major_upgrade"
-# Deployed containers carry no ODOO_VERSION; this image's own Odoo says which major runs.
 ODOO_RELEASE_FILE = Path("/odoo/odoo/release.py")
 
 
