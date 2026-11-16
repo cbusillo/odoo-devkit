@@ -899,6 +899,15 @@ Notes
   separately supplied digest must be qualified by their custodian before this
   command; hashing does not establish provenance. A missing independent input
   remains a source-qualification task, never a new native19 behavior run.
+  A tenant that derives its reference from its own candidate in the same
+  conversion run can explicitly set `allow_same_run_reference: true` in the
+  hashed profile. This permits source/reference UUID equality in both core
+  preparation and the native Mail pre-stage. Profiles without that Boolean
+  opt-in retain the independent-reference requirement. View content,
+  customization, ownership, module closure and source-version checks still
+  run. A tenant supplying its own profile writer includes the flag before
+  computing the profile digest; it preserves its same-run source snapshot and
+  before/after history check.
   When adopting the shared stage, remove the equivalent tenant-owned Mail
   execution pre-stage so only `mail_view_20.py` performs the transition;
   retain tenant-specific reference/completeness helpers. Selecting both

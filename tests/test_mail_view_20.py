@@ -165,6 +165,58 @@ class MailAdmissionTests(MailFixture):
         self.current["database_uuid"] = self.reference["database_uuid"]
         self.assert_refused()
 
+    def test_same_run_profile_needs_explicit_opt_in_and_still_protects_source_content(self) -> None:
+        self.current["database_uuid"] = self.reference["database_uuid"]
+        profile: dict[str, Any] = {"reference": self.reference}
+        with self.assertRaises(RuntimeError):
+            MODULE["admit_profile"](self.current, profile)
+        for value in (False, None, "true", 1):
+            with self.subTest(value=value), self.assertRaises(RuntimeError):
+                MODULE["admit_profile"](self.current, {**profile, "allow_same_run_reference": value})
+        profile["allow_same_run_reference"] = True
+        MODULE["admit_profile"](self.current, profile)
+        for change in ("architecture", "customization", "noupdate", "family", "modules"):
+            current = copy.deepcopy(self.current)
+            if change == "architecture":
+                current["target"]["arch_db"]["en_US"] = "changed after capture"
+            elif change == "customization":
+                current["customizations"] = [{"ref_id": 201}]
+            elif change == "noupdate":
+                current["binding"]["noupdate"] = True
+            elif change == "family":
+                current["views"].append({"xmlids": []})
+            else:
+                current["modules"]["extra"] = "19.extra"
+            with self.subTest(change=change), self.assertRaises(RuntimeError):
+                MODULE["admit_profile"](current, profile)
+
+    def test_native_mail_stage_honors_profile_opt_in_without_relaxing_content_checks(self) -> None:
+        self.current["database_uuid"] = self.reference["database_uuid"]
+        profile: dict[str, Any] = {"reference": self.reference}
+        function = MODULE["migrate_mail"]
+        cursor = Mock()
+        cursor.fetchone.return_value = (self.current["binding"]["record_id"],)
+        capture = Mock(return_value=self.current)
+        with patch.dict(
+            function.__globals__,
+            load_reference=Mock(return_value=profile),
+            capture=capture,
+            canonical_architecture=Mock(return_value="native architecture"),
+        ):
+            with self.assertRaises(RuntimeError):
+                function(cursor, self.reference["modules"]["mail"], Path("native.xml"))
+            cursor.execute.assert_not_called()
+            profile["allow_same_run_reference"] = True
+            changed = copy.deepcopy(self.current)
+            changed["target"]["arch_db"]["en_US"] = "keep this edit"
+            capture.return_value = changed
+            with self.assertRaises(RuntimeError):
+                function(cursor, self.reference["modules"]["mail"], Path("native.xml"))
+            cursor.execute.assert_not_called()
+            capture.return_value = self.current
+            function(cursor, self.reference["modules"]["mail"], Path("native.xml"))
+        self.assertEqual(cursor.execute.call_count, 1)
+
     def test_architecture_edit_with_unmodified_flag_is_deferred(self) -> None:
         self.current["target"]["arch_db"]["en_US"] = "<data><p>Keep my edit</p></data>"
         self.assert_refused()
