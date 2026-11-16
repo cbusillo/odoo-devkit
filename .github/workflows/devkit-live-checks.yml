@@ -31,7 +31,7 @@ jobs:
       matrix:
         include:
           - series: '19.0'
-            image: ghcr.io/cbusillo/odoo-docker:19.0-devtools@sha256:03c76cfcd8d75e8f0272d725b709594ddcb5134ebbb9cf3a638d5b6cdfbfef02
+            image: ghcr.io/cbusillo/odoo-docker:19.0-devtools@sha256:a28bc143d03c47261764fb0d1e5e263102e9c73852255202167aa5b31082d9f9
             shared_ref: 5dcf55162eca8cbcc026789e6cb4f0c79f7c8733
           - series: '20.0'
             image: ghcr.io/cbusillo/odoo-docker:20.0-devtools@sha256:77043065c5d1d66b16b6b247f2b43d56ca1614611214dd085b245f9d623ecc05
