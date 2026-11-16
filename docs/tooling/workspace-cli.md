@@ -782,7 +782,16 @@ Notes
   The existing `CM_WEBSITE_MAIL_REFERENCE` and
   `CM_WEBSITE_MAIL_REFERENCE_SHA256` inputs remain the reference contract for
   shared consumers. A missing or changed artifact refuses before effects.
-  The version-qualified Payment pre-stage uses a separately qualified `payment`
+  A tenant may pass `allow_same_run_reference=True` to `mail_view_20.write_reference`
+  or call its `same_run_evidence` helper while writing its own profile. The same
+  opt-in admits the candidate's Mail identity and captures Payment source values,
+  logical aliases and verified original image hashes in the digest-bound profile
+  before preparation effects. Payment's native stage still compares that earlier
+  evidence, checks ownership, disabled connectors, absence of payment history,
+  original files and incoming-reference closure, then deletes the exact admitted
+  cohorts. Changes after capture still refuse. No environment-wide switch is used;
+  profiles without the explicit Boolean opt-in keep their existing behavior.
+  The version-qualified Payment pre-stage otherwise uses a separately qualified `payment`
   witness in that same authenticated profile. It supports only the obsolete
   stock global-method family with disabled `none` providers whose connector
   modules remain uninstalled. The custodian binds material values and links to

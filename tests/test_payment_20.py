@@ -7,6 +7,7 @@ import runpy
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock, patch
 
@@ -163,6 +164,72 @@ class PaymentAdmissionTests(unittest.TestCase):
         ):
             snapshot = PAYMENT["observe"](self.collector_cursor())
         self.assertEqual(snapshot, self.current)
+
+    def test_same_run_source_evidence_is_read_only_and_preserves_later_comparisons(self) -> None:
+        before = copy.deepcopy(self.current)
+        witness = PAYMENT["same_run_witness"](self.collector_cursor(), self.version, self.filestore)
+        self.assertEqual(self.current, before)
+        self.assertEqual(PAYMENT["admit"](self.current, witness, self.filestore), self.admit())
+        self.current["methods"][0]["name"]["en_US"] = "Changed after capture"
+        with self.assertRaisesRegex(RuntimeError, "method values"):
+            PAYMENT["admit"](self.current, witness, self.filestore)
+
+    def test_same_run_evidence_keeps_source_major_ownership_history_and_file_guards(self) -> None:
+        function = PAYMENT["same_run_witness"]
+        baseline = copy.deepcopy(self.current)
+        for mutate in (
+            lambda: self.current["method_aliases"][0].update(module="tenant"),
+            lambda: self.current["method_aliases"][0].update(noupdate=False),
+            lambda: self.current.update(transactions=True),
+            lambda: self.current.update(tokens=True),
+            lambda: self.current["providers"][0].update(state="enabled"),
+            lambda: self.current["attachments"][0].update(store_fname="../outside"),
+        ):
+            self.current = copy.deepcopy(baseline)
+            mutate()
+            with patch.dict(function.__globals__, observe=Mock(return_value=self.current)), self.assertRaises(RuntimeError):
+                function(Mock(), self.version, self.filestore)
+        observe = Mock()
+        with patch.dict(function.__globals__, observe=observe), self.assertRaises(RuntimeError):
+            function(Mock(), "18.source", self.filestore)
+        observe.assert_not_called()
+        self.current = baseline
+        path = self.filestore / self.current["attachments"][0]["store_fname"]
+        path.write_bytes(b"corrupt")
+        with self.assertRaisesRegex(RuntimeError, "original attachment bytes"):
+            function(self.collector_cursor(), self.version, self.filestore)
+
+    def test_same_run_retirement_still_checks_closure_before_exact_deletion(self) -> None:
+        function = PAYMENT["retire"]
+        witness = PAYMENT["same_run_witness"](self.collector_cursor(), self.version, self.filestore)
+        profile = {"allow_same_run_reference": True, "payment": witness}
+        delete = Mock()
+        checker = Mock(side_effect=RuntimeError("incoming business reference"))
+        with patch.dict(function.__globals__, capture=Mock(return_value=self.current), _delete_exact=delete):
+            with self.assertRaisesRegex(RuntimeError, "incoming business reference"):
+                function(Mock(), profile, self.version, self.filestore, checker)
+            delete.assert_not_called()
+            checker.side_effect = None
+            plan = function(Mock(), profile, self.version, self.filestore, checker)
+        self.assertEqual(
+            [(call.args[1], call.args[2]) for call in delete.call_args_list],
+            [("ir_attachment", plan.attachments), ("ir_model_data", plan.aliases), ("payment_method", plan.methods)],
+        )
+
+    def test_empty_same_run_cohorts_remain_empty_and_default_witness_rules_are_unchanged(self) -> None:
+        current = copy.deepcopy(self.current)
+        for key in ("methods", "providers", "method_aliases", "provider_aliases", "attachments", "provider_links"):
+            current[key] = []
+        for key in ("countries", "currencies", "modules"):
+            current[key] = {}
+        function = PAYMENT["same_run_witness"]
+        with patch.dict(function.__globals__, observe=Mock(return_value=current)):
+            witness = function(Mock(), self.version, self.filestore)
+        with self.assertRaisesRegex(RuntimeError, "public source family"):
+            PAYMENT["source_witness"]({"payment": witness}, self.version)
+        PAYMENT["source_witness"]({"payment": witness, "allow_same_run_reference": True}, self.version)
+        plan = PAYMENT["admit"](current, witness, self.filestore)
+        self.assertFalse(plan.methods or plan.attachments or plan.aliases)
 
     def test_capture_locks_before_collecting_the_same_qualified_snapshot(self) -> None:
         cursor = self.collector_cursor(allow_lock=True)
@@ -411,6 +478,44 @@ class PaymentAdmissionTests(unittest.TestCase):
         with patch.dict(stage["migrate"].__globals__, {"import_module": loader}), self.assertRaises(RuntimeError):
             stage["migrate"](Mock(), self.version)
         loader.assert_called_once()
+
+    def test_native_payment_stage_requires_evidence_by_default_and_consumes_the_same_run_witness(self) -> None:
+        stage = runpy.run_path(str(SCRIPTS / "nativeupgrade/payment/20.0.2.0/pre-global-methods.py"))["migrate"]
+        witness = PAYMENT["same_run_witness"](self.collector_cursor(), self.version, self.filestore)
+        load = Mock()
+        delete = Mock()
+        closure = Mock()
+        diagnostics = runpy.run_path(str(SCRIPTS / "migration_diagnostics.py"))
+        modules = SimpleNamespace(get_module_path=Mock(return_value="/native/mail"))
+        tools = SimpleNamespace(config=SimpleNamespace(filestore=Mock(return_value=str(self.filestore))))
+
+        def scripts(path: str) -> dict[str, Any]:
+            return {
+                "migration_diagnostics.py": diagnostics,
+                "mail_view_20.py": {"load_reference": load},
+                "payment_20.py": PAYMENT,
+                "prepare_core_references_20.py": {"_check_references": closure},
+            }[Path(path).name]
+
+        with (
+            patch.dict(
+                stage.__globals__,
+                runpy=SimpleNamespace(run_path=scripts),
+                import_module=lambda name: tools if name == "odoo.tools" else modules,
+            ),
+            patch.dict(PAYMENT["retire"].__globals__, capture=Mock(return_value=self.current), _delete_exact=delete),
+        ):
+            for profile in ({}, {"allow_same_run_reference": True}):
+                load.return_value = profile
+                with self.assertRaisesRegex(RuntimeError, "missing public source witness"):
+                    stage(Mock(), self.version)
+                delete.assert_not_called()
+                closure.assert_not_called()
+            for profile in (self.profile, {"payment": witness, "allow_same_run_reference": True}):
+                load.return_value = profile
+                stage(Mock(), self.version)
+        self.assertEqual(closure.call_count, 2)
+        self.assertEqual(delete.call_count, 6)
 
     def test_reference_refusal_precedes_every_effect_and_valid_plan_deletes_exact_cohorts(self) -> None:
         self.admit()

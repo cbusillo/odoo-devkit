@@ -9,6 +9,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock, patch
 
@@ -320,6 +321,17 @@ class SourceFamilyTests(MailFixture):
             )
             return MODULE["qualify_source_family"](self.profile, manifest, hashlib.sha256(manifest.read_bytes()).hexdigest(), source)
 
+    def test_source_family_keeps_default_independence_and_accepts_the_same_opt_in(self) -> None:
+        qualified = self.qualified()
+        self.current["database_uuid"] = qualified["reference"]["database_uuid"]
+        with self.assertRaisesRegex(RuntimeError, "independently"):
+            MODULE["admit_profile"](self.current, qualified)
+        qualified["allow_same_run_reference"] = True
+        MODULE["admit_profile"](self.current, qualified)
+        self.extension["arch_db"]["en_US"] = "<data><p>Changed after capture</p></data>"
+        with self.assertRaises(RuntimeError):
+            MODULE["admit_profile"](self.current, qualified)
+
     def test_independent_sms_storage_shape_qualifies_only_legacy_customize_flag(self) -> None:
         sms = copy.deepcopy(self.target)
         sms.update(
@@ -464,6 +476,23 @@ class SourceFamilyTests(MailFixture):
 
 
 class TargetSourceTests(unittest.TestCase):
+    def test_same_run_evidence_collects_payment_from_the_candidate_only_when_installed(self) -> None:
+        function = MODULE["same_run_evidence"]
+        witness = {"source_version": "19.payment", "methods": {"payment.method": {}}}
+        collect = Mock(return_value=witness)
+        config = SimpleNamespace(filestore=Mock(return_value="/isolated/filestore"))
+        cursor = Mock(dbname="disposable")
+        with patch.dict(
+            function.__globals__,
+            import_module=Mock(return_value=SimpleNamespace(config=config)),
+            runpy=SimpleNamespace(run_path=Mock(return_value={"same_run_witness": collect})),
+        ):
+            self.assertEqual(function(cursor, {"base": "19.base"}), {"allow_same_run_reference": True})
+            collect.assert_not_called()
+            actual = function(cursor, {"payment": witness["source_version"]})
+        self.assertEqual(actual, {"allow_same_run_reference": True, "payment": witness})
+        collect.assert_called_once_with(cursor, witness["source_version"], Path(config.filestore.return_value))
+
     def test_reference_history_must_share_database_and_complete_modules(self) -> None:
         reference = {
             "database_uuid": "independent",
@@ -495,10 +524,29 @@ class TargetSourceTests(unittest.TestCase):
                             function(cursor, output, target, "source@sha256:source", "target@sha256:target", **{section: facts})
                         self.assertFalse(output.exists())
                     facts = {"database_uuid": reference["database_uuid"], "modules": reference["modules"]}
-                    output = Path(directory) / (section + "matched.json")
-                    digest = function(cursor, output, target, "source@sha256:source", "target@sha256:target", **{section: facts})
-                    self.assertEqual(json.loads(output.read_text())[section], facts)
-                    self.assertEqual(digest, hashlib.sha256(output.read_bytes()).hexdigest())
+                    for opted_in in (False, True):
+                        output = Path(directory) / f"{section}-matched-{opted_in}.json"
+                        collect = Mock(return_value={"allow_same_run_reference": True, "payment": {"captured": "same run"}})
+                        with patch.dict(function.__globals__, same_run_evidence=collect):
+                            digest = function(
+                                cursor,
+                                output,
+                                target,
+                                "source@sha256:source",
+                                "target@sha256:target",
+                                allow_same_run_reference=opted_in,
+                                **{section: facts},
+                            )
+                        profile = json.loads(output.read_text())
+                        self.assertEqual(profile[section], facts)
+                        if opted_in:
+                            collect.assert_called_once_with(cursor, reference["modules"])
+                            self.assertEqual(profile["payment"], collect.return_value["payment"])
+                        else:
+                            collect.assert_not_called()
+                            self.assertNotIn("payment", profile)
+                        self.assertIs(profile.get("allow_same_run_reference", False), opted_in)
+                        self.assertEqual(digest, hashlib.sha256(output.read_bytes()).hexdigest())
 
     def test_reads_architecture_from_selected_native_source_and_binds_digest(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

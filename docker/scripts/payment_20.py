@@ -11,6 +11,20 @@ from typing import Any, NoReturn
 
 AUDIT = {"create_uid", "create_date", "write_uid", "write_date"}
 IMAGE_FIELDS = {"image", "image_payment_form"}
+IMAGE_IDENTITY = {
+    "id",
+    "name",
+    "res_model",
+    "res_field",
+    "res_id",
+    "type",
+    "mimetype",
+    "company_id",
+    "store_fname",
+    "checksum",
+    "file_size",
+    "has_db_datas",
+}
 RELATIONS = {
     "providers": ("payment_method_payment_provider_rel", "payment_provider_id", "payment.provider"),
     "countries": ("payment_method_res_country_rel", "res_country_id", "res.country"),
@@ -111,7 +125,11 @@ def source_witness(profile: dict[str, Any], version: str) -> dict[str, Any]:
         _fail("public source version")
     for family in ("methods", "providers"):
         records = witness.get(family)
-        if not isinstance(records, dict) or not records or any(not key.startswith("payment.") for key in records):
+        if (
+            not isinstance(records, dict)
+            or (not records and profile.get("allow_same_run_reference") is not True)
+            or any(not key.startswith("payment.") for key in records)
+        ):
             _fail("public source family")
     if not isinstance(witness.get("attachment_defaults"), dict):
         _fail("public attachment defaults")
@@ -123,6 +141,59 @@ def qualify_payment_source(profile: dict[str, Any], witness: dict[str, Any], sou
     qualified = copy.deepcopy(profile)
     qualified["payment"] = copy.deepcopy(witness)
     return qualified
+
+
+def same_run_witness(cr: Any, version: str, filestore: Path) -> dict[str, Any]:
+    if version.split(".", 1)[0] != "19":
+        _fail("public source version")
+    snapshot = observe(cr)
+    current, _preserved = _separate_native_provider_methods(snapshot)
+    methods = _owned(
+        current["methods"],
+        current["method_aliases"],
+        {row["module"] + "." + row["name"]: None for row in current["method_aliases"]},
+        "payment.method",
+    )
+    providers = _owned(
+        current["providers"],
+        current["provider_aliases"],
+        {row["module"] + "." + row["name"]: None for row in current["provider_aliases"]},
+        "payment.provider",
+    )
+    witness: dict[str, Any] = {"source_version": version, "methods": {}, "providers": {}, "attachment_defaults": {}}
+    for row in current["methods"]:
+        values = {key: value for key, value in row.items() if key not in AUDIT | {"id"}}
+        parent = values["primary_payment_method_id"]
+        if parent is not None and parent not in methods:
+            _fail("outside brand parent")
+        values["primary_payment_method_id"] = methods.get(parent)
+        values["supported_country_ids"] = current["countries"][row["id"]]
+        values["supported_currency_ids"] = current["currencies"][row["id"]]
+        witness["methods"][methods[row["id"]]] = {"values": values, "images": dict.fromkeys(IMAGE_FIELDS)}
+    for row in current["providers"]:
+        witness["providers"][providers[row["id"]]] = {
+            "module": current["modules"][row["module_id"]]["xmlid"],
+            "methods": [methods[method] for provider, method in current["provider_links"] if provider == row["id"]],
+        }
+    defaults = None
+    for row in current["attachments"]:
+        metadata = {key: value for key, value in row.items() if key not in AUDIT | IMAGE_IDENTITY}
+        context = {key: metadata.pop(key) for key in ("index_content", "website_id") if key in metadata}
+        if defaults is not None and metadata != defaults:
+            _fail("inconsistent source image defaults")
+        defaults = metadata
+        body = _image_body(row, filestore)
+        image = {"sha1": row["checksum"], "sha256": hashlib.sha256(body).hexdigest(), "bytes": len(body), "metadata": context}
+        if row["res_id"] not in methods or row["res_field"] not in IMAGE_FIELDS:
+            _fail("extra or duplicate attachment")
+        images = witness["methods"][methods[row["res_id"]]]["images"]
+        if images[row["res_field"]] is not None:
+            _fail("extra or duplicate attachment")
+        images[row["res_field"]] = image
+    witness["attachment_defaults"] = defaults or {}
+    source_witness({"payment": witness, "allow_same_run_reference": True}, version)
+    admit(snapshot, witness, filestore)
+    return copy.deepcopy(witness)
 
 
 def _owned(rows: list[dict[str, Any]], aliases: list[dict[str, Any]], expected: dict[str, Any], model: str) -> dict[int, str]:
@@ -156,7 +227,7 @@ def _owned(rows: list[dict[str, Any]], aliases: list[dict[str, Any]], expected: 
     return result
 
 
-def _admit_image_file(attachment: dict[str, Any], expected: dict[str, Any], filestore: Path) -> None:
+def _image_body(attachment: dict[str, Any], filestore: Path) -> bytes:
     checksum = attachment["checksum"]
     if not isinstance(checksum, str) or not re.fullmatch(r"[0-9a-f]{40}", checksum):
         _fail("attachment checksum")
@@ -169,7 +240,16 @@ def _admit_image_file(attachment: dict[str, Any], expected: dict[str, Any], file
     body = path.read_bytes()
     if len(body) != attachment["file_size"] or hashlib.sha1(body).hexdigest() != checksum:
         _fail("original attachment bytes")
-    if expected["sha1"] != checksum or expected["bytes"] != len(body) or hashlib.sha256(body).hexdigest() != expected["sha256"]:
+    return body
+
+
+def _admit_image_file(attachment: dict[str, Any], expected: dict[str, Any], filestore: Path) -> None:
+    body = _image_body(attachment, filestore)
+    if (
+        expected["sha1"] != attachment["checksum"]
+        or expected["bytes"] != len(body)
+        or hashlib.sha256(body).hexdigest() != expected["sha256"]
+    ):
         _fail("qualified original image representation")
 
 
@@ -226,21 +306,7 @@ def admit(snapshot: dict[str, Any], witness: dict[str, Any], filestore: Path) ->
             or row["company_id"] != snapshot["main_company"]
         ):
             _fail("attachment identity or metadata")
-        dynamic = {
-            "id",
-            "name",
-            "res_model",
-            "res_field",
-            "res_id",
-            "type",
-            "mimetype",
-            "company_id",
-            "store_fname",
-            "checksum",
-            "file_size",
-            "has_db_datas",
-        }
-        metadata = {key: value for key, value in row.items() if key not in AUDIT | dynamic}
+        metadata = {key: value for key, value in row.items() if key not in AUDIT | IMAGE_IDENTITY}
         expected_image = witness["methods"][methods[row["res_id"]]]["images"][field]
         if expected_image is None:
             _fail("image differs from recorded source absence")
