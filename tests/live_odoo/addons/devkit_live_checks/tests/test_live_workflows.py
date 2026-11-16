@@ -1038,7 +1038,8 @@ os.execv('/bin/bash', ['bash', '-c', command])
                     "postgres",
                     "CREATE TABLE IF NOT EXISTS devkit_boundary_events (id bigserial PRIMARY KEY, database_name text, event text)",
                 )
-                connection = runner.connect_to_db()
+                runner._reset_db_connection()
+                connect = runner._connect_with_retry
 
                 class BrokenCommit:
                     def __init__(self, wrapped: Any, failure_mode: str) -> None:
@@ -1053,7 +1054,6 @@ os.execv('/bin/bash', ['bash', '-c', command])
                         if self.failure_mode == "failed":
                             raise workflows.OdooDatabaseUpdateError("planted commit failure")
 
-                runner.local.db_conn = BrokenCommit(connection, mode)
                 if mode == "production_rolled_back":
                     runner.local.platform_instance = "prod"
                 runner.os_env.update(DEVKIT_BOUNDARY_PROBE="1", DEVKIT_LANE_KEY="inert-lane-sentinel")
@@ -1061,7 +1061,16 @@ os.execv('/bin/bash', ['bash', '-c', command])
                     runner.local.db_name,
                     "INSERT INTO ir_config_parameter (key,value) VALUES ('printnode.api_key','inert-production-sentinel') ON CONFLICT (key) DO UPDATE SET value=excluded.value",
                 )
-                with self.assertRaises(workflows.OdooDatabaseUpdateError):
+                with (
+                    patch.object(
+                        runner,
+                        "_connect_with_retry",
+                        side_effect=lambda *args, real=connect, failure_mode=mode, **kwargs: BrokenCommit(
+                            real(*args, **kwargs), failure_mode
+                        ),
+                    ),
+                    self.assertRaisesRegex(workflows.OdooDatabaseUpdateError, "planted commit failure|commit readback failed"),
+                ):
                     runner.run_post_deploy_maintenance()
                 self.assertEqual(
                     query("postgres", "SELECT event FROM devkit_boundary_events WHERE database_name=%s", (runner.local.db_name,)), []

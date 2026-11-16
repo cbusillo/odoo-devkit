@@ -724,6 +724,86 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
                         runner.run_post_deploy_maintenance()
                     connect.assert_not_called()
 
+    def _runtime_runner(
+        self, *, declared: str | None, source: str | None, base: str
+    ) -> tuple[odoo_data_workflows.OdooDataWorkflowRunner, MagicMock]:
+        settings = self._local_settings()
+        settings.openupgrade_enabled = source is not None
+        settings.openupgrade_source_version = source
+        settings.openupgrade_target_version = "20.0" if source else None
+        settings.odoo_version = declared
+        runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
+        connection = MagicMock()
+        cursor = connection.cursor.return_value.__enter__.return_value
+        cursor.fetchone.return_value = None
+        cursor.fetchall.return_value = [("base", base)]
+        return runner, connection
+
+    @staticmethod
+    def _running_odoo(directory: str, major: int) -> Path:
+        release = Path(directory) / "release.py"
+        release.write_text(f"FINAL = 'final'\nversion_info = ({major}, 0, 0, FINAL, 0, '')\n")
+        return release
+
+    def test_running_odoo_major_selects_conversion_without_odoo_version(self) -> None:
+        for declared in (None, "20.0"):
+            with self.subTest(declared=declared), TemporaryDirectory() as directory:
+                runner, connection = self._runtime_runner(declared=declared, source="19.0", base="19.0.1.3")
+                with (
+                    patch.object(odoo_data_workflows, "ODOO_RELEASE_FILE", self._running_odoo(directory, 20)),
+                    patch.object(runner, "connect_to_db", return_value=connection),
+                ):
+                    self.assertTrue(runner.maintenance_requires_major_upgrade())
+
+    def test_running_odoo_major_guards_unselected_crossing_without_odoo_version(self) -> None:
+        with TemporaryDirectory() as directory:
+            release = self._running_odoo(directory, 20)
+            for base, refused in (("19.0.1.3", True), ("20.0.1.3", False)):
+                with self.subTest(base=base):
+                    runner, connection = self._runtime_runner(declared=None, source=None, base=base)
+                    with (
+                        patch.object(odoo_data_workflows, "ODOO_RELEASE_FILE", release),
+                        patch.object(runner, "connect_to_db", return_value=connection),
+                    ):
+                        if refused:
+                            with self.assertRaisesRegex(odoo_data_workflows.OdooDatabaseUpdateError, "differs from the runtime"):
+                                runner.maintenance_requires_major_upgrade()
+                        else:
+                            self.assertFalse(runner.maintenance_requires_major_upgrade())
+
+    def test_running_odoo_is_the_default_upgrade_target_without_odoo_version(self) -> None:
+        with TemporaryDirectory() as directory:
+            runner, connection = self._runtime_runner(declared=None, source="19.0", base="19.0.1.3")
+            runner.local.openupgrade_target_version = None
+            with (
+                patch.object(odoo_data_workflows, "ODOO_RELEASE_FILE", self._running_odoo(directory, 20)),
+                patch.object(runner, "connect_to_db", return_value=connection),
+            ):
+                self.assertEqual(runner._openupgrade_target_version(), "20.0")
+                self.assertTrue(runner.maintenance_requires_major_upgrade())
+
+    def test_odoo_version_disagreeing_with_running_odoo_refuses(self) -> None:
+        for source in (None, "19.0"):
+            with self.subTest(source=source), TemporaryDirectory() as directory:
+                runner, connection = self._runtime_runner(declared="19.0", source=source, base="19.0.1.3")
+                with (
+                    patch.object(odoo_data_workflows, "ODOO_RELEASE_FILE", self._running_odoo(directory, 20)),
+                    patch.object(runner, "connect_to_db", return_value=connection),
+                ):
+                    with self.assertRaisesRegex(odoo_data_workflows.OdooDatabaseUpdateError, "disagrees with the running Odoo 20"):
+                        runner.maintenance_requires_major_upgrade()
+
+    def test_unknown_runtime_refuses_maintenance(self) -> None:
+        for source in (None, "19.0"):
+            with self.subTest(source=source), TemporaryDirectory() as directory:
+                runner, connection = self._runtime_runner(declared=None, source=source, base="19.0.1.3")
+                with (
+                    patch.object(odoo_data_workflows, "ODOO_RELEASE_FILE", Path(directory) / "missing.py"),
+                    patch.object(runner, "connect_to_db", return_value=connection),
+                ):
+                    with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
+                        runner.maintenance_requires_major_upgrade()
+
     def test_unselected_and_diagnostic_crossings_refuse_all_maintenance_before_changes(self) -> None:
         for source, diagnostic in ((None, None), ("19.0", "/private/diagnostic.jsonl")):
             with self.subTest(source=source, diagnostic=diagnostic):
@@ -815,6 +895,8 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
 
         with (
             patch.object(runner, "major_upgrade_is_pending", return_value=False),
+            patch.object(runner, "installed_module_majors", return_value={"base": 20}),
+            patch.object(odoo_data_workflows, "_running_odoo_major", return_value=20),
             patch.object(runner, "prepare_credentials_before_registry", side_effect=lambda: calls.append("credential_boundary")),
             patch.object(runner, "install_addons", side_effect=lambda **_kwargs: calls.append("install_addons")),
             patch.object(runner, "update_addons", side_effect=lambda **_kwargs: calls.append("update_addons")),
@@ -1702,6 +1784,8 @@ class _RestoredProductionCopy:
             );
             CREATE TABLE iap_account (id INTEGER PRIMARY KEY, service_id INTEGER, account_token TEXT);
             CREATE TABLE res_users_apikeys (id INTEGER PRIMARY KEY, user_id INTEGER, name TEXT, key TEXT);
+            CREATE TABLE ir_module_module (name TEXT, latest_version TEXT, state TEXT);
+            INSERT INTO ir_module_module VALUES ('base', '19.0.1.3', 'installed');
             ATTACH DATABASE ':memory:' AS information_schema;
             CREATE TABLE information_schema.columns (table_name TEXT, column_name TEXT, is_nullable TEXT, data_type TEXT);
             """
@@ -2550,6 +2634,9 @@ class CredentialBoundaryTests(unittest.TestCase):
         patcher = patch.object(self.runner, "_connect_with_retry", side_effect=self.connection)
         patcher.start()
         self.addCleanup(patcher.stop)
+        running = patch.object(odoo_data_workflows, "_running_odoo_major", return_value=19)
+        running.start()
+        self.addCleanup(running.stop)
 
     def seed_readonly_qa(self, *, same_recipient: bool = False, shell: bool = False, target: str = "preview") -> None:
         self.qa_policy = types.SimpleNamespace(
@@ -3131,7 +3218,8 @@ class CredentialBoundaryTests(unittest.TestCase):
                         raise odoo_data_workflows.OdooDatabaseUpdateError("planted commit failure")
 
                 conn.commit = broken_commit
-                result = self.run_update_only()
+                with patch.object(self.runner, "installed_module_majors", return_value={"base": 19}):
+                    result = self.run_update_only()
 
                 self.assertEqual(result, odoo_data_workflows.ExitCode.BOOTSTRAP_FAILED)
                 self.assertEqual(self.hooks, [])
@@ -3184,7 +3272,10 @@ class CredentialBoundaryTests(unittest.TestCase):
                         raise odoo_data_workflows.OdooDatabaseUpdateError("planted commit failure")
 
                 conn.commit = broken_commit
-                with self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError):
+                with (
+                    patch.object(self.runner, "installed_module_majors", return_value={"base": 19}),
+                    self.assertRaises(odoo_data_workflows.OdooDatabaseUpdateError),
+                ):
                     self.run_maintenance()
                 self.assertEqual(self.hooks, [])
 
@@ -3516,7 +3607,10 @@ class CredentialBoundaryTests(unittest.TestCase):
         conn = self.connection("fixture")
         self.runner.local.db_conn = conn
         conn.commit = conn.rollback
-        with self.assertRaisesRegex(odoo_data_workflows.OdooDatabaseUpdateError, "commit readback failed"):
+        with (
+            patch.object(self.runner, "installed_module_majors", return_value={"base": 19}),
+            self.assertRaisesRegex(odoo_data_workflows.OdooDatabaseUpdateError, "commit readback failed"),
+        ):
             self.run_maintenance()
         self.assertEqual(self.hooks, [])
 
