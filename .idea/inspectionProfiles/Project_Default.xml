@@ -40,8 +40,10 @@
     <inspection_tool class="CssUnusedSymbol" enabled="false" level="WARNING" enabled_by_default="false">
       <scope name="Generated" level="WARNING" enabled="false" />
     </inspection_tool>
+    <!-- Off in a tenant's Migrations scope: Odoo loads each versioned migration script as a standalone module, so addons cannot share code between their migrations. -->
     <inspection_tool class="DuplicatedCode" enabled="true" level="WEAK WARNING" enabled_by_default="true">
       <scope name="Generated" level="WEAK WARNING" enabled="false" />
+      <scope name="Migrations" level="WEAK WARNING" enabled="false" />
     </inspection_tool>
     <inspection_tool class="Eslint" enabled="true" level="WARNING" enabled_by_default="true" />
     <inspection_tool class="HttpUrlsUsage" enabled="true" level="WEAK WARNING" enabled_by_default="true">
@@ -88,6 +90,10 @@
         </value>
       </option>
     </inspection_tool>
+    <!-- Off in the Generated scope: generated code is regenerated, never edited. -->
+    <inspection_tool class="PyInvalidCastInspection" enabled="true" level="WARNING" enabled_by_default="true">
+      <scope name="Generated" level="WARNING" enabled="false" />
+    </inspection_tool>
     <inspection_tool class="PyMethodMayBeStaticInspection" enabled="true" level="WEAK WARNING" enabled_by_default="true">
       <scope name="Generated" level="WEAK WARNING" enabled="false" />
     </inspection_tool>
@@ -114,12 +120,18 @@
     <inspection_tool class="PyShadowingBuiltinsInspection" enabled="true" level="WEAK WARNING" enabled_by_default="true">
       <scope name="Generated" level="WEAK WARNING" enabled="false" />
     </inspection_tool>
+    <!-- Off in the Generated scope: generated code is regenerated, never edited. -->
+    <inspection_tool class="PyTypeCheckerInspection" enabled="true" level="WARNING" enabled_by_default="true">
+      <scope name="Generated" level="WARNING" enabled="false" />
+    </inspection_tool>
     <inspection_tool class="PyUnreachableCodeInspection" enabled="true" level="WARNING" enabled_by_default="true">
       <scope name="Generated" level="WARNING" enabled="false" editorAttributes="NOT_USED_ELEMENT_ATTRIBUTES" />
     </inspection_tool>
     <inspection_tool class="PyUnusedLocalInspection" enabled="true" level="WEAK WARNING" enabled_by_default="true">
       <scope name="Generated" level="WEAK WARNING" enabled="false" />
     </inspection_tool>
+    <!-- Off: Odoo builds its schema at runtime from the installed modules, and tenant SQL runs in migrations, upgrade scripts, install and retirement hooks, and their tests, against earlier and transitional schemas. No single attached schema describes those tables, so table and column resolution would only report false findings. -->
+    <inspection_tool class="SqlResolveInspection" enabled="false" level="WARNING" enabled_by_default="false" />
     <inspection_tool class="SpellCheckingInspection" enabled="true" level="TYPO" enabled_by_default="true">
       <scope name="Generated" level="TYPO" enabled="false">
         <option name="processCode" value="true" />

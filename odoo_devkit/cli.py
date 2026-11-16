@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .dependency_workspace import inspect_dependency_workspace, normalize_dependency_workspace, prepare_dependency_workspace
 from .manifest import WorkspaceManifest, load_workspace_manifest
-from .pycharm_sources import prepare_odoo_sources
+from .pycharm_sources import INSPECTION_PROFILE, prepare_odoo_sources
 from .runtime import (
     run_native_runtime_build,
     run_native_runtime_check_artifact,
@@ -54,7 +54,9 @@ def build_parser() -> argparse.ArgumentParser:
     source_parser.set_defaults(handler=_handle_workspace_check_source)
 
     ide_parser = _add_manifest_argument(
-        workspace_subparsers.add_parser("prepare-ide", help="Attach pinned Odoo sources to the exact tenant PyCharm project")
+        workspace_subparsers.add_parser(
+            "prepare-ide", help="Attach pinned Odoo, shared-addon and runtime sources to the exact tenant PyCharm project"
+        )
     )
     ide_parser.add_argument("--odoo-source", type=Path, required=True, help="Existing clean Odoo community Git checkout")
     ide_parser.add_argument("--odoo-commit", required=True, help="Expected full source commit SHA")
@@ -63,6 +65,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--ide-path-variables",
         type=Path,
         help="Read custom path variables from the selected IDE's options/path.macros.xml (never modified)",
+    )
+    ide_parser.add_argument(
+        "--shared-addons-source",
+        type=Path,
+        help="Clean shared-addons Git checkout at the manifest's pinned ref, attached as a content root",
+    )
+    ide_parser.add_argument(
+        "--runtime-source",
+        type=Path,
+        help="Clean runtime Git checkout at the manifest's pinned ref; its docker/scripts is attached as a content root",
     )
     ide_parser.set_defaults(handler=_handle_workspace_prepare_ide)
 
@@ -298,6 +310,9 @@ def _handle_workspace_prepare_ide(arguments: argparse.Namespace) -> None:
             expected_commit=arguments.odoo_commit,
             expected_series=arguments.odoo_series,
             path_variables_file=arguments.ide_path_variables,
+            shared_addons_source=arguments.shared_addons_source,
+            runtime_source=arguments.runtime_source,
+            shared_profile=_discover_repo_root() / INSPECTION_PROFILE,
         )
     except (ValueError, OSError) as error:
         raise SystemExit(str(error)) from error

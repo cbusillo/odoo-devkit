@@ -12,8 +12,14 @@ from xml.etree import ElementTree
 
 from odoo_devkit.cli import build_parser
 from odoo_devkit.manifest import load_workspace_manifest
-from odoo_devkit.pycharm_sources import prepare_odoo_sources
-from tests.git_fixture import init_fixture_repository
+from odoo_devkit.pycharm_sources import INSPECTION_PROFILE, prepare_odoo_sources
+from tests.git_fixture import commit_fixture_repository, init_fixture_repository
+
+SHARED_PROFILE = Path(__file__).resolve().parent.parent / INSPECTION_PROFILE
+
+
+def idea_files(project: Path) -> dict[Path, tuple[bytes, int]]:
+    return {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in (project / ".idea").rglob("*") if path.is_file()}
 
 
 def required_element(root: ElementTree.ElementTree | ElementTree.Element, path: str) -> ElementTree.Element:
@@ -93,9 +99,150 @@ class OdooSourcesTestCase(unittest.TestCase):
         self.assertEqual(module.getroot().get("external.system.id"), "pyproject.toml")
         self.assertEqual(module_path.name, "tenant-dependencies.iml")
         self.assertEqual(content_urls, [f"file://{self.project}", f"file://{self.source}"])
-        before = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in (self.project / ".idea").iterdir()}
+        self.assertEqual((self.project / INSPECTION_PROFILE).read_bytes(), SHARED_PROFILE.read_bytes())
+        before = idea_files(self.project)
         self.assertFalse(self.prepare()["changed"])
-        self.assertEqual(before, {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in before})
+        self.assertEqual(before, idea_files(self.project))
+
+    def pinned_checkouts(self) -> tuple[Path, Path]:
+        shared = self.root / "shared-addons"
+        runtime = self.root / "runtime"
+        for checkout, file in (
+            (shared, Path("house_standard") / "__manifest__.py"),
+            (runtime, Path("docker") / "scripts" / "odoo_addon_paths.py"),
+        ):
+            init_fixture_repository(checkout)
+            (checkout / file).parent.mkdir(parents=True)
+            (checkout / file).write_text("{}\n")
+            commit_fixture_repository(checkout)
+        self.manifest_path.write_text(
+            self.manifest_path.read_text()
+            + f'[repos.shared_addons]\nname = "shared"\nref = "{self.git(shared, "rev-parse", "HEAD")}"\n'
+            + f'[repos.runtime]\nname = "runtime"\nref = "{self.git(runtime, "rev-parse", "HEAD")}"\n'
+        )
+        return shared, runtime
+
+    def test_pinned_shared_addons_and_runtime_scripts_are_attached_once(self) -> None:
+        shared, runtime = self.pinned_checkouts()
+        summary = prepare_odoo_sources(
+            manifest=load_workspace_manifest(self.manifest_path),
+            source_path=self.source,
+            expected_commit=self.commit,
+            expected_series="19.0",
+            shared_addons_source=shared,
+            runtime_source=runtime,
+            shared_profile=SHARED_PROFILE,
+        )
+        module_path = summary["module_path"]
+        assert isinstance(module_path, str)
+        content_urls = [content.get("url") for content in ElementTree.parse(module_path).findall("./component/content")]
+        self.assertEqual(content_urls[1:], [f"file://{self.source}", f"file://{shared}", f"file://{runtime / 'docker' / 'scripts'}"])
+        arguments = build_parser().parse_args(
+            [
+                "workspace",
+                "prepare-ide",
+                "--manifest",
+                str(self.manifest_path),
+                "--odoo-source",
+                str(self.source),
+                "--odoo-commit",
+                self.commit,
+                "--odoo-series",
+                "19.0",
+                "--shared-addons-source",
+                str(shared),
+                "--runtime-source",
+                str(runtime),
+            ]
+        )
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            arguments.handler(arguments)
+        self.assertFalse(json.loads(output.getvalue())["changed"])
+
+    def test_pinned_checkout_off_its_ref_or_without_a_pin_writes_nothing(self) -> None:
+        shared, _runtime = self.pinned_checkouts()
+        (shared / "house_standard" / "__manifest__.py").write_text("{'version': '2'}\n")
+        commit_fixture_repository(shared, "Move past the pin")
+        with self.assertRaisesRegex(ValueError, "shared addons source commit mismatch"):
+            prepare_odoo_sources(
+                manifest=load_workspace_manifest(self.manifest_path),
+                source_path=self.source,
+                expected_commit=self.commit,
+                expected_series="19.0",
+                shared_addons_source=shared,
+            )
+        self.assertFalse((self.project / ".idea").exists())
+        self.manifest_path.write_text(self.manifest_path.read_text().split("[repos.shared_addons]")[0])
+        with self.assertRaisesRegex(ValueError, "pins no shared addons ref"):
+            prepare_odoo_sources(
+                manifest=load_workspace_manifest(self.manifest_path),
+                source_path=self.source,
+                expected_commit=self.commit,
+                expected_series="19.0",
+                shared_addons_source=shared,
+            )
+        self.assertFalse((self.project / ".idea").exists())
+
+    def prepare_pinned(self, shared: Path | None = None, runtime: Path | None = None) -> dict[str, object]:
+        return prepare_odoo_sources(
+            manifest=load_workspace_manifest(self.manifest_path),
+            source_path=self.source,
+            expected_commit=self.commit,
+            expected_series="19.0",
+            shared_addons_source=shared,
+            runtime_source=runtime,
+            shared_profile=SHARED_PROFILE,
+        )
+
+    def test_another_checkout_of_a_pinned_repository_must_be_reconciled_first(self) -> None:
+        shared, runtime = self.pinned_checkouts()
+        self.prepare_pinned(shared, runtime)
+        moved = self.root / "shared-addons-next"
+        subprocess.run(["git", "clone", "--quiet", str(shared), str(moved)], check=True, capture_output=True)
+        module_path = self.project / ".idea" / "tenant-dependencies.iml"
+        before = module_path.read_bytes()
+        with self.assertRaisesRegex(ValueError, "different shared addons checkout"):
+            self.prepare_pinned(moved, runtime)
+        self.assertEqual(module_path.read_bytes(), before)
+        module = ElementTree.parse(module_path)
+        ElementTree.SubElement(required_element(module, "./component"), "content", {"url": f"file://{runtime / 'docker'}"})
+        module.write(module_path)
+        self.assertFalse(self.prepare_pinned(shared, runtime)["changed"])
+
+    def test_runtime_scripts_symlinked_outside_the_checkout_are_not_attached(self) -> None:
+        _shared, runtime = self.pinned_checkouts()
+        outside = self.root / "outside-scripts"
+        outside.mkdir()
+        scripts = runtime / "docker" / "scripts"
+        for child in scripts.iterdir():
+            child.unlink()
+        scripts.rmdir()
+        scripts.symlink_to(outside, target_is_directory=True)
+        commit_fixture_repository(runtime, "Point scripts elsewhere")
+        self.manifest_path.write_text(
+            self.manifest_path.read_text().rsplit('ref = "', 1)[0] + f'ref = "{self.git(runtime, "rev-parse", "HEAD")}"\n'
+        )
+        with self.assertRaisesRegex(ValueError, "inside it"):
+            self.prepare_pinned(runtime=runtime)
+        self.assertFalse((self.project / ".idea").exists())
+
+    def test_failed_profile_write_restores_an_existing_module(self) -> None:
+        shared, _runtime = self.pinned_checkouts()
+        self.prepare()
+        module_path = self.project / ".idea" / "tenant-dependencies.iml"
+        before = module_path.read_bytes()
+        from odoo_devkit.atomic_files import atomic_write_bytes
+
+        def fail_profile(*, path: Path, content: bytes) -> None:
+            if path.name == INSPECTION_PROFILE.name:
+                raise PermissionError("injected profile write failure")
+            atomic_write_bytes(path=path, content=content)
+
+        with mock.patch("odoo_devkit.pycharm_sources.atomic_write_bytes", side_effect=fail_profile):
+            with self.assertRaisesRegex(PermissionError, "injected"):
+                self.prepare_pinned(shared)
+        self.assertEqual(module_path.read_bytes(), before)
+        self.assertFalse((self.project / INSPECTION_PROFILE).exists())
 
     def test_existing_module_preserves_sdk_roots_comments_and_other_ide_files(self) -> None:
         self.prepare()
@@ -300,7 +447,13 @@ class OdooSourcesTestCase(unittest.TestCase):
         self.assertEqual(module_path.read_bytes(), original)
 
     def custom_macro_project(self) -> Path:
-        self.prepare()
+        prepare_odoo_sources(
+            manifest=load_workspace_manifest(self.manifest_path),
+            source_path=self.source,
+            expected_commit=self.commit,
+            expected_series="19.0",
+            shared_profile=SHARED_PROFILE,
+        )
         module_path = self.project / ".idea" / "tenant-dependencies.iml"
         module = ElementTree.parse(module_path)
         module.findall("./component/content")[1].set("url", "file://$ODOO_SRC$")
@@ -331,7 +484,7 @@ class OdooSourcesTestCase(unittest.TestCase):
 
     def test_cli_resolves_saved_custom_roots_and_preserves_all_project_and_ide_bytes(self) -> None:
         variables_path = self.custom_macro_project()
-        before = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in (self.project / ".idea").iterdir()}
+        before = idea_files(self.project)
         before[variables_path] = (variables_path.read_bytes(), variables_path.stat().st_mtime_ns)
         arguments = build_parser().parse_args(
             [
@@ -363,7 +516,7 @@ class OdooSourcesTestCase(unittest.TestCase):
         variables = ElementTree.parse(variables_path)
         required_element(variables, "./component/macro[@name='ODOO_SRC']").set("value", str(other_source))
         variables.write(variables_path)
-        before = {path: path.read_bytes() for path in (self.project / ".idea").iterdir()}
+        before = {path: path.read_bytes() for path in (self.project / ".idea").rglob("*") if path.is_file()}
         with self.assertRaisesRegex(ValueError, "different Odoo source"):
             self.prepare(path_variables_file=variables_path)
         self.assertEqual(before, {path: path.read_bytes() for path in before})
@@ -371,7 +524,7 @@ class OdooSourcesTestCase(unittest.TestCase):
     def test_missing_or_ambiguous_custom_mappings_fail_without_writes(self) -> None:
         variables_path = self.custom_macro_project()
         original = variables_path.read_bytes()
-        before = {path: path.read_bytes() for path in (self.project / ".idea").iterdir()}
+        before = {path: path.read_bytes() for path in (self.project / ".idea").rglob("*") if path.is_file()}
         for name, value, message in (
             ("ODOO_SRC", "relative/path", "absolute path"),
             ("ODOO_SRC", str(self.root / "$USER_HOME$" / "odoo"), "nested macros"),
