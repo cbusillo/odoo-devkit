@@ -2620,6 +2620,20 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def write_artifact_image_environment(dockerfile: Path, environment: tuple[tuple[str, str], ...]) -> None:
+    if not environment:
+        return
+    stages = re.findall(r"(?im)^FROM\s+[^\n]+\s+AS\s+(\S+)\s*$", dockerfile.read_text(encoding="utf-8"))
+    if not stages or stages[-1].lower() != "production":
+        raise RuntimeCommandError(
+            "Image environment defaults require the final artifact stage to be production; update repos.runtime."
+        )
+    with dockerfile.open("a", encoding="utf-8") as output:
+        for name, value in environment:
+            escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$")
+            output.write(f'ENV {name}="{escaped}"\n')
+
+
 def stage_artifact_build_context(
     *,
     manifest: WorkspaceManifest,
@@ -2644,6 +2658,7 @@ def stage_artifact_build_context(
         destination_path=staged_context_root / "docker",
         label="runtime docker directory",
     )
+    write_artifact_image_environment(staged_context_root / "docker" / "artifact.Dockerfile", manifest.build.image_environment)
     copy_required_path(
         repo_path=runtime_source.repo_path,
         source_commit=None if working_tree else runtime_source.commit,

@@ -80,6 +80,7 @@ class BuildDefinition:
     odoo_version: str | None = None
     base_runtime_image: str | None = None
     base_devtools_image: str | None = None
+    image_environment: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -157,6 +158,7 @@ def load_workspace_manifest(manifest_path: Path) -> WorkspaceManifest:
         odoo_version=_read_optional_nonempty_string(build_table, "odoo_version"),
         base_runtime_image=_read_optional_nonempty_string(build_table, "base_runtime_image"),
         base_devtools_image=_read_optional_nonempty_string(build_table, "base_devtools_image"),
+        image_environment=_read_image_environment(build_table),
     )
     return WorkspaceManifest(
         schema_version=schema_version,
@@ -173,6 +175,20 @@ def load_workspace_manifest(manifest_path: Path) -> WorkspaceManifest:
         devkit_repo=devkit_repo,
         runtime_repo=runtime_repo,
     )
+
+
+def _read_image_environment(build_table: dict[str, object]) -> tuple[tuple[str, str], ...]:
+    environment = build_table.get("image_environment", {})
+    if not isinstance(environment, dict):
+        raise ValueError("Expected build.image_environment to be a table")
+    values: list[tuple[str, str]] = []
+    for name, value in environment.items():
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) is None:
+            raise ValueError("Expected build.image_environment keys to be environment variable names")
+        if not isinstance(value, str) or any(character in value for character in "\0\r\n"):
+            raise ValueError(f"Expected build.image_environment.{name} to be a single-line string without NUL")
+        values.append((name, value))
+    return tuple(sorted(values))
 
 
 def _parse_repo_definition(repositories_table: dict[str, object], key: str) -> RepoDefinition:
