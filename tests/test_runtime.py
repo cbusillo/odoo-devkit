@@ -1763,8 +1763,8 @@ homepage = true
             environment = {"SELECTED": "true", "LITERAL": '$HOME "quoted" \\path'}
             with manifest_path.open("a") as manifest_file:
                 manifest_file.write("\n[build.image_environment]\n")
-                for name, value in environment.items():
-                    manifest_file.write(f"{name} = {json.dumps(value)}\n")
+                for environment_key, environment_value in environment.items():
+                    manifest_file.write(f"{environment_key} = {json.dumps(environment_value)}\n")
             subprocess.run(["git", "add", "workspace.toml"], cwd=tenant_repo_path, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "workspace manifest"], cwd=tenant_repo_path, check=True, capture_output=True)
             manifest = load_workspace_manifest(manifest_path)

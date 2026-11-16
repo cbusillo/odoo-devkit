@@ -44,7 +44,7 @@ class ImageEnvironmentTests(unittest.TestCase):
         container = None
         with tempfile.TemporaryDirectory() as directory:
             dockerfile = Path(directory) / "Dockerfile"
-            dockerfile.write_text('FROM scratch AS production\nENV SELECTED="base"')
+            dockerfile.write_text('FROM scratch AS production\nENV SELECTED="base"\nUSER 1000')
             write_artifact_image_environment(dockerfile, tuple(environment.items()))
             with built_image(dockerfile) as tag:
                 try:
