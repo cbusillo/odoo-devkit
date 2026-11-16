@@ -528,11 +528,15 @@ class TargetSourceTests(unittest.TestCase):
                         output = Path(directory) / f"{section}-matched-{opted_in}.json"
                         collect = Mock(return_value={"allow_same_run_reference": True, "payment": {"captured": "same run"}})
                         with patch.dict(function.__globals__, same_run_evidence=collect):
+                            if not opted_in:
+                                with self.assertRaisesRegex(RuntimeError, "immutable digest"):
+                                    function(cursor, output, target, None, "target@sha256:target", **{section: facts})
+                                self.assertFalse(output.exists())
                             digest = function(
                                 cursor,
                                 output,
                                 target,
-                                "source@sha256:source",
+                                None if opted_in else "source@sha256:source",
                                 "target@sha256:target",
                                 allow_same_run_reference=opted_in,
                                 **{section: facts},

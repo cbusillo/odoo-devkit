@@ -286,7 +286,7 @@ def write_reference(
     cr: Any,
     output: Path,
     target_xml: Path,
-    source_image: str,
+    source_image: str | None,
     target_image: str,
     *,
     history: dict[str, Any] | None = None,
@@ -311,9 +311,12 @@ def write_reference(
     if set(reference["target"].get("arch_db", {})) != {"en_US"}:
         raise RuntimeError("Reference requires a separately qualified translation rebase")
     canonical_architecture(target_xml)
-    for image in (source_image, target_image):
-        if "@sha256:" not in image:
-            raise RuntimeError("Reference images must be immutable digest references")
+    if (
+        "@sha256:" not in target_image
+        or (source_image is None and not allow_same_run_reference)
+        or (source_image is not None and "@sha256:" not in source_image)
+    ):
+        raise RuntimeError("Reference images must be immutable digest references")
     profile: dict[str, Any] = {
         "reference": reference,
         "source_image": source_image,
