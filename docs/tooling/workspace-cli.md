@@ -25,7 +25,8 @@ Runtime ownership is split by target type:
 ```bash
 uv run platform workspace sync --manifest /path/to/workspace.toml
 uv run platform workspace prepare-ide --manifest /path/to/tenant/workspace.toml \
-  --odoo-source /path/to/odoo-19 --odoo-series 19.0 --odoo-commit <full-source-sha>
+  --odoo-source /path/to/odoo-19 --odoo-series 19.0 --odoo-commit <full-source-sha> \
+  --shared-addons-source /path/to/shared-addons --runtime-source /path/to/runtime
 uv run platform workspace status --manifest /path/to/workspace.toml
 uv run platform workspace status --manifest /path/to/workspace.toml --check
 uv run platform workspace scaffold-tenant-overlay \
@@ -102,19 +103,27 @@ attach them to the IDE.
    first open. Do not run the generator while that project has an active IDE
    writer or inspection. Other worktrees can keep their own projects open.
 3. Run `workspace prepare-ide` with that tenant worktree's `workspace.toml`,
-   `--odoo-source`, `--odoo-series`, and `--odoo-commit`. Keep machine-local
-   paths in local invocation/configuration, outside tracked tenant files.
+   `--odoo-source`, `--odoo-series`, and `--odoo-commit`. Add
+   `--shared-addons-source` and `--runtime-source` with clean checkouts at the
+   manifest's `repos.shared_addons` and `repos.runtime` refs: the shared addons
+   are attached so sibling and dependency addons resolve, and the runtime's
+   `docker/scripts` so scripts that import the image's helpers resolve. Keep
+   machine-local paths in local invocation/configuration, outside tracked
+   tenant files.
 4. Open and inspect the tenant worktree through the normal inspection helper.
    Core sources supply resolution context; keep the inspection scope on the
    tenant files. A successful preparation is setup evidence, not an inspection
    verdict or a runtime update.
 
-The command checks the source checkout's commit, clean Git state, core/addon
-layout, and release series without importing Odoo or changing the dependency.
+The command checks each source checkout's commit, clean Git state and layout,
+and the Odoo release series, without importing Odoo or changing a dependency.
 It adds the content root to the Python module rooted at the exact tenant, or
 creates a minimal project using the tenant's `pyproject.toml` project name when
 no module exists. Existing SDK assignments, content roots, module
-dependencies, inspection profiles, and other project state remain in place.
+dependencies and other project state remain in place. It writes this devkit's
+shared inspection profile to `.idea/inspectionProfiles/Project_Default.xml`,
+the path tenants declare in `qualityGate.inspection.profile`, so the profile
+travels with the devkit pin.
 This implements the plugin author's supported
 [content-root setup](https://github.com/odoo-ide/pycharm-odoo/wiki/Structure-Odoo-Projects).
 
