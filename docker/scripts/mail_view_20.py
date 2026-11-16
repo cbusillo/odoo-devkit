@@ -255,7 +255,13 @@ def admit_profile(current: dict[str, Any], profile: dict[str, Any]) -> None:
     if "source_family" not in profile:
         contract = profile.get("history", {}).get("source_contract")
         source_modules = contract["modules"] if contract is not None else None
-        admit(current, profile["reference"], whole_family=True, source_modules=source_modules)
+        admit(
+            current,
+            profile["reference"],
+            whole_family=True,
+            source_modules=source_modules,
+            allow_same_run_reference=profile.get("allow_same_run_reference") is True,
+        )
         return
     expected = _qualified_family(profile)
     views = copy.deepcopy(current["views"])
@@ -266,7 +272,12 @@ def admit_profile(current: dict[str, Any], profile: dict[str, Any]) -> None:
                 raise RuntimeError("Deferred Base Automation translation rebase")
             view["arch_db"] = {"en_US": _normalized_architecture(architectures["en_US"])}
     views.sort(key=lambda row: json.dumps(row["xmlids"], sort_keys=True))
-    admit(dict(current, views=views), expected, whole_family=True)
+    admit(
+        dict(current, views=views),
+        expected,
+        whole_family=True,
+        allow_same_run_reference=profile.get("allow_same_run_reference") is True,
+    )
 
 
 def write_reference(
@@ -348,9 +359,14 @@ def load_reference(target_xml: Path) -> dict[str, Any]:
 
 
 def admit(
-    current: dict[str, Any], reference: dict[str, Any], *, whole_family: bool, source_modules: dict[str, str | None] | None = None
+    current: dict[str, Any],
+    reference: dict[str, Any],
+    *,
+    whole_family: bool,
+    source_modules: dict[str, str | None] | None = None,
+    allow_same_run_reference: bool = False,
 ) -> None:
-    if current["database_uuid"] == reference["database_uuid"]:
+    if current["database_uuid"] == reference["database_uuid"] and not allow_same_run_reference:
         raise RuntimeError("Reference must be generated independently from the candidate")
     if current["customizations"] or current["binding"]["noupdate"]:
         raise RuntimeError("Deferred view conversion: preserve linked customizations or noupdate view")
@@ -377,7 +393,12 @@ def migrate_mail(cr: Any, version: str | None, target_xml: Path) -> None:
     if not isinstance(expected_version, str) or not expected_version or version != expected_version:
         raise RuntimeError("Mail pre-stage requires the qualified old source version; restore a fresh copy")
     current = capture(cr, lock=True)
-    admit(current, profile["reference"], whole_family=False)
+    admit(
+        current,
+        profile["reference"],
+        whole_family=False,
+        allow_same_run_reference=profile.get("allow_same_run_reference") is True,
+    )
     architecture = json.dumps({"en_US": canonical_architecture(target_xml)})
     identity = current["binding"]["record_id"]
     cr.execute("UPDATE ir_ui_view SET arch_db=%s::jsonb WHERE id=%s RETURNING id", (architecture, identity))
