@@ -166,7 +166,7 @@ def same_run_witness(cr: Any, version: str, filestore: Path) -> dict[str, Any]:
         parent = values["primary_payment_method_id"]
         if parent is not None and parent not in methods:
             _fail("outside brand parent")
-        values["primary_payment_method_id"] = methods.get(parent)
+        values["primary_payment_method_id"] = None if parent is None else methods[parent]
         values["supported_country_ids"] = current["countries"][row["id"]]
         values["supported_currency_ids"] = current["currencies"][row["id"]]
         witness["methods"][methods[row["id"]]] = {"values": values, "images": dict.fromkeys(IMAGE_FIELDS)}
