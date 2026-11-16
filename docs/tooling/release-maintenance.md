@@ -122,7 +122,8 @@ attest public traffic or cutover readiness.
 ## One-time major-version conversion
 
 For ordinary post-deploy maintenance, select `OPENUPGRADE_ENABLED=true`,
-`OPENUPGRADE_SOURCE_VERSION=19.0`, and target version 20. The runtime version
+`OPENUPGRADE_SOURCE_VERSION=19.0`, and target version 20; an unset target
+means the runtime version. The runtime version
 is the one in the image's own `/odoo/odoo/release.py`; deployed containers need
 no `ODOO_VERSION`. One that disagrees with the image refuses, and so does
 maintenance when neither says which major runs. Supply ordered,

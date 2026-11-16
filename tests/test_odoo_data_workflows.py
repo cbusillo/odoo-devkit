@@ -771,6 +771,17 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
                         else:
                             self.assertFalse(runner.maintenance_requires_major_upgrade())
 
+    def test_running_odoo_is_the_default_upgrade_target_without_odoo_version(self) -> None:
+        with TemporaryDirectory() as directory:
+            runner, connection = self._runtime_runner(declared=None, source="19.0", base="19.0.1.3")
+            runner.local.openupgrade_target_version = None
+            with (
+                patch.object(odoo_data_workflows, "ODOO_RELEASE_FILE", self._running_odoo(directory, 20)),
+                patch.object(runner, "connect_to_db", return_value=connection),
+            ):
+                self.assertEqual(runner._openupgrade_target_version(), "20.0")
+                self.assertTrue(runner.maintenance_requires_major_upgrade())
+
     def test_odoo_version_disagreeing_with_running_odoo_refuses(self) -> None:
         for source in (None, "19.0"):
             with self.subTest(source=source), TemporaryDirectory() as directory:

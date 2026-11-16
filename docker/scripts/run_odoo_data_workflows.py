@@ -3221,7 +3221,14 @@ with registry.cursor() as cr:
         return sorted(module_names)
 
     def _openupgrade_target_version(self) -> str:
-        return (self.local.openupgrade_target_version or self.local.odoo_version or "").strip()
+        explicit = (self.local.openupgrade_target_version or "").strip()
+        if explicit:
+            return explicit
+        declared = (self.local.odoo_version or "").strip()
+        if _running_odoo_major() is None:
+            return declared
+        major = self.runtime_odoo_major()
+        return declared if declared.split(".", 1)[0] == str(major) else f"{major}.0"
 
     def _is_native_20_upgrade(self) -> bool:
         return self._openupgrade_target_version().split(".", 1)[0] == "20"

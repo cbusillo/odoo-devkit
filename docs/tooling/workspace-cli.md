@@ -690,7 +690,7 @@ Notes
   `database.secret`. `database.uuid` is kept: it identifies the database,
   authenticates nothing, and Odoo's own neutralize keeps it too.
 - For an OpenUpgrade target in major 20, selected from the explicit target
-  or `ODOO_VERSION`, the existing packaged runner
+  or the runtime version (see release maintenance), the existing packaged runner
   loads `base,web,openupgrade_framework` and selects its SQL-only
   `prepare_core_references_20.py` with native `--pre-upgrade-scripts`.
   Explicit `ODOO_INSTALL_MODULES` (comma- or colon-separated) selects initial
