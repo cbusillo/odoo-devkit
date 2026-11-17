@@ -292,6 +292,9 @@ Current runtime ownership is intentionally narrow and explicit:
 
 ## Testing
 
+Live Odoo CI checks use Community 20. Older published images remain available
+for migration and rollback; CI no longer runs the retired Community 19 fixture.
+
 For secretless tenant PRs, use the
 [source-only validation command](docs/tooling/consumer-build-checks.md#source-only-pr-screening).
 
