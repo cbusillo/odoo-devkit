@@ -18,10 +18,14 @@ only local Git metadata and offline uv lock checking and frozen export.
 It requires the complete `[build]` declaration, validates every declared
 artifact source (including context/instance overrides) without resolving it,
 and checks the tenant/shared dependency workspace and tracked Python/XML
-syntax with devkit's Python interpreter without importing code or writing bytecode. It does not run Odoo or
-addon suites, resolve private refs, read runtime environment payloads, log in,
-or inspect/pull/build/publish images. Keep existing repository-specific Node,
-SCSS and helper checks alongside it.
+syntax with devkit's Python interpreter without importing code or writing bytecode.
+It also checks the current tracked tenant tree for scripts under `migrations/`
+and `upgrades/`, including addon groups. A script's version folder must be at or
+below its addon's manifest version using Odoo's version rules. Odoo's `0.0.0`
+folder is exempt. Source screening skips Odoo and addon suites, private ref
+resolution, runtime environment payloads, registry login, and image inspection,
+pulls, builds, and publication. Keep existing repository-specific Node, SCSS
+and helper checks alongside it.
 
 Success prints screening JSON with `validation = "source-only"` and
 `full_build_required = true`. There is no artifact-manifest output option or

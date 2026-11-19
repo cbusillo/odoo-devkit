@@ -59,6 +59,9 @@ Evidence: [README.md](README.md).
 
 ## Guardrails
 
+- Adding a migration script requires an addon manifest version bump. Keep the
+  existing version for ordinary view, data, and code changes. Devkit's deploy
+  maintenance updates selected addons by name.
 - Fix generators, not generated output.
 - Keep the assembled workspace rebuildable and safe to delete.
 - Do not let secrets migrate into tracked manifests, checked-in templates, or
