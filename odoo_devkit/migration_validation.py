@@ -34,17 +34,17 @@ def _comparison_base(repository: Path, candidate: str, source_token: str | None,
     if source_token:
         environment["STYLE_CHECK_TOKEN"] = source_token
     event_path = environment.get("GITHUB_EVENT_PATH")
-    if event_path and not comparison:
+    if event_path:
         event = json.loads(Path(event_path).read_text())
-        pull_request = event.get("pull_request", {})
-        if environment.get("GITHUB_EVENT_NAME") == "pull_request" and candidate in {
-            pull_request.get("head", {}).get("sha"),
-            environment.get("GITHUB_SHA"),
-        }:
-            comparison = pull_request["base"]["sha"]
-        elif environment.get("GITHUB_EVENT_NAME") == "push" and candidate == event.get("after"):
-            comparison = event.get("before", "")
-    environment.pop("GITHUB_EVENT_PATH", None)
+        match environment.get("GITHUB_EVENT_NAME"):
+            case "pull_request":
+                exact_event = candidate in {event.get("pull_request", {}).get("head", {}).get("sha"), environment.get("GITHUB_SHA")}
+            case "push":
+                exact_event = candidate == event.get("after")
+            case _:
+                exact_event = False
+        if not exact_event:
+            environment.pop("GITHUB_EVENT_NAME", None)
     try:
         return subprocess.run(
             ["bash", str(_COMPARISON), str(repository), comparison],

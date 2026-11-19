@@ -1,11 +1,12 @@
+import hashlib
 import os
 import shutil
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-from odoo_release_inventory import addon_digest, ignored_source_entry
+from odoo_release_inventory import ignored_source_entry
 from psycopg2.extensions import connection
 
 TABLE = "public.devkit_addon_checkpoint"
@@ -31,6 +32,8 @@ CREATE OR REPLACE TRIGGER devkit_addon_loaded AFTER UPDATE OF demo ON public.ir_
 CREATE OR REPLACE TRIGGER devkit_addon_state_changed AFTER UPDATE OF state ON public.ir_module_module
     FOR EACH ROW WHEN (OLD.state IS DISTINCT FROM NEW.state AND NEW.state <> 'installed')
     EXECUTE FUNCTION public.devkit_invalidate_addon_checkpoint('state');
+ALTER TABLE public.ir_module_module ENABLE TRIGGER devkit_addon_loaded;
+ALTER TABLE public.ir_module_module ENABLE TRIGGER devkit_addon_state_changed;
 """
 
 
@@ -52,9 +55,19 @@ def checkpoint_exists(database: connection) -> bool:
         return cursor.fetchone()[0]
 
 
-def install_tracker(database: connection) -> None:
+def ensure_tracker(database: connection) -> None:
     with database, database.cursor() as cursor:
+        if checkpoint_exists(database):
+            cursor.execute("""
+                SELECT count(*) = 2 FROM pg_catalog.pg_trigger
+                WHERE tgrelid = 'public.ir_module_module'::regclass
+                  AND tgname IN ('devkit_addon_loaded', 'devkit_addon_state_changed')
+                  AND tgenabled IN ('O', 'A')
+                """)
+            if cursor.fetchone()[0]:
+                return
         cursor.execute(INSTALL_TRACKER)
+        cursor.execute("UPDATE public.devkit_addon_checkpoint SET digest = NULL, attempt = NULL WHERE name <> ''")
 
 
 def checkpoint_digests(database: connection) -> dict[str, str | None]:
@@ -77,8 +90,36 @@ def changed_addons(paths: dict[str, Path], recorded: dict[str, str | None], inst
     return changed
 
 
-def _ignore_source_entries(_directory: str, names: list[str]) -> set[str]:
-    return {name for name in names if ignored_source_entry(name)}
+def _addon_entries(directory: Path, ancestors: frozenset[Path] = frozenset()) -> Iterator[Path]:
+    resolved = directory.resolve()
+    if resolved in ancestors:
+        raise ValueError(f"Circular addon directory symlink: {directory}")
+    for path in sorted(directory.iterdir()):
+        if ignored_source_entry(path.name):
+            continue
+        if path.is_dir():
+            yield path
+            yield from _addon_entries(path, ancestors | {resolved})
+        elif path.is_file():
+            yield path
+
+
+def addon_digest(root: Path, *, snapshot: Path | None = None) -> str:
+    digest = hashlib.sha256()
+    if snapshot is not None:
+        snapshot.mkdir(parents=True)
+    for source in _addon_entries(root):
+        relative = source.relative_to(root)
+        if source.is_dir():
+            if snapshot is not None:
+                (snapshot / relative).mkdir()
+            continue
+        if snapshot is not None:
+            source = Path(shutil.copy2(source, snapshot / relative))
+        digest.update(os.fsencode(relative.as_posix()) + b"\0")
+        with source.open("rb") as stream:
+            digest.update(hashlib.file_digest(stream, "sha256").digest())
+    return digest.hexdigest()
 
 
 def prepare_addon_load(database: connection, roots: list[Path], paths: dict[str, Path], directory: Path) -> AddonLoad:
@@ -92,16 +133,10 @@ def prepare_addon_load(database: connection, roots: list[Path], paths: dict[str,
     digests = {}
     snapshot_roots = {}
     for name, path in paths.items():
-        target_root = snapshot_roots.get(path.parent, directory / str(len(snapshot_roots)))
+        target_root = snapshot_roots.setdefault(path.parent, directory / str(len(snapshot_roots)))
         snapshot = target_root / name
-        shutil.copytree(path, snapshot, symlinks=True, ignore=_ignore_source_entries)
-        digest = addon_digest(snapshot)
-        if digest is not None:
-            snapshot_roots[path.parent] = target_root
-            snapshots[name] = snapshot
-            digests[name] = digest
-        else:
-            shutil.rmtree(snapshot)
+        digests[name] = addon_digest(path, snapshot=snapshot)
+        snapshots[name] = snapshot
     load_roots = [path for root in roots for path in (snapshot_roots.get(root), root) if path is not None]
     return AddonLoad(uuid4().hex, load_roots, snapshots, digests)
 

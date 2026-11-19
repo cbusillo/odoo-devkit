@@ -576,18 +576,24 @@ os.execv('/bin/bash', ['bash', '-c', command])
             view = self.write_fingerprint_fixture(addons)
             runner.local.addons_path = f"{addons},{ADDONS}"
             runner.local.update_modules = "fixture_product_requested"
-            command = [
-                "/odoo/odoo-bin",
-                "--config",
-                str(self.generated_config),
-                *runner._odoo_runtime_connection_flags(),
-                "--database",
-                runner.local.db_name,
-                "--no-http",
-                "--stop-after-init",
-            ]
-            run([*command, "-i", "fixture_product_reverse,fixture_product_requested"], env=runner.os_env)
-            with patch.object(workflows, "PROJECT_ADDONS_ROOT", addons):
+            discovery_only = addons / "discovery-only"
+            discovery_only.mkdir()
+            runner.local.local_addons_dirs = str(discovery_only)
+            with (
+                patch.object(workflows, "PROJECT_ADDONS_ROOT", addons),
+                patch.dict(workflows.expand_addon_paths.__globals__, PROJECT_ADDONS_ROOT=addons),
+            ):
+                command = [
+                    "/odoo/odoo-bin",
+                    "--config",
+                    str(self.generated_config),
+                    *runner._odoo_runtime_connection_flags(),
+                    "--database",
+                    runner.local.db_name,
+                    "--no-http",
+                    "--stop-after-init",
+                ]
+                run([*command, "-i", "fixture_product_reverse,fixture_product_requested"], env=runner.os_env)
                 yield runner, view, command
 
     @staticmethod
@@ -654,7 +660,12 @@ os.execv('/bin/bash', ['bash', '-c', command])
 
             self.edit_product_parameter(database, "fixture.dependency")
             self.edit_product_parameter(database, "fixture.reverse")
-            runner.run_post_deploy_maintenance()
+            with patch.object(runner, "_run_updating_registry", wraps=runner._run_updating_registry) as registry:
+                runner.run_post_deploy_maintenance()
+            load = registry.call_args.args[-1]
+            configured = runner._configured_addons_paths()
+            self.assertEqual([root for root in load.roots if root in configured], configured)
+            self.assertNotIn(Path(runner.local.local_addons_dirs), load.roots)
             self.assertIn("New tenant name", self.product_view(database))
             self.assertNotEqual(self.product_checkpoint(database), old_digest)
             self.assertEqual(self.product_parameter(database, "fixture.reverse"), "from source")
@@ -664,6 +675,7 @@ os.execv('/bin/bash', ['bash', '-c', command])
             runner.run_post_deploy_maintenance()
             self.assertEqual(self.product_parameter(database, "fixture.product"), "database edit")
             self.assertEqual(self.product_parameter(database, "fixture.reverse"), "database edit")
+            self.assertEqual(self.product_parameter(database, "fixture.dependency"), "database edit")
 
             self.restore_product_dump(runner, dump)
             self.assertEqual(self.product_checkpoint(database), old_digest)
@@ -714,6 +726,29 @@ os.execv('/bin/bash', ['bash', '-c', command])
             runner.run_post_deploy_maintenance()
             self.assertEqual(self.product_parameter(database, "fixture.product"), "database edit")
 
+    def test_symlinked_view_is_checkpointed_after_confirmation_recovers(self) -> None:
+        with self.product_addons() as (runner, view, _command):
+            database = runner.local.db_name
+            linked_view = view.rename(view.parent.parent / "linked-view.xml")
+            view.symlink_to(Path("..") / linked_view.name)
+            runner.run_post_deploy_maintenance()
+            runner.run_post_deploy_maintenance()
+            original_digest = self.product_checkpoint(database)
+            self.assertIsNotNone(original_digest)
+
+            linked_view.write_text(linked_view.read_text().replace("Old tenant name", "Linked tenant name"))
+            with patch.object(workflows, "confirm_addon_load", side_effect=psycopg2.OperationalError("Fixture failure")):
+                runner.run_post_deploy_maintenance()
+            self.assertIn("Linked tenant name", self.product_view(database))
+            self.assertIsNone(self.product_checkpoint(database))
+
+            runner.run_post_deploy_maintenance()
+            self.assertIsNotNone(self.product_checkpoint(database))
+            self.assertNotEqual(self.product_checkpoint(database), original_digest)
+            self.edit_product_parameter(database, "fixture.product")
+            runner.run_post_deploy_maintenance()
+            self.assertEqual(self.product_parameter(database, "fixture.product"), "database edit")
+
     def test_partial_load_and_old_finisher_cannot_confirm_newer_source(self) -> None:
         with self.product_addons() as (runner, view, command):
             database = runner.local.db_name
@@ -743,6 +778,21 @@ os.execv('/bin/bash', ['bash', '-c', command])
             self.assertEqual(self.product_checkpoint(database), winning_digest)
             self.assertIn("Attempt B", self.product_view(database))
             runner._reset_db_connection()
+
+            query(
+                database,
+                "ALTER TABLE public.ir_module_module DISABLE TRIGGER devkit_addon_loaded; "
+                "DROP TRIGGER devkit_addon_state_changed ON public.ir_module_module",
+            )
+            winning_view = view.read_text()
+            view.write_text(original)
+            run([*command, "-u", "fixture_product_view"], env=runner.os_env)
+            self.assertIn("Old tenant name", self.product_view(database))
+            self.assertEqual(self.product_checkpoint(database), winning_digest)
+            view.write_text(winning_view)
+            runner.run_post_deploy_maintenance()
+            self.assertIn("Attempt B", self.product_view(database))
+            self.assertEqual(self.product_checkpoint(database), winning_digest)
 
             query(database, "DROP TABLE public.devkit_addon_checkpoint")
             view.write_text(original)
@@ -816,13 +866,15 @@ os.execv('/bin/bash', ['bash', '-c', command])
 
     @staticmethod
     def write_fingerprint_fixture(addons: Path) -> Path:
+        group = addons / "tenant_group"
+        group.mkdir()
         for name, depends, parameter in (
             ("fixture_product_dependency", ["base"], "fixture.dependency"),
             ("fixture_product_view", ["fixture_product_dependency"], "fixture.product"),
             ("fixture_product_requested", ["base"], "fixture.requested"),
             ("fixture_product_reverse", ["fixture_product_view"], "fixture.reverse"),
         ):
-            module = addons / name
+            module = (addons if parameter == "fixture.requested" else group) / name
             module.mkdir()
             (module / "__init__.py").touch()
             (module / "__manifest__.py").write_text(
@@ -839,7 +891,7 @@ os.execv('/bin/bash', ['bash', '-c', command])
                 f'<odoo><record id="probe" model="ir.config_parameter"><field name="key">{parameter}</field>'
                 f'<field name="value">from source</field></record>{view_data}</odoo>'
             )
-        return addons / "fixture_product_view" / "probe.xml"
+        return group / "fixture_product_view" / "probe.xml"
 
     def assert_password(self, runner: workflows.OdooDataWorkflowRunner) -> None:
         self.assertTrue(CRYPT.verify(PASSWORD, self.password_state(runner)[0]), "Configured admin password was not applied")

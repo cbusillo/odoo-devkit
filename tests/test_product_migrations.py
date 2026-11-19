@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
+import os
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from odoo_devkit.migration_validation import validate_product_migrations
 
@@ -98,6 +101,33 @@ class ProductMigrationTests(unittest.TestCase):
         candidate = self.commit()
         with self.assertRaisesRegex(ValueError, "Cannot compare migration history"):
             validate_product_migrations(self.repo, candidate, "20.0", base="missing")
+
+    def test_later_feature_push_still_validates_the_introducing_commit(self) -> None:
+        self.addon()
+        base = self.commit()
+        self.git("remote", "add", "origin", self.repo.as_uri())
+        self.git("switch", "-c", "feature")
+        self.migration(self.addon(version="1.2"), "1.1")
+        first_push = self.commit()
+        self.git("commit", "--allow-empty", "-m", "Unrelated second push")
+        candidate = self.git("rev-parse", "HEAD")
+        event = self.repo / "event.json"
+        payload = {"before": first_push, "after": candidate, "repository": {"default_branch": "main"}}
+        event.write_text(json.dumps(payload))
+        with patch.dict(os.environ, GITHUB_EVENT_NAME="push", GITHUB_EVENT_PATH=str(event), GITHUB_REF="refs/heads/feature"):
+            with self.assertRaisesRegex(ValueError, r"product.*1[.]1"):
+                validate_product_migrations(self.repo, candidate, "20.0")
+
+        self.git("switch", "main")
+        self.git("merge", "--ff-only", "feature")
+        with patch.dict(os.environ, GITHUB_EVENT_NAME="push", GITHUB_EVENT_PATH=str(event), GITHUB_REF="refs/heads/main"):
+            validate_product_migrations(self.repo, candidate, "20.0")
+
+        payload["pull_request"] = {"head": {"sha": candidate}, "base": {"sha": base}}
+        event.write_text(json.dumps(payload))
+        with patch.dict(os.environ, GITHUB_EVENT_NAME="pull_request", GITHUB_EVENT_PATH=str(event), GITHUB_REF="refs/pull/1/merge"):
+            with self.assertRaisesRegex(ValueError, r"product.*1[.]1"):
+                validate_product_migrations(self.repo, candidate, "20.0")
 
     def test_merge_only_introduction_is_checked_and_inherited_folder_is_not_rejudged(self) -> None:
         self.addon()

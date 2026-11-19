@@ -248,9 +248,13 @@ maintenance. Thereafter, a matching checkpoint skips the explicit upgrade.
 Native Odoo dependency cascades still apply.
 
 The checkpoint table travels with the database. A successful updating
-registry confirms only the addon source it loaded. Native upgrades and
+registry confirms only the addon source it loaded from a snapshot of the
+configured addon paths. A snapshot includes the contents of linked source
+files. Native upgrades and
 reinitialization invalidate earlier checkpoints in the module transaction,
-including when an older runner performs the upgrade. A planned cutover keeps
+including when an older runner performs the upgrade. If ordinary maintenance
+finds a missing or disabled invalidation trigger, it reinstalls the triggers
+and rechecks the affected database's addon sources. A planned cutover keeps
 its authorized module list. Restore and explicit repair keep their existing
 selection. The major-version converter keeps its own migration sequence.
 

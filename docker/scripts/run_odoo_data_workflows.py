@@ -32,7 +32,7 @@ from odoo_addon_checkpoints import (
     checkpoint_exists,
     complete_adoption,
     confirm_addon_load,
-    install_tracker,
+    ensure_tracker,
     prepare_addon_load,
 )
 from odoo_addon_paths import PROJECT_ADDONS_ROOT, expand_addon_paths
@@ -2664,9 +2664,7 @@ with registry.cursor() as cr:
             self.set_major_upgrade_pending(pending=False)
         products = self._product_module_paths() if not crossing else {}
         if products:
-            database = self.connect_to_db()
-            if not checkpoint_exists(database):
-                install_tracker(database)
+            ensure_tracker(self.connect_to_db())
         self.install_addons(reason="post-deploy install")
         if not crossing:
             if products and "" in (recorded := checkpoint_digests(self.connect_to_db())):
@@ -2691,7 +2689,7 @@ with registry.cursor() as cr:
         _logger.info("Post-deploy maintenance completed successfully.")
 
     def _product_module_paths(self) -> dict[str, Path]:
-        return product_module_paths(self._resolve_addons_paths(), PROJECT_ADDONS_ROOT)
+        return product_module_paths(self._configured_addons_paths(), PROJECT_ADDONS_ROOT)
 
     @contextmanager
     def _tracked_addon_load(self, *, optional: bool = False) -> Iterator[AddonLoad | None]:
@@ -2700,7 +2698,7 @@ with registry.cursor() as cr:
             try:
                 paths = self._product_module_paths()
                 if paths and checkpoint_exists(self.connect_to_db()):
-                    load = prepare_addon_load(self.connect_to_db(), self._resolve_addons_paths(), paths, Path(directory))
+                    load = prepare_addon_load(self.connect_to_db(), self._configured_addons_paths(), paths, Path(directory))
             except (OSError, ValueError, psycopg2.Error):
                 if not optional:
                     raise
@@ -2761,7 +2759,13 @@ with registry.cursor() as cr:
         if any(state in {"to install", "to upgrade", "to remove"} for state in states.values()):
             _logger.warning("Addon checkpoint confirmation skipped while module work is pending.")
             return
-        confirm_addon_load(self.connect_to_db(), load, confirmed)
+        self._confirm_addon_checkpoints(load, confirmed)
+
+    def _confirm_addon_checkpoints(self, load: AddonLoad, confirmed: list[str]) -> None:
+        try:
+            confirm_addon_load(self.connect_to_db(), load, confirmed)
+        except psycopg2.Error:
+            _logger.warning("Successful addon work could not confirm addon checkpoints", exc_info=True)
 
     def release_module_graph(self) -> dict[str, set[str]]:
         from odoo_release_inventory import module_graph
@@ -2835,10 +2839,7 @@ with registry.cursor() as cr:
                     raise ValueError("Maintenance readback did not match the release plan")
                 confirmed = result.pop("confirmed", [])
                 if load:
-                    try:
-                        confirm_addon_load(self.connect_to_db(), load, confirmed)
-                    except psycopg2.Error:
-                        _logger.warning("Passing release could not confirm addon checkpoints", exc_info=True)
+                    self._confirm_addon_checkpoints(load, confirmed)
             except (subprocess.CalledProcessError, OSError, ValueError) as error:
                 raise OdooDatabaseUpdateError("Planned maintenance failed; no passing readback.") from error
             finally:

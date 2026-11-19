@@ -152,17 +152,6 @@ def source_files(root: Path, exclude: list[Path] | None = None) -> list[Path]:
     ]
 
 
-def addon_digest(root: Path) -> str | None:
-    digest = hashlib.sha256()
-    for path in source_files(root):
-        if path.is_symlink():
-            return None
-        digest.update(os.fsencode(path.relative_to(root).as_posix()) + b"\0")
-        with path.open("rb") as source:
-            digest.update(hashlib.file_digest(source, "sha256").digest())
-    return digest.hexdigest()
-
-
 def module_paths(roots: list[Path]) -> dict[str, Path]:
     """Match Odoo's exposed addon namespaces and first-path precedence."""
     paths: dict[str, Path] = {}
