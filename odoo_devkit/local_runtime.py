@@ -37,6 +37,7 @@ from .base_python import BASE_PYTHON_PLATFORMS, BasePythonCatalog, read_base_pyt
 from .dependency_workspace import (
     DependencyWorkspaceError,
     derive_base_python_lock,
+    ensure_dependency_python,
     require_staged_build_requirements_supplied,
     require_staged_dependency_workspace_current,
     stage_publishable_dependency_workspace,
@@ -2677,6 +2678,7 @@ def stage_artifact_build_context(
         label="runtime Python dependency catalog",
     )
     try:
+        ensure_dependency_python(python_version=manifest.workspace.python_version, cwd=staged_context_root)
         stage_publishable_dependency_workspace(
             manifest=manifest,
             destination_root=staged_context_root / "project",

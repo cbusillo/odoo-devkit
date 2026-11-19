@@ -13,6 +13,7 @@ uv --directory ../odoo-devkit run --locked platform workspace check-source \
 `--related-repo-root` resolves relative devkit/runtime/shared paths from that
 directory; omit it when the manifest's paths already match the checkouts.
 The command never runs workspace sync. Missing required local checkouts fail.
+Install the Python version declared by `[workspace].python` before screening.
 Setup may download devkit's public Python dependencies; validation itself uses
 only local Git metadata and offline uv lock checking and frozen export.
 It requires the complete `[build]` declaration, validates every declared
@@ -112,7 +113,8 @@ The command requires the executing devkit and runtime to be the same checkout
 at the requested exact SHA. It overrides their manifest refs in memory and
 uses the production artifact publisher's source verification, staging, lock
 and build-tool checks, base-image provenance, dependency preflight, and
-`docker/artifact.Dockerfile` production target. Buildx Bake passes every requested
+`docker/artifact.Dockerfile` production target. Artifact staging uses the manifest's workspace Python for
+the offline tenant lock check and installs that interpreter with uv if the runner lacks it. Buildx Bake passes every requested
 platform's production result directly to the shared
 `docker/dependency-evidence.Dockerfile` through a
 [named target context](https://docs.docker.com/build/bake/contexts/#using-a-target-as-a-build-context).

@@ -1207,6 +1207,14 @@ def _git_head_commit(repo_path: Path) -> str:
     return commit
 
 
+def ensure_dependency_python(*, python_version: str, cwd: Path) -> None:
+    if _run_uv(["uv", "python", "find", "--no-config", "--no-project", "--", python_version], cwd=cwd).returncode == 0:
+        return
+    result = _run_uv(["uv", "python", "install", "--no-config", "--no-bin", "--", python_version], cwd=cwd)
+    if result.returncode:
+        raise DependencyWorkspaceError(f"Cannot prepare dependency workspace Python {python_version}: {result.stderr.strip()}")
+
+
 def _run_uv_lock(*, staged_root: Path, python_version: str) -> None:
     result = _run_uv(["uv", "lock", "--python", python_version, "--no-config"], cwd=staged_root)
     if result.returncode != 0:
