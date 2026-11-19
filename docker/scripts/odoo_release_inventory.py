@@ -166,7 +166,12 @@ def module_paths(roots: list[Path]) -> dict[str, Path]:
             if name in seen:
                 continue
             seen.add(name)
-            data = ast.literal_eval(manifest.read_text())
+            try:
+                data = ast.literal_eval(manifest.read_text())
+                if not isinstance(data, dict):
+                    raise ValueError("expected a dictionary")
+            except (SyntaxError, ValueError) as error:
+                raise ValueError(f"Invalid addon manifest {manifest}: {error}") from error
             if data.get("installable", True):
                 paths[name] = manifest.parent
     return paths

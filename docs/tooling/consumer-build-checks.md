@@ -23,6 +23,11 @@ addon suites, resolve private refs, read runtime environment payloads, log in,
 or inspect/pull/build/publish images. Keep existing repository-specific Node,
 SCSS and helper checks alongside it.
 
+The migration screen checks the committed revision and pending tracked addon changes.
+In a pull request or push, the comparison history must already be available locally.
+An offline checkout without an event checks the current tree. Artifact builds also
+validate migration introductions against their source history.
+
 Success prints screening JSON with `validation = "source-only"` and
 `full_build_required = true`. There is no artifact-manifest output option or
 deployable image. Keep the production manifest complete, including private

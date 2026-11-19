@@ -15,7 +15,10 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["ruff==0.17.4"]
+dev = [
+    "ruff==0.17.4",
+    "types-psycopg2>=2.9.21.20261030",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["odoo_devkit"]

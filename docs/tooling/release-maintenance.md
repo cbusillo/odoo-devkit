@@ -250,7 +250,8 @@ Native Odoo dependency cascades still apply.
 The checkpoint table travels with the database. A successful updating
 registry confirms only the addon source it loaded from a snapshot of the
 configured addon paths. A snapshot includes the contents of linked source
-files. Native upgrades and
+files. When the snapshot cannot be copied, Odoo loads the configured addon paths.
+That run leaves the affected checkpoints unknown for the next ordinary update. Native upgrades and
 reinitialization invalidate earlier checkpoints in the module transaction,
 including when an older runner performs the upgrade. If ordinary maintenance
 finds a missing or disabled invalidation trigger, it reinstalls the triggers

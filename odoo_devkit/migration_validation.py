@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ast
-import json
 import os
 import re
 import runpy
@@ -29,25 +28,13 @@ def _git(repository: Path, *arguments: str) -> str:
     return subprocess.run(["git", *arguments], cwd=repository, text=True, capture_output=True, check=True).stdout.strip()
 
 
-def _comparison_base(repository: Path, candidate: str, source_token: str | None, comparison: str = "") -> str:
+def _comparison_base(repository: Path, candidate: str, source_token: str | None, comparison: str, local: bool) -> str:
     environment = os.environ.copy()
     if source_token:
         environment["STYLE_CHECK_TOKEN"] = source_token
-    event_path = environment.get("GITHUB_EVENT_PATH")
-    if event_path:
-        event = json.loads(Path(event_path).read_text())
-        match environment.get("GITHUB_EVENT_NAME"):
-            case "pull_request":
-                exact_event = candidate in {event.get("pull_request", {}).get("head", {}).get("sha"), environment.get("GITHUB_SHA")}
-            case "push":
-                exact_event = candidate == event.get("after")
-            case _:
-                exact_event = False
-        if not exact_event:
-            environment.pop("GITHUB_EVENT_NAME", None)
     try:
         return subprocess.run(
-            ["bash", str(_COMPARISON), str(repository), comparison],
+            ["bash", str(_COMPARISON), str(repository), comparison, candidate, "local" if local else "fetch"],
             env=environment,
             text=True,
             capture_output=True,
@@ -84,8 +71,11 @@ def _migration_folder(path: PurePosixPath) -> bool:
     return path.parent.parent.name in {"migrations", "upgrades"} and _MIGRATION_SCRIPT.fullmatch(path.name) is not None
 
 
-def _git_addon_tree(repository: Path, commit: str) -> tuple[dict[str, Mapping[str, Any]], dict[str, set[tuple[str, str]]]]:
-    paths = [PurePosixPath(name) for name in _git(repository, "ls-tree", "-rz", "--name-only", commit, "--", "addons").split("\0")]
+def _git_addon_tree(repository: Path, revision: str | None) -> tuple[dict[str, Mapping[str, Any]], dict[str, set[tuple[str, str]]]]:
+    listing = ("ls-tree", "-rz", "--name-only", revision) if revision else ("ls-files", "-z")
+    paths = [PurePosixPath(name) for name in _git(repository, *listing, "--", "addons").split("\0") if name]
+    if revision is None:
+        paths = [path for path in paths if (repository / path).is_file()]
     manifests = {}
     folders = {}
     with tempfile.TemporaryDirectory(prefix="devkit-migration-tree-") as directory:
@@ -94,7 +84,10 @@ def _git_addon_tree(repository: Path, commit: str) -> tuple[dict[str, Mapping[st
             if path.name in {"__manifest__.py", "__init__.py", "__openerp__.py"} and len(path.parts) <= 4:
                 target = checkout / path
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(_git(repository, "show", f"{commit}:{path}") if path.name == "__manifest__.py" else "")
+                content = ""
+                if path.name == "__manifest__.py":
+                    content = _git(repository, "show", f"{revision}:{path}") if revision else (repository / path).read_text()
+                target.write_text(content)
         root = checkout / "addons"
         groups = runpy.run_path(
             str(
@@ -104,7 +97,11 @@ def _git_addon_tree(repository: Path, commit: str) -> tuple[dict[str, Mapping[st
             )
         )["addon_group_dirs"](root)
         scripts = {path.parent for path in paths if _migration_folder(path)}
-        for name, module in _PRODUCT_PATHS([root, *groups], root).items():
+        try:
+            modules = _PRODUCT_PATHS([root, *groups], root)
+        except ValueError as error:
+            raise ValueError(f"Cannot validate migrations at {revision or 'working tree'}: {error}") from error
+        for name, module in modules.items():
             manifests[name] = ast.literal_eval((module / "__manifest__.py").read_text())
             relative = PurePosixPath(module.relative_to(checkout))
             folders[name] = {(script.parent.name, script.name) for script in scripts if script.parent.parent == relative}
@@ -123,8 +120,8 @@ def _validate_folder(name: str, folder: str, version: str, series: str, *, intro
         actual = _folder_version(folder, series)
         if actual > expected or (introduced and actual != expected):
             raise ValueError("folder must match the introducing manifest version")
-        scope = slice(2, None) if folder.count(".") <= 2 else slice(None)
-        if introduced and any(actual[scope] <= _older_version(old, series)[scope] for old in previous):
+        start = 2 if folder.count(".") <= 2 else 0
+        if introduced and any(actual[start:] <= _older_version(old, series)[start:] for old in previous):
             raise ValueError("version must advance beyond the previously deliverable manifest")
     except ValueError as error:
         raise ValueError(f"Addon {name} migration {folder} with manifest {version}: {error}") from error
@@ -137,25 +134,46 @@ def validate_product_migrations(
     *,
     base: str | None = None,
     source_token: str | None = None,
+    local: bool = False,
 ) -> None:
     if not re.fullmatch(r"[0-9]+[.]0", series):
         raise ValueError(f"Unsupported Odoo migration series: {series}")
     head = _git(repository, "rev-parse", "--verify", "--end-of-options", f"{candidate}^{{commit}}")
 
     @cache
-    def tree(commit: str) -> tuple[dict[str, Mapping[str, Any]], dict[str, set[tuple[str, str]]]]:
-        return _git_addon_tree(repository, commit)
+    def tree(revision: str | None) -> tuple[dict[str, Mapping[str, Any]], dict[str, set[tuple[str, str]]]]:
+        return _git_addon_tree(repository, revision)
 
     manifests, folders = tree(head)
+    if local and _git(repository, "diff", "--name-only", "HEAD", "--", "addons"):
+        working_manifests, working_folders = tree(None)
+        for name, entries in working_folders.items():
+            for directory, folder in entries:
+                _validate_folder(
+                    name,
+                    folder,
+                    working_manifests[name].get("version", "1.0"),
+                    series,
+                    introduced=(directory, folder) not in folders.get(name, set()),
+                    previous=[manifests[name].get("version", "1.0")] if name in manifests else [],
+                )
     for name, module_folders in folders.items():
         for _directory, folder in sorted(module_folders):
             _validate_folder(name, folder, manifests[name].get("version", "1.0"), series, introduced=False, previous=[])
     if not any(folders.values()):
         return
-    base = base if base is not None else _comparison_base(repository, head, source_token)
+    if base is None:
+        base = (
+            head
+            if local and not os.environ.get("GITHUB_EVENT_PATH")
+            else _comparison_base(repository, head, source_token, "", local)
+        )
+    if base == head:
+        return
     if _git(repository, "rev-parse", "--is-shallow-repository") == "true":
-        base = _comparison_base(repository, head, source_token, base) if base != head else head
-        if base != head and _git(repository, "rev-parse", "--is-shallow-repository") == "true":
+        if not local:
+            base = _comparison_base(repository, head, source_token, base, local)
+        if _git(repository, "rev-parse", "--is-shallow-repository") == "true":
             raise ValueError(f"Cannot obtain complete migration comparison history for {head}")
     try:
         base = _git(repository, "merge-base", base, head)

@@ -2,6 +2,8 @@
 set -euo pipefail
 source_root=$1
 base=${2:-}
+candidate=${3:-}
+mode=${4:-fetch}
 default_branch=''
 fetch_base=false
 
@@ -19,12 +21,24 @@ source_git() {
 if [ -n "${GITHUB_EVENT_PATH:-}" ]; then
   default_branch=$(jq -r '.repository.default_branch // ""' "$GITHUB_EVENT_PATH")
   if [ -z "$base" ]; then
-    base=$(jq -r --arg event "${GITHUB_EVENT_NAME:-}" --arg ref "${GITHUB_REF:-}" '
-      if $event == "pull_request" then .pull_request.base.sha
-      elif $event == "push" and $ref == ("refs/heads/" + (.repository.default_branch // "")) then .before
+    base=$(jq -r --arg event "${GITHUB_EVENT_NAME:-}" --arg ref "${GITHUB_REF:-}" --arg candidate "$candidate" --arg sha "${GITHUB_SHA:-}" '
+      if $event == "pull_request" and ($candidate == "" or $candidate == .pull_request.head.sha or $candidate == $sha) then .pull_request.base.sha
+      elif $event == "push" and ($candidate == "" or $candidate == .after) and $ref == ("refs/heads/" + (.repository.default_branch // "")) then .before
       else "" end // ""
     ' "$GITHUB_EVENT_PATH")
   fi
+fi
+
+if [ "$mode" = local ]; then
+  if [[ -z "$base" || "$base" =~ ^0+$ ]]; then
+    if [ -n "$default_branch" ]; then
+      base="refs/remotes/origin/$default_branch"
+    else
+      base="$candidate"
+    fi
+  fi
+  git -C "$source_root" rev-parse --verify --end-of-options "$base^{commit}"
+  exit
 fi
 
 if [[ -z "$base" || "$base" =~ ^0+$ ]]; then

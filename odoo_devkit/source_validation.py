@@ -21,12 +21,12 @@ def check_workspace_source(*, manifest: WorkspaceManifest) -> dict[str, object]:
     candidate = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=tenant_root, capture_output=True, text=True, check=True
     ).stdout.strip()
-    validate_product_migrations(tenant_root, candidate, build_values["ODOO_VERSION"])
     roots = {tenant_root}
     shared_root = resolve_manifest_shared_addons_repo_path(manifest=manifest)
     if shared_root is not None:
         roots.add(shared_root)
     syntax_files = sum(_check_source_syntax(root) for root in sorted(roots))
+    validate_product_migrations(tenant_root, candidate, build_values["ODOO_VERSION"], local=True)
     return {
         "validation": "source-only",
         "tenant": manifest.tenant,

@@ -85,8 +85,12 @@ def changed_addons(paths: dict[str, Path], recorded: dict[str, str | None], inst
     changed = set()
     for name in paths.keys() & installed:
         last_loaded = recorded.get(name)
-        if last_loaded is None or last_loaded != addon_digest(paths[name]):
-            changed.add(name)
+        try:
+            if last_loaded is not None and last_loaded == addon_digest(paths[name]):
+                continue
+        except (OSError, ValueError):
+            pass
+        changed.add(name)
     return changed
 
 

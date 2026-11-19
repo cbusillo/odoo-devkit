@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -72,6 +73,19 @@ base_devtools_image = "registry.invalid/private/devtools:19.0"
         with contextlib.redirect_stdout(output):
             arguments.handler(arguments)
         return json.loads(output.getvalue())
+
+    def test_local_migration_screen_checks_committed_and_pending_tracked_changes_without_origin(self) -> None:
+        manifest = self.addons / "__manifest__.py"
+        manifest.write_text(repr({"version": "1.1"}))
+        folder = self.addons / "migrations" / "1.1"
+        folder.mkdir(parents=True)
+        (folder / "post-change.py").touch()
+        commit_fixture_repository(self.tenant)
+        with mock.patch.dict(os.environ, GITHUB_EVENT_PATH=""):
+            self.assertTrue(self.check_source()["full_build_required"])
+            manifest.write_text(repr({"version": "1.0"}))
+            with self.assertRaisesRegex(SystemExit, r"fixture.*1[.]1"):
+                self.check_source()
 
     def test_source_only_checks_are_offline_and_cannot_publish(self) -> None:
         original_run = subprocess.run

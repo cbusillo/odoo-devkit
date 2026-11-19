@@ -237,7 +237,10 @@ class TestLiveWorkflows(TransactionCase):
                     cursor.execute("SELECT company_dependent FROM ir_model_fields WHERE id=9")
                     self.assertEqual(cursor.fetchone(), (False,))
 
-    def planned_payload(self, runner: workflows.OdooDataWorkflowRunner) -> dict[str, Any]:
+    def planned_payload(
+        self, runner: workflows.OdooDataWorkflowRunner, probe: Path = Path("/opt/extra_addons/ci_probe/probe.xml")
+    ) -> dict[str, Any]:
+        module = probe.parent.name
         graph = runner.release_module_graph()
         image = "fixture/image@sha256:" + "a" * 64
         candidate = {
@@ -249,15 +252,15 @@ class TestLiveWorkflows(TransactionCase):
                 "modules": [{"name": name, "depends": sorted(deps)} for name, deps in graph.items()],
                 "sources": [
                     {
-                        "input_name": "addon:fixture/ci_probe",
-                        "repository": "fixture/ci_probe",
+                        "input_name": f"addon:fixture/{module}",
+                        "repository": f"fixture/{module}",
                         "commit": "a" * 40,
                         "files": [
                             {
                                 "path": "probe.xml",
-                                "sha256": digest(Path("/opt/extra_addons/ci_probe/probe.xml").read_text()),
+                                "sha256": digest(probe.read_text()),
                                 "kind": "database_data",
-                                "module": "ci_probe",
+                                "module": module,
                             }
                         ],
                     }
@@ -277,9 +280,9 @@ class TestLiveWorkflows(TransactionCase):
                 "module_plan_complete": True,
                 "classification": "database_changing",
                 "install_modules": ["ci_boundary_install_probe"],
-                "update_modules": ["ci_probe"],
-                "changed_modules": ["ci_probe"],
-                "changes": [{"module": "ci_probe", "kind": "database_data"}],
+                "update_modules": [module],
+                "changed_modules": [module],
+                "changes": [{"module": module, "kind": "database_data"}],
             },
         }
 
@@ -782,7 +785,7 @@ os.execv('/bin/bash', ['bash', '-c', command])
             query(
                 database,
                 "ALTER TABLE public.ir_module_module DISABLE TRIGGER devkit_addon_loaded; "
-                "DROP TRIGGER devkit_addon_state_changed ON public.ir_module_module",
+                "ALTER TABLE public.ir_module_module DISABLE TRIGGER devkit_addon_state_changed",
             )
             winning_view = view.read_text()
             view.write_text(original)
@@ -815,8 +818,11 @@ os.execv('/bin/bash', ['bash', '-c', command])
             runner.run_post_deploy_maintenance()
             previous = self.product_checkpoint(database)
             view.write_text(view.read_text().replace("Old tenant name", "Excluded change"))
+            requested = view.parents[2] / "fixture_product_requested" / "probe.xml"
+            prior_requested = self.product_checkpoint(database, requested.parent.name)
+            requested.write_text(requested.read_text().replace("from source", "authorized"))
             for compatible in (True, False):
-                payload = self.planned_payload(runner)
+                payload = self.planned_payload(runner, requested)
                 release = payload["release"]
                 candidate = payload["candidate_manifest"]
                 if compatible:
@@ -839,6 +845,12 @@ os.execv('/bin/bash', ['bash', '-c', command])
                 self.assertNotIn("fixture_product_view", runner.maintenance_receipt["updated_by_odoo"])
                 self.assertIn("Old tenant name", self.product_view(database))
                 self.assertEqual(self.product_checkpoint(database), previous)
+
+            self.assertEqual(self.product_parameter(database, "fixture.requested"), "authorized")
+            updated = self.product_checkpoint(database, requested.parent.name)
+            self.assertIsNotNone(updated)
+            self.assertNotEqual(updated, prior_requested)
+            self.assertNotIn("confirmed", runner.maintenance_receipt)
 
     def test_conversion_load_is_reconciled_once_by_ordinary_maintenance(self) -> None:
         with self.product_addons() as (runner, view, command):

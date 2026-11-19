@@ -16,7 +16,7 @@ import textwrap
 import time
 import uuid
 from collections.abc import Iterator, Sequence
-from contextlib import closing, contextmanager, nullcontext, suppress
+from contextlib import ExitStack, closing, contextmanager, nullcontext, suppress
 from dataclasses import dataclass
 from enum import Enum, IntEnum
 from pathlib import Path
@@ -2693,16 +2693,22 @@ with registry.cursor() as cr:
 
     @contextmanager
     def _tracked_addon_load(self, *, optional: bool = False) -> Iterator[AddonLoad | None]:
-        with tempfile.TemporaryDirectory(prefix="odoo-addon-snapshot-") as directory:
+        with ExitStack() as cleanup:
             load = None
             try:
                 paths = self._product_module_paths()
                 if paths and checkpoint_exists(self.connect_to_db()):
-                    load = prepare_addon_load(self.connect_to_db(), self._configured_addons_paths(), paths, Path(directory))
+                    roots = self._configured_addons_paths()
+                    try:
+                        directory = cleanup.enter_context(tempfile.TemporaryDirectory(prefix="odoo-addon-snapshot-"))
+                        load = prepare_addon_load(self.connect_to_db(), roots, paths, Path(directory))
+                    except (OSError, ValueError):
+                        _logger.warning("Loading configured addon paths without fingerprint confirmation", exc_info=True)
+                        load = AddonLoad(uuid.uuid4().hex, roots, {}, {})
             except (OSError, ValueError, psycopg2.Error):
                 if not optional:
                     raise
-                _logger.warning("Release addon checkpoint preparation failed", exc_info=True)
+                _logger.warning("Addon checkpoint preparation failed", exc_info=True)
             finally:
                 self._reset_db_connection()
             yield load

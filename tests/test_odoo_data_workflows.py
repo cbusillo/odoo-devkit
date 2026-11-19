@@ -1087,6 +1087,26 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
                 modules = command[command.index("--load") + 1].split(",") if "--load" in command else []
                 self.assertEqual("openupgrade_framework" in modules, legacy)
 
+    def test_unverifiable_product_is_selected_for_native_update(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "cycle").symlink_to(root, target_is_directory=True)
+            self.assertEqual(
+                odoo_data_workflows.changed_addons({"fixture": root}, {"fixture": "previous"}, {"fixture"}), {"fixture"}
+            )
+
+    def test_snapshot_copy_failure_leaves_native_work_available_without_confirmation(self) -> None:
+        runner = odoo_data_workflows.OdooDataWorkflowRunner(self._local_settings(), upstream=None, env_file=None)
+        with (
+            patch.object(runner, "_product_module_paths", return_value={"fixture": Path("/addons/fixture")}),
+            patch.object(runner, "connect_to_db"),
+            patch.object(odoo_data_workflows, "checkpoint_exists", return_value=True),
+            patch.object(odoo_data_workflows, "prepare_addon_load", side_effect=OSError("snapshot volume full")),
+            runner._tracked_addon_load() as load,
+        ):
+            self.assertEqual(load.sources, {})
+            self.assertEqual(load.roots, runner._configured_addons_paths())
+
     def test_module_update_releases_metadata_connection_before_odoo_command(self) -> None:
         runner = odoo_data_workflows.OdooDataWorkflowRunner(self._local_settings(), upstream=None, env_file=None)
         connection = MagicMock()

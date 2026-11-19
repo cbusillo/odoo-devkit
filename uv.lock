@@ -100,6 +100,7 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "ruff" },
+    { name = "types-psycopg2" },
 ]
 
 [package.metadata]
@@ -111,7 +112,10 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-dev = [{ name = "ruff", specifier = "==0.17.4" }]
+dev = [
+    { name = "ruff", specifier = "==0.17.4" },
+    { name = "types-psycopg2", specifier = ">=2.9.21.20261030" },
+]
 
 [[package]]
 name = "passlib"
@@ -286,6 +290,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/b9/ab/d8e407669ffe5014429baf780c2df47e001968a6e4c17f615e2e7b13a9ba/ruff-0.17.4-py3-none-win32.whl", hash = "sha256:3971a78cba76298b284c8321e6d40d93045ed348bec5c369d85099efc97fb7cf", size = 9931993, upload-time = "2026-11-05T18:52:11.169Z" },
     { url = "https://files.pythonhosted.org/packages/bd/15/42af8a72d8946e3c9efd2bbf6641e462b6832783b0d043d63ef5b280ba7f/ruff-0.17.4-py3-none-win_amd64.whl", hash = "sha256:67c5a894fc054cf41f75f7afa24815de5a74329d97634126c2a1015740ff4e8c", size = 10292922, upload-time = "2026-11-05T18:52:13.436Z" },
     { url = "https://files.pythonhosted.org/packages/68/9e/f1dbffcfb8ff25dadbc21f87a8b73c3848abe4abada9d4b08ccef8bec40c/ruff-0.17.4-py3-none-win_arm64.whl", hash = "sha256:181ae38a9a8fb94925bf7d0794327b48d7fd7f4b50cfd84c0e999cc09ef8d131", size = 9889396, upload-time = "2026-11-05T18:52:15.549Z" },
+]
+
+[[package]]
+name = "types-psycopg2"
+version = "2.9.21.20261030"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/99/9d/3d22bd79e5777d6bb11042d5853cfe41617e40aebea5272b048aef070872/types_psycopg2-2.9.21.20261030.tar.gz", hash = "sha256:7850716d731d6bf45c53f2d26179e2bcf7273d1d3acfd56b0201adc1dec4ba20", size = 27973, upload-time = "2026-10-30T07:50:27.642Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8f/23/eb7f937f9f9346097a31d243b74cc3d23e4d8cc777916cef4a89bfafa6b5/types_psycopg2-2.9.21.20261030-py3-none-any.whl", hash = "sha256:e51ed54722bc7bc3cfb635a8623d9915d1816ed789c926c40b5f61d5f417a4ab", size = 25041, upload-time = "2026-10-30T07:50:26.781Z" },
 ]
 
 [[package]]

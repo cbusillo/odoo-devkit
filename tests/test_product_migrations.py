@@ -94,6 +94,19 @@ class ProductMigrationTests(unittest.TestCase):
         validate_product_migrations(checkout, candidate, "20.0", base=base)
         self.assertFalse((checkout / ".git" / "shallow").is_file())
 
+    def test_unreadable_history_identifies_the_manifest_and_revision(self) -> None:
+        root = self.addon()
+        base = self.commit()
+        manifest = root / "__manifest__.py"
+        manifest.write_text("{")
+        broken = self.commit()
+        self.migration(self.addon(version="1.1"), "1.1")
+        candidate = self.commit()
+        with self.assertRaises(ValueError) as failure:
+            validate_product_migrations(self.repo, candidate, "20.0", base=base)
+        self.assertIn(broken, str(failure.exception))
+        self.assertIn(str(manifest.relative_to(self.repo)), str(failure.exception))
+
     def test_missing_comparison_is_reported(self) -> None:
         self.addon()
         self.commit()
@@ -120,11 +133,12 @@ class ProductMigrationTests(unittest.TestCase):
 
         self.git("switch", "main")
         self.git("merge", "--ff-only", "feature")
+        event.write_text(json.dumps({**payload, "before": base}))
         with patch.dict(os.environ, GITHUB_EVENT_NAME="push", GITHUB_EVENT_PATH=str(event), GITHUB_REF="refs/heads/main"):
-            validate_product_migrations(self.repo, candidate, "20.0")
+            with self.assertRaisesRegex(ValueError, r"product.*1[.]1"):
+                validate_product_migrations(self.repo, candidate, "20.0")
 
-        payload["pull_request"] = {"head": {"sha": candidate}, "base": {"sha": base}}
-        event.write_text(json.dumps(payload))
+        event.write_text(json.dumps({**payload, "pull_request": {"head": {"sha": candidate}, "base": {"sha": base}}}))
         with patch.dict(os.environ, GITHUB_EVENT_NAME="pull_request", GITHUB_EVENT_PATH=str(event), GITHUB_REF="refs/pull/1/merge"):
             with self.assertRaisesRegex(ValueError, r"product.*1[.]1"):
                 validate_product_migrations(self.repo, candidate, "20.0")
