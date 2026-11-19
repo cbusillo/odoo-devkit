@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import re
 import subprocess
 import tempfile
 import unittest
@@ -114,6 +115,45 @@ base_devtools_image = "registry.invalid/private/devtools:19.0"
                     self.check_source()
                 path.unlink()
                 commit_fixture_repository(self.tenant)
+
+    def test_migration_newer_than_manifest_fails(self) -> None:
+        for folder in ("1.1", "19.0.1"):
+            with self.subTest(folder=folder):
+                migration = self.write_migration(self.addons, f"migrations/{folder}/pre-upgrade.py", version="1.0")
+                commit_fixture_repository(self.tenant)
+                with self.assertRaisesRegex(SystemExit, re.escape(str(migration.parent.relative_to(self.tenant)))):
+                    self.check_source()
+                migration.unlink()
+
+    def test_existing_migration_can_move_to_upgrades(self) -> None:
+        self.write_migration(self.addons, "migrations/19.0.1.1/pre-upgrade.py", version="1.2")
+        commit_fixture_repository(self.tenant)
+        (self.addons / "migrations").rename(self.addons / "upgrades")
+        commit_fixture_repository(self.tenant)
+        self.assertTrue(self.check_source()["full_build_required"])
+
+    def test_nested_addon_checks_script_versions_with_odoo_normalization(self) -> None:
+        addon = self.addons.parent / "group" / "nested"
+        addon.mkdir(parents=True)
+        (addon / "__init__.py").touch()
+        self.write_migration(addon, "upgrades/1.2.0/end-upgrade.py", version="19.0.1.2")
+        self.write_migration(addon, "migrations/0.0.0/post-upgrade.py", version="19.0.1.2")
+        self.write_migration(addon, "upgrades/1.9/helper.py", version="19.0.1.2")
+        commit_fixture_repository(self.tenant)
+        self.assertTrue(self.check_source()["full_build_required"])
+
+        self.write_migration(addon, "upgrades/1.9/end-upgrade.py", version="19.0.1.2")
+        commit_fixture_repository(self.tenant)
+        with self.assertRaisesRegex(SystemExit, r"addons/group/nested/upgrades/1\.9"):
+            self.check_source()
+
+    @staticmethod
+    def write_migration(addon: Path, relative_script: str, *, version: str) -> Path:
+        (addon / "__manifest__.py").write_text(repr({"name": "Fixture", "version": version}), encoding="utf-8")
+        path = addon / relative_script
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("def migrate(cr, version):\n    return None\n", encoding="utf-8")
+        return path
 
     def test_stale_or_missing_locks_fail(self) -> None:
         project = self.tenant / "pyproject.toml"
