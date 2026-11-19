@@ -9,14 +9,19 @@ from .artifact_provenance import normalize_git_commit, normalize_repository_iden
 from .dependency_workspace import check_source_dependency_workspace
 from .local_runtime import GIT_SHA_PATTERN, manifest_build_values, resolve_manifest_shared_addons_repo_path
 from .manifest import WorkspaceManifest
+from .migration_validation import validate_product_migrations
 
 
 def check_workspace_source(*, manifest: WorkspaceManifest) -> dict[str, object]:
-    manifest_build_values(manifest, required=True)
+    build_values = manifest_build_values(manifest, required=True)
     declared_sources = _check_source_declarations(manifest)
     inspection = check_source_dependency_workspace(manifest=manifest)
     tenant_root = manifest.tenant_repo.resolve_path(manifest_directory=manifest.manifest_directory)
     assert tenant_root is not None
+    candidate = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tenant_root, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    validate_product_migrations(tenant_root, candidate, build_values["ODOO_VERSION"])
     roots = {tenant_root}
     shared_root = resolve_manifest_shared_addons_repo_path(manifest=manifest)
     if shared_root is not None:

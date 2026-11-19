@@ -569,6 +569,278 @@ os.execv('/bin/bash', ['bash', '-c', command])
     def password_state(runner: workflows.OdooDataWorkflowRunner) -> tuple:
         return query(runner.local.db_name, "SELECT password,write_date FROM res_users WHERE login='admin'")[0]
 
+    @contextmanager
+    def product_addons(self) -> Iterator[tuple[workflows.OdooDataWorkflowRunner, Path, list[str]]]:
+        with tempfile.TemporaryDirectory(dir=self.root) as directory, self.target() as runner:
+            addons = Path(directory)
+            view = self.write_fingerprint_fixture(addons)
+            runner.local.addons_path = f"{addons},{ADDONS}"
+            runner.local.update_modules = "fixture_product_requested"
+            command = [
+                "/odoo/odoo-bin",
+                "--config",
+                str(self.generated_config),
+                *runner._odoo_runtime_connection_flags(),
+                "--database",
+                runner.local.db_name,
+                "--no-http",
+                "--stop-after-init",
+            ]
+            run([*command, "-i", "fixture_product_reverse,fixture_product_requested"], env=runner.os_env)
+            with patch.object(workflows, "PROJECT_ADDONS_ROOT", addons):
+                yield runner, view, command
+
+    @staticmethod
+    def product_view(database: str) -> str:
+        return query(
+            database,
+            "SELECT view.arch_db->>'en_US' FROM ir_ui_view view JOIN ir_model_data data ON view.id=data.res_id "
+            "WHERE data.model='ir.ui.view' AND data.module='fixture_product_view' AND data.name='partner_form'",
+        )[0][0]
+
+    @staticmethod
+    def product_checkpoint(database: str, name: str = "fixture_product_view") -> str | None:
+        rows = query(database, "SELECT digest FROM public.devkit_addon_checkpoint WHERE name=%s", (name,))
+        return rows[0][0] if rows else None
+
+    @staticmethod
+    def product_parameter(database: str, name: str) -> str:
+        return query(database, "SELECT value FROM ir_config_parameter WHERE key=%s", (name,))[0][0]
+
+    @staticmethod
+    def edit_product_parameter(database: str, name: str) -> None:
+        query(database, "UPDATE ir_config_parameter SET value='database edit' WHERE key=%s", (name,))
+
+    def restore_product_dump(self, runner: workflows.OdooDataWorkflowRunner, dump: Path) -> None:
+        database = runner.local.db_name
+        runner._reset_db_connection()
+        self.drop(database)
+        database_command(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(database)))
+        run(["pg_restore", "-d", database, str(dump)], env=runner.os_env)
+
+    def test_maintenance_records_only_native_loads_and_replays_after_rollback(self) -> None:
+        with self.product_addons() as (runner, view, command):
+            database = runner.local.db_name
+            original = view.read_text()
+            edited = original.replace("Old tenant name", "New tenant name")
+            manifest = view.parent / "__manifest__.py"
+            runner.run_post_deploy_maintenance()
+            self.assertIsNone(self.product_checkpoint(database))
+            self.assertIsNotNone(self.product_checkpoint(database, "fixture_product_requested"))
+            self.assertIn("Old tenant name", self.product_view(database))
+            runner.run_post_deploy_maintenance()
+            old_digest = self.product_checkpoint(database)
+            self.assertIsNotNone(old_digest)
+            dump = self.root / (database + ".dump")
+            run(["pg_dump", "-Fc", "-f", str(dump), database], env=runner.os_env)
+
+            manifest.write_text(manifest.read_text().replace("'depends':", "'summary': 'Detected metadata', 'depends':"))
+            view.write_text(edited)
+            runner.prepare_restored_modules(do_sanitize=True)
+            self.assertEqual(
+                query(database, "SELECT summary->>'en_US' FROM ir_module_module WHERE name='fixture_product_view'")[0][0],
+                "Detected metadata",
+            )
+            self.assertIn("Old tenant name", self.product_view(database))
+            self.assertEqual(self.product_checkpoint(database), old_digest)
+            manifest.write_text(manifest.read_text().replace("Detected metadata", "Standalone metadata"))
+            runner.update_addons()
+            self.assertEqual(
+                query(database, "SELECT summary->>'en_US' FROM ir_module_module WHERE name='fixture_product_view'")[0][0],
+                "Standalone metadata",
+            )
+            self.assertIn("Old tenant name", self.product_view(database))
+            self.assertEqual(self.product_checkpoint(database), old_digest)
+
+            self.edit_product_parameter(database, "fixture.dependency")
+            self.edit_product_parameter(database, "fixture.reverse")
+            runner.run_post_deploy_maintenance()
+            self.assertIn("New tenant name", self.product_view(database))
+            self.assertNotEqual(self.product_checkpoint(database), old_digest)
+            self.assertEqual(self.product_parameter(database, "fixture.reverse"), "from source")
+            self.assertEqual(self.product_parameter(database, "fixture.dependency"), "database edit")
+            self.edit_product_parameter(database, "fixture.product")
+            self.edit_product_parameter(database, "fixture.reverse")
+            runner.run_post_deploy_maintenance()
+            self.assertEqual(self.product_parameter(database, "fixture.product"), "database edit")
+            self.assertEqual(self.product_parameter(database, "fixture.reverse"), "database edit")
+
+            self.restore_product_dump(runner, dump)
+            self.assertEqual(self.product_checkpoint(database), old_digest)
+            self.assertIn("Old tenant name", self.product_view(database))
+            runner.run_post_deploy_maintenance()
+            self.assertIn("New tenant name", self.product_view(database))
+
+            for arguments in (["-u", "fixture_product_view"], ["--reinit=fixture_product_view"]):
+                view.write_text(original)
+                run([*command, *arguments], env=runner.os_env)
+                self.assertIn("Old tenant name", self.product_view(database))
+                self.assertIsNone(self.product_checkpoint(database))
+                view.write_text(edited)
+                runner.run_post_deploy_maintenance()
+                self.assertIn("New tenant name", self.product_view(database))
+
+    def test_restore_applies_versioned_migrations_once_before_ordinary_maintenance(self) -> None:
+        with self.product_addons() as (runner, view, _command):
+            database = runner.local.db_name
+            runner.run_post_deploy_maintenance()
+            runner.run_post_deploy_maintenance()
+            dump = self.root / (database + ".dump")
+            run(["pg_dump", "-Fc", "-f", str(dump), database], env=runner.os_env)
+            view.write_text(view.read_text().replace("Old tenant name", "New tenant name"))
+            manifest = view.parent / "__manifest__.py"
+            manifest.write_text(manifest.read_text().replace("'1.0'", "'1.1.2'"))
+            first = view.parent / "migrations" / "1.1"
+            first.mkdir(parents=True)
+            (first / "post-migrate.py").write_text(
+                "def migrate(cr, version):\n"
+                "    cr.execute('INSERT INTO ir_config_parameter (key, value) VALUES (%s, %s)', "
+                "('fixture.migrated', version))\n"
+            )
+            second = first.parent / "1.1.2"
+            second.mkdir()
+            (second / "post-migrate.py").write_text(
+                "def migrate(cr, version):\n"
+                "    cr.execute('UPDATE ir_config_parameter SET value=%s WHERE key=%s', "
+                "(version + ':second', 'fixture.migrated'))\n"
+                "    assert cr.rowcount == 1\n"
+            )
+            self.restore_product_dump(runner, dump)
+            runner.local.update_modules = "fixture_product_view"
+            runner.prepare_restored_modules(do_sanitize=True)
+            self.assertIn("New tenant name", self.product_view(database))
+            self.assertTrue(self.product_parameter(database, "fixture.migrated").endswith(".1.0:second"))
+            self.edit_product_parameter(database, "fixture.product")
+            runner.run_post_deploy_maintenance()
+            self.assertEqual(self.product_parameter(database, "fixture.product"), "database edit")
+
+    def test_partial_load_and_old_finisher_cannot_confirm_newer_source(self) -> None:
+        with self.product_addons() as (runner, view, command):
+            database = runner.local.db_name
+            runner.run_post_deploy_maintenance()
+            runner.run_post_deploy_maintenance()
+            original = view.read_text()
+            dependency = view.parent.parent / "fixture_product_dependency" / "probe.xml"
+            dependency.write_text(dependency.read_text().replace("from source", "changed dependency"))
+            view.write_text("<odoo><broken></odoo>")
+            with self.assertRaises(workflows.OdooRestorerError):
+                runner.run_post_deploy_maintenance()
+            self.assertEqual(self.product_parameter(database, "fixture.dependency"), "changed dependency")
+            self.assertIsNone(self.product_checkpoint(database, "fixture_product_dependency"))
+            self.assertIn("Old tenant name", self.product_view(database))
+
+            view.write_text(original.replace("Old tenant name", "Attempt A"))
+            with patch.object(workflows, "confirm_addon_load") as delayed:
+                runner.run_post_deploy_maintenance()
+            _, old_load, old_modules = delayed.call_args.args
+            self.assertIn("Attempt A", self.product_view(database))
+            self.assertIsNone(self.product_checkpoint(database))
+            view.write_text(original.replace("Old tenant name", "Attempt B"))
+            runner.run_post_deploy_maintenance()
+            winning_digest = self.product_checkpoint(database)
+            self.assertIsNotNone(winning_digest)
+            workflows.confirm_addon_load(runner.connect_to_db(), old_load, old_modules)
+            self.assertEqual(self.product_checkpoint(database), winning_digest)
+            self.assertIn("Attempt B", self.product_view(database))
+            runner._reset_db_connection()
+
+            query(database, "DROP TABLE public.devkit_addon_checkpoint")
+            view.write_text(original)
+            run([*command, "-u", "fixture_product_view"], env=runner.os_env)
+            self.assertIn("Old tenant name", self.product_view(database))
+            runner.run_post_deploy_maintenance()
+            query(
+                database,
+                "DROP TRIGGER devkit_addon_loaded ON public.ir_module_module; "
+                "DROP TRIGGER devkit_addon_state_changed ON public.ir_module_module; "
+                "DROP FUNCTION public.devkit_invalidate_addon_checkpoint(); DROP TABLE public.devkit_addon_checkpoint",
+            )
+            run([*command, "-u", "fixture_product_view"], env=runner.os_env)
+            self.assertIn("Old tenant name", self.product_view(database))
+
+    def test_planned_maintenance_excludes_unapproved_changed_product(self) -> None:
+        with self.product_addons() as (runner, view, _command):
+            database = runner.local.db_name
+            runner.run_post_deploy_maintenance()
+            runner.run_post_deploy_maintenance()
+            previous = self.product_checkpoint(database)
+            view.write_text(view.read_text().replace("Old tenant name", "Excluded change"))
+            for compatible in (True, False):
+                payload = self.planned_payload(runner)
+                release = payload["release"]
+                candidate = payload["candidate_manifest"]
+                if compatible:
+                    candidate["odoo_install_modules"] = []
+                    candidate["release_compatibility"]["sources"] = []
+                    runner.release_declaration_file.write_text(json.dumps(candidate["release_compatibility"]))
+                    release.update(
+                        classification="compatible",
+                        install_modules=[],
+                        update_modules=[],
+                        changed_modules=[],
+                        changes=[],
+                        candidate_manifest_sha256=digest(candidate),
+                    )
+                plan = self.root / (database + "-plan.json")
+                plan.write_text(json.dumps(payload))
+                runner.os_env["ODOO_RELEASE_IMAGE"] = release["candidate_image"]
+                runner.run_planned_post_deploy_maintenance(plan)
+                self.assertEqual(runner.maintenance_receipt["state"], "passed")
+                self.assertNotIn("fixture_product_view", runner.maintenance_receipt["updated_by_odoo"])
+                self.assertIn("Old tenant name", self.product_view(database))
+                self.assertEqual(self.product_checkpoint(database), previous)
+
+    def test_conversion_load_is_reconciled_once_by_ordinary_maintenance(self) -> None:
+        with self.product_addons() as (runner, view, command):
+            database = runner.local.db_name
+            runner.run_post_deploy_maintenance()
+            runner.run_post_deploy_maintenance()
+            view.write_text(view.read_text().replace("Old tenant name", "Converted tenant"))
+            with (
+                patch.object(runner, "maintenance_requires_major_upgrade", return_value=True),
+                patch.object(
+                    runner,
+                    "run_prepared_openupgrade",
+                    side_effect=lambda: run([*command, "-u", "fixture_product_view"], env=runner.os_env),
+                ),
+                patch.object(runner, "assert_major_upgrade_complete"),
+            ):
+                runner.run_post_deploy_maintenance()
+            self.assertIn("Converted tenant", self.product_view(database))
+            self.assertIsNone(self.product_checkpoint(database))
+            runner.run_post_deploy_maintenance()
+            self.assertIsNotNone(self.product_checkpoint(database))
+            self.edit_product_parameter(database, "fixture.product")
+            runner.run_post_deploy_maintenance()
+            self.assertEqual(self.product_parameter(database, "fixture.product"), "database edit")
+
+    @staticmethod
+    def write_fingerprint_fixture(addons: Path) -> Path:
+        for name, depends, parameter in (
+            ("fixture_product_dependency", ["base"], "fixture.dependency"),
+            ("fixture_product_view", ["fixture_product_dependency"], "fixture.product"),
+            ("fixture_product_requested", ["base"], "fixture.requested"),
+            ("fixture_product_reverse", ["fixture_product_view"], "fixture.reverse"),
+        ):
+            module = addons / name
+            module.mkdir()
+            (module / "__init__.py").touch()
+            (module / "__manifest__.py").write_text(
+                repr({"name": name, "version": "1.0", "depends": depends, "data": ["probe.xml"]})
+            )
+            view_data = (
+                '<record id="partner_form" model="ir.ui.view"><field name="name">Fixture partner</field>'
+                '<field name="model">res.partner</field><field name="arch" type="xml">'
+                '<form string="Old tenant name"><field name="name"/></form></field></record>'
+                if parameter == "fixture.product"
+                else ""
+            )
+            (module / "probe.xml").write_text(
+                f'<odoo><record id="probe" model="ir.config_parameter"><field name="key">{parameter}</field>'
+                f'<field name="value">from source</field></record>{view_data}</odoo>'
+            )
+        return addons / "fixture_product_view" / "probe.xml"
+
     def assert_password(self, runner: workflows.OdooDataWorkflowRunner) -> None:
         self.assertTrue(CRYPT.verify(PASSWORD, self.password_state(runner)[0]), "Configured admin password was not applied")
 

@@ -15,8 +15,8 @@ import tempfile
 import textwrap
 import time
 import uuid
-from collections.abc import Sequence
-from contextlib import closing, suppress
+from collections.abc import Iterator, Sequence
+from contextlib import closing, contextmanager, nullcontext, suppress
 from dataclasses import dataclass
 from enum import Enum, IntEnum
 from pathlib import Path
@@ -25,8 +25,19 @@ from typing import Any, Literal
 from unittest.mock import patch
 
 import psycopg2
-from odoo_addon_paths import expand_addon_paths
+from odoo_addon_checkpoints import (
+    AddonLoad,
+    changed_addons,
+    checkpoint_digests,
+    checkpoint_exists,
+    complete_adoption,
+    confirm_addon_load,
+    install_tracker,
+    prepare_addon_load,
+)
+from odoo_addon_paths import PROJECT_ADDONS_ROOT, expand_addon_paths
 from odoo_admin_password import RESTORED_LOGINS_PARAMETER, restored_logins_preserved, validate_admin_password
+from odoo_release_inventory import product_module_paths
 from odoo_release_plan import load_plan, resolve_plan, verify_image_declaration
 from odoo_upgrade_paths import resolve_upgrade_util
 from odoo_website_bootstrap import load_instance_override_payload, require_launchplane_payloads_if_configured
@@ -2651,9 +2662,21 @@ with registry.cursor() as cr:
             self.run_prepared_openupgrade()
             self.assert_major_upgrade_complete()
             self.set_major_upgrade_pending(pending=False)
+        products = self._product_module_paths() if not crossing else {}
+        if products:
+            database = self.connect_to_db()
+            if not checkpoint_exists(database):
+                install_tracker(database)
         self.install_addons(reason="post-deploy install")
         if not crossing:
-            self.update_addons(reason="post-deploy upgrade")
+            if products and "" in (recorded := checkpoint_digests(self.connect_to_db())):
+                installed = self._installed_modules()
+                self.update_addons(
+                    reason="post-deploy upgrade",
+                    product_selection=(products.keys() & installed, changed_addons(products, recorded, installed)),
+                )
+            else:
+                self.update_addons(reason="post-deploy upgrade")
         self.connect_to_db()
         self.reconcile_missing_manifest_install_queue()
         self.assert_install_queue_is_resolvable()
@@ -2663,7 +2686,82 @@ with registry.cursor() as cr:
         self.connect_to_db()
         self.assert_core_schema_healthy()
         self.ensure_gpt_users()
+        if products:
+            complete_adoption(self.connect_to_db())
         _logger.info("Post-deploy maintenance completed successfully.")
+
+    def _product_module_paths(self) -> dict[str, Path]:
+        return product_module_paths(self._resolve_addons_paths(), PROJECT_ADDONS_ROOT)
+
+    @contextmanager
+    def _tracked_addon_load(self, *, optional: bool = False) -> Iterator[AddonLoad | None]:
+        with tempfile.TemporaryDirectory(prefix="odoo-addon-snapshot-") as directory:
+            load = None
+            try:
+                paths = self._product_module_paths()
+                if paths and checkpoint_exists(self.connect_to_db()):
+                    load = prepare_addon_load(self.connect_to_db(), self._resolve_addons_paths(), paths, Path(directory))
+            except (OSError, ValueError, psycopg2.Error):
+                if not optional:
+                    raise
+                _logger.warning("Release addon checkpoint preparation failed", exc_info=True)
+            finally:
+                self._reset_db_connection()
+            yield load
+
+    def _run_updating_registry(
+        self,
+        installs: list[str],
+        updates: list[str],
+        finish: str,
+        load: AddonLoad | None,
+    ) -> None:
+        self._ensure_odoo_shell_preflight()
+        command = self._odoo_shell_command()
+        database_flag = command.index("-d")
+        del command[database_flag : database_flag + 2]
+        command += ["--database=", "--max-cron-threads=0"]
+        if load:
+            command = [argument for argument in command if not argument.startswith("--addons-path=")]
+            command += ["--addons-path=" + ",".join(str(root) for root in load.roots)]
+        if self.local.openupgrade_enabled and self._uses_openupgrade_framework():
+            command += ["--load", "base,web,openupgrade_framework"]
+        if installs:
+            command += ["-i", ",".join(installs)]
+        if updates:
+            command += ["-u", ",".join(updates)]
+        sources = {name: str(path) for name, path in load.sources.items()} if load else {}
+        script = (
+            "import json\nfrom pathlib import Path\n"
+            "from odoo.modules.module import get_module_path\n"
+            "from odoo.modules.registry import Registry\n"
+            f"registry = Registry.new({self.local.db_name!r}, update_module={bool(installs or updates)!r}, "
+            f"install_modules={installs!r}, upgrade_modules={updates!r})\n"
+            f"snapshot_modules = {sources!r}\n"
+            "confirmed = [name for name in registry.updated_modules if name in snapshot_modules "
+            "and get_module_path(name) == snapshot_modules[name]]\n"
+            f"{finish}"
+        )
+        subprocess.run(command, input=script.encode(), env=load.environment(self.os_env) if load else self.os_env, check=True)
+
+    def _run_tracked_addon_update(self, installs: list[str], updates: list[str], load: AddonLoad) -> None:
+        with tempfile.TemporaryDirectory(prefix="odoo-addon-load-") as directory:
+            receipt = Path(directory) / "loaded.json"
+            self._run_updating_registry(
+                installs,
+                updates,
+                f"Path({str(receipt)!r}).write_text(json.dumps([registry.updated_modules, confirmed]))\n",
+                load,
+            )
+            loaded, confirmed = json.loads(receipt.read_text())
+        states = self._module_states_by_name()
+        expected = set(installs) | set(updates)
+        if expected - set(loaded) or any(states.get(name) != "installed" for name in expected):
+            raise OdooDatabaseUpdateError("Addon update readback found skipped module work.")
+        if any(state in {"to install", "to upgrade", "to remove"} for state in states.values()):
+            _logger.warning("Addon checkpoint confirmation skipped while module work is pending.")
+            return
+        confirm_addon_load(self.connect_to_db(), load, confirmed)
 
     def release_module_graph(self) -> dict[str, set[str]]:
         from odoo_release_inventory import module_graph
@@ -2713,42 +2811,34 @@ with registry.cursor() as cr:
         # This is the existing SQL-only, committed/read-back credential guard.
         # No Odoo import, shell or module process may precede it.
         self.prepare_credentials_before_registry()
-        self._ensure_odoo_shell_preflight()
-        command = self._odoo_shell_command()
-        database_flag = command.index("-d")
-        del command[database_flag : database_flag + 2]
-        # Odoo shell's implicit Registry(db) ignores -i/-u. Start without a
-        # database, then explicitly construct the updating registry exactly once.
-        command.append("--database=")
-        command += ["--max-cron-threads=0"]
-        if self.local.openupgrade_enabled and self._uses_openupgrade_framework():
-            command += ["--load", "base,web,openupgrade_framework"]
-        if resolved["install_modules"]:
-            command += ["-i", ",".join(resolved["install_modules"])]
-        if resolved["update_modules"]:
-            command += ["-u", ",".join(resolved["update_modules"])]
         settings = self.local.model_dump(mode="json", by_alias=True, exclude={"db_conn"})
         for field_name, field in type(self.local).model_fields.items():
             value = getattr(self.local, field_name)
             if isinstance(value, SecretStr):
                 settings[field.alias or field_name] = value.get_secret_value()
-        with tempfile.TemporaryDirectory(prefix="odoo-maintenance-") as directory:
+        installs, updates = resolved["install_modules"], resolved["update_modules"]
+        with (
+            tempfile.TemporaryDirectory(prefix="odoo-maintenance-") as directory,
+            self._tracked_addon_load(optional=True) if installs or updates else nullcontext() as load,
+        ):
             receipt = Path(directory) / "receipt.json"
-            script = (
-                "import json\nfrom pathlib import Path\n"
-                "from odoo.modules.registry import Registry\n"
+            finish = (
                 "from run_odoo_data_workflows import LocalServerSettings, InProcessMaintenanceRunner\n"
                 f"runner = InProcessMaintenanceRunner(LocalServerSettings(**json.loads({json.dumps(settings)!r})), None, None)\n"
-                f"registry = Registry.new({self.local.db_name!r}, update_module={bool(resolved['install_modules'] or resolved['update_modules'])!r}, "
-                f"install_modules={resolved['install_modules']!r}, upgrade_modules={resolved['update_modules']!r})\n"
                 f"runner.finish_planned_maintenance(json.loads({json.dumps(resolved)!r}), registry.updated_modules)\n"
-                f"Path({str(receipt)!r}).write_text(json.dumps(runner.maintenance_receipt))\n"
+                f"Path({str(receipt)!r}).write_text(json.dumps(runner.maintenance_receipt | dict(confirmed=confirmed)))\n"
             )
             try:
-                subprocess.run(command, input=script.encode(), env=self.os_env, check=True)
+                self._run_updating_registry(installs, updates, finish, load)
                 result = json.loads(receipt.read_text())
                 if result.get("plan_sha256") != resolved["plan_sha256"] or result.get("state") != "passed":
                     raise ValueError("Maintenance readback did not match the release plan")
+                confirmed = result.pop("confirmed", [])
+                if load:
+                    try:
+                        confirm_addon_load(self.connect_to_db(), load, confirmed)
+                    except psycopg2.Error:
+                        _logger.warning("Passing release could not confirm addon checkpoints", exc_info=True)
             except (subprocess.CalledProcessError, OSError, ValueError) as error:
                 raise OdooDatabaseUpdateError("Planned maintenance failed; no passing readback.") from error
             finally:
@@ -2983,7 +3073,13 @@ with registry.cursor() as cr:
             update_existing=False,
         )
 
-    def update_addons(self, explicit_modules: Sequence[str] | None = None, reason: str | None = None) -> None:
+    def update_addons(
+        self,
+        explicit_modules: Sequence[str] | None = None,
+        reason: str | None = None,
+        *,
+        product_selection: tuple[set[str], set[str]] | None = None,
+    ) -> None:
         mods_env = (self.local.update_modules or "").strip()
         desired: list[str]
         local_module_paths: dict[str, Path] | None = None
@@ -2999,12 +3095,12 @@ with registry.cursor() as cr:
             detected_module_paths = self._resolve_local_module_paths()
             local_module_paths = detected_module_paths
             local_modules = set(detected_module_paths)
-            if not local_modules:
+            if not local_modules and product_selection is None:
                 _logger.info("ODOO_UPDATE_MODULES unset/AUTO and no local modules detected; skipping addon update.")
                 return
             installed_modules = self._installed_modules()
             installed_local_modules = sorted(local_modules & installed_modules)
-            if not installed_local_modules:
+            if not installed_local_modules and product_selection is None:
                 _logger.info("ODOO_UPDATE_MODULES unset/AUTO and no installed local modules detected; skipping.")
                 return
             mode_label = mods_env.upper() if mods_env else "AUTO"
@@ -3043,6 +3139,11 @@ with registry.cursor() as cr:
                 )
                 desired = [*desired, *installed_dependencies]
             modules_source_label = "ODOO_UPDATE_MODULES"
+
+        if product_selection is not None:
+            installed_products, changed_products = product_selection
+            desired = sorted((set(desired) - installed_products) | changed_products)
+            local_module_paths = None
 
         if explicit_modules is not None:
             _logger.info("Updating addons: %s", ", ".join(desired))
@@ -3150,8 +3251,14 @@ with registry.cursor() as cr:
         try:
             if self.local.copy_purpose:
                 self.prepare_credentials_before_registry(restored_copy=True)
-            self.run_command(command)
-        except subprocess.CalledProcessError as update_error:
+            with self._tracked_addon_load() as load:
+                if load:
+                    self._run_tracked_addon_update(to_install, to_update, load)
+                else:
+                    self.run_command(command)
+        except OdooRestorerError:
+            raise
+        except (subprocess.CalledProcessError, OSError, ValueError, psycopg2.Error) as update_error:
             raise OdooRestorerError(f"Failed to install/update addons: {update_error}") from update_error
         finally:
             self._reset_db_connection()

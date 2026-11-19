@@ -43,6 +43,7 @@ from .dependency_workspace import (
 )
 from .ide_support import write_pycharm_odoo_conf
 from .manifest import WorkspaceManifest
+from .migration_validation import validate_product_migrations
 from .runtime_environment import (
     ENVIRONMENT_VARIABLE_NAME_PATTERN,
     RUNTIME_ENVIRONMENT_PAYLOAD_ENV_VAR,
@@ -717,6 +718,12 @@ def publish_runtime_artifact(
     )
     if expected_runtime_commit is not None and runtime_source.commit != expected_runtime_commit:
         raise RuntimeCommandError(f"Artifact check requires runtime commit {expected_runtime_commit}; got {runtime_source.commit}.")
+    try:
+        validate_product_migrations(
+            tenant_source.repo_path, tenant_source.commit, runtime_values["ODOO_VERSION"], source_token=source_github_token
+        )
+    except (ValueError, subprocess.CalledProcessError) as error:
+        raise RuntimeCommandError(str(error)) from error
     ensure_registry_auth_for_base_images(runtime_values)
     if not build_only:
         ensure_registry_auth_for_image_push(

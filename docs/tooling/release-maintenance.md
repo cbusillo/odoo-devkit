@@ -237,3 +237,37 @@ zero HTTP workers and one cron thread. It does not initialize modules, apply
 overrides, change administrator passwords or synchronize dependencies. Those
 steps belong to the already completed maintenance operation. This interface
 supplies no independent release or credential authority.
+
+## Product addon checkpoints
+
+Ordinary stopped-web maintenance checks file changes in the effective tenant
+addons, including addon groups and excluding the staged shared tree. The
+first successful pass keeps the existing upgrade selection. An installed
+addon omitted from that pass can reload once during the next ordinary
+maintenance. Thereafter, a matching checkpoint skips the explicit upgrade.
+Native Odoo dependency cascades still apply.
+
+The checkpoint table travels with the database. A successful updating
+registry confirms only the addon source it loaded. Native upgrades and
+reinitialization invalidate earlier checkpoints in the module transaction,
+including when an older runner performs the upgrade. A planned cutover keeps
+its authorized module list. Restore and explicit repair keep their existing
+selection. The major-version converter keeps its own migration sequence.
+
+When retiring this table from a disposable database, remove both triggers
+and their function in the same transaction as the table.
+
+```sql
+BEGIN;
+DROP TRIGGER IF EXISTS devkit_addon_loaded ON public.ir_module_module;
+DROP TRIGGER IF EXISTS devkit_addon_state_changed ON public.ir_module_module;
+DROP FUNCTION IF EXISTS public.devkit_invalidate_addon_checkpoint();
+DROP TABLE IF EXISTS public.devkit_addon_checkpoint;
+COMMIT;
+```
+
+A manifest version stays the same for ordinary view, data and code changes.
+When adding a versioned migration, advance the manifest in the same commit
+and use a folder version Odoo reads as that manifest version. Shared
+source screening and artifact builds check the introducing change, including
+for grouped addons. Odoo selects and orders migration scripts at runtime.

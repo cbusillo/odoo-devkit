@@ -131,37 +131,69 @@ def inventory(
 ) -> tuple[list[dict[str, Any]], dict[str, set[str]]]:
     content = {}
     for root in roots:
-        for path in sorted(root.rglob("*")):
-            if (
-                {".git", "__pycache__"} & set(path.parts)
-                or path.suffix == ".pyc"
-                or any(path.is_relative_to(item) for item in exclude or [])
-            ):
-                continue
-            if path.is_symlink():
-                value = os.readlink(path).encode()
-            elif path.is_file():
-                value = path.read_bytes()
-            else:
-                continue
+        for path in source_files(root, exclude or []):
+            value = os.readlink(path).encode() if path.is_symlink() else path.read_bytes()
             content[root.as_posix().lstrip("/") + "/" + path.relative_to(root).as_posix()] = value
     aliases = {Path(root.as_posix().lstrip("/")): root_module for root in roots} if root_module else {}
     return classify_files(content, aliases)
 
 
+def ignored_source_entry(name: str) -> bool:
+    return name in {".git", "__pycache__"} or name.endswith(".pyc")
+
+
+def source_files(root: Path, exclude: list[Path] | None = None) -> list[Path]:
+    return [
+        path
+        for path in sorted(root.rglob("*"))
+        if not any(ignored_source_entry(part) for part in path.relative_to(root).parts)
+        and not any(path.is_relative_to(item) for item in exclude or [])
+        and (path.is_symlink() or path.is_file())
+    ]
+
+
+def addon_digest(root: Path) -> str | None:
+    digest = hashlib.sha256()
+    for path in source_files(root):
+        if path.is_symlink():
+            return None
+        digest.update(os.fsencode(path.relative_to(root).as_posix()) + b"\0")
+        with path.open("rb") as source:
+            digest.update(hashlib.file_digest(source, "sha256").digest())
+    return digest.hexdigest()
+
+
 def module_paths(roots: list[Path]) -> dict[str, Path]:
     """Match Odoo's exposed addon namespaces and first-path precedence."""
     paths: dict[str, Path] = {}
-    expand_addon_paths = runpy.run_path(str(Path(__file__).with_name("odoo_addon_paths.py")))["expand_addon_paths"]
+    seen: set[str] = set()
+    addon_paths = Path(__file__).with_name("odoo_addon_paths.py")
+    if not addon_paths.is_file():
+        addon_paths = Path(__file__).with_name("addon_paths.py")
+    expand_addon_paths = runpy.run_path(str(addon_paths))["expand_addon_paths"]
     for root in expand_addon_paths(roots):
         for manifest in sorted(root.glob("*/__manifest__.py")):
             name = manifest.parent.name
-            if name in paths:
+            if name in seen:
                 continue
+            seen.add(name)
             data = ast.literal_eval(manifest.read_text())
             if data.get("installable", True):
                 paths[name] = manifest.parent
     return paths
+
+
+def product_module_paths(roots: list[Path], product_root: Path) -> dict[str, Path]:
+    if not any(root.is_relative_to(product_root) for root in roots):
+        return {}
+    return {
+        name: path
+        for name, path in module_paths(roots).items()
+        if path.is_relative_to(product_root)
+        and path.resolve().is_relative_to(product_root.resolve())
+        and not path.is_relative_to(product_root / "shared")
+        and not path.resolve().is_relative_to((product_root / "shared").resolve())
+    }
 
 
 def module_graph(roots: list[Path]) -> dict[str, set[str]]:
