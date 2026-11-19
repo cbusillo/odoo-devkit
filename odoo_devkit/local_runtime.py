@@ -826,6 +826,7 @@ def publish_runtime_artifact(
                             str(snapshot.repo_path),
                             snapshot.commit,
                             snapshot.repository.rsplit("/", 1)[-1],
+                            runtime_values.get("ODOO_VERSION", "") if input_name == "tenant" else "",
                         ],
                         capture_output=True,
                         check=True,

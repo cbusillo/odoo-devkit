@@ -27,6 +27,17 @@ inventory = load("odoo_release_inventory")
 
 
 class ReleaseMaintenanceTests(unittest.TestCase):
+    def test_source_migration_check_rejects_a_new_folder_below_the_manifest_version(self) -> None:
+        manifest = "addons/example/__manifest__.py"
+        historical = "addons/example/migrations/20.0.1.0/post-migrate.py"
+        new = "addons/example/migrations/20.0.1.1/post-migrate.py"
+        script = b"def migrate(cr, version): ...\n"
+        content = {manifest: b"{'version': '1.2'}", historical: script}
+        inventory.verify_product_source_migrations(content, {manifest, historical}, 20)
+        with self.assertRaisesRegex(ValueError, "example.*20.0.1.1.*1.2"):
+            inventory.verify_product_source_migrations({**content, new: script}, set(content), 20)
+        inventory.verify_product_source_migrations({**content, manifest: b"{'version': '1.1'}", new: script}, set(content), 20)
+
     def test_enterprise_tenant_manifest_has_margin_below_ingestion_limit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

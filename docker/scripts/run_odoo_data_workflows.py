@@ -21,12 +21,13 @@ from dataclasses import dataclass
 from enum import Enum, IntEnum
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 from unittest.mock import patch
 
 import psycopg2
-from odoo_addon_paths import expand_addon_paths
+from odoo_addon_paths import PROJECT_ADDONS_ROOT, expand_addon_paths
 from odoo_admin_password import RESTORED_LOGINS_PARAMETER, restored_logins_preserved, validate_admin_password
+from odoo_release_inventory import ModuleSources, migration_version, module_paths, module_sources
 from odoo_release_plan import load_plan, resolve_plan, verify_image_declaration
 from odoo_upgrade_paths import resolve_upgrade_util
 from odoo_website_bootstrap import load_instance_override_payload, require_launchplane_payloads_if_configured
@@ -66,7 +67,38 @@ class ExitCode(IntEnum):
 RUNTIME_SCRIPTS_PATH = "/volumes/scripts"
 BOUNDARY_COMMIT_PARAMETER = "odoo_devkit.credential_boundary_commit"
 PENDING_MAJOR_UPGRADE_PARAMETER = "odoo_devkit.pending_major_upgrade"
+MODULE_FINGERPRINTS_PARAMETER = "odoo_devkit.module_fingerprints.v1"
 ODOO_RELEASE_FILE = Path("/odoo/odoo/release.py")
+
+
+class ModuleLoad(NamedTuple):
+    state: str
+    version: str
+    witness: str
+
+
+@dataclass(frozen=True)
+class ProductModuleChanges:
+    sources: dict[str, ModuleSources]
+    loaded: dict[str, ModuleLoad]
+    raw_fingerprints: str | None
+    fingerprints: dict[str, dict[str, Any]]
+
+    def changed(self) -> set[str]:
+        if self.raw_fingerprints is None:
+            return set()
+        return {
+            name
+            for name, source in self.sources.items()
+            if (loaded := self.loaded.get(name)) is not None
+            and loaded.state in {"installed", "to upgrade"}
+            and (
+                loaded.state == "to upgrade"
+                or (previous := self.fingerprints.get(name)) is None
+                or previous["sha256"] != source.sha256
+                or previous["witness"] != loaded.witness
+            )
+        }
 
 
 @dataclass(frozen=True)
@@ -2646,14 +2678,16 @@ with registry.cursor() as cr:
             return
         crossing = self.maintenance_requires_major_upgrade()
         self.prepare_credentials_before_registry()
+        changes = None if crossing else self._read_product_module_changes(ordinary=True)
         if crossing:
             self.set_major_upgrade_pending(pending=True)
             self.run_prepared_openupgrade()
             self.assert_major_upgrade_complete()
             self.set_major_upgrade_pending(pending=False)
         self.install_addons(reason="post-deploy install")
+        updated = set()
         if not crossing:
-            self.update_addons(reason="post-deploy upgrade")
+            updated = self.update_addons(reason="post-deploy upgrade", changes=changes)
         self.connect_to_db()
         self.reconcile_missing_manifest_install_queue()
         self.assert_install_queue_is_resolvable()
@@ -2663,6 +2697,8 @@ with registry.cursor() as cr:
         self.connect_to_db()
         self.assert_core_schema_healthy()
         self.ensure_gpt_users()
+        if changes is not None:
+            self._record_product_module_changes(changes, updated)
         _logger.info("Post-deploy maintenance completed successfully.")
 
     def release_module_graph(self) -> dict[str, set[str]]:
@@ -2704,6 +2740,7 @@ with registry.cursor() as cr:
                 states=self._module_states_by_name(),
                 graph=self.release_module_graph(),
             )
+            changes = self._read_product_module_changes()
             resolved["update_witnesses"] = self.module_update_witnesses(resolved["update_modules"])
         except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
             raise OdooDatabaseUpdateError("Invalid or incomplete release module plan.") from error
@@ -2754,6 +2791,8 @@ with registry.cursor() as cr:
             finally:
                 self._reset_db_connection()
         result["seconds"] = time.monotonic() - started
+        if changes is not None:
+            self._record_product_module_changes(changes, set(result["updated_by_odoo"]) | set(result["installed_by_odoo"]))
         self.maintenance_receipt = result
         if output:
             Path(output).write_text(json.dumps(result, sort_keys=True) + "\n")
@@ -2763,6 +2802,135 @@ with registry.cursor() as cr:
         with self.connect_to_db().cursor() as cursor:
             cursor.execute("SELECT name,write_date FROM ir_module_module WHERE name = ANY(%s)", (modules,))
             return {name: value.isoformat() if value else "" for name, value in cursor.fetchall()}
+
+    def _product_module_loads(self, names: Sequence[str]) -> dict[str, ModuleLoad]:
+        with self.connect_to_db().cursor() as cursor:
+            cursor.execute(
+                "SELECT name, state, latest_version, write_date FROM ir_module_module WHERE name = ANY(%s)", (list(names),)
+            )
+            return {
+                name: ModuleLoad(state, version or "", written.isoformat() if written else "")
+                for name, state, version, written in cursor.fetchall()
+            }
+
+    def _read_product_module_changes(self, *, ordinary: bool = False) -> ProductModuleChanges | None:
+        roots = self._resolve_addons_paths()
+        if not any(root.is_relative_to(PROJECT_ADDONS_ROOT) for root in roots):
+            return None
+        shared = PROJECT_ADDONS_ROOT / "shared"
+        try:
+            paths = module_paths(roots)
+            product = {
+                name for name, path in paths.items() if path.is_relative_to(PROJECT_ADDONS_ROOT) and not path.is_relative_to(shared)
+            }
+            if not product:
+                return None
+            selected = set(product)
+            if ordinary:
+                local_paths = self._resolve_local_module_paths()
+                configured = self._split_module_list(self.local.update_modules)
+                selected.update(self._local_dependency_closure(configured, local_paths) if configured else local_paths)
+            sources = {name: module_sources(paths[name]) for name in selected & paths.keys()}
+        except (OSError, SyntaxError, ValueError, TypeError, AttributeError) as error:
+            raise OdooDatabaseUpdateError(f"Could not read product addon sources: {error}") from error
+        if not sources:
+            return None
+        try:
+            with self.connect_to_db().cursor() as cursor:
+                cursor.execute("SELECT value FROM ir_config_parameter WHERE key = %s", (MODULE_FINGERPRINTS_PARAMETER,))
+                row = cursor.fetchone()
+            raw = row[0] if row else None
+            if raw is not None and not isinstance(raw, str):
+                raise ValueError("Invalid stored addon fingerprints.")
+            previous = json.loads(raw) if isinstance(raw, str) else {}
+            if not isinstance(previous, dict) or any(
+                not isinstance(record["sha256"], str)
+                or not isinstance(record["witness"], str)
+                or not isinstance(record["migrations"], list)
+                for record in previous.values()
+            ):
+                raise ValueError("Invalid stored addon fingerprints.")
+            loaded = self._product_module_loads(list(sources))
+            major = self.runtime_odoo_major()
+            for name in sorted(product):
+                self._assert_migration_versions(name, sources[name], loaded.get(name), previous.get(name), major)
+            return ProductModuleChanges(sources, loaded, raw, previous)
+        except (OSError, SyntaxError, ValueError, TypeError, AttributeError, KeyError, psycopg2.Error) as error:
+            raise OdooDatabaseUpdateError(f"Could not determine product addon changes: {error}") from error
+        finally:
+            self._reset_db_connection()
+
+    @staticmethod
+    def _assert_migration_versions(
+        name: str, source: ModuleSources, loaded: ModuleLoad | None, previous: dict[str, Any] | None, major: int
+    ) -> None:
+        if not source.migrations:
+            return
+        candidate = migration_version(source.version, major)
+        for directory in sorted(source.migrations):
+            folder = Path(directory).name
+            target = candidate if folder == "0.0.0" else migration_version(folder, major)
+            if target > candidate:
+                raise ValueError(f"Addon {name} migration folder {folder} exceeds manifest version {source.version}.")
+            if (
+                loaded is not None
+                and loaded.state in {"installed", "to upgrade"}
+                and previous is not None
+                and directory not in previous["migrations"]
+                and target <= migration_version(loaded.version, major)
+            ):
+                raise ValueError(
+                    f"Addon {name} migration folder {folder} cannot run from installed version {loaded.version} "
+                    f"with manifest version {source.version}."
+                )
+
+    def _record_product_module_changes(self, changes: ProductModuleChanges, requested: set[str]) -> None:
+        try:
+            loaded = self._product_module_loads(list(changes.sources))
+            previous = changes.fingerprints
+            fingerprints = {name: record for name, record in previous.items() if name not in changes.sources}
+            for name, source in changes.sources.items():
+                after = loaded.get(name)
+                before = changes.loaded.get(name)
+                if after is None or after.state != "installed":
+                    if name in requested:
+                        raise OdooDatabaseUpdateError(f"Product addon {name} did not finish loading.")
+                    continue
+                if name in requested and before is not None and before.witness == after.witness:
+                    raise OdooDatabaseUpdateError(f"Product addon {name} has no module load readback.")
+                if (
+                    changes.raw_fingerprints is None
+                    or name in requested
+                    or (before is None or before.state != "installed")
+                    or (name in previous and previous[name]["sha256"] == source.sha256 and before.witness != after.witness)
+                ):
+                    fingerprints[name] = {"sha256": source.sha256, "migrations": sorted(source.migrations), "witness": after.witness}
+                elif name in previous:
+                    fingerprints[name] = previous[name]
+            if changes.raw_fingerprints is not None and fingerprints == previous:
+                return
+            value = json.dumps(fingerprints, sort_keys=True)
+            conn = self.connect_to_db()
+            with conn.cursor() as cursor:
+                if changes.raw_fingerprints is None:
+                    cursor.execute(
+                        "INSERT INTO ir_config_parameter (key, value) VALUES (%s, %s) ON CONFLICT (key) DO NOTHING",
+                        (MODULE_FINGERPRINTS_PARAMETER, value),
+                    )
+                else:
+                    cursor.execute(
+                        "UPDATE ir_config_parameter SET value = %s WHERE key = %s AND value = %s",
+                        (value, MODULE_FINGERPRINTS_PARAMETER, changes.raw_fingerprints),
+                    )
+                if cursor.rowcount != 1:
+                    raise OdooDatabaseUpdateError(
+                        "Product addon fingerprints changed during maintenance. Retry on the stopped database."
+                    )
+            conn.commit()
+        except psycopg2.Error as error:
+            raise OdooDatabaseUpdateError("Could not record product addon fingerprints.") from error
+        finally:
+            self._reset_db_connection()
 
     def compute_update_module_list(self) -> list[str]:
         """Return sorted addon names discovered from local addon directories."""
@@ -2983,7 +3151,13 @@ with registry.cursor() as cr:
             update_existing=False,
         )
 
-    def update_addons(self, explicit_modules: Sequence[str] | None = None, reason: str | None = None) -> None:
+    def update_addons(
+        self,
+        explicit_modules: Sequence[str] | None = None,
+        reason: str | None = None,
+        *,
+        changes: ProductModuleChanges | None = None,
+    ) -> set[str]:
         mods_env = (self.local.update_modules or "").strip()
         desired: list[str]
         local_module_paths: dict[str, Path] | None = None
@@ -2991,7 +3165,7 @@ with registry.cursor() as cr:
             desired = [module_name.strip() for module_name in explicit_modules if module_name.strip()]
             if not desired:
                 _logger.info("No explicit modules provided; skipping addon update.")
-                return
+                return set()
             modules_source_label = "explicit module list"
             if reason:
                 modules_source_label = f"{modules_source_label} ({reason})"
@@ -3001,12 +3175,12 @@ with registry.cursor() as cr:
             local_modules = set(detected_module_paths)
             if not local_modules:
                 _logger.info("ODOO_UPDATE_MODULES unset/AUTO and no local modules detected; skipping addon update.")
-                return
+                return set()
             installed_modules = self._installed_modules()
             installed_local_modules = sorted(local_modules & installed_modules)
             if not installed_local_modules:
                 _logger.info("ODOO_UPDATE_MODULES unset/AUTO and no installed local modules detected; skipping.")
-                return
+                return set()
             mode_label = mods_env.upper() if mods_env else "AUTO"
             desired_set = self._local_dependency_closure(installed_local_modules, detected_module_paths)
             missing_dependencies = sorted(name for name in desired_set if name not in installed_modules)
@@ -3029,7 +3203,7 @@ with registry.cursor() as cr:
             desired = [module_name.strip() for module_name in mods_env.split(",") if module_name.strip()]
             if not desired:
                 _logger.info("ODOO_UPDATE_MODULES is empty after parsing; skipping.")
-                return
+                return set()
             # Odoo's -u upgrades a module's dependents, not its dependencies, so a
             # changed local dependency (a new cron, view or record) would otherwise
             # load only on the next restore.
@@ -3044,6 +3218,10 @@ with registry.cursor() as cr:
                 desired = [*desired, *installed_dependencies]
             modules_source_label = "ODOO_UPDATE_MODULES"
 
+        if changes is not None and changes.raw_fingerprints is not None:
+            tracked = {name for name in changes.sources if name in changes.loaded and changes.loaded[name].state == "installed"}
+            desired = sorted((set(desired) - tracked) | changes.changed())
+
         if explicit_modules is not None:
             _logger.info("Updating addons: %s", ", ".join(desired))
         elif reason:
@@ -3051,7 +3229,7 @@ with registry.cursor() as cr:
         else:
             _logger.info("Updating addons: %s", ", ".join(desired))
 
-        self._apply_module_updates(
+        return self._apply_module_updates(
             desired,
             modules_source_label=modules_source_label,
             local_module_paths=local_module_paths,
@@ -3064,10 +3242,10 @@ with registry.cursor() as cr:
         modules_source_label: str,
         update_existing: bool = True,
         local_module_paths: dict[str, Path] | None = None,
-    ) -> None:
+    ) -> set[str]:
         if not desired:
             _logger.info("No addons requested for %s; skipping.", modules_source_label)
-            return
+            return set()
 
         addons_paths = self._resolve_addons_paths()
         _logger.info(
@@ -3101,7 +3279,7 @@ with registry.cursor() as cr:
             )
         if not found:
             _logger.info("No valid modules from %s found on disk; skipping.", modules_source_label)
-            return
+            return set()
 
         database_connection = self.connect_to_db()
         rows: dict[str, str] = {}
@@ -3120,7 +3298,7 @@ with registry.cursor() as cr:
         to_update = list(found) if update_existing else []
         if not to_install and not to_update:
             _logger.info("No addon installs or updates required for %s; skipping Odoo startup.", modules_source_label)
-            return
+            return set()
 
         odoo_bin = "/odoo/odoo-bin"
         if not Path(odoo_bin).exists():
@@ -3155,6 +3333,7 @@ with registry.cursor() as cr:
             raise OdooRestorerError(f"Failed to install/update addons: {update_error}") from update_error
         finally:
             self._reset_db_connection()
+        return set(to_install) | set(to_update)
 
     def _resolve_openupgrade_assets(self, *, require_framework: bool = True) -> tuple[list[Path], Path | None]:
         addons_paths = self._resolve_addons_paths()

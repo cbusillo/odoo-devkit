@@ -569,6 +569,108 @@ os.execv('/bin/bash', ['bash', '-c', command])
     def password_state(runner: workflows.OdooDataWorkflowRunner) -> tuple:
         return query(runner.local.db_name, "SELECT password,write_date FROM res_users WHERE login='admin'")[0]
 
+    def test_maintenance_updates_changed_view_and_replays_after_restore(self) -> None:
+        with tempfile.TemporaryDirectory(dir=self.root) as directory, self.target() as runner:
+            addons = Path(directory)
+            view = self.write_fingerprint_fixture(addons)
+            runner.local.addons_path = f"{addons},{ADDONS}"
+            runner.local.update_modules = "fixture_product_requested,launchplane_settings"
+            database = runner.local.db_name
+            command = [
+                "/odoo/odoo-bin",
+                "--config",
+                str(self.generated_config),
+                *runner._odoo_runtime_connection_flags(),
+                "--database",
+                database,
+                "--no-http",
+                "--stop-after-init",
+            ]
+            run([*command, "-i", "fixture_product_view,fixture_product_requested"], env=runner.os_env)
+
+            def edit_record(key: str) -> None:
+                query(database, "UPDATE ir_config_parameter SET value='database edit' WHERE key=%s", (key,))
+
+            def record(key: str) -> str:
+                return query(database, "SELECT value FROM ir_config_parameter WHERE key=%s", (key,))[0][0]
+
+            def view_arch() -> str:
+                return query(
+                    database,
+                    "SELECT view.arch_db->>'en_US' FROM ir_ui_view view JOIN ir_model_data data ON view.id=data.res_id "
+                    "WHERE data.model='ir.ui.view' AND data.module='fixture_product_view' AND data.name='partner_form'",
+                )[0][0]
+
+            with patch.object(workflows, "PROJECT_ADDONS_ROOT", addons, create=True):
+                runner.run_post_deploy_maintenance()
+                self.assertIn("Old tenant name", view_arch())
+                dump = addons / "before.dump"
+                run(["pg_dump", "-Fc", "-f", str(dump), database], env=runner.os_env)
+                old_view = view.read_text()
+                view.write_text(old_view.replace("Old tenant name", "New tenant name"))
+                edit_record("fixture.dependency")
+                edit_record("fixture.requested")
+                runner.run_post_deploy_maintenance()
+                self.assertIn("New tenant name", view_arch())
+                self.assertEqual(record("fixture.dependency"), "database edit")
+                self.assertEqual(record("fixture.requested"), "database edit")
+                candidate = runner._read_product_module_changes()
+                self.assertIsNotNone(candidate)
+                candidate_record = candidate.fingerprints["fixture_product_view"]
+                edit_record("fixture.product")
+                runner.run_post_deploy_maintenance()
+                self.assertEqual(record("fixture.product"), "database edit")
+
+                runner._reset_db_connection()
+                self.drop(database)
+                database_command(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(database)))
+                run(["pg_restore", "-d", database, str(dump)], env=runner.os_env)
+                self.assertIn("Old tenant name", view_arch())
+                restored = runner._read_product_module_changes()
+                self.assertIsNotNone(restored)
+                self.assertNotEqual(restored.fingerprints["fixture_product_view"]["sha256"], candidate_record["sha256"])
+                runner.run_post_deploy_maintenance()
+                self.assertIn("New tenant name", view_arch())
+
+                view.write_text(old_view)
+                run([*command, "-u", "fixture_product_view"], env=runner.os_env)
+                self.assertIn("Old tenant name", view_arch())
+                view.write_text(old_view.replace("Old tenant name", "New tenant name"))
+                runner.run_post_deploy_maintenance()
+                self.assertIn("New tenant name", view_arch())
+
+                migration = view.parent / "migrations" / "99.0.1.0"
+                migration.mkdir(parents=True)
+                (migration / "post-migrate.py").write_text("def migrate(cr, version):\n    raise AssertionError\n")
+                with self.assertRaisesRegex(workflows.OdooDatabaseUpdateError, "fixture_product_view.*99.0.1.0"):
+                    runner.run_post_deploy_maintenance()
+
+    @staticmethod
+    def write_fingerprint_fixture(addons: Path) -> Path:
+        for name, depends, parameter in (
+            ("fixture_product_dependency", ["base"], "fixture.dependency"),
+            ("fixture_product_view", ["fixture_product_dependency"], "fixture.product"),
+            ("fixture_product_requested", ["base"], "fixture.requested"),
+        ):
+            module = addons / name
+            module.mkdir()
+            (module / "__init__.py").touch()
+            (module / "__manifest__.py").write_text(
+                repr({"name": name, "version": "1.0", "depends": depends, "data": ["probe.xml"]})
+            )
+            view_data = (
+                '<record id="partner_form" model="ir.ui.view"><field name="name">Fixture partner</field>'
+                '<field name="model">res.partner</field><field name="arch" type="xml">'
+                '<form string="Old tenant name"><field name="name"/></form></field></record>'
+                if parameter == "fixture.product"
+                else ""
+            )
+            (module / "probe.xml").write_text(
+                f'<odoo><record id="probe" model="ir.config_parameter"><field name="key">{parameter}</field>'
+                f'<field name="value">from source</field></record>{view_data}</odoo>'
+            )
+        return addons / "fixture_product_view" / "probe.xml"
+
     def assert_password(self, runner: workflows.OdooDataWorkflowRunner) -> None:
         self.assertTrue(CRYPT.verify(PASSWORD, self.password_state(runner)[0]), "Configured admin password was not applied")
 

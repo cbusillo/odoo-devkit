@@ -10,8 +10,9 @@ import re
 import runpy
 import subprocess
 import sys
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 from xml.etree import ElementTree
 
 
@@ -35,7 +36,7 @@ def xml_database_references(elements: Any) -> list[str | None]:
     return references
 
 
-def git_inventory(repository: Path, commit: str, module_name: str = "") -> list[dict[str, Any]]:
+def git_inventory(repository: Path, commit: str, module_name: str = "", *, product_odoo_version: str = "") -> list[dict[str, Any]]:
     """Hash the exact committed tree, including build files and symlink blobs."""
     tree = subprocess.run(["git", "-C", str(repository), "ls-tree", "-rz", commit], capture_output=True, check=True).stdout
     entries = []
@@ -60,6 +61,8 @@ def git_inventory(repository: Path, commit: str, module_name: str = "") -> list[
         size = int(blobs[offset:end].split()[-1])
         content[path] = blobs[end + 1 : end + 1 + size]
         offset = end + size + 2
+    if product_odoo_version:
+        verify_product_source_migrations(content, previous_source_paths(repository, commit), int(product_odoo_version.split(".")[0]))
     return classify_files(content, {Path("."): module_name or repository.name})[0]
 
 
@@ -147,6 +150,79 @@ def inventory(
             content[root.as_posix().lstrip("/") + "/" + path.relative_to(root).as_posix()] = value
     aliases = {Path(root.as_posix().lstrip("/")): root_module for root in roots} if root_module else {}
     return classify_files(content, aliases)
+
+
+class ModuleSources(NamedTuple):
+    sha256: str
+    version: str
+    migrations: frozenset[str]
+
+
+def module_sources(path: Path) -> ModuleSources:
+    files, _ = inventory([path], root_module=path.name)
+    prefix = path.as_posix().lstrip("/") + "/"
+    hashes = {file["path"].removeprefix(prefix): file["sha256"] for file in files}
+    sha256 = hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()
+    manifest = ast.literal_eval((path / "__manifest__.py").read_text())
+    migrations = migration_folders(hashes)
+    return ModuleSources(
+        sha256, manifest.get("version", "1.0"), frozenset(path.as_posix() for path in migrations if len(path.parts) == 2)
+    )
+
+
+def migration_folders(paths: Iterable[str]) -> set[Path]:
+    return {
+        path.parent
+        for item in paths
+        if (path := Path(item)).parent.parent.name in {"migrations", "upgrades"}
+        and path.name.startswith(("pre-", "post-", "end-"))
+        and path.suffix == ".py"
+    }
+
+
+def migration_version(version: str, major: int) -> tuple[int, ...]:
+    if not re.fullmatch(r"\d+\.\d+(?:\.\d+){0,3}", version):
+        raise ValueError(f"Invalid Odoo module or migration version {version!r}")
+    parts = tuple(int(part) for part in version.split("."))
+    if len(parts) <= 3 and parts[:2] != (major, 0):
+        parts = (major, 0, *parts)
+    return parts + (0,) * (5 - len(parts))
+
+
+def verify_product_source_migrations(content: dict[str, bytes], previous_paths: set[str] | None, major: int) -> None:
+    earlier = migration_folders(previous_paths or ())
+    for folder in sorted(migration_folders(content)):
+        root = folder.parent.parent
+        if not root.is_relative_to("addons") or root.is_relative_to("addons/shared") or folder.name == "0.0.0":
+            continue
+        manifest = content.get((root / "__manifest__.py").as_posix())
+        if manifest is None:
+            continue
+        version = ast.literal_eval(manifest.decode()).get("version", "1.0")
+        candidate = migration_version(version, major)
+        target = migration_version(folder.name, major)
+        if target > candidate or (previous_paths is not None and folder not in earlier and target != candidate):
+            raise ValueError(f"Addon {root.name} migration folder {folder.name} does not match manifest version {version}.")
+
+
+def previous_source_paths(repository: Path, commit: str) -> set[str] | None:
+    event_path = os.environ.get("GITHUB_EVENT_PATH")
+    event = json.loads(Path(event_path).read_text()) if event_path else {}
+    pull_request = event.get("pull_request", {})
+    if (pull_request.get("head", {}).get("sha") if pull_request else event.get("after")) != commit:
+        return None
+    baseline = pull_request.get("base", {}).get("sha") or event.get("before")
+    if not isinstance(baseline, str) or not re.fullmatch(r"[0-9a-f]{40}", baseline):
+        return None
+    if pull_request:
+        merge_base = subprocess.run(["git", "-C", str(repository), "merge-base", baseline, commit], capture_output=True, text=True)
+        if merge_base.returncode:
+            return None
+        baseline = merge_base.stdout.strip()
+    tree = subprocess.run(
+        ["git", "-C", str(repository), "ls-tree", "-r", "-z", "--name-only", baseline, "--", "addons"], capture_output=True
+    )
+    return set(tree.stdout.decode().split("\0")) if tree.returncode == 0 else None
 
 
 def module_paths(roots: list[Path]) -> dict[str, Path]:
@@ -346,6 +422,10 @@ if __name__ == "__main__" and sys.argv[1] in {"--base", "--base-tools"}:
     base_roots = [Path(path) for path in base_paths if Path(path).is_dir()]
     Path(sys.argv[2]).write_text(json.dumps(inventory(base_roots)[0], sort_keys=True))
 elif __name__ == "__main__" and sys.argv[1] == "--git":
-    print(json.dumps(git_inventory(Path(sys.argv[2]), sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else ""), sort_keys=True))
+    source_name = sys.argv[4] if len(sys.argv) > 4 else ""
+    product_series = sys.argv[5] if len(sys.argv) > 5 else ""
+    print(
+        json.dumps(git_inventory(Path(sys.argv[2]), sys.argv[3], source_name, product_odoo_version=product_series), sort_keys=True)
+    )
 elif __name__ == "__main__":
     Path(sys.argv[2]).write_text(json.dumps(build_inventory(json.loads(Path(sys.argv[1]).read_text())), sort_keys=True))

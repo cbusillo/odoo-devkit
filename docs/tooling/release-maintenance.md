@@ -119,6 +119,29 @@ credential preparation. Isolated tests count registry-load log events and
 compare the whole run with the legacy multi-process path. A receipt does not
 attest public traffic or cutover readiness.
 
+## Changed addon files
+
+Ordinary stopped-web maintenance checks all installed product addons under
+the tenant's staged addon tree and the addons the ordinary update list
+already selects. An existing database's first run uses its normal selection
+and records a baseline after successful maintenance. Later runs request an
+upgrade when module-relative paths or contents change, or when an intervening
+Odoo load changes the module's write timestamp. Explicit local `--update-only`
+can still reload modules for repairs. Odoo handles reverse dependencies.
+
+The fingerprint is a database configuration parameter and follows the
+database through dumps and restores. It advances after module load readback.
+Planned cutovers use the verified install/update list and record modules
+confirmed by their receipt. Failed maintenance preserves the previous record.
+
+Odoo uses manifest versions to decide which migration scripts to run. Artifact
+validation checks that newly added versioned migration folders match the
+candidate manifest when the triggering source revision is available. Artifact
+and maintenance validation reject folders newer than the manifest. On tracked
+databases, maintenance also rejects newly observed folders that the installed
+version would skip. Odoo can still run intermediate migrations when the
+database skipped releases.
+
 ## One-time major-version conversion
 
 For ordinary post-deploy maintenance, select `OPENUPGRADE_ENABLED=true`,
