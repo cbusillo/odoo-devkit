@@ -1104,6 +1104,7 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
             patch.object(odoo_data_workflows, "prepare_addon_load", side_effect=OSError("snapshot volume full")),
             runner._tracked_addon_load() as load,
         ):
+            assert load is not None
             self.assertEqual(load.sources, {})
             self.assertEqual(load.roots, runner._configured_addons_paths())
 

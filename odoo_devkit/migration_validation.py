@@ -162,21 +162,18 @@ def validate_product_migrations(
             _validate_folder(name, folder, manifests[name].get("version", "1.0"), series, introduced=False, previous=[])
     if not any(folders.values()):
         return
-    if base is None:
-        base = (
-            head
-            if local and not os.environ.get("GITHUB_EVENT_PATH")
-            else _comparison_base(repository, head, source_token, "", local)
-        )
-    if base == head:
+    if base is None and local and not os.environ.get("GITHUB_EVENT_PATH"):
+        return
+    comparison = base or _comparison_base(repository, head, source_token, "", local)
+    if comparison == head:
         return
     if _git(repository, "rev-parse", "--is-shallow-repository") == "true":
         if not local:
-            base = _comparison_base(repository, head, source_token, base, local)
+            comparison = _comparison_base(repository, head, source_token, comparison, local)
         if _git(repository, "rev-parse", "--is-shallow-repository") == "true":
             raise ValueError(f"Cannot obtain complete migration comparison history for {head}")
     try:
-        base = _git(repository, "merge-base", base, head)
+        base = _git(repository, "merge-base", comparison, head)
         changes = _git(repository, "rev-list", "--reverse", f"{base}..{head}", "--").splitlines()
         base_manifests, _ = tree(base)
         for commit in changes:

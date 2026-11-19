@@ -160,7 +160,8 @@ def module_paths(roots: list[Path]) -> dict[str, Path]:
     if not addon_paths.is_file():
         addon_paths = Path(__file__).with_name("addon_paths.py")
     expand_addon_paths = runpy.run_path(str(addon_paths))["expand_addon_paths"]
-    for root in expand_addon_paths(roots):
+    expanded: list[Path] = expand_addon_paths(roots)
+    for root in expanded:
         for manifest in sorted(root.glob("*/__manifest__.py")):
             name = manifest.parent.name
             if name in seen:

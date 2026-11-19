@@ -52,7 +52,7 @@ class AddonLoad:
 def checkpoint_exists(database: connection) -> bool:
     with database.cursor() as cursor:
         cursor.execute("SELECT to_regclass(%s) IS NOT NULL", (TABLE,))
-        return cursor.fetchone()[0]
+        return next(cursor)[0]
 
 
 def ensure_tracker(database: connection) -> None:
@@ -64,7 +64,7 @@ def ensure_tracker(database: connection) -> None:
                   AND tgname IN ('devkit_addon_loaded', 'devkit_addon_state_changed')
                   AND tgenabled IN ('O', 'A')
                 """)
-            if cursor.fetchone()[0]:
+            if next(cursor)[0]:
                 return
         cursor.execute(INSTALL_TRACKER)
         cursor.execute("UPDATE public.devkit_addon_checkpoint SET digest = NULL, attempt = NULL WHERE name <> ''")
