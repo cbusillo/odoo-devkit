@@ -518,6 +518,83 @@ class OdooDataWorkflowShellEnvironmentTests(unittest.TestCase):
 
         self.assertEqual(runner.os_env["PYTHONPATH"], "/volumes/scripts:/opt/custom")
 
+    def test_module_workflows_record_migrations_before_the_next_maintenance(self) -> None:
+        for workflow in ("restore", "standalone update", "major conversion"):
+            with self.subTest(workflow=workflow):
+                self.assert_migration_recorded(workflow)
+
+    def assert_migration_recorded(self, workflow: str) -> None:
+        with TemporaryDirectory() as directory, ExitStack() as stack:
+            addons = Path(directory)
+            module = addons / "product"
+            migration = module / "migrations" / "1.1"
+            migration.mkdir(parents=True)
+            (module / "__manifest__.py").write_text("{'version': '1.1'}")
+            (migration / "post-migrate.py").touch()
+            settings = self._local_settings()
+            runner = odoo_data_workflows.OdooDataWorkflowRunner(settings, upstream=None, env_file=None)
+            before_version = "19.0.1.0" if workflow == "major conversion" else "20.0.1.0"
+            loaded = {"product": odoo_data_workflows.ModuleLoad("installed", before_version, "before")}
+            stored = json.dumps({"product": {"sha256": "old", "migrations": [], "witness": "before"}})
+            connection = MagicMock()
+            cursor = connection.cursor.return_value.__enter__.return_value
+            cursor.rowcount = 1
+            cursor.fetchone.side_effect = lambda: (stored,)
+
+            def execute(statement: str, arguments: tuple[str, ...]) -> None:
+                nonlocal stored
+                if statement.startswith("UPDATE ir_config_parameter"):
+                    stored = arguments[0]
+
+            def upgrade(*, changes: odoo_data_workflows.ProductModuleChanges | None = None, **_kwargs: Any) -> set[str]:
+                if changes is not None:
+                    self.assertEqual(changes.changed(), set())
+                    return set()
+                loaded["product"] = odoo_data_workflows.ModuleLoad("installed", "20.0.1.1", "after")
+                return {"product"}
+
+            cursor.execute.side_effect = execute
+            stack.enter_context(patch.object(odoo_data_workflows, "PROJECT_ADDONS_ROOT", addons))
+            stack.enter_context(patch.object(runner, "_resolve_addons_paths", return_value=[addons]))
+            stack.enter_context(patch.object(runner, "_resolve_local_module_paths", return_value={"product": module}))
+            stack.enter_context(patch.object(runner, "runtime_odoo_major", return_value=20))
+            stack.enter_context(patch.object(runner, "connect_to_db", return_value=connection))
+            stack.enter_context(patch.object(runner, "_product_module_loads", side_effect=lambda _names: dict(loaded)))
+            stack.enter_context(patch.object(runner, "update_addons", side_effect=upgrade))
+            stack.enter_context(patch.object(runner, "run_prepared_openupgrade", side_effect=upgrade))
+            stack.enter_context(
+                patch.object(runner, "maintenance_requires_major_upgrade", side_effect=[workflow == "major conversion", False])
+            )
+            for name in (
+                "acquire_data_workflow_lock",
+                "release_data_workflow_lock",
+                "prepare_credentials_before_registry",
+                "set_major_upgrade_pending",
+                "assert_major_upgrade_complete",
+                "install_addons",
+                "reconcile_missing_manifest_install_queue",
+                "assert_install_queue_is_resolvable",
+                "apply_environment_overrides",
+                "block_outgoing_mail_outside_production",
+                "ensure_admin_user",
+                "assert_core_schema_healthy",
+                "ensure_gpt_users",
+            ):
+                stack.enter_context(patch.object(runner, name))
+
+            if workflow == "restore":
+                runner.prepare_restored_modules(do_sanitize=True)
+            elif workflow == "standalone update":
+                stack.enter_context(patch.object(odoo_data_workflows, "LocalServerSettings", return_value=settings))
+                stack.enter_context(patch.object(odoo_data_workflows, "UpstreamServerSettings", return_value=None))
+                stack.enter_context(patch.object(odoo_data_workflows, "OdooDataWorkflowRunner", return_value=runner))
+                self.assertEqual(odoo_data_workflows.main(["--update-only"]), odoo_data_workflows.ExitCode.SUCCESS)
+            else:
+                runner.run_post_deploy_maintenance()
+
+            runner.run_post_deploy_maintenance()
+            self.assertEqual(json.loads(stored)["product"]["migrations"], ["migrations/1.1"])
+
     def test_crossing_refuses_release_plan_before_any_plan_or_registry_work(self) -> None:
         settings = self._local_settings()
         settings.openupgrade_enabled = True

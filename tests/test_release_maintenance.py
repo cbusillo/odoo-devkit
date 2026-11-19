@@ -4,10 +4,13 @@ import copy
 import hashlib
 import importlib.util
 import json
+import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from odoo_devkit.artifact_provenance import ArtifactProvenanceError, aggregate_release_inventories, load_examined_input_plan
 from odoo_devkit.local_runtime import BaseImageProvenance, build_runtime_artifact_manifest_payload
@@ -27,16 +30,58 @@ inventory = load("odoo_release_inventory")
 
 
 class ReleaseMaintenanceTests(unittest.TestCase):
-    def test_source_migration_check_rejects_a_new_folder_below_the_manifest_version(self) -> None:
+    def test_three_component_migration_folder_uses_odoo_loader_prefix(self) -> None:
         manifest = "addons/example/__manifest__.py"
-        historical = "addons/example/migrations/20.0.1.0/post-migrate.py"
-        new = "addons/example/migrations/20.0.1.1/post-migrate.py"
         script = b"def migrate(cr, version): ...\n"
-        content = {manifest: b"{'version': '1.2'}", historical: script}
-        inventory.verify_product_source_migrations(content, {manifest, historical}, 20)
-        with self.assertRaisesRegex(ValueError, "example.*20.0.1.1.*1.2"):
-            inventory.verify_product_source_migrations({**content, new: script}, set(content), 20)
-        inventory.verify_product_source_migrations({**content, manifest: b"{'version': '1.1'}", new: script}, set(content), 20)
+        for folder in ("1.0.0", "20.0.1.0"):
+            inventory.verify_product_source_migrations(
+                {manifest: b"{'version': '1.0'}", f"addons/example/migrations/{folder}/post-migrate.py": script},
+                20,
+            )
+        with self.assertRaisesRegex(ValueError, r"example.*20\.0\.1.*1\.0"):
+            inventory.verify_product_source_migrations(
+                {manifest: b"{'version': '1.0'}", "addons/example/migrations/20.0.1/post-migrate.py": script},
+                20,
+            )
+
+    def test_shallow_push_checks_migration_at_its_introducing_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source, checkout = root / "source", root / "checkout"
+            subprocess.run(["git", "init", "-q", "-b", "main", str(source)], check=True)
+
+            def git(*arguments: str) -> str:
+                return subprocess.check_output(["git", "-C", str(source), *arguments], text=True).strip()
+
+            def commit(version: str, migration: str | None = None) -> str:
+                addon = source / "addons" / "example"
+                addon.mkdir(parents=True, exist_ok=True)
+                (addon / "__manifest__.py").write_text(repr({"version": version}))
+                if migration:
+                    script = addon / "migrations" / migration / "post-migrate.py"
+                    script.parent.mkdir(parents=True)
+                    script.write_text("def migrate(cr, version): ...\n")
+                git("add", "addons")
+                git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", version)
+                return git("rev-parse", "HEAD")
+
+            baseline = commit("1.0")
+            commit("1.1", "1.1")
+            head = commit("1.2", "1.2")
+            subprocess.run(["git", "clone", "-q", "--depth=1", source.as_uri(), str(checkout)], check=True)
+            event = root / "event.json"
+            with patch.dict(
+                os.environ, {"GITHUB_EVENT_PATH": str(event), "GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/heads/main"}
+            ):
+                event.write_text(json.dumps({"before": baseline, "after": head, "repository": {"default_branch": "main"}}))
+                self.assertTrue(inventory.git_inventory(checkout, head, product_odoo_version="20.0"))
+                commit("1.4", "1.3")
+                head = commit("1.5")
+                shallow = root / "invalid-checkout"
+                subprocess.run(["git", "clone", "-q", "--depth=1", source.as_uri(), str(shallow)], check=True)
+                event.write_text(json.dumps({"before": baseline, "after": head, "repository": {"default_branch": "main"}}))
+                with self.assertRaisesRegex(ValueError, r"example.*1\.3.*1\.4"):
+                    inventory.git_inventory(shallow, head, product_odoo_version="20.0")
 
     def test_enterprise_tenant_manifest_has_margin_below_ingestion_limit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

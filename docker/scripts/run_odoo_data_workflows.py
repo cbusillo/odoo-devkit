@@ -27,7 +27,14 @@ from unittest.mock import patch
 import psycopg2
 from odoo_addon_paths import PROJECT_ADDONS_ROOT, expand_addon_paths
 from odoo_admin_password import RESTORED_LOGINS_PARAMETER, restored_logins_preserved, validate_admin_password
-from odoo_release_inventory import ModuleSources, migration_version, module_paths, module_sources
+from odoo_release_inventory import (
+    ModuleSources,
+    manifest_migration_version,
+    migration_version,
+    module_paths,
+    module_sources,
+    version_key,
+)
 from odoo_release_plan import load_plan, resolve_plan, verify_image_declaration
 from odoo_upgrade_paths import resolve_upgrade_util
 from odoo_website_bootstrap import load_instance_override_payload, require_launchplane_payloads_if_configured
@@ -309,12 +316,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         workflow_runner.acquire_data_workflow_lock()
         lock_acquired = True
         if update_only:
-            workflow_runner.require_environment_override_payloads_if_configured()
-            if workflow_runner.maintenance_requires_major_upgrade():
-                raise OdooDatabaseUpdateError("Update-only cannot execute a major-version conversion; use post-deploy maintenance.")
-            workflow_runner.prepare_credentials_before_registry()
-            workflow_runner.update_addons(reason="post-deploy upgrade")
-            _logger.info("Addon update completed successfully.")
+            workflow_runner.run_standalone_update()
             return ExitCode.SUCCESS
 
         if post_deploy_maintenance:
@@ -2670,6 +2672,17 @@ with registry.cursor() as cr:
             raise OdooDatabaseUpdateError("Post-deploy maintenance cannot run a diagnostic major-version conversion.")
         return True
 
+    def run_standalone_update(self) -> None:
+        self.require_environment_override_payloads_if_configured()
+        if self.maintenance_requires_major_upgrade():
+            raise OdooDatabaseUpdateError("Update-only cannot execute a major-version conversion; use post-deploy maintenance.")
+        self.prepare_credentials_before_registry()
+        changes = self._read_product_module_changes()
+        updated = self.update_addons(reason="post-deploy upgrade")
+        if changes is not None and changes.raw_fingerprints is not None:
+            self._record_product_module_changes(changes, updated, record_reloaded=True)
+        _logger.info("Addon update completed successfully.")
+
     def run_post_deploy_maintenance(self) -> None:
         _logger.info("Starting post-deploy maintenance for database '%s'", self.local.db_name)
         plan_file = self.os_env.get("ODOO_RELEASE_MODULE_PLAN_FILE", "")
@@ -2678,11 +2691,13 @@ with registry.cursor() as cr:
             return
         crossing = self.maintenance_requires_major_upgrade()
         self.prepare_credentials_before_registry()
-        changes = None if crossing else self._read_product_module_changes(ordinary=True)
+        changes = self._read_product_module_changes(ordinary=True)
         if crossing:
             self.set_major_upgrade_pending(pending=True)
             self.run_prepared_openupgrade()
             self.assert_major_upgrade_complete()
+            if changes is not None:
+                self._record_product_module_changes(changes, set(), record_reloaded=True)
             self.set_major_upgrade_pending(pending=False)
         self.install_addons(reason="post-deploy install")
         updated = set()
@@ -2697,7 +2712,7 @@ with registry.cursor() as cr:
         self.connect_to_db()
         self.assert_core_schema_healthy()
         self.ensure_gpt_users()
-        if changes is not None:
+        if changes is not None and not crossing:
             self._record_product_module_changes(changes, updated)
         _logger.info("Post-deploy maintenance completed successfully.")
 
@@ -2866,10 +2881,12 @@ with registry.cursor() as cr:
     ) -> None:
         if not source.migrations:
             return
-        candidate = migration_version(source.version, major)
+        candidate = manifest_migration_version(source.version, major)
         for directory in sorted(source.migrations):
             folder = Path(directory).name
-            target = candidate if folder == "0.0.0" else migration_version(folder, major)
+            if folder == "0.0.0":
+                continue
+            target = migration_version(folder, major)
             if target > candidate:
                 raise ValueError(f"Addon {name} migration folder {folder} exceeds manifest version {source.version}.")
             if (
@@ -2877,14 +2894,18 @@ with registry.cursor() as cr:
                 and loaded.state in {"installed", "to upgrade"}
                 and previous is not None
                 and directory not in previous["migrations"]
-                and target <= migration_version(loaded.version, major)
             ):
-                raise ValueError(
-                    f"Addon {name} migration folder {folder} cannot run from installed version {loaded.version} "
-                    f"with manifest version {source.version}."
-                )
+                installed = version_key(loaded.version)
+                unqualified = folder.count(".") <= 2
+                if (target[2:] if unqualified else target) <= (installed[2:] if unqualified else installed):
+                    raise ValueError(
+                        f"Addon {name} migration folder {folder} cannot run from installed version {loaded.version} "
+                        f"with manifest version {source.version}."
+                    )
 
-    def _record_product_module_changes(self, changes: ProductModuleChanges, requested: set[str]) -> None:
+    def _record_product_module_changes(
+        self, changes: ProductModuleChanges, requested: set[str], *, record_reloaded: bool = False
+    ) -> None:
         try:
             loaded = self._product_module_loads(list(changes.sources))
             previous = changes.fingerprints
@@ -2896,13 +2917,14 @@ with registry.cursor() as cr:
                     if name in requested:
                         raise OdooDatabaseUpdateError(f"Product addon {name} did not finish loading.")
                     continue
-                if name in requested and before is not None and before.witness == after.witness:
+                reloaded = before is not None and before.witness != after.witness
+                if name in requested and before is not None and not reloaded:
                     raise OdooDatabaseUpdateError(f"Product addon {name} has no module load readback.")
                 if (
                     changes.raw_fingerprints is None
                     or name in requested
                     or (before is None or before.state != "installed")
-                    or (name in previous and previous[name]["sha256"] == source.sha256 and before.witness != after.witness)
+                    or (reloaded and (record_reloaded or (name in previous and previous[name]["sha256"] == source.sha256)))
                 ):
                     fingerprints[name] = {"sha256": source.sha256, "migrations": sorted(source.migrations), "witness": after.witness}
                 elif name in previous:
@@ -3653,6 +3675,8 @@ with registry.cursor() as cr:
         self.prepare_credentials_before_registry(restored_copy=restored_copy, do_sanitize=do_sanitize)
 
     def prepare_restored_modules(self, *, do_sanitize: bool) -> None:
+        changes = self._read_product_module_changes()
+        updated = set()
         if self.local.openupgrade_enabled:
             self.run_prepared_openupgrade(restored_copy=True, do_sanitize=do_sanitize)
 
@@ -3662,17 +3686,19 @@ with registry.cursor() as cr:
             _logger.info("OpenUpgrade enabled; skipping update_addons per OPENUPGRADE_SKIP_UPDATE_ADDONS.")
             if self._should_refresh_website_after_openupgrade():
                 self._reset_website_snippets_inheritance()
-                self.update_addons(
+                updated = self.update_addons(
                     explicit_modules=["website"],
                     reason="OpenUpgrade 19 website refresh",
                 )
         else:
-            self.update_addons(reason="restore upgrade")
+            updated = self.update_addons(reason="restore upgrade")
         self.connect_to_db()
         self.reconcile_missing_manifest_install_queue()
         self.assert_install_queue_is_resolvable()
 
         self.prepare_credentials_before_registry(restored_copy=True, do_sanitize=do_sanitize)
+        if changes is not None and changes.raw_fingerprints is not None:
+            self._record_product_module_changes(changes, updated, record_reloaded=True)
 
 
 class InProcessMaintenanceRunner(OdooDataWorkflowRunner):

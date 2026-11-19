@@ -11,6 +11,7 @@ import runpy
 import subprocess
 import sys
 from collections.abc import Iterable
+from functools import partial
 from pathlib import Path
 from typing import Any, NamedTuple
 from xml.etree import ElementTree
@@ -62,7 +63,9 @@ def git_inventory(repository: Path, commit: str, module_name: str = "", *, produ
         content[path] = blobs[end + 1 : end + 1 + size]
         offset = end + size + 2
     if product_odoo_version:
-        verify_product_source_migrations(content, previous_source_paths(repository, commit), int(product_odoo_version.split(".")[0]))
+        major = int(product_odoo_version.split(".")[0])
+        verify_introduced_migrations(repository, commit, major)
+        verify_product_source_migrations(content, major)
     return classify_files(content, {Path("."): module_name or repository.name})[0]
 
 
@@ -175,54 +178,117 @@ def migration_folders(paths: Iterable[str]) -> set[Path]:
         path.parent
         for item in paths
         if (path := Path(item)).parent.parent.name in {"migrations", "upgrades"}
+        and path.parent.name != "tests"
         and path.name.startswith(("pre-", "post-", "end-"))
         and path.suffix == ".py"
     }
 
 
+def version_key(version: str) -> tuple[int, ...]:
+    parts = version.removeprefix("saas~").replace(".saas~", ".").split(".")
+    while parts and int(parts[-1]) == 0:
+        parts.pop()
+    return tuple(map(int, parts))
+
+
+def manifest_migration_version(version: str, major: int) -> tuple[int, ...]:
+    if not re.fullmatch(r"\d+\.\d+(?:\.\d+){0,3}", version, re.ASCII):
+        raise ValueError(f"Invalid Odoo manifest version {version!r}")
+    series = f"{major}.0"
+    if version.count(".") <= 2 and not version.startswith(series):
+        version = f"{series}.{version}"
+    if not version.startswith(f"{series}."):
+        raise ValueError(f"Odoo manifest version {version!r} must start with {series}.")
+    return _migration_order(version, major)
+
+
 def migration_version(version: str, major: int) -> tuple[int, ...]:
-    if not re.fullmatch(r"\d+\.\d+(?:\.\d+){0,3}", version):
-        raise ValueError(f"Invalid Odoo module or migration version {version!r}")
-    parts = tuple(int(part) for part in version.split("."))
-    if len(parts) <= 3 and parts[:2] != (major, 0):
-        parts = (major, 0, *parts)
-    return parts + (0,) * (5 - len(parts))
+    # https://github.com/odoo/odoo/blob/20.0/odoo/modules/migration.py
+    prefix = r"(?:6\.1|(?:[6-9]|[1-9]\d+)\.0|(?:[7-9]|10)\.saas~[1-9]\d*|saas~(?:1[1-9]|[2-9]\d+)\.[1-9])"
+    if not re.fullmatch(rf"(?:{prefix}\.)?\d+\.\d+(?:\.\d+)?", version, re.ASCII):
+        raise ValueError(f"Invalid Odoo migration folder {version!r}")
+    return _migration_order(version, major)
 
 
-def verify_product_source_migrations(content: dict[str, bytes], previous_paths: set[str] | None, major: int) -> None:
-    earlier = migration_folders(previous_paths or ())
-    for folder in sorted(migration_folders(content)):
-        root = folder.parent.parent
-        if not root.is_relative_to("addons") or root.is_relative_to("addons/shared") or folder.name == "0.0.0":
-            continue
-        manifest = content.get((root / "__manifest__.py").as_posix())
-        if manifest is None:
-            continue
-        version = ast.literal_eval(manifest.decode()).get("version", "1.0")
-        candidate = migration_version(version, major)
-        target = migration_version(folder.name, major)
-        if target > candidate or (previous_paths is not None and folder not in earlier and target != candidate):
-            raise ValueError(f"Addon {root.name} migration folder {folder.name} does not match manifest version {version}.")
+def _migration_order(version: str, major: int) -> tuple[int, ...]:
+    if version.count(".") <= 2 and version != "0.0.0":
+        version = f"{major}.0.{version}"
+    return version_key(version)
 
 
-def previous_source_paths(repository: Path, commit: str) -> set[str] | None:
+def _product_migration_folders(paths: Iterable[str]) -> set[Path]:
+    return {
+        folder
+        for folder in migration_folders(paths)
+        if len(folder.parts) == 4
+        and folder.is_relative_to("addons")
+        and not folder.is_relative_to("addons/shared")
+        and folder.name != "0.0.0"
+    }
+
+
+def _check_migration_folder(folder: Path, manifest: bytes, major: int, *, introduced: bool) -> None:
+    version = ast.literal_eval(manifest.decode()).get("version", "1.0")
+    candidate = manifest_migration_version(version, major)
+    target = migration_version(folder.name, major)
+    if target > candidate or (introduced and target != candidate):
+        raise ValueError(
+            f"Addon {folder.parent.parent.name} migration folder {folder.name} does not match manifest version {version}."
+        )
+
+
+def verify_product_source_migrations(content: dict[str, bytes], major: int) -> None:
+    for folder in sorted(_product_migration_folders(content)):
+        manifest = content.get((folder.parent.parent / "__manifest__.py").as_posix())
+        if manifest is not None:
+            _check_migration_folder(folder, manifest, major, introduced=False)
+
+
+def verify_introduced_migrations(repository: Path, commit: str, major: int) -> None:
     event_path = os.environ.get("GITHUB_EVENT_PATH")
     event = json.loads(Path(event_path).read_text()) if event_path else {}
     pull_request = event.get("pull_request", {})
     if (pull_request.get("head", {}).get("sha") if pull_request else event.get("after")) != commit:
-        return None
+        return
     baseline = pull_request.get("base", {}).get("sha") or event.get("before")
     if not isinstance(baseline, str) or not re.fullmatch(r"[0-9a-f]{40}", baseline):
-        return None
-    if pull_request:
-        merge_base = subprocess.run(["git", "-C", str(repository), "merge-base", baseline, commit], capture_output=True, text=True)
-        if merge_base.returncode:
-            return None
-        baseline = merge_base.stdout.strip()
-    tree = subprocess.run(
-        ["git", "-C", str(repository), "ls-tree", "-r", "-z", "--name-only", baseline, "--", "addons"], capture_output=True
-    )
-    return set(tree.stdout.decode().split("\0")) if tree.returncode == 0 else None
+        return
+    comparison = Path(__file__).resolve().parents[2] / ".github/actions/addon-tests/comparison-base.sh"
+    baseline = subprocess.check_output(["bash", str(comparison), str(repository), baseline], text=True).strip()
+    git = partial(_migration_git, repository)
+    for entry in git("rev-list", "--reverse", "--topo-order", "--parents", f"{baseline}..{commit}").splitlines():
+        revision, *parents = entry.split()
+        base = parents[:1] or ["--root"]
+        added = git(
+            "diff-tree",
+            "--no-commit-id",
+            "--no-renames",
+            "--diff-filter=A",
+            "--name-only",
+            "-r",
+            "-z",
+            *base,
+            revision,
+            "--",
+            "addons",
+        )
+        folders = _product_migration_folders(added.split("\0"))
+        if not folders:
+            continue
+        for parent in parents:
+            if not folders:
+                break
+            earlier = git("ls-tree", "-r", "-z", "--name-only", parent, "--", *map(str, sorted(folders)))
+            folders.difference_update(migration_folders(earlier.split("\0")))
+        for folder in sorted(folders):
+            path = (folder.parent.parent / "__manifest__.py").as_posix()
+            manifest = git("ls-tree", "--name-only", revision, "--", path)
+            if manifest:
+                _check_migration_folder(folder, git("show", f"{revision}:{path}").encode(), major, introduced=True)
+
+
+def _migration_git(repository: Path, *args: str) -> str:
+    return subprocess.check_output(["git", "-C", str(repository), *args], text=True)
 
 
 def module_paths(roots: list[Path]) -> dict[str, Path]:

@@ -131,16 +131,19 @@ can still reload modules for repairs. Odoo handles reverse dependencies.
 
 The fingerprint is a database configuration parameter and follows the
 database through dumps and restores. It advances after module load readback.
+Restore, standalone update, and major conversion advance the record for
+addons they load so later maintenance sees the migrations already applied.
 Planned cutovers use the verified install/update list and record modules
-confirmed by their receipt. Failed maintenance preserves the previous record.
+confirmed by their receipt.
 
 Odoo uses manifest versions to decide which migration scripts to run. Artifact
-validation checks that newly added versioned migration folders match the
-candidate manifest when the triggering source revision is available. Artifact
-and maintenance validation reject folders newer than the manifest. On tracked
-databases, maintenance also rejects newly observed folders that the installed
-version would skip. Odoo can still run intermediate migrations when the
-database skipped releases.
+validation follows the GitHub comparison range and checks each newly added
+versioned migration folder against the manifest at the commit that added it.
+Artifact and maintenance validation use Odoo's folder naming and version
+ordering. Both reject folders newer than the manifest. On tracked databases,
+maintenance also rejects newly observed folders that the installed version
+would skip. Odoo runs eligible intermediate migrations when the database
+skipped releases.
 
 ## One-time major-version conversion
 

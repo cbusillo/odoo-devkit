@@ -828,6 +828,9 @@ def publish_runtime_artifact(
                             snapshot.repository.rsplit("/", 1)[-1],
                             runtime_values.get("ODOO_VERSION", "") if input_name == "tenant" else "",
                         ],
+                        env={**os.environ, "STYLE_CHECK_TOKEN": source_github_token}
+                        if input_name == "tenant" and source_github_token
+                        else None,
                         capture_output=True,
                         check=True,
                     )

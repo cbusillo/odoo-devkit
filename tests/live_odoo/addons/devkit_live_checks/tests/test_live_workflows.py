@@ -639,11 +639,42 @@ os.execv('/bin/bash', ['bash', '-c', command])
                 runner.run_post_deploy_maintenance()
                 self.assertIn("New tenant name", view_arch())
 
-                migration = view.parent / "migrations" / "99.0.1.0"
+                migration = view.parent / "migrations" / "20.0.1"
                 migration.mkdir(parents=True)
                 (migration / "post-migrate.py").write_text("def migrate(cr, version):\n    raise AssertionError\n")
-                with self.assertRaisesRegex(workflows.OdooDatabaseUpdateError, "fixture_product_view.*99.0.1.0"):
+                with self.assertRaisesRegex(workflows.OdooDatabaseUpdateError, r"fixture_product_view.*20\.0\.1"):
                     runner.run_post_deploy_maintenance()
+                (migration / "post-migrate.py").unlink()
+                migration.rmdir()
+
+                runner._reset_db_connection()
+                self.drop(database)
+                database_command(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(database)))
+                run(["pg_restore", "-d", database, str(dump)], env=runner.os_env)
+                manifest = view.parent / "__manifest__.py"
+                manifest.write_text(manifest.read_text().replace("'1.0'", "'1.1.2'"))
+                first = view.parent / "migrations" / "1.1"
+                first.mkdir()
+                (first / "post-migrate.py").write_text(
+                    "def migrate(cr, version):\n"
+                    "    cr.execute('INSERT INTO ir_config_parameter (key, value) VALUES (%s, %s)', "
+                    "('fixture.migrated', version))\n"
+                )
+                migration = view.parent / "migrations" / "1.1.2"
+                migration.mkdir()
+                (migration / "post-migrate.py").write_text(
+                    "def migrate(cr, version):\n"
+                    "    cr.execute('UPDATE ir_config_parameter SET value=%s WHERE key=%s', "
+                    "(version + ':second', 'fixture.migrated'))\n"
+                    "    assert cr.rowcount == 1\n"
+                )
+                runner.local.update_modules = "fixture_product_view"
+                runner.prepare_restored_modules(do_sanitize=True)
+                self.assertIn("New tenant name", view_arch())
+                self.assertTrue(record("fixture.migrated").endswith(".1.0:second"))
+                edit_record("fixture.product")
+                runner.run_post_deploy_maintenance()
+                self.assertEqual(record("fixture.product"), "database edit")
 
     @staticmethod
     def write_fingerprint_fixture(addons: Path) -> Path:
