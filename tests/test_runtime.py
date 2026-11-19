@@ -8,6 +8,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1556,6 +1557,21 @@ homepage = true
             manifest = replace(manifest, devkit_repo=manifest.runtime_repo)
             original_manifest = manifest.manifest_path.read_bytes()
             output = temp_root / "check.json"
+            runner_uv = temp_root / "uv"
+            runner_uv.write_text(
+                """#!/bin/sh
+case "$1 $2" in
+    "python find") exit 1 ;;
+    "python install") printf '%s\\n' "$@" > "$0.installed"; exit 0 ;;
+    "lock --check")
+        if ! grep -Fxq -- "$FIXTURE_PYTHON" "$0.installed" 2>/dev/null; then exit 2; fi ;;
+esac
+exec "$FIXTURE_UV" "$@"
+"""
+            )
+            runner_uv.chmod(0o755)
+            real_uv = shutil.which("uv")
+            assert real_uv is not None
             commands: list[list[str]] = []
 
             def execute(*, command: list[str], **_kwargs: object) -> None:
@@ -1583,6 +1599,14 @@ homepage = true
                     )
 
             with (
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "PATH": f"{temp_root}{os.pathsep}{os.environ['PATH']}",
+                        "FIXTURE_UV": real_uv,
+                        "FIXTURE_PYTHON": manifest.workspace.python_version,
+                    },
+                ),
                 mock.patch("odoo_devkit.runtime.__file__", str(runtime_root / "odoo_devkit/runtime.py")),
                 mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_base_images"),
                 mock.patch("odoo_devkit.local_runtime.ensure_registry_auth_for_image_push") as push_auth,
@@ -4721,6 +4745,7 @@ install_modules = ["opw_custom"]
         (tenant_repo_path / "pyproject.toml").write_text(
             "[project]\n"
             'name = "tenant-dependencies"\n'
+            'requires-python = ">=3.13"\n'
             'version = "0.0.0"\n'
             "dependencies = []\n\n"
             "[tool.uv]\n"

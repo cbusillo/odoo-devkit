@@ -112,7 +112,9 @@ The command requires the executing devkit and runtime to be the same checkout
 at the requested exact SHA. It overrides their manifest refs in memory and
 uses the production artifact publisher's source verification, staging, lock
 and build-tool checks, base-image provenance, dependency preflight, and
-`docker/artifact.Dockerfile` production target. Buildx Bake passes every requested
+`docker/artifact.Dockerfile` production target. Artifact staging and addon CI use the manifest’s workspace Python
+for the offline tenant lock check. They install that interpreter with uv when it is
+missing from the runner. Buildx Bake passes every requested
 platform's production result directly to the shared
 `docker/dependency-evidence.Dockerfile` through a
 [named target context](https://docs.docker.com/build/bake/contexts/#using-a-target-as-a-build-context).
