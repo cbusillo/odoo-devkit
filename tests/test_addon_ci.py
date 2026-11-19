@@ -38,15 +38,17 @@ ide={mode="tenant_repo",focus_paths=[],attached_paths=[]}
             image = "registry.invalid/base@sha256:" + "a" * 64
             with (
                 patch.object(addon_ci, "ROOT", root),
-                patch.object(addon_ci, "command", return_value=subprocess.CompletedProcess([], 0, "", "")),
-                patch.object(addon_ci, "ensure_dependency_python") as prepare_python,
+                patch.object(addon_ci, "command", return_value=subprocess.CompletedProcess([], 0, "", "")) as command_mock,
                 patch.object(addon_ci, "derive_base_python_lock") as derive,
                 patch.object(addon_ci, "stage_publishable_dependency_workspace"),
                 patch.object(addon_ci, "read_base_python_catalogs", return_value=()),
                 patch("odoo_devkit.local_runtime.resolve_image_digest", return_value=image.split("@", 1)[1]),
             ):
                 addon_ci.build_test_image(image, tenant, context, "fixture:test")
-            prepare_python.assert_called_once_with(python_version=manifest.workspace.python_version, cwd=context)
+            installation = next(
+                call.args[0] for call in command_mock.call_args_list if call.args[0][:3] == ["uv", "python", "install"]
+            )
+            self.assertEqual(installation[3], manifest.workspace.python_version)
             self.assertTrue(derive.called)
             for call in derive.call_args_list:
                 self.assertEqual(call.kwargs["python_version"], manifest.workspace.python_version)
@@ -157,6 +159,8 @@ attached_paths=[]
             def execute(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
                 if args[:2] == ["docker", "build"]:
                     docker_calls.append(args)
+                    return subprocess.CompletedProcess(args, 0, "", "")
+                if args[:3] == ["uv", "python", "install"]:
                     return subprocess.CompletedProcess(args, 0, "", "")
                 return original_command(args, **kwargs)
 

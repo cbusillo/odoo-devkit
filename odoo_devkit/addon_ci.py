@@ -20,7 +20,7 @@ from typing import Literal, TypedDict
 
 from .artifact_inputs import effective_artifact_input_sources, load_artifact_inputs_definition
 from .base_python import BASE_PYTHON_PLATFORMS, read_base_python_catalogs
-from .dependency_workspace import derive_base_python_lock, ensure_dependency_python, stage_publishable_dependency_workspace
+from .dependency_workspace import derive_base_python_lock, stage_publishable_dependency_workspace
 from .manifest import load_workspace_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -154,7 +154,7 @@ def build_test_image(image: str, tenant: Path | None, context: Path, tag: str, *
         if manifest is not None
         else tomllib.loads((catalogs[1] / "pyproject.toml").read_text())["project"]["requires-python"]
     )
-    ensure_dependency_python(python_version=python_requirement, cwd=context)
+    command(["uv", "python", "install", python_requirement])
     if manifest is not None:
         # Actions checkouts need not use the developer's sibling directory names.
         manifest = replace(
