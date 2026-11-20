@@ -1,6 +1,6 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "description": "Moves exact devkit pins and Odoo 20 shared-addons pins to their main head commits.",
+  "description": "Updates exact devkit and Odoo 20 shared-addons commits and paired Community base image digests.",
   "customManagers": [
     {
       "customType": "regex",
@@ -11,6 +11,18 @@
       "currentValueTemplate": "main",
       "packageNameTemplate": "https://github.com/{{{depName}}}",
       "datasourceTemplate": "git-refs"
+    },
+    {
+      "customType": "jsonata",
+      "fileFormat": "toml",
+      "managerFilePatterns": ["/^workspace\\.toml$/"],
+      "matchStrings": [
+        "$[build.odoo_version = '20.0'].build.base_runtime_image[$contains($, /^ghcr\\.io\\/cbusillo\\/odoo-docker@sha256:[a-f0-9]{64}$/)].{'currentValue': '20.0-runtime', 'currentDigest': $substringAfter($, '@')}",
+        "$[build.odoo_version = '20.0'].build.base_devtools_image[$contains($, /^ghcr\\.io\\/cbusillo\\/odoo-docker@sha256:[a-f0-9]{64}$/)].{'currentValue': '20.0-devtools', 'currentDigest': $substringAfter($, '@')}"
+      ],
+      "depNameTemplate": "ghcr.io/cbusillo/odoo-docker",
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "exact"
     },
     {
       "customType": "regex",
@@ -45,6 +57,13 @@
       "matchManagers": ["custom.jsonata"],
       "matchDepNames": ["cbusillo/odoo-shared-addons"],
       "commitMessageTopic": "shared-addons pin",
+      "schedule": ["at any time"]
+    },
+    {
+      "matchManagers": ["custom.jsonata"],
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["ghcr.io/cbusillo/odoo-docker"],
+      "groupName": "Odoo 20 base images",
       "schedule": ["at any time"]
     }
   ]

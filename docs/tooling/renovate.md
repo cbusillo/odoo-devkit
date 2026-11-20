@@ -27,6 +27,11 @@ Renovate opens a pull request for each alert it can fix.
   unmerged conversion does not. Odoo 19 shared-addons pins stay unchanged.
   Shared-addons updates use ordinary visible pull requests, preview checks
   and the merge train. Production still requires Client release acceptance.
+  For Community 20, the same preset proposes both digest-only base-image pins
+  together from the stable runtime and devtools tags. It also repairs one stale
+  pin when the other already matches. Before landing, check that both proposed
+  digests identify the same producer run in their manifest annotations. The two
+  stable tags are promoted separately.
 
 ## Repository Config
 

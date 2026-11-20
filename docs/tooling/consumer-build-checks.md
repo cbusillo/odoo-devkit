@@ -125,6 +125,12 @@ before the check succeeds. Base-image authentication uses the existing read
 path; image push authentication is omitted. Temporary evidence is removed when
 the command exits.
 
+Both production Dockerfiles build dependencies with the devtools toolchain,
+starting from the serving image's Python interpreter, virtual environment, and
+base constraints. The serving image receives the completed production virtual
+environment and its dependency provenance. The local development target keeps
+the devtools environment and installs development dependencies there.
+
 The JSON records built source commits, platforms, resolved addon inputs and
 base-image digests, staged lock hashes, and validated in-image
 `dependency_provenance`. It is build-check evidence, not a
