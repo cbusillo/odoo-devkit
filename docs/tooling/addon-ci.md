@@ -46,9 +46,12 @@ skipping the Odoo runner. They also run
 The default remains full addon validation.
 
 The runner installs all installable owned addons, including ones without tests,
-and selects tests by the owned module names. Shared addons are installed as
-tenant dependencies without selecting their tests again. Test discovery remains
-Odoo's responsibility. Browser suites use the image's Chromium plus the locked
+and selects tests by the owned module names. For tenant runs, it adds the
+required platform addons and the shared addons named in the product's artifact
+install list. The entire shared checkout is available for Odoo to resolve
+dependencies. Shared-addon CI
+installs and tests its own full addon set independently. Browser suites use
+the image's Chromium plus the locked
 CI-only `websocket-client` dependency catalog in `docker/addon-tests`.
 Its Python range covers the 3.13 and 3.14 image families; the base image
 supplies the interpreter that executes Odoo and its addon tests.
