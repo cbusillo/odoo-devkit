@@ -1288,23 +1288,16 @@ def load_runtime_context(
         artifact_inputs_definition = load_artifact_inputs_definition(manifest=manifest)
     except ArtifactInputsError as error:
         raise RuntimeCommandError(str(error)) from error
-    effective_stack_definition = resolve_manifest_runtime_stack_definition(
+    effective_stack_definition, runtime_selection = resolve_manifest_runtime_stack_selection(
         manifest=manifest,
         stack_definition=loaded_stack.stack_definition,
+        artifact_inputs_definition=artifact_inputs_definition,
+        runtime_repo_path=runtime_repo_path,
         allow_runtime_payload_context=(
             not require_local_instance
             and manifest.runtime.instance.strip().lower() != "local"
             and explicit_runtime_environment_payload_is_configured()
         ),
-    )
-    website_bootstrap = load_website_bootstrap_definition(manifest=manifest)
-    runtime_selection = resolve_runtime_selection(
-        stack_definition=effective_stack_definition,
-        artifact_inputs_definition=artifact_inputs_definition,
-        context_name=manifest.runtime.context,
-        instance_name=manifest.runtime.instance,
-        repo_root=runtime_repo_path,
-        website_bootstrap=website_bootstrap,
     )
     if enforce_required_environment:
         ensure_required_runtime_selection_values(
@@ -1326,6 +1319,28 @@ def load_runtime_context(
         selection=runtime_selection,
         runtime_env_file=runtime_env_file,
     )
+
+
+def resolve_manifest_runtime_stack_selection(
+    *,
+    manifest: WorkspaceManifest,
+    stack_definition: StackDefinition,
+    artifact_inputs_definition: ArtifactInputsDefinition | None,
+    runtime_repo_path: Path,
+    allow_runtime_payload_context: bool,
+) -> tuple[StackDefinition, RuntimeSelection]:
+    stack = resolve_manifest_runtime_stack_definition(
+        manifest=manifest, stack_definition=stack_definition, allow_runtime_payload_context=allow_runtime_payload_context
+    )
+    selection = resolve_runtime_selection(
+        stack_definition=stack,
+        artifact_inputs_definition=artifact_inputs_definition,
+        context_name=manifest.runtime.context,
+        instance_name=manifest.runtime.instance,
+        repo_root=runtime_repo_path,
+        website_bootstrap=load_website_bootstrap_definition(manifest=manifest),
+    )
+    return stack, selection
 
 
 def resolve_manifest_runtime_stack_definition(

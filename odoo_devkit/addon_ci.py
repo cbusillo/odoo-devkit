@@ -21,10 +21,11 @@ from typing import Literal, TypedDict
 from .artifact_inputs import effective_artifact_input_sources, load_artifact_inputs_definition
 from .base_python import BASE_PYTHON_PLATFORMS, read_base_python_catalogs
 from .dependency_workspace import derive_base_python_lock, stage_publishable_dependency_workspace
-from .manifest import load_workspace_manifest
+from .manifest import WorkspaceManifest, load_workspace_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
 SUMMARY = re.compile(r"(\d+) failed, (\d+) error[(]s[)] of (\d+) tests")
+TEST_DATABASE = "addon_ci"
 
 
 class TestCounts(TypedDict):
@@ -35,6 +36,8 @@ class TestCounts(TypedDict):
 
 class AddonResult(TypedDict, total=False):
     addons: list[str]
+    install_addons: list[str]
+    installed_addons: list[str]
     external_sources: list[dict[str, str]]
     image: str
     test_image_id: str
@@ -67,6 +70,25 @@ def discover_addons(root: Path) -> list[str]:
     return addons
 
 
+def product_addons_to_install(manifest: WorkspaceManifest) -> set[str]:
+    from .local_runtime import (
+        LAUNCHPLANE_REQUIRED_ODOO_MODULES,
+        load_stack,
+        resolve_manifest_runtime_stack_selection,
+        resolve_stack_file_path,
+    )
+
+    artifact = replace(manifest, runtime=replace(manifest.runtime, instance="artifact"))
+    _, selection = resolve_manifest_runtime_stack_selection(
+        manifest=artifact,
+        stack_definition=load_stack(resolve_stack_file_path(ROOT)).stack_definition,
+        artifact_inputs_definition=None,
+        runtime_repo_path=ROOT,
+        allow_runtime_payload_context=True,
+    )
+    return {*LAUNCHPLANE_REQUIRED_ODOO_MODULES, *selection.effective_install_modules}
+
+
 def test_result(log: str, exit_code: int) -> TestCounts:
     matches = SUMMARY.findall(log)
     if not matches:
@@ -76,6 +98,30 @@ def test_result(log: str, exit_code: int) -> TestCounts:
     if exit_code or failed or errors or not count:
         raise TestRunError(f"Odoo test run failed: exit={exit_code}, failed={failed}, errors={errors}, tests={count}", counts)
     return counts
+
+
+def read_installed_addons(database_container: str) -> list[str]:
+    query = "SELECT name FROM ir_module_module WHERE state = 'installed' ORDER BY name"
+    return command(
+        [
+            "docker",
+            "exec",
+            database_container,
+            "psql",
+            "-h",
+            "127.0.0.1",
+            "-U",
+            "odoo",
+            "-d",
+            TEST_DATABASE,
+            "-XAt",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-c",
+            query,
+        ],
+        capture=True,
+    ).stdout.splitlines()
 
 
 def execution_environment() -> dict[str, str]:
@@ -217,9 +263,7 @@ def run_tests(
     devkit_checks: bool = False,
 ) -> None:
     owned_addons = discover_addons(addons_root)
-    install_addons = list(owned_addons)
-    if support_root is not None:
-        install_addons = sorted(set(install_addons + discover_addons(support_root)))
+    install_addons = set(owned_addons)
     token = f"odoo-addon-ci-{uuid.uuid4().hex[:12]}"
     database_container = f"{token}-db"
     test_container = f"{token}-tests"
@@ -231,12 +275,22 @@ def run_tests(
     external_paths: list[str] = []
     result["external_sources"] = external_sources
     try:
+        manifest = None
+        if tenant is not None:
+            manifest = load_workspace_manifest(tenant / "workspace.toml")
+            product_addons = product_addons_to_install(manifest)
+            if addons_root != tenant / "addons":
+                available_support = discover_addons(support_root) if support_root is not None else ()
+                product_addons.intersection_update(available_support)
+            install_addons.update(product_addons)
+        elif support_root is not None:
+            install_addons.update(discover_addons(support_root))
+        result["install_addons"] = sorted(install_addons)
         with tempfile.TemporaryDirectory(prefix=token, dir=output.parent) as temporary:
             context = Path(temporary)
             external_root = context / "external"
             external_root.mkdir()
-            if tenant is not None:
-                manifest = load_workspace_manifest(tenant / "workspace.toml")
+            if manifest is not None:
                 inputs = load_artifact_inputs_definition(manifest=manifest)
                 if inputs:
                     sources = effective_artifact_input_sources(
@@ -385,7 +439,7 @@ def run_tests(
             "--db_user",
             "odoo",
             "--database",
-            "addon_ci",
+            TEST_DATABASE,
             "--addons-path",
             ",".join(paths),
             "--data-dir",
@@ -393,7 +447,7 @@ def run_tests(
             "--without-demo",
             "all",
             "--init",
-            ",".join(install_addons),
+            ",".join(result["install_addons"]),
             "--test-enable",
             "--test-tags",
             ",".join(f"/{name}" for name in owned_addons),
@@ -419,6 +473,10 @@ def run_tests(
         log = (output / "odoo.log").read_text(encoding="utf-8")
         print(log)
         result.update(test_result(log, completed.returncode))
+        result["installed_addons"] = read_installed_addons(database_container)
+        missing = sorted(install_addons.difference(result["installed_addons"]))
+        if missing:
+            raise ValueError(f"Odoo did not install required addons: {', '.join(missing)}")
         result["state"] = "passed"
     except TestRunError as error:
         result.update(error.counts)

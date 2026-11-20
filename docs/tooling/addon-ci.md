@@ -46,9 +46,13 @@ skipping the Odoo runner. They also run
 The default remains full addon validation.
 
 The runner installs all installable owned addons, including ones without tests,
-and selects tests by the owned module names. Shared addons are installed as
-tenant dependencies without selecting their tests again. Test discovery remains
-Odoo's responsibility. Browser suites use the image's Chromium plus the locked
+and selects tests by the owned module names. Full tenant runs also install
+the required platform addons and the product's artifact install list, including
+modules the owned addons do not depend on directly. A focused tenant run with
+a selected addon directory adds only the declared modules from its shared
+support checkout. Odoo can resolve dependencies using the entire shared
+checkout. Shared-addon CI installs and tests its own full addon set
+independently. Browser suites use the image's Chromium plus the locked
 CI-only `websocket-client` dependency catalog in `docker/addon-tests`.
 Its Python range covers the 3.13 and 3.14 image families; the base image
 supplies the interpreter that executes Odoo and its addon tests.
@@ -85,10 +89,11 @@ layers, under its existing host cache policy. The runner removes only its own na
 hosted runner supplies an additional cleanup boundary for job cancellation.
 
 `odoo.log` and `result.json` are written to the output directory. The result
-records selected modules, external source commits, requested image, the actual
-built test image's immutable ID, test count and elapsed
+records the test selection, requested and installed modules, external source
+commits, requested image, the actual built test image's immutable ID, test count and elapsed
 seconds; the elapsed time is also reported in the Actions job summary. A missing
-summary, zero tests, reported failures/errors, or nonzero Odoo exit fails the job.
+summary, zero tests, reported failures/errors, nonzero Odoo exit, or any requested
+module missing from the installed set fails the job.
 Callers upload evidence even when the run fails. Legacy callers may filter
 addon and test-input changes. Callers adopting `qualityGate.test.local` and
 `qualityGate.test.ci` run the complete suite for every source PR head and merge

@@ -1,4 +1,5 @@
 import base64
+import json
 import os
 import shutil
 import subprocess
@@ -202,6 +203,72 @@ attached_paths=[]
                 addon.mkdir()
                 (addon / "__manifest__.py").write_text(repr({"installable": installable}))
             self.assertEqual(discover_addons(root), ["no_tests", "tested"])
+
+    def test_full_tenant_validation_installs_startup_addons_and_leaves_optional_support_available(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            tenant = root / "tenant"
+            owned = tenant / "addons"
+            support = root / "support"
+            platform = root / "platform"
+            platform.mkdir()
+            for parent, names in (
+                (owned, ("owned_one", "owned_two")),
+                (support, ("declared", "optional", "launchplane_settings", "disable_odoo_online")),
+            ):
+                for name in names:
+                    addon = parent / name
+                    addon.mkdir(parents=True)
+                    (addon / "__manifest__.py").write_text("{}\n")
+            (tenant / "workspace.toml").write_text("""schema_version=1
+tenant="fixture"
+workspace={name="fixture",python="3.13"}
+repos={tenant={name="fixture",path="."}}
+runtime={context="fixture",instance="local",database="fixture",addons_paths=[]}
+ide={mode="tenant_repo",focus_paths=[],attached_paths=[]}
+""")
+            (platform / "stack.toml").write_text("""schema_version=1
+odoo_version="20.0"
+addons_path=[]
+contexts.fixture={install_modules=["declared", "native_startup"],instances={local={install_modules_add=["optional"]}}}
+""")
+            requested = {"owned_one", "owned_two", "declared", "native_startup", "launchplane_settings", "disable_odoo_online"}
+            installed = requested | {"transitive_support"}
+
+            def docker_command(args: list[str], *, capture: bool = False) -> subprocess.CompletedProcess[str]:
+                if args[:2] == ["docker", "exec"] and args[3] == "psql":
+                    return subprocess.CompletedProcess(args, 0, "\n".join(sorted(installed)), "")
+                return subprocess.CompletedProcess(args, 0, "20.0" if capture else "", "")
+
+            def run_fixture() -> None:
+                addon_ci.run_tests(
+                    image="fixture",
+                    version="20.0",
+                    addons_root=owned,
+                    support_root=support,
+                    tenant=tenant,
+                    output=root / "results",
+                    timeout=60,
+                )
+
+            with (
+                patch.object(addon_ci, "ROOT", root),
+                patch.object(addon_ci, "build_test_image"),
+                patch.object(addon_ci, "command", side_effect=docker_command) as command_mock,
+                patch.object(addon_ci, "copy_test_inputs") as copy,
+                patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0)),
+                patch.object(addon_ci, "test_result", return_value={"tests": 1, "errors": 0, "failed": 0}),
+            ):
+                run_fixture()
+                invocation = next(call.args[0] for call in command_mock.call_args_list if call.args[0][:2] == ["docker", "create"])
+                self.assertEqual(set(invocation[invocation.index("--init") + 1].split(",")), requested)
+                self.assertEqual(set(invocation[invocation.index("--test-tags") + 1].split(",")), {"/owned_one", "/owned_two"})
+                self.assertIn((support, "/opt/extra_addons"), copy.call_args.args[0])
+                evidence = json.loads((root / "results/result.json").read_text())
+                self.assertEqual(set(evidence["installed_addons"]), installed)
+                installed.remove("native_startup")
+                with self.assertRaisesRegex(ValueError, "Odoo did not install required addons: native_startup"):
+                    run_fixture()
 
     def test_no_addons_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, self.assertRaises(ValueError):
