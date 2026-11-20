@@ -203,7 +203,7 @@ attached_paths=[]
                 (addon / "__manifest__.py").write_text(repr({"installable": installable}))
             self.assertEqual(discover_addons(root), ["no_tests", "tested"])
 
-    def test_tenant_validation_only_explicitly_installs_declared_support_addons(self) -> None:
+    def test_full_tenant_validation_installs_startup_addons_and_leaves_optional_support_available(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             tenant = root / "tenant"
@@ -211,7 +211,10 @@ attached_paths=[]
             support = root / "support"
             platform = root / "platform"
             platform.mkdir()
-            for parent, names in ((owned, ("owned_one", "owned_two")), (support, ("declared", "optional"))):
+            for parent, names in (
+                (owned, ("owned_one", "owned_two")),
+                (support, ("declared", "optional", "launchplane_settings", "disable_odoo_online")),
+            ):
                 for name in names:
                     addon = parent / name
                     addon.mkdir(parents=True)
@@ -226,7 +229,7 @@ ide={mode="tenant_repo",focus_paths=[],attached_paths=[]}
             (platform / "stack.toml").write_text("""schema_version=1
 odoo_version="20.0"
 addons_path=[]
-contexts.fixture={install_modules=["declared"],instances={local={}}}
+contexts.fixture={install_modules=["declared", "native_startup"],instances={local={install_modules_add=["optional"]}}}
 """)
 
             def docker_command(args: list[str], *, capture: bool = False) -> subprocess.CompletedProcess[str]:
@@ -250,7 +253,10 @@ contexts.fixture={install_modules=["declared"],instances={local={}}}
                     timeout=60,
                 )
             invocation = next(call.args[0] for call in command_mock.call_args_list if call.args[0][:2] == ["docker", "create"])
-            self.assertEqual(set(invocation[invocation.index("--init") + 1].split(",")), {"owned_one", "owned_two", "declared"})
+            self.assertEqual(
+                set(invocation[invocation.index("--init") + 1].split(",")),
+                {"owned_one", "owned_two", "declared", "native_startup", "launchplane_settings", "disable_odoo_online"},
+            )
             self.assertEqual(set(invocation[invocation.index("--test-tags") + 1].split(",")), {"/owned_one", "/owned_two"})
             self.assertIn((support, "/opt/extra_addons"), copy.call_args.args[0])
 
