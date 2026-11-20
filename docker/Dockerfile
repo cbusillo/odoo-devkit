@@ -53,15 +53,24 @@ COPY --from=addon-sources --chown=ubuntu:ubuntu /opt/extra_addons /opt/extra_add
 RUN mkdir -p /volumes /opt/project \
     && rm -f /volumes/pyproject.toml /volumes/uv.lock \
     && ln -s /opt/project/pyproject.toml /volumes/pyproject.toml \
-    && ln -s /opt/project/uv.lock /volumes/uv.lock \
-    && rm -rf /opt/project/tools \
-    && ln -s /volumes/tools /opt/project/tools
+    && ln -s /opt/project/uv.lock /volumes/uv.lock
 
-FROM base-runtime AS production
+FROM base-devtools AS production-deps
 ARG TARGETPLATFORM
 WORKDIR /opt/project
+# Seed from the serving image so devtools-only packages and import paths stay out.
 RUN --mount=type=cache,target=/home/ubuntu/.cache/uv,uid=1000,gid=1000,sharing=locked \
-	TARGETPLATFORM="${TARGETPLATFORM}" /usr/local/bin/odoo-python-sync.sh prod
+    --mount=from=base-runtime,source=/venv,target=/tmp/runtime-venv \
+    --mount=from=base-runtime,source=/opt/uv/python,target=/opt/uv/python \
+    --mount=from=base-runtime,source=/opt/launchplane/base-python-constraints.txt,target=/opt/launchplane/base-python-constraints.txt \
+    rm -rf /venv \
+    && cp -a /tmp/runtime-venv /venv \
+    && TARGETPLATFORM="${TARGETPLATFORM}" /usr/local/bin/odoo-python-sync.sh prod
+
+FROM base-runtime AS production
+RUN --mount=from=production-deps,source=/venv,target=/tmp/production-venv \
+    rm -rf /venv && cp -a /tmp/production-venv /venv
+COPY --from=production-deps /opt/launchplane/evidence/dependency-provenance.json /opt/launchplane/evidence/dependency-provenance.json
 WORKDIR /
 USER ubuntu
 
@@ -70,5 +79,7 @@ ARG TARGETPLATFORM
 WORKDIR /opt/project
 
 RUN --mount=type=cache,target=/home/ubuntu/.cache/uv,uid=1000,gid=1000,sharing=locked \
-	TARGETPLATFORM="${TARGETPLATFORM}" /usr/local/bin/odoo-python-sync.sh dev
+    rm -rf /opt/project/tools \
+    && ln -s /volumes/tools /opt/project/tools \
+    && TARGETPLATFORM="${TARGETPLATFORM}" /usr/local/bin/odoo-python-sync.sh dev
 USER ubuntu
