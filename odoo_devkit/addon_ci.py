@@ -25,6 +25,7 @@ from .manifest import WorkspaceManifest, load_workspace_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
 SUMMARY = re.compile(r"(\d+) failed, (\d+) error[(]s[)] of (\d+) tests")
+TEST_DATABASE = "addon_ci"
 
 
 class TestCounts(TypedDict):
@@ -35,6 +36,8 @@ class TestCounts(TypedDict):
 
 class AddonResult(TypedDict, total=False):
     addons: list[str]
+    install_addons: list[str]
+    installed_addons: list[str]
     external_sources: list[dict[str, str]]
     image: str
     test_image_id: str
@@ -95,6 +98,30 @@ def test_result(log: str, exit_code: int) -> TestCounts:
     if exit_code or failed or errors or not count:
         raise TestRunError(f"Odoo test run failed: exit={exit_code}, failed={failed}, errors={errors}, tests={count}", counts)
     return counts
+
+
+def read_installed_addons(database_container: str) -> list[str]:
+    query = "SELECT name FROM ir_module_module WHERE state = 'installed' ORDER BY name"
+    return command(
+        [
+            "docker",
+            "exec",
+            database_container,
+            "psql",
+            "-h",
+            "127.0.0.1",
+            "-U",
+            "odoo",
+            "-d",
+            TEST_DATABASE,
+            "-XAt",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-c",
+            query,
+        ],
+        capture=True,
+    ).stdout.splitlines()
 
 
 def execution_environment() -> dict[str, str]:
@@ -258,6 +285,7 @@ def run_tests(
             install_addons.update(product_addons)
         elif support_root is not None:
             install_addons.update(discover_addons(support_root))
+        result["install_addons"] = sorted(install_addons)
         with tempfile.TemporaryDirectory(prefix=token, dir=output.parent) as temporary:
             context = Path(temporary)
             external_root = context / "external"
@@ -411,7 +439,7 @@ def run_tests(
             "--db_user",
             "odoo",
             "--database",
-            "addon_ci",
+            TEST_DATABASE,
             "--addons-path",
             ",".join(paths),
             "--data-dir",
@@ -419,7 +447,7 @@ def run_tests(
             "--without-demo",
             "all",
             "--init",
-            ",".join(sorted(install_addons)),
+            ",".join(result["install_addons"]),
             "--test-enable",
             "--test-tags",
             ",".join(f"/{name}" for name in owned_addons),
@@ -445,6 +473,10 @@ def run_tests(
         log = (output / "odoo.log").read_text(encoding="utf-8")
         print(log)
         result.update(test_result(log, completed.returncode))
+        result["installed_addons"] = read_installed_addons(database_container)
+        missing = sorted(install_addons.difference(result["installed_addons"]))
+        if missing:
+            raise ValueError(f"Odoo did not install required addons: {', '.join(missing)}")
         result["state"] = "passed"
     except TestRunError as error:
         result.update(error.counts)
