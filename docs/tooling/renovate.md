@@ -13,9 +13,9 @@ Renovate opens a pull request for each alert it can fix.
   section that Client repositories require. It also tracks dependencies
   pinned in PEP 723 `# /// script` blocks in any Python file, including under
   `tests/`, which `config:recommended` otherwise skips; Renovate's `pep723`
-  manager matches no files unless a config names them. Pull requests
-  land through the merge train after an agent's review, like any engineering
-  change.
+  manager matches no files unless a config names them. Pull requests land
+  through the merge train. Qualifying signed dependency updates can enter
+  automatically, and updates that need agent review use checked Ready.
 - [`renovate/devkit-pin.json`](../../renovate/devkit-pin.json) moves a
   consumer's exact odoo-devkit pins, in `workspace.toml` and in workflow
   `uses:` references, to the head commit of devkit `main`
@@ -32,6 +32,31 @@ Renovate opens a pull request for each alert it can fix.
   pin when the other already matches. Before landing, check that both proposed
   digests identify the same producer run in their manifest annotations. The two
   stable tags are promoted separately.
+
+## Landing product pins
+
+Before marking a dependency update Ready, read the product's current release
+record and check whether an exact build is waiting for a person. When the
+release seat is preparing that handoff, coordinate with it and post a
+[waiting handoff](https://github.com/cbusillo/launchplane/blob/main/docs/merge-train-policy.md#ready-handoffs)
+on the product's open dependency update PRs. Start each trusted PR comment
+with this line.
+
+```text
+Engineering ready; waiting for the release seat to confirm the exact-build attempt ran.
+```
+
+Apply the same wait as new proposals and refreshed heads appear, including
+updates that qualify for automatic admission. Verify the train shows the wait.
+If a candidate is already in the train, reconcile its current state with the
+release seat. If a landing has already started, check which build remains
+eligible for the release attempt after it finishes.
+
+Keep the wait until the release seat confirms that the release attempt ran
+and records its candidate and result in the release issue. A release approval
+or elapsed time leaves the wait in place. Then check the current PR heads
+and resume through the normal checked handoff. Renovate continues proposing
+updates, and other products continue through their normal train.
 
 ## Repository Config
 
