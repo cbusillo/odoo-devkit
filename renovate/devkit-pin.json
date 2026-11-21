@@ -1,6 +1,9 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "description": "Updates exact devkit and Odoo 20 shared-addons commits and paired Community base image digests.",
+  "prBodyNotes": [
+    "## Landing\n\nBefore marking this dependency update Ready, [check the product's current release](https://github.com/cbusillo/odoo-devkit/blob/main/docs/tooling/renovate.md#landing-product-pins)."
+  ],
   "customManagers": [
     {
       "customType": "regex",
