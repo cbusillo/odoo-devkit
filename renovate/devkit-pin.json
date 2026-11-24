@@ -51,6 +51,12 @@
   ],
   "packageRules": [
     {
+      "description": "The tenant's requires-python constraints move with its Odoo base image.",
+      "matchManagers": ["pep621"],
+      "matchDepTypes": ["requires-python"],
+      "enabled": false
+    },
+    {
       "matchManagers": ["custom.regex"],
       "matchDepNames": ["cbusillo/odoo-devkit"],
       "commitMessageTopic": "odoo-devkit pin",

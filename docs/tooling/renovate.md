@@ -32,6 +32,10 @@ Renovate opens a pull request for each alert it can fix.
   pin when the other already matches. Before landing, check that both proposed
   digests identify the same producer run in their manifest annotations. The two
   stable tags are promoted separately.
+  When the base image changes Python series, update the image pins, the
+  workspace Python version and the affected projects' `requires-python`
+  ranges together, then regenerate the lockfile. The tenant preset disables
+  Renovate's independent updates to those ranges.
 
 ## Landing product pins
 
