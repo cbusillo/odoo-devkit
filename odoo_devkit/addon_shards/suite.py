@@ -9,6 +9,7 @@ from collections import Counter
 from collections.abc import Sequence
 from pathlib import Path
 from types import ModuleType
+from unittest import TestSuite
 
 
 class ShardLoader(importlib.machinery.SourceFileLoader):
@@ -16,7 +17,7 @@ class ShardLoader(importlib.machinery.SourceFileLoader):
         super().exec_module(module)
         original = module.make_suite
 
-        def make_suite(module_names: Sequence[str], position: str = "at_install") -> object:
+        def make_suite(module_names: Sequence[str], position: str = "at_install") -> TestSuite:
             if position != "post_install":
                 return original(module_names, position)
             directory = Path(os.environ["ADDON_TEST_WORK"])

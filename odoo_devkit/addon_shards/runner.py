@@ -44,7 +44,10 @@ class ParallelRun:
     def query(self, database: str, sql: str) -> list[str]:
         return self.postgres("psql", "-XAt", "-v", "ON_ERROR_STOP=1", "-d", database, "-c", sql).splitlines()
 
-    def start(self, part: str, streams: ExitStack) -> subprocess.Popen:
+    def drop_clone(self, db: str) -> None:
+        self.postgres("dropdb", "--force", db)
+
+    def start(self, part: str) -> subprocess.Popen:
         args = list(self.arguments)
         if part != "seed":
             db = self.database(part)
@@ -62,10 +65,10 @@ class ParallelRun:
             "ADDON_TEST_PART": part,
             "ODOO_SOURCE_BIN": str(Path(__file__).with_name("suite.py")),
         }
-        output = streams.enter_context((EVIDENCE / f"{part}.log").open("x"))
-        return subprocess.Popen(
-            ["/odoo/odoo-bin", *args], stdout=output, stderr=subprocess.STDOUT, env=environment, start_new_session=True
-        )
+        with (EVIDENCE / f"{part}.log").open("x") as output:
+            return subprocess.Popen(
+                ["/odoo/odoo-bin", *args], stdout=output.fileno(), stderr=subprocess.STDOUT, env=environment, start_new_session=True
+            )
 
     def validate(self, part: str) -> None:
         observed = read_inventory((EVIDENCE / f"{part}.log").read_text())
@@ -84,30 +87,29 @@ class ParallelRun:
 
     def run_parts(self, parts: list[str]) -> None:
         processes = {}
-        with ExitStack() as streams:
-            try:
-                for part in parts:
-                    processes[part] = self.start(part, streams)
-                pending = set(parts)
-                while pending:
-                    if time.monotonic() >= self.deadline:
-                        raise TimeoutError(f"Shared {self.timeout}s addon deadline expired with {sorted(pending)} running")
-                    for part in sorted(pending):
-                        code = processes[part].poll()
-                        if code is not None:
-                            if code:
-                                raise ValueError(f"Addon worker {part} exited {code}")
-                            self.validate(part)
-                            pending.remove(part)
-                    if pending:
-                        time.sleep(0.05)
-            finally:
-                for process in processes.values():
-                    if process.poll() is None:
-                        with suppress(ProcessLookupError):
-                            os.killpg(process.pid, signal.SIGKILL)
-                codes = {part: proc.wait(timeout=10) for part, proc in processes.items()}
-                (EVIDENCE / f"{parts[0]}-exits.json").write_text(json.dumps(codes))
+        try:
+            for part in parts:
+                processes[part] = self.start(part)
+            pending = set(parts)
+            while pending:
+                if time.monotonic() >= self.deadline:
+                    raise TimeoutError(f"Shared {self.timeout}s addon deadline expired with {sorted(pending)} running")
+                for part in sorted(pending):
+                    code = processes[part].poll()
+                    if code is not None:
+                        if code:
+                            raise ValueError(f"Addon worker {part} exited {code}")
+                        self.validate(part)
+                        pending.remove(part)
+                if pending:
+                    time.sleep(0.05)
+        finally:
+            for process in processes.values():
+                if process.poll() is None:
+                    with suppress(ProcessLookupError):
+                        os.killpg(process.pid, signal.SIGKILL)
+            codes = {part: proc.wait(timeout=10) for part, proc in processes.items()}
+            (EVIDENCE / f"{parts[0]}-exits.json").write_text(json.dumps(codes))
 
     def run(self) -> int:
         (self.work / "groups.json").write_text(json.dumps(self.groups))
@@ -116,7 +118,7 @@ class ParallelRun:
             for part in ("0", "1"):
                 db = self.database(part)
                 self.postgres("createdb", "-T", self.seed, db)
-                cleanup.callback(self.postgres, "dropdb", "--force", db)
+                cleanup.callback(self.drop_clone, db)
                 dest = self.work / db
                 shutil.copytree(self.seed_data, dest)
                 filestore = dest / "filestore" / self.seed

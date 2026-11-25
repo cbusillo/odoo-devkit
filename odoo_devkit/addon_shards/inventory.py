@@ -4,6 +4,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
+from itertools import pairwise
 
 _NATIVE = re.compile(r" INFO (\S+) odoo\.addons\.([\w.]+): Starting ([\w.]+) \.\.\.$")
 _BROWSER = re.compile(r" INFO (\S+) (odoo\.addons\.[\w.]+)\.browser: (.*)$")
@@ -55,7 +56,7 @@ def read_inventory(log: str) -> Inventory:
         if terminal := _POST_END.search(line):
             post_counts.append(int(terminal[1]))
             end = datetime.strptime(line[:23], "%Y-%m-%d %H:%M:%S,%f")
-            for (group, start), stop in zip(starts, [t for _, t in starts[1:]] + [end], strict=False):
+            for (group, start), (_, stop) in pairwise([*starts, ("", end)]):
                 inventory.class_seconds[group] += max(0.0, (stop - start).total_seconds())
         if result := _RESULT.search(line):
             summaries.append(result.groups())
@@ -69,16 +70,16 @@ def read_inventory(log: str) -> Inventory:
                 inventory.tours.append(wrapper)
             elif message == "[HOOT] Starting test suites":
                 contexts.append(wrapper)
-            elif item := re.fullmatch(r'\[HOOT\] Running test "(.*)"', message):
+            elif item := re.fullmatch(r'\[HOOT] Running test "(.*)"', message):
                 counts[wrapper] += 1
                 inventory.hoot.append(f"{wrapper} {item[1]}")
-            elif total := re.fullmatch(r"\[HOOT\] Passed (\d+) tests? \(.*\)", message):
+            elif total := re.fullmatch(r"\[HOOT] Passed (\d+) tests? \(.*\)", message):
                 if wrapper in passed:
                     raise ValueError(f"Repeated HOOT summary for {wrapper}")
                 passed[wrapper] = int(total[1])
             elif message == "[HOOT] Test suite succeeded":
                 successes.append(wrapper)
-            elif re.match(r"\[HOOT\] (?:Failed|Skipped|Test suite failed)", message, re.I):
+            elif re.match(r"\[HOOT] (?:Failed|Skipped|Test suite failed)", message, re.I):
                 raise ValueError(f"{wrapper}: {message}")
     if not post or post_counts != [len(inventory.post_install)] or len(summaries) != 1:
         raise ValueError("Missing or inconsistent native phase totals")
@@ -99,7 +100,7 @@ def split_classes(inventory: Inventory) -> list[list[str]]:
     loads = [0.0, 0.0]
     owners = {}
     for group, seconds in sorted(inventory.class_seconds.items(), key=lambda item: (-item[1], item[0])):
-        slot = min(range(2), key=loads.__getitem__)
+        slot = 0 if loads[0] <= loads[1] else 1
         owners[group] = slot
         loads[slot] += max(seconds, 0.001)
     shards: list[list[str]] = [[], []]
