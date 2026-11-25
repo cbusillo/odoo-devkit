@@ -298,6 +298,8 @@ def run_tests(
     devkit_checks: bool = False,
     parallel_reference: Path | None = None,
 ) -> None:
+    if parallel_reference is not None and output.exists() and any(output.iterdir()):
+        raise ValueError("Use an empty output directory for parallel evidence, separate from the serial reference")
     owned_addons = discover_addons(addons_root)
     install_addons = set(owned_addons)
     token = f"odoo-addon-ci-{uuid.uuid4().hex[:12]}"
@@ -558,9 +560,15 @@ def run_tests(
             ["docker", "network", "rm", token],
             ["docker", "image", "rm", image_tag],
         ):
-            removed = subprocess.run(
-                args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60, env=execution_environment()
-            )
+            try:
+                removed = subprocess.run(
+                    args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60, env=execution_environment()
+                )
+            except subprocess.TimeoutExpired:
+                if parallel_reference is None:
+                    raise
+                cleanup_failed.append(args)
+                continue
             if parallel_reference is not None and removed.returncode:
                 cleanup_failed.append(args)
         if cleanup_failed:

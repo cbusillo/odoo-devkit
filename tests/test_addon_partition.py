@@ -1,11 +1,25 @@
 from __future__ import annotations
 
+import os
 import unittest
+from types import ModuleType
+from unittest.mock import patch
 
 from odoo_devkit.addon_shards.inventory import read_inventory, split_classes
+from odoo_devkit.addon_shards.suite import ShardLoader
 
 
 class AddonPartitionTests(unittest.TestCase):
+    def test_reopening_clone_never_repeats_at_install(self) -> None:
+        loader = ShardLoader("odoo.tests.loader", "unused")
+        module = ModuleType("odoo.tests.loader")
+        module.make_suite = lambda names, position: list(names)
+        with patch("importlib.machinery.SourceFileLoader.exec_module"):
+            loader.exec_module(module)
+        for part, expected in (("seed", ["example"]), ("0", []), ("1", [])):
+            with self.subTest(part=part), patch.dict(os.environ, ADDON_TEST_PART=part):
+                self.assertEqual(module.make_suite(["example"], "at_install"), expected)
+
     def test_equal_counts_do_not_hide_a_browser_skip(self) -> None:
         native = "odoo.addons.example.tests.test_js"
         wrapper = f"{native}.WebSuite.test_js.browser"

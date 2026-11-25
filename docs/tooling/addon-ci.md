@@ -220,3 +220,9 @@ browser filters. A missing or extra test, native skip, HOOT or tour mismatch,
 failed worker, timeout or failed teardown fails the run. The original timeout
 covers the seed and both workers together. The upload includes per-worker logs
 and exits in `shards/`. Use a fresh output directory for each arm.
+
+The devtools image's `odoo-bin` wrapper applies its normal defaults and invokes
+the executable `ODOO_SOURCE_BIN` through the image's Python interpreter.
+Only the seed accepts at-install tests. Opening an initialized worker database
+can request an at-install suite again, so the worker returns an empty suite at
+that phase.

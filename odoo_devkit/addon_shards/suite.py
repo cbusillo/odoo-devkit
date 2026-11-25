@@ -18,10 +18,10 @@ class ShardLoader(importlib.machinery.SourceFileLoader):
         original = module.make_suite
 
         def make_suite(module_names: Sequence[str], position: str = "at_install") -> TestSuite:
-            if position != "post_install":
-                return original(module_names, position)
-            directory = Path(os.environ["ADDON_TEST_WORK"])
             part = os.environ["ADDON_TEST_PART"]
+            if position != "post_install":
+                return original(module_names if part == "seed" else [], position)
+            directory = Path(os.environ["ADDON_TEST_WORK"])
             scope = directory / "modules.json"
             if part == "seed":
                 scope.write_text(json.dumps(list(module_names)))
