@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import tomllib
@@ -18,6 +19,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Literal, TypedDict
 
+from .addon_shards.inventory import read_inventory, split_classes
 from .artifact_inputs import effective_artifact_input_sources, load_artifact_inputs_definition
 from .base_python import BASE_PYTHON_PLATFORMS, read_base_python_catalogs
 from .dependency_workspace import derive_base_python_lock, stage_publishable_dependency_workspace
@@ -251,6 +253,39 @@ def build_test_image(image: str, tenant: Path | None, context: Path, tag: str, *
     command(["docker", "build", "--build-arg", f"BASE_IMAGE={image}", "--tag", tag, str(context)])
 
 
+def parallel_reference_payload(reference: Path, result: AddonResult) -> dict:
+    serial = json.loads((reference / "result.json").read_text())
+    for key in ("addons", "install_addons", "odoo_version", "image", "external_sources"):
+        if serial.get(key) != result[key]:
+            raise ValueError(f"Serial reference does not match this run's {key}")
+    log = (reference / "odoo.log").read_text()
+    counts = test_result(log, 0)
+    if serial["state"] != "passed" or any(serial[key] != value for key, value in counts.items()):
+        raise ValueError("Serial reference did not pass with the recorded test counts")
+    inventory = read_inventory(log)
+    split_classes(inventory)
+    return {"installed_addons": serial["installed_addons"], "inventory": vars(inventory)}
+
+
+def stage_parallel_tests(payload: dict, container: str, output: Path) -> None:
+    with tempfile.TemporaryDirectory(dir=output.parent) as temp:
+        staged = Path(temp)
+        scripts = staged / "ci-runner"
+        scripts.mkdir()
+        scripts.chmod(0o755)
+        package = scripts / "addon_shards"
+        package.mkdir()
+        package.chmod(0o755)
+        for filename in ("__init__.py", "inventory.py", "runner.py", "suite.py"):
+            destination = package / filename
+            shutil.copyfile(Path(__file__).with_name("addon_shards") / filename, destination)
+            destination.chmod(0o755 if filename == "suite.py" else 0o644)
+        reference_file = scripts / "reference.json"
+        reference_file.write_text(json.dumps(payload))
+        reference_file.chmod(0o644)
+        command(["docker", "cp", str(scripts), f"{container}:/opt/ci-runner"])
+
+
 def run_tests(
     *,
     image: str,
@@ -261,6 +296,7 @@ def run_tests(
     output: Path,
     timeout: int,
     devkit_checks: bool = False,
+    parallel_reference: Path | None = None,
 ) -> None:
     owned_addons = discover_addons(addons_root)
     install_addons = set(owned_addons)
@@ -415,6 +451,10 @@ def run_tests(
             paths.append("/opt/extra_addons/ci_enterprise")
             python_paths.insert(0, "/volumes/scripts")
         mounts = [argument for _, destination in inputs for argument in ("--mount", f"type=volume,dst={destination},volume-nocopy")]
+        program = ["/odoo/odoo-bin", image_tag]
+        if parallel_reference is not None:
+            python_paths.append("/opt/ci-runner")
+            program = ["/venv/bin/python", image_tag, "-m", "addon_shards.runner"]
         test_command = [
             "docker",
             "create",
@@ -432,8 +472,7 @@ def run_tests(
             "--env",
             "ODOO_BROWSER_BIN=/usr/local/bin/chromium-playwright",
             "--entrypoint",
-            "/odoo/odoo-bin",
-            image_tag,
+            *program,
             "--db_host",
             "database",
             "--db_user",
@@ -461,18 +500,48 @@ def run_tests(
         ]
         command(test_command)
         copy_test_inputs(inputs, test_container, output)
+        if parallel_reference is not None:
+            (output / "shards").mkdir()
+            stage_parallel_tests(parallel_reference_payload(parallel_reference, result), test_container, output)
         with (output / "odoo.log").open("w", encoding="utf-8") as log_file:
-            completed = subprocess.run(
-                ["docker", "start", "--attach", test_container],
-                stdout=log_file,
-                stderr=subprocess.STDOUT,
-                text=True,
-                timeout=timeout,
-                env=execution_environment(),
-            )
+            try:
+                completed = subprocess.run(
+                    ["docker", "start", "--attach", test_container],
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    timeout=timeout,
+                    env=execution_environment(),
+                )
+            except subprocess.TimeoutExpired:
+                if parallel_reference is not None:
+                    log_file.write(f"Shared addon deadline expired after {timeout} seconds\n")
+                    subprocess.run(["docker", "kill", test_container], capture_output=True, timeout=30, env=execution_environment())
+                raise
+            finally:
+                if parallel_reference is not None:
+                    collected = subprocess.run(
+                        ["docker", "cp", f"{test_container}:/tmp/addon-results/.", str(output / "shards")],
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                        env=execution_environment(),
+                    )
+                    if collected.returncode:
+                        log_file.write(f"Could not collect addon shard evidence: {collected.stderr}\n")
+                        if sys.exc_info()[0] is None and completed.returncode == 0:
+                            collected.check_returncode()
         log = (output / "odoo.log").read_text(encoding="utf-8")
         print(log)
-        result.update(test_result(log, completed.returncode))
+        if parallel_reference is None:
+            result.update(test_result(log, completed.returncode))
+        elif completed.returncode:
+            raise ValueError(f"Parallel addon validation exited {completed.returncode}; see the shard logs")
+        else:
+            count = json.loads((output / "shards/counts.json").read_text())["tests"]
+            if type(count) is not int or count <= 0:
+                raise ValueError("No completed native tests in the parallel result")
+            result.update(failed=0, errors=0, tests=count)
         result["installed_addons"] = read_installed_addons(database_container)
         missing = sorted(install_addons.difference(result["installed_addons"]))
         if missing:
@@ -483,12 +552,19 @@ def run_tests(
         raise
     finally:
         # Names are generated for this invocation; never enumerate or prune other Docker resources.
+        cleanup_failed = []
         for args in (
             ["docker", "rm", "--force", "--volumes", test_container, database_container],
             ["docker", "network", "rm", token],
             ["docker", "image", "rm", image_tag],
         ):
-            subprocess.run(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60, env=execution_environment())
+            removed = subprocess.run(
+                args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60, env=execution_environment()
+            )
+            if parallel_reference is not None and removed.returncode:
+                cleanup_failed.append(args)
+        if cleanup_failed:
+            result["state"] = "failed"
         result["seconds"] = round(time.monotonic() - started, 1)
         (output / "result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
         summary = f"Addon CI: {result['state']}, {result.get('tests', 'unknown')} tests, {result['seconds']} seconds\n"
@@ -496,6 +572,8 @@ def run_tests(
         if os.environ.get("GITHUB_STEP_SUMMARY"):
             with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as summary_file:
                 summary_file.write(summary)
+        if cleanup_failed and sys.exc_info()[0] is None:
+            raise RuntimeError(f"Failed to remove disposable addon resources: {cleanup_failed}")
 
 
 def argument_parser() -> argparse.ArgumentParser:
@@ -506,6 +584,9 @@ def argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--support-root", type=Path)
     parser.add_argument("--tenant", type=Path)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--parallel-reference", type=Path, help="Run two post-install workers against this passing serial evidence directory"
+    )
     parser.add_argument("--timeout", type=int, default=1800)
     parser.add_argument("--devkit-checks", action="store_true", help="Copy devkit scripts and synthetic live-check addons")
     return parser
@@ -533,6 +614,7 @@ def main() -> None:
         output=arguments.output.resolve(),
         timeout=arguments.timeout,
         devkit_checks=arguments.devkit_checks,
+        parallel_reference=arguments.parallel_reference,
     )
 
 
