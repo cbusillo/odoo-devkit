@@ -25,6 +25,11 @@ from .manifest import WorkspaceManifest, load_workspace_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
 SUMMARY = re.compile(r"(\d+) failed, (\d+) error[(]s[)] of (\d+) tests")
+DEVTOOLS_PORT_SKIP = re.compile(
+    r"\bINFO \S+ odoo\.(?:addons\.[\w.]+|tests\.result): "
+    r"(skipped [^\n]+? : Failed to detect chrome devtools port after \d+(?:\.\d+)?s\.)$",
+    re.MULTILINE,
+)
 TEST_DATABASE = "addon_ci"
 
 
@@ -97,6 +102,8 @@ def test_result(log: str, exit_code: int) -> TestCounts:
     counts: TestCounts = {"failed": failed, "errors": errors, "tests": count}
     if exit_code or failed or errors or not count:
         raise TestRunError(f"Odoo test run failed: exit={exit_code}, failed={failed}, errors={errors}, tests={count}", counts)
+    if skipped := DEVTOOLS_PORT_SKIP.search(log):
+        raise TestRunError(f"Incomplete browser coverage: {skipped[1]}", counts)
     return counts
 
 
