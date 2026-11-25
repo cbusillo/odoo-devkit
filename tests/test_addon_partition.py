@@ -6,16 +6,14 @@ from types import ModuleType
 from unittest.mock import patch
 
 from odoo_devkit.addon_shards.inventory import read_inventory, split_classes
-from odoo_devkit.addon_shards.suite import ShardLoader
+from odoo_devkit.addon_shards.suite import select_worker_suite
 
 
 class AddonPartitionTests(unittest.TestCase):
     def test_reopening_clone_never_repeats_at_install(self) -> None:
-        loader = ShardLoader("odoo.tests.loader", "unused")
         module = ModuleType("odoo.tests.loader")
         module.make_suite = lambda names, position: list(names)
-        with patch("importlib.machinery.SourceFileLoader.exec_module"):
-            loader.exec_module(module)
+        select_worker_suite(module)
         for part, expected in (("seed", ["example"]), ("0", []), ("1", [])):
             with self.subTest(part=part), patch.dict(os.environ, ADDON_TEST_PART=part):
                 self.assertEqual(module.make_suite(["example"], "at_install"), expected)
