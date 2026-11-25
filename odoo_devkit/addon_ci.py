@@ -26,7 +26,7 @@ from .manifest import WorkspaceManifest, load_workspace_manifest
 ROOT = Path(__file__).resolve().parents[1]
 SUMMARY = re.compile(r"(\d+) failed, (\d+) error[(]s[)] of (\d+) tests")
 DEVTOOLS_PORT_SKIP = re.compile(
-    r"\bINFO \S+ odoo\.(?:addons\.[\w.]+|tests\.result): "
+    r"\bINFO \S+ odoo\.[\w.]+: "
     r"(skipped [^\n]+? : Failed to detect chrome devtools port after \d+(?:\.\d+)?s\.)$",
     re.MULTILINE,
 )
