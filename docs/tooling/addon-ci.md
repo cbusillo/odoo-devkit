@@ -93,7 +93,9 @@ records the test selection, requested and installed modules, external source
 commits, requested image, the actual built test image's immutable ID, test count and elapsed
 seconds; the elapsed time is also reported in the Actions job summary. A missing
 summary, zero tests, reported failures/errors, nonzero Odoo exit, or any requested
-module missing from the installed set fails the job.
+module missing from the installed set fails the job. A native test skipped because Chromium
+never exposed its DevTools port also fails the run, with the test name and Odoo's skip
+reason. Other conditional skips keep their native outcome.
 Callers upload evidence even when the run fails. Legacy callers may filter
 addon and test-input changes. Callers adopting `qualityGate.test.local` and
 `qualityGate.test.ci` run the complete suite for every source PR head and merge

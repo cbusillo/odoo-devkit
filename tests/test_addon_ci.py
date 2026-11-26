@@ -285,3 +285,26 @@ contexts.fixture={install_modules=["declared", "native_startup"],instances={loca
         ):
             with self.subTest(log=log, exit_code=exit_code), self.assertRaises(ValueError):
                 test_result(log, exit_code)
+
+    def test_browser_startup_skip_fails_with_native_reason_and_counts(self) -> None:
+        reason = "Failed to detect chrome devtools port after 4.5s."
+        summary = "0 failed, 0 error(s) of 3 tests"
+        for logger, test in (
+            ("odoo.addons.web.tests.test_js", "MobileWebSuite.test_unit_mobile"),
+            ("odoo.tests.suite", "setUpClass (odoo.addons.example.tests.BrowserSuite)"),
+        ):
+            with self.subTest(test=test):
+                skipped = f"INFO addon_ci {logger}: skipped {test} : {reason}"
+                with self.assertRaises(addon_ci.TestRunError) as raised:
+                    test_result(f"{skipped}\n{summary}", 0)
+                self.assertIn(test, str(raised.exception))
+                self.assertIn(reason, str(raised.exception))
+                self.assertEqual(raised.exception.counts, {"failed": 0, "errors": 0, "tests": 3})
+
+    def test_conditional_browser_skip_and_startup_warning_preserve_success(self) -> None:
+        log = (
+            "WARNING addon_ci odoo.tests.common: DevToolsActivePort not found\n"
+            "INFO addon_ci odoo.addons.web.tests.test_js: skipped MobileWebSuite.test_feature : optional feature disabled\n"
+            "0 failed, 0 error(s) of 3 tests"
+        )
+        self.assertEqual(test_result(log, 0)["tests"], 3)
