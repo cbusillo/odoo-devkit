@@ -467,6 +467,7 @@ def run_tests(
         test_command = [
             "docker",
             "create",
+            *(["--init"] if parallel_reference is not None else []),
             "--name",
             test_container,
             "--network",

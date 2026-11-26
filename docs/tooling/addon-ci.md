@@ -216,7 +216,8 @@ matched source and image inputs when comparing wall time.
 
 Installation and native at-install tests run once. Two workers run whole
 post-install classes on separate database and filestore clones, with separate
-Odoo HTTP ports and browser profiles. The recorded class times determine the
+Odoo HTTP ports and browser profiles. Docker's init process reaps orphaned
+browser descendants in the two-worker container. The recorded class times determine the
 split. Each worker uses native Odoo selection and the original cross-module
 browser filters. A missing or extra test, native skip, HOOT or tour mismatch,
 failed worker, timeout or failed teardown fails the run. The original timeout
