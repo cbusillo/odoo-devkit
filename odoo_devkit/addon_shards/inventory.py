@@ -106,7 +106,7 @@ def split_classes(inventory: Inventory, workers: int | None = None) -> list[list
     loads = [0.0] * workers
     owners = {}
     for group, seconds in sorted(inventory.class_seconds.items(), key=lambda item: (-item[1], item[0])):
-        slot = min(range(workers), key=loads.__getitem__)
+        slot = loads.index(min(loads))
         owners[group] = slot
         loads[slot] += max(seconds, 0.001)
     shards: list[list[str]] = [[] for _ in loads]

@@ -122,8 +122,8 @@ class AddonPartitionTests(unittest.TestCase):
             self.assertEqual(len(temp_dirs), len(databases))
             self.assertCountEqual([method for group in run.groups for method in group], methods)
             self.assertEqual((data / "filestore/ci/attachment").read_bytes(), b"seed")
-            for db in databases:
-                postgres.assert_any_call("createdb", "-T", "ci", db)
-                postgres.assert_any_call("dropdb", "--force", db)
+            for database in databases:
+                postgres.assert_any_call("createdb", "-T", "ci", database)
+                postgres.assert_any_call("dropdb", "--force", database)
         with self.assertRaises(ValueError):
             split_classes(Inventory(post_install=methods[:1], class_seconds=Counter({methods[0].rsplit(".", 1)[0]: 1})), 4)
