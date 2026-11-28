@@ -204,3 +204,31 @@ uv run python -m odoo_devkit.addon_ci \
 Use the workflow's image selection. A sparse support checkout keeps unrelated
 addon dependencies out of this lane. The normal addon-CI path continues to run
 without copying the devkit scripts or synthetic Enterprise fixtures.
+
+## Matched parallel validation
+
+The default runs the existing serial suite. For a timing trial, pass
+`--parallel-reference /path/to/serial-evidence` to the CLI or set the
+composite action's `parallel-reference` input. Supply the complete unmodified
+`odoo.log` and `result.json` from a successful serial run with matching test
+and install selections, Odoo version, base image and external sources. Use
+matched source and image inputs when comparing wall time. The reference selects
+two workers by default. To run four in the same job, also pass
+`--parallel-workers 4` or set the action input `parallel-workers: 4`. The
+reference must contain at least one post-install class per worker.
+
+Installation and native at-install tests run once. Workers run whole
+post-install classes on separate database and filestore clones, with separate
+Odoo HTTP ports and browser profiles. Docker's init process reaps orphaned
+browser descendants in the parallel container. The recorded class times determine the
+split. Each worker uses native Odoo selection and the original cross-module
+browser filters. A missing or extra test, native skip, HOOT or tour mismatch,
+failed worker, timeout or failed teardown fails the run. The original timeout
+covers the seed and all workers together. The upload includes per-worker logs
+and exits in `shards/`. Use a fresh output directory for each arm.
+
+The devtools image's `odoo-bin` wrapper applies its normal defaults and invokes
+the executable `ODOO_SOURCE_BIN` through the image's Python interpreter.
+Only the seed accepts at-install tests. Opening an initialized worker database
+can request an at-install suite again, so the worker returns an empty suite at
+that phase.
