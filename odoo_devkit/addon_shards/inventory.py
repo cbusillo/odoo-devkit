@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from itertools import pairwise
 
+PARALLEL_WORKERS = (2, 4)
+
 _NATIVE = re.compile(r" INFO (\S+) odoo\.addons\.([\w.]+): Starting ([\w.]+) \.\.\.$")
 _BROWSER = re.compile(r" INFO (\S+) (odoo\.addons\.[\w.]+)\.browser: (.*)$")
 _RESULT = re.compile(r" odoo\.tests\.result: (\d+) failed, (\d+) error\(s\) of (\d+) tests when loading database '([^']+)'$")
@@ -96,16 +98,18 @@ def read_inventory(log: str) -> Inventory:
     return inventory
 
 
-def split_classes(inventory: Inventory) -> list[list[str]]:
-    loads = [0.0, 0.0]
+def split_classes(inventory: Inventory, workers: int = 2) -> list[list[str]]:
+    if workers not in PARALLEL_WORKERS:
+        raise ValueError(f"Unsupported parallel worker count: {workers}")
+    loads = [0.0] * workers
     owners = {}
     for group, seconds in sorted(inventory.class_seconds.items(), key=lambda item: (-item[1], item[0])):
-        slot = 0 if loads[0] <= loads[1] else 1
+        slot = min(range(workers), key=loads.__getitem__)
         owners[group] = slot
         loads[slot] += max(seconds, 0.001)
-    shards: list[list[str]] = [[], []]
+    shards: list[list[str]] = [[] for _ in loads]
     for name in inventory.post_install:
         shards[owners[name.rsplit(".", 1)[0]]].append(name)
     if not all(shards):
-        raise ValueError("Two nonempty post-install class groups are required")
+        raise ValueError(f"Need at least {workers} nonempty post-install classes")
     return shards

@@ -26,7 +26,10 @@ inputs:
     description: Explicit comparison base; omitted to select the complete event range
     default: ''
   parallel-reference:
-    description: Optional passing serial evidence directory for a matched two-worker run
+    description: Optional passing serial evidence directory for a matched parallel run
+    default: ''
+  parallel-workers:
+    description: Post-install worker count with parallel-reference (2 or 4, default 2)
     default: ''
   style-only:
     description: Run style checks while skipping the Odoo addon runner
@@ -92,6 +95,7 @@ runs:
         ADDON_CI_OUTPUT: ${{ inputs.output }}
         ADDON_CI_SOURCE_TOKEN: ${{ inputs.source-token }}
         ADDON_CI_PARALLEL_REFERENCE: ${{ inputs.parallel-reference }}
+        ADDON_CI_PARALLEL_WORKERS: ${{ inputs.parallel-workers }}
         ADDON_CI_METADATA: ${{ inputs.command-metadata }}
       run: |
         set -euo pipefail
@@ -106,5 +110,6 @@ runs:
           if [[ "$ADDON_CI_PARALLEL_REFERENCE" != /* ]]; then ADDON_CI_PARALLEL_REFERENCE="$GITHUB_WORKSPACE/$ADDON_CI_PARALLEL_REFERENCE"; fi
           args+=(--parallel-reference "$ADDON_CI_PARALLEL_REFERENCE")
         fi
+        if [ -n "$ADDON_CI_PARALLEL_WORKERS" ]; then args+=(--parallel-workers "$ADDON_CI_PARALLEL_WORKERS"); fi
         if [ -n "$ADDON_CI_IMAGE" ]; then args+=(--image "$ADDON_CI_IMAGE"); fi
         uv --directory "$ADDON_CI_ACTION/../../.." run --locked python -m odoo_devkit.addon_ci "${args[@]}"

@@ -8,17 +8,16 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections import Counter
 from contextlib import ExitStack, suppress
 from pathlib import Path
 
-from .inventory import Inventory, read_inventory, same_inventory, split_classes
+from .inventory import Inventory, read_inventory, same_inventory
 
 EVIDENCE = Path("/tmp/addon-results")
 
 
 class ParallelRun:
-    def __init__(self, arguments: list[str], expected: Inventory, installed: list[str], work: Path) -> None:
+    def __init__(self, arguments: list[str], expected: Inventory, installed: list[str], groups: list[list[str]], work: Path) -> None:
         self.arguments = arguments
         self.expected = expected
         self.installed = installed
@@ -27,7 +26,7 @@ class ParallelRun:
         self.seed_data = Path(self.option("--data-dir"))
         self.timeout = int(self.option("--limit-time-real"))
         self.deadline = time.monotonic() + self.timeout
-        self.groups = split_classes(expected)
+        self.groups = groups
         self.connection = ["-h", self.option("--db_host"), "-U", self.option("--db_user")]
 
     def option(self, name: str) -> str:
@@ -115,7 +114,8 @@ class ParallelRun:
         (self.work / "groups.json").write_text(json.dumps(self.groups))
         self.run_parts(["seed"])
         with ExitStack() as cleanup:
-            for part in ("0", "1"):
+            parts = [str(index) for index in range(len(self.groups))]
+            for part in parts:
                 db = self.database(part)
                 self.postgres("createdb", "-T", self.seed, db)
                 cleanup.callback(self.drop_clone, db)
@@ -124,7 +124,7 @@ class ParallelRun:
                 filestore = dest / "filestore" / self.seed
                 if filestore.exists():
                     filestore.rename(filestore.with_name(db))
-            self.run_parts(["0", "1"])
+            self.run_parts(parts)
         databases = self.query("postgres", "SELECT datname FROM pg_database WHERE datname NOT IN ('template0','template1')")
         same_inventory(databases, ["postgres", self.seed], "remaining databases")
         return len(self.expected.at_install) + len(self.expected.post_install)
@@ -133,12 +133,11 @@ class ParallelRun:
 def main() -> None:
     EVIDENCE.mkdir()
     reference = json.loads((Path(__file__).resolve().parent.parent / "reference.json").read_text())
-    values = reference["inventory"]
-    inventory = Inventory(**{**values, "class_seconds": Counter(values["class_seconds"])})
+    inventory = Inventory(**reference["inventory"])
     with tempfile.TemporaryDirectory(dir="/tmp", prefix="s") as temporary:
-        total = ParallelRun(sys.argv[1:], inventory, reference["installed_addons"], Path(temporary)).run()
+        total = ParallelRun(sys.argv[1:], inventory, reference["installed_addons"], reference["groups"], Path(temporary)).run()
     (EVIDENCE / "counts.json").write_text(json.dumps({"tests": total}))
-    print(f"Both post-install workers completed: {total} native tests across both phases")
+    print(f"Completed post-install workers: {total} native tests across both phases")
 
 
 if __name__ == "__main__":

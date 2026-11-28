@@ -19,7 +19,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Literal, TypedDict
 
-from .addon_shards.inventory import read_inventory, split_classes
+from .addon_shards.inventory import PARALLEL_WORKERS, read_inventory, split_classes
 from .artifact_inputs import effective_artifact_input_sources, load_artifact_inputs_definition
 from .base_python import BASE_PYTHON_PLATFORMS, read_base_python_catalogs
 from .dependency_workspace import derive_base_python_lock, stage_publishable_dependency_workspace
@@ -260,7 +260,7 @@ def build_test_image(image: str, tenant: Path | None, context: Path, tag: str, *
     command(["docker", "build", "--build-arg", f"BASE_IMAGE={image}", "--tag", tag, str(context)])
 
 
-def parallel_reference_payload(reference: Path, result: AddonResult) -> dict:
+def parallel_reference_payload(reference: Path, result: AddonResult, workers: int) -> dict:
     serial = json.loads((reference / "result.json").read_text())
     for key in ("addons", "install_addons", "odoo_version", "image", "external_sources"):
         if serial.get(key) != result[key]:
@@ -270,8 +270,11 @@ def parallel_reference_payload(reference: Path, result: AddonResult) -> dict:
     if serial["state"] != "passed" or any(serial[key] != value for key, value in counts.items()):
         raise ValueError("Serial reference did not pass with the recorded test counts")
     inventory = read_inventory(log)
-    split_classes(inventory)
-    return {"installed_addons": serial["installed_addons"], "inventory": vars(inventory)}
+    return {
+        "installed_addons": serial["installed_addons"],
+        "inventory": vars(inventory),
+        "groups": split_classes(inventory, workers),
+    }
 
 
 def stage_parallel_tests(payload: dict, container: str, output: Path) -> None:
@@ -304,7 +307,10 @@ def run_tests(
     timeout: int,
     devkit_checks: bool = False,
     parallel_reference: Path | None = None,
+    parallel_workers: int | None = None,
 ) -> None:
+    if parallel_workers is not None and parallel_reference is None:
+        raise ValueError("--parallel-workers requires --parallel-reference")
     if parallel_reference is not None and output.exists() and any(output.iterdir()):
         raise ValueError("Use an empty output directory for parallel evidence, separate from the serial reference")
     owned_addons = discover_addons(addons_root)
@@ -512,7 +518,11 @@ def run_tests(
         copy_test_inputs(inputs, test_container, output)
         if parallel_reference is not None:
             (output / "shards").mkdir()
-            stage_parallel_tests(parallel_reference_payload(parallel_reference, result), test_container, output)
+            stage_parallel_tests(
+                parallel_reference_payload(parallel_reference, result, parallel_workers if parallel_workers is not None else 2),
+                test_container,
+                output,
+            )
         with (output / "odoo.log").open("w", encoding="utf-8") as log_file:
             try:
                 completed = subprocess.run(
@@ -601,7 +611,13 @@ def argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tenant", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
-        "--parallel-reference", type=Path, help="Run two post-install workers against this passing serial evidence directory"
+        "--parallel-reference", type=Path, help="Run post-install workers against this passing serial evidence directory"
+    )
+    parser.add_argument(
+        "--parallel-workers",
+        type=int,
+        choices=PARALLEL_WORKERS,
+        help="Post-install worker count with a parallel reference (default 2)",
     )
     parser.add_argument("--timeout", type=int, default=1800)
     parser.add_argument("--devkit-checks", action="store_true", help="Copy devkit scripts and synthetic live-check addons")
@@ -631,6 +647,7 @@ def main() -> None:
         timeout=arguments.timeout,
         devkit_checks=arguments.devkit_checks,
         parallel_reference=arguments.parallel_reference,
+        parallel_workers=arguments.parallel_workers,
     )
 
 

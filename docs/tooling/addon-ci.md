@@ -212,16 +212,19 @@ The default runs the existing serial suite. For a timing trial, pass
 composite action's `parallel-reference` input. Supply the complete unmodified
 `odoo.log` and `result.json` from a successful serial run with matching test
 and install selections, Odoo version, base image and external sources. Use
-matched source and image inputs when comparing wall time.
+matched source and image inputs when comparing wall time. The reference selects
+two workers by default. To run four in the same job, also pass
+`--parallel-workers 4` or set the action input `parallel-workers: 4`. The
+reference must contain at least one post-install class per worker.
 
-Installation and native at-install tests run once. Two workers run whole
+Installation and native at-install tests run once. Workers run whole
 post-install classes on separate database and filestore clones, with separate
 Odoo HTTP ports and browser profiles. Docker's init process reaps orphaned
-browser descendants in the two-worker container. The recorded class times determine the
+browser descendants in the parallel container. The recorded class times determine the
 split. Each worker uses native Odoo selection and the original cross-module
 browser filters. A missing or extra test, native skip, HOOT or tour mismatch,
 failed worker, timeout or failed teardown fails the run. The original timeout
-covers the seed and both workers together. The upload includes per-worker logs
+covers the seed and all workers together. The upload includes per-worker logs
 and exits in `shards/`. Use a fresh output directory for each arm.
 
 The devtools image's `odoo-bin` wrapper applies its normal defaults and invokes
