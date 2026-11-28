@@ -98,7 +98,9 @@ def read_inventory(log: str) -> Inventory:
     return inventory
 
 
-def split_classes(inventory: Inventory, workers: int = 2) -> list[list[str]]:
+def split_classes(inventory: Inventory, workers: int | None = None) -> list[list[str]]:
+    if workers is None:
+        workers = 2
     if workers not in PARALLEL_WORKERS:
         raise ValueError(f"Unsupported parallel worker count: {workers}")
     loads = [0.0] * workers

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import tempfile
 import unittest
 from collections import Counter
@@ -63,7 +64,7 @@ class AddonPartitionTests(unittest.TestCase):
         self.assertEqual(second, inventory.post_install[2:])
         self.assertEqual(len(inventory.at_install), 1)
 
-    def test_four_workers_launch_on_distinct_clones_and_run_every_post_install_class(self) -> None:
+    def test_four_workers_launch_with_isolated_databases_files_and_ports(self) -> None:
         methods = [f"example.tests.Case{i}.test_native" for i in range(7)]
         expected = Inventory(
             post_install=methods, class_seconds=Counter({name.rsplit(".", 1)[0]: i for i, name in enumerate(methods)})
@@ -73,37 +74,56 @@ class AddonPartitionTests(unittest.TestCase):
             data = root / "data"
             (data / "filestore/ci").mkdir(parents=True)
             (data / "filestore/ci/attachment").write_bytes(b"seed")
-            args = ["--database", "ci", "--data-dir", str(data), "--limit-time-real", "60", "--db_host", "db", "--db_user", "odoo"]
+            args = [
+                "--database",
+                "ci",
+                "--data-dir",
+                str(data),
+                "--limit-time-real",
+                "60",
+                "--db_host",
+                "db",
+                "--db_user",
+                "odoo",
+                "--init",
+                "example",
+            ]
             run = ParallelRun(args, expected, [], split_classes(expected, 4), root)
-            processes = {}
-            selected = []
+            ports = set()
+            databases = set()
+            temp_dirs = set()
 
-            def start(part: str) -> Mock:
+            def launch(argv: list[str], *, env: dict[str, str], **_: object) -> Mock:
+                part = env["ADDON_TEST_PART"]
                 if part != "seed":
-                    clone = root / run.database(part) / "filestore" / run.database(part) / "attachment"
+                    self.assertNotIn("--init", argv)
+                    db = argv[argv.index("--database") + 1]
+                    self.assertNotEqual(db, run.seed)
+                    databases.add(db)
+                    ports.add(argv[argv.index("--http-port") + 1])
+                    temp_dirs.add(env["TMPDIR"])
+                    clone = Path(argv[argv.index("--data-dir") + 1]) / "filestore" / db / "attachment"
                     self.assertEqual(clone.read_bytes(), b"seed")
                     clone.write_text(part)
-                    selected.extend(run.groups[int(part)])
                 process = Mock()
                 process.poll.return_value = process.wait.return_value = 0
-                processes[part] = process
                 return process
 
             with (
-                patch.object(run, "start", side_effect=start),
+                patch.object(subprocess, "Popen", side_effect=launch),
                 patch.object(run, "validate"),
                 patch.object(run, "postgres") as postgres,
                 patch.object(run, "query", return_value=["postgres", "ci"]),
                 patch("odoo_devkit.addon_shards.runner.EVIDENCE", root),
             ):
                 self.assertEqual(run.run(), len(methods))
-            self.assertCountEqual(selected, methods)
-            workers = set(processes) - {"seed"}
-            self.assertEqual(len(workers), 4)
+            self.assertEqual(len(databases), 4)
+            self.assertEqual(len(ports), len(databases))
+            self.assertEqual(len(temp_dirs), len(databases))
+            self.assertCountEqual([method for group in run.groups for method in group], methods)
             self.assertEqual((data / "filestore/ci/attachment").read_bytes(), b"seed")
-            for part in workers:
-                postgres.assert_any_call("createdb", "-T", "ci", run.database(part))
-                postgres.assert_any_call("dropdb", "--force", run.database(part))
-                processes[part].wait.assert_called_once()
+            for db in databases:
+                postgres.assert_any_call("createdb", "-T", "ci", db)
+                postgres.assert_any_call("dropdb", "--force", db)
         with self.assertRaises(ValueError):
             split_classes(Inventory(post_install=methods[:1], class_seconds=Counter({methods[0].rsplit(".", 1)[0]: 1})), 4)

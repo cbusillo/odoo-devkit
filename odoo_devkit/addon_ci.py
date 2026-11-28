@@ -260,7 +260,7 @@ def build_test_image(image: str, tenant: Path | None, context: Path, tag: str, *
     command(["docker", "build", "--build-arg", f"BASE_IMAGE={image}", "--tag", tag, str(context)])
 
 
-def parallel_reference_payload(reference: Path, result: AddonResult, workers: int) -> dict:
+def parallel_reference_payload(reference: Path, result: AddonResult, workers: int | None = None) -> dict:
     serial = json.loads((reference / "result.json").read_text())
     for key in ("addons", "install_addons", "odoo_version", "image", "external_sources"):
         if serial.get(key) != result[key]:
@@ -519,7 +519,7 @@ def run_tests(
         if parallel_reference is not None:
             (output / "shards").mkdir()
             stage_parallel_tests(
-                parallel_reference_payload(parallel_reference, result, parallel_workers if parallel_workers is not None else 2),
+                parallel_reference_payload(parallel_reference, result, parallel_workers),
                 test_container,
                 output,
             )
